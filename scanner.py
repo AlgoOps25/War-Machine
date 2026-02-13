@@ -4,6 +4,8 @@ import time
 from datetime import datetime
 import pytz
 
+print("RUNNING WAR MACHINE V2 BUILD")
+
 EODHD_API_KEY = os.getenv("EODHD_API_KEY")
 DISCORD_WEBHOOK = os.getenv("DISCORD_WEBHOOK")
 
