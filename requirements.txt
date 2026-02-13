@@ -1,5 +1,6 @@
+discord-webhook
 requests
 pandas
 numpy
-discord-webhook
+requests
 schedule
