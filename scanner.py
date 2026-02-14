@@ -4,7 +4,7 @@ import time
 from eodhd_api import screener_top_by_marketcap
 import config
 from discord_bot import send
-from sniper.py import process_ticker  # careful: if import error, use from .sniper import process_ticker
+from sniper import process_ticker  # careful: if import error, use from .sniper import process_ticker
 # Note: in some environments, relative imports are needed. Adjust import if Railway complains.
 
 def score_stock_quick(rec):
