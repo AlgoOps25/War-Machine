@@ -24,7 +24,7 @@ entry = {"direction":"bull", "zone_low":100.0, "zone_high":100.8, "or_low":99.5,
 # If you don't want network calls you can temporarily monkeypatch it in your test to return the fake bars.
 # Example monkeypatch:
 import scanner
-scanner.get_intraday_bars = lambda ticker, limit=180: make_1m_bars(base_price=100.0, count=120)
+scanner.get_intraday_bars_for_logger = lambda ticker, limit=180: make_1m_bars(base_price=100.0, count=120)
 
 confirmed, bar, tf, grade = check_confirmation_multi_timeframe("FAKE", entry)
 print("confirmed:", confirmed)
