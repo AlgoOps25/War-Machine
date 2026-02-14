@@ -127,7 +127,7 @@ def check_confirmation_multi_timeframe(ticker, entry):
                 # if only A+ allowed adjust here
 
         # 2) Fetch 1m bars (we will aggregate into 3m and 2m)
-        bars_1m = get_intraday_bars(ticker, limit=180)  # returns 1m bars ascending
+        bars_1m = get_intraday_bars_for_logger(ticker, limit=180, interval="1m")  # returns 1m bars ascending
         if not bars_1m:
             return False, None, None, None
 

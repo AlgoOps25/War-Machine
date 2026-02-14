@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 import json
 from scanner_helpers import get_intraday_bars_for_logger  # optional
 # We'll import the multi-TF function directly from scanner.py if it's in same folder
-from scanner import check_confirmation_multi_timeframe
+from scanner_helpers import check_confirmation_multi_timeframe
 
 # create fake 1m bars (ascending times)
 def make_1m_bars(base_price=100.0, count=30, start_dt=None):
