@@ -1,59 +1,27 @@
-# WAR MACHINE — README (GOD MODE Sniper + Multi-TF Confirmation)
+# WAR MACHINE — God Mode Pro
 
-This repo runs the War Machine GOD MODE sniper engine:
-- Opening Range (9:30–9:40) → Breakout → FVG after breakout → Retest confirmation
-- Multi-timeframe confirmation detection: prefer highest TF (5m → 3m → 2m → 1m)
-- Stop/Target auto-calculator: T1 = 2R, T2 = previous 1-hour high/low (used if >=2R)
-- Trade/result logger: persists confirmed trades and monitors until T1/T2/Stop
-- Alerts delivered to Discord; data via EODHD intraday API; runtime on Railway
+This repo contains the modular War Machine GOD MODE PRO system:
+- Momentum scanner -> Sniper (BOS + FVG) -> Multi-TF confirmations -> Stop/Targets -> Trade Logger
+- Data: EODHD intraday (1m/5m) via `EODHD_API_KEY`
+- Alerts: Discord webhook via `DISCORD_WEBHOOK`
+- Host: Railway (recommended) — Start command: `python main.py`
 
----
+## Files
+See `config.py`, `eodhd_api.py`, `scanner.py`, `sniper.py`, `confirmations.py`, `targets.py`, `trade_logger.py`, `discord_bot.py`, `main.py`.
 
-## File layout (place these files in repo root)
+## Env vars
+Set these in Railway (Service Variables):
+- EODHD_API_KEY
+- DISCORD_WEBHOOK
+- LEARNING_DB_PATH (optional)
 
-/ (repo root)
-│
-├─ scanner.py # main orchestrator (imports modules)
-├─ targets.py # stop/target calculator (provided)
-├─ trade_logger.py # SQLite trade logger + monitor (provided)
-├─ scanner_helpers.py # EODHD helper wrappers (provided)
-├─ config.py # tuning values (you have)
-├─ discord_bot.py # optional bot helper (you may have)
-├─ main.py # wrapper to run scanner.py (optional)
-├─ requirements.txt # requests, pytz
-├─ railway.json # Railway config (optional)
-├─ README.md # this file
-├─ retest_state.json # runtime (created by scanner)
-└─ war_machine_trades.db # created by trade_logger.py
+## Local test
+1. `pip install -r requirements.txt`
+2. Set env vars locally (export or set in shell)
+3. `python main.py` — watch console logs and Discord.
 
+## Deployment
+- Commit & push to GitHub
+- Railway project -> Deploy from GitHub -> set start command `python main.py`
+- Add env vars in Railway -> Redeploy
 
----
-
-## Required environment variables (Railway service variables / local .env)
-
-
-EODHD_API_KEY # your EODHD API token
-DISCORD_WEBHOOK # Discord incoming webhook URL
-LEARNING_DB_PATH # optional, defaults to war_machine_trades.db
-
-
----
-
-## Install locally (minimal)
-1. Create virtualenv:
-   ```bash
-   python -m venv venv
-   source venv/bin/activate   # or venv\Scripts\activate on Windows
-   pip install -r requirements.txt
-
-
-Set environment variables (locally):
-
-export EODHD_API_KEY="your_key"
-export DISCORD_WEBHOOK="https://discord.com/api/..."
-export LEARNING_DB_PATH="war_machine_trades.db"
-
-
-Run a single-cycle test (see "Minimal test" below) or run full scanner:
-
-python scanner.py
