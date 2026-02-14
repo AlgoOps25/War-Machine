@@ -1,4 +1,4 @@
-# scanner.py — War Machine v3 + Pre-alert + Confirmation (Opening Range -> Breakout -> Retest)
+# scanner.py — WAR MACHINE GOD MODE: Elite Active Sniper + STRICT FVG filter
 import requests
 import os
 import time
@@ -7,35 +7,36 @@ import threading
 from datetime import datetime, date, time as dtime, timedelta
 import pytz
 
-print("⚔️ WAR MACHINE ELITE ACTIVE v3 + SNIPER RETEST LAYER STARTING")
+print("⚔️ WAR MACHINE GOD MODE — SNIPER v1 (STRICT FVG) STARTING")
 
 EODHD_API_KEY = os.getenv("EODHD_API_KEY")
 DISCORD_WEBHOOK = os.getenv("DISCORD_WEBHOOK")
 
-# MAIN SCHEDULE
-SCAN_INTERVAL = 300            # 5 min main scan (universe)
-RETEST_POLL = 15               # poll seconds for armed tickers (fast monitor)
+# MAIN SCHEDULE / TUNING
+SCAN_INTERVAL = 300            # 5 min main scan
+RETEST_POLL = 15               # seconds for armed tickers (fast monitor)
 MARKET_CAP_MIN = 2_000_000_000
 MAX_UNIVERSE = 1000
-TOP_SCAN_COUNT = 350           # how many to score per scan cycle
+TOP_SCAN_COUNT = 350           # how many to evaluate each cycle
+
+# retest arm limits
+MAX_ARMED = 10                 # how many tickers to monitor at once
+RETEST_TIMEOUT_MINUTES = 45    # prune armed tickers after N minutes if no confirmation
+
+# confirmation tuning (video-derived)
+RETEST_MIN_RELVOL = 1.2
+CONFIRM_CLOSE_ABOVE_RATIO = 0.5   # require close inside upper half of OR range for bull (tuned)
+CONFIRM_CANDLE_BODY_MIN = 0.25    # body relative to OR range minimum for strong flip
 
 est = pytz.timezone("US/Eastern")
-
-# persistent retest state filename (so restarts keep state)
 RETEST_STATE_FILE = "retest_state.json"
 
-# thresholds & tuning (adjust later)
-RETEST_MIN_RELVOL = 1.2       # minimum rel vol to consider
-CONFIRM_CLOSE_ABOVE_RATIO = 0.5  # confirmation candle must close above midpoint of the opening range
-CONFIRM_CANDLE_BODY_MIN = 0.25   # minimum body relative to range for strong flip
-MAX_ARMED = 10                   # only arm up to this many tickers for frequent monitoring
-
 # -------------------------
-# helpers - discord
+# discord helper
 # -------------------------
 def send(msg):
     if not DISCORD_WEBHOOK:
-        print("No Discord webhook")
+        print("No Discord webhook configured")
         return
     try:
         requests.post(DISCORD_WEBHOOK, json={"content": msg}, timeout=10)
@@ -43,7 +44,7 @@ def send(msg):
         print("Discord error:", e)
 
 # -------------------------
-# helpers - time/phase
+# time helpers
 # -------------------------
 def now_est():
     return datetime.now(est)
@@ -79,10 +80,10 @@ def save_retest_state(state):
     except Exception as e:
         print("Error saving retest state:", e)
 
-retest_state = load_retest_state()  # dict keyed by ticker
+retest_state = load_retest_state()
 
 # -------------------------
-# EODHD API wrappers
+# EODHD wrappers
 # -------------------------
 def screener_top_by_marketcap(limit=MAX_UNIVERSE):
     try:
@@ -96,27 +97,20 @@ def screener_top_by_marketcap(limit=MAX_UNIVERSE):
         print("EODHD screener error:", e)
         return []
 
-def get_intraday_bars(ticker, limit=120):
-    """
-    Try to fetch recent 1-minute bars for today.
-    Endpoint used: /api/intraday/{symbol}.US?interval=1m&limit=...
-    If your EODHD plan uses a different path, update this function accordingly.
-    Returns list of bars: each {'datetime':..., 'open':..,'high':..,'low':..,'close':..,'volume':..}
-    """
+def get_intraday_bars(ticker, limit=240):
+    # 1-minute bars (adjust endpoint if your EODHD plan uses a different path)
     try:
         url = f"https://eodhd.com/api/intraday/{ticker}.US?api_token={EODHD_API_KEY}&interval=1m&limit={limit}"
         r = requests.get(url, timeout=15)
         if r.status_code != 200:
-            # fallback to realtime endpoint with minimal info (may not have bars)
+            # fallback: return []
             return []
-        bars = r.json()  # adjust if response structure differs
-        # Ensure bars are in ascending time order and have expected keys
-        # EODHD may return a list of objects; be defensive
-        if isinstance(bars, dict) and 'data' in bars:
-            bars = bars['data']
+        bars = r.json()
+        if isinstance(bars, dict) and "data" in bars:
+            bars = bars["data"]
         return bars
     except Exception as e:
-        print("get_intraday_bars error:", e)
+        print("get_intraday_bars error for", ticker, e)
         return []
 
 def get_realtime_quote(ticker):
@@ -130,209 +124,229 @@ def get_realtime_quote(ticker):
         return None
 
 # -------------------------
-# Opening range computation
+# timestamp parsing helper
 # -------------------------
-def compute_opening_range_from_bars(bars):
-    """
-    Input: bars — list of intraday bars (should include today 1m bars)
-    Compute high/low between 09:30 and 09:40 EST for today's date.
-    Bars timestamps must be parseable - we assume each bar has 'date' or 'datetime' fields.
-    """
-    if not bars:
-        return None, None
-
-    today = now_est().date()
-    or_start = datetime.combine(today, dtime(hour=9, minute=30)).astimezone(est)
-    or_end   = datetime.combine(today, dtime(hour=9, minute=40)).astimezone(est)
-
-    highs = []
-    lows = []
-    for b in bars:
-        # try several timestamp keys defensively
-        ts = b.get("date") or b.get("datetime") or b.get("timestamp") or b.get("time")
-        if not ts:
-            continue
-        # normalize string timestamp to datetime if needed
-        try:
-            # EODHD timestamps often look like "2026-02-13 09:31:00"
-            if isinstance(ts, str):
-                dt = datetime.fromisoformat(ts)
-                # assume returned timezone is UTC or local — adjust if needed
-                if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=pytz.UTC).astimezone(est)
-                else:
-                    dt = dt.astimezone(est)
-            else:
-                continue
-        except Exception:
-            continue
-
-        if dt >= or_start and dt <= or_end:
-            # get high/low fields defensively
-            h = float(b.get("high") or b.get("High") or b.get("h", 0))
-            l = float(b.get("low") or b.get("Low") or b.get("l", 0))
-            highs.append(h)
-            lows.append(l)
-
-    if not highs or not lows:
-        return None, None
-    return max(highs), min(lows)  # OR high, OR low
-
-# -------------------------
-# Breakout detection after OR
-# -------------------------
-def detect_breakout_after_or(bars, or_high, or_low):
-    """
-    Returns 'bull' if high > or_high anywhere after OR time,
-            'bear' if low < or_low,
-            None if no breakout.
-    """
-    if not bars or or_high is None:
-        return None
-    # find bars after 09:40
-    today = now_est().date()
-    or_end = datetime.combine(today, dtime(hour=9, minute=40)).astimezone(est)
-    for b in bars:
-        ts = b.get("date") or b.get("datetime") or b.get("timestamp")
-        if not ts:
-            continue
-        try:
-            dt = datetime.fromisoformat(ts) if isinstance(ts, str) else None
-            if dt and dt.tzinfo is None:
+def parse_eodhd_timestamp(ts):
+    # Try multiple formats defensively and return timezone-aware datetime in EST
+    try:
+        if isinstance(ts, str):
+            # common format: "2026-02-13 09:31:00"
+            dt = datetime.fromisoformat(ts)
+            if dt.tzinfo is None:
+                # assume UTC if no tzinfo (EODHD often returns UTC) -> convert to EST
                 dt = dt.replace(tzinfo=pytz.UTC).astimezone(est)
-            elif dt:
+            else:
                 dt = dt.astimezone(est)
-        except:
-            continue
-        if dt and dt > or_end:
-            h = float(b.get("high") or b.get("High") or 0)
-            l = float(b.get("low") or b.get("Low") or 0)
-            if h > or_high:
-                return "bull"
-            if l < or_low:
-                return "bear"
+            return dt
+    except Exception:
+        pass
     return None
 
 # -------------------------
-# Pre-alert formatting
+# Opening range computation
 # -------------------------
-def publish_prealert(ticker, direction, or_low, or_high):
+def compute_opening_range_from_bars(bars):
+    if not bars:
+        return None, None
+    today = now_est().date()
+    or_start = datetime.combine(today, dtime(hour=9, minute=30)).astimezone(est)
+    or_end   = datetime.combine(today, dtime(hour=9, minute=40)).astimezone(est)
+    highs = []
+    lows = []
+    for b in bars:
+        ts = b.get("date") or b.get("datetime") or b.get("timestamp") or b.get("time")
+        if not ts:
+            continue
+        dt = parse_eodhd_timestamp(ts)
+        if not dt:
+            continue
+        if dt >= or_start and dt <= or_end:
+            try:
+                highs.append(float(b.get("high") or b.get("High") or 0))
+                lows.append(float(b.get("low") or b.get("Low") or 0))
+            except:
+                continue
+    if not highs or not lows:
+        return None, None
+    return max(highs), min(lows)
+
+# -------------------------
+# Breakout detection
+# -------------------------
+def detect_breakout_after_or(bars, or_high, or_low):
+    if not bars or or_high is None or or_low is None:
+        return None, None  # (direction, breakout_index)
+    today = now_est().date()
+    or_end = datetime.combine(today, dtime(hour=9, minute=40)).astimezone(est)
+    for idx, b in enumerate(bars):
+        ts = b.get("date") or b.get("datetime") or b.get("timestamp")
+        if not ts:
+            continue
+        dt = parse_eodhd_timestamp(ts)
+        if not dt or dt <= or_end:
+            continue
+        try:
+            h = float(b.get("high") or b.get("High") or 0)
+            l = float(b.get("low") or b.get("Low") or 0)
+        except:
+            continue
+        if h > or_high:
+            return "bull", idx
+        if l < or_low:
+            return "bear", idx
+    return None, None
+
+# -------------------------
+# FVG detection AFTER breakout
+# -------------------------
+def detect_fvg_after_break(bars, breakout_idx, direction):
+    """
+    bars: list of bars (assumed ascending time order)
+    breakout_idx: index where breakout occurred (0-based)
+    direction: 'bull' or 'bear'
+    Returns (fvg_low, fvg_high) for zone or (None, None) if not found.
+    Logic (defensive and simple):
+      For bullish FVG: find i >= breakout_idx where bars[i+2].low > bars[i].high => FVG = (bars[i].high, bars[i+2].low)
+      For bearish FVG: find i >= breakout_idx where bars[i+2].high < bars[i].low => FVG = (bars[i+2].high, bars[i].low)
+    """
+    try:
+        n = len(bars)
+        for i in range(breakout_idx, n - 2):
+            try:
+                b0 = bars[i]
+                b2 = bars[i + 2]
+                h0 = float(b0.get("high") or b0.get("High") or 0)
+                l0 = float(b0.get("low") or b0.get("Low") or 0)
+                h2 = float(b2.get("high") or b2.get("High") or 0)
+                l2 = float(b2.get("low") or b2.get("Low") or 0)
+            except:
+                continue
+            if direction == "bull":
+                # bullish imbalance: later low above earlier high
+                if l2 > h0:
+                    fvg_low = h0
+                    fvg_high = l2
+                    # ensure reasonable width
+                    if (fvg_high - fvg_low) > 0:
+                        return fvg_low, fvg_high
+            else:  # bear
+                if h2 < l0:
+                    fvg_low = h2
+                    fvg_high = l0
+                    if (fvg_high - fvg_low) > 0:
+                        return fvg_low, fvg_high
+    except Exception as e:
+        print("FVG detection error:", e)
+    return None, None
+
+# -------------------------
+# Pre-alert publishing
+# -------------------------
+def publish_prealert(ticker, direction, zone_low, zone_high, or_low, or_high):
     if direction == "bull":
         text = (f"🔔 PRE-ALERT — {ticker} BREAKOUT (BULL)\n"
                 f"Opening Range: {or_low:.2f} - {or_high:.2f}\n"
-                f"If {ticker} retraces into {or_low:.2f}-{or_high:.2f} and then shows a strong green flip (open red -> close green),"
-                f" ENTER CALL. Waiting for confirmation...")
+                f"FVG Zone: {zone_low:.2f} - {zone_high:.2f}\n"
+                f"If {ticker} retraces into {zone_low:.2f}-{zone_high:.2f} and then shows a strong green flip, ENTER CALL. Waiting for confirmation...")
     else:
         text = (f"🔔 PRE-ALERT — {ticker} BREAKOUT (BEAR)\n"
                 f"Opening Range: {or_low:.2f} - {or_high:.2f}\n"
-                f"If {ticker} retraces into {or_low:.2f}-{or_high:.2f} and then shows a strong red flip (open green -> close red),"
-                f" ENTER PUT. Waiting for confirmation...")
-
+                f"FVG Zone: {zone_low:.2f} - {zone_high:.2f}\n"
+                f"If {ticker} retraces into {zone_low:.2f}-{zone_high:.2f} and then shows a strong red flip, ENTER PUT. Waiting for confirmation...")
     send(text)
 
 # -------------------------
-# Confirmation detection (video-like rules)
+# Confirmation check (video-like rules)
 # -------------------------
 def check_confirmation_for_ticker(ticker, entry):
-    """
-    entry dict contains:
-      { 'direction': 'bull'/'bear', 'or_high':.., 'or_low':.., 'armed_at': 'timestamp' }
-    Returns True if confirmed.
-    Logic (simplified translation of video):
-      - For bull: detect a 1-min candle that has low <= or_high (retest), and then closes green.
-        For higher confidence require the candle close > low + CONFIRM_CLOSE_ABOVE_RATIO * (or_high - or_low)
-      - For bear: symmetric
-    """
-    bars = get_intraday_bars(ticker, limit=20)
+    bars = get_intraday_bars(ticker, limit=40)
     if not bars:
         return False
-
-    # compute range size
-    rlow = entry["or_low"]
-    rhigh = entry["or_high"]
+    rlow = entry["zone_low"]
+    rhigh = entry["zone_high"]
     rsize = max(rhigh - rlow, 1e-9)
-    for b in reversed(bars):  # check newest-first
-        # parse bar time and ensure it's after the breakout time if necessary (we assume bars are recent)
-        low = float(b.get("low") or b.get("Low") or 0)
-        high = float(b.get("high") or b.get("High") or 0)
-        openp = float(b.get("open") or b.get("Open") or 0)
-        closep = float(b.get("close") or b.get("Close") or b.get("close", 0))
+    # check newest bars for a retest+flip candle
+    for b in reversed(bars[-12:]):  # only recent bars
+        try:
+            low = float(b.get("low") or b.get("Low") or 0)
+            high = float(b.get("high") or b.get("High") or 0)
+            openp = float(b.get("open") or b.get("Open") or 0)
+            closep = float(b.get("close") or b.get("Close") or b.get("close", 0))
+        except:
+            continue
         body = abs(closep - openp)
-
-        # indicator: candle tapped into the range (retest)
+        # bullish confirmation
         if entry["direction"] == "bull":
-            tapped = low <= rhigh and closep > openp  # green flip that touched range
-            # require close be inside upper half, to ensure strength
+            tapped = low <= rhigh and closep > openp  # touched FVG and closed green
             if tapped and (closep >= (rlow + CONFIRM_CLOSE_ABOVE_RATIO * rsize)):
                 # optional stronger body check
-                if (body >= CONFIRM_CANDLE_BODY_MIN * rsize):
+                if body >= CONFIRM_CANDLE_BODY_MIN * rsize:
                     return True
-                else:
-                    # still allow smaller flip if green and tapped
-                    return True
-        else:  # bear
-            tapped = high >= rlow and closep < openp  # red flip that touched range
+                return True
+        else:
+            tapped = high >= rlow and closep < openp
             if tapped and (closep <= (rhigh - CONFIRM_CLOSE_ABOVE_RATIO * rsize)):
-                if (body >= CONFIRM_CANDLE_BODY_MIN * rsize):
+                if body >= CONFIRM_CANDLE_BODY_MIN * rsize:
                     return True
-                else:
-                    return True
+                return True
     return False
 
 # -------------------------
-# Arm ticker for retest monitoring
+# Arm ticker for monitoring (only after strict FVG found)
 # -------------------------
-def arm_ticker_for_retest(ticker, direction, or_low, or_high):
-    # limit how many we arm at once
+def arm_ticker_for_retest(ticker, direction, zone_low, zone_high, or_low, or_high):
     global retest_state
     if ticker in retest_state:
         return
     if len(retest_state) >= MAX_ARMED:
-        # skip arming if too many already
         return
     retest_state[ticker] = {
         "direction": direction,
+        "zone_low": zone_low,
+        "zone_high": zone_high,
         "or_low": or_low,
         "or_high": or_high,
         "armed_at": datetime.utcnow().isoformat(),
         "confirmed": False
     }
     save_retest_state(retest_state)
-    publish_prealert(ticker, direction, or_low, or_high)
-    print(f"Armed {ticker} for retest ({direction})")
+    publish_prealert(ticker, direction, zone_low, zone_high, or_low, or_high)
+    print(f"Armed {ticker} for retest with FVG ({direction})")
 
 # -------------------------
-# Fast monitoring thread for retest confirmations
+# Fast monitor thread
 # -------------------------
 def fast_monitor_loop():
     global retest_state
-    print("Fast monitor thread started")
+    print("Fast monitor started")
     while True:
         try:
-            # make a shallow copy to iterate
             keys = list(retest_state.keys())
             for ticker in keys:
                 entry = retest_state.get(ticker)
                 if not entry or entry.get("confirmed"):
                     continue
-                # confirm logic
+                # prune old
+                armed_at = datetime.fromisoformat(entry["armed_at"])
+                if datetime.utcnow() - armed_at > timedelta(minutes=RETEST_TIMEOUT_MINUTES):
+                    try:
+                        del retest_state[ticker]
+                        save_retest_state(retest_state)
+                    except:
+                        pass
+                    continue
                 confirmed = check_confirmation_for_ticker(ticker, entry)
                 if confirmed:
-                    # publish confirmation
                     if entry["direction"] == "bull":
-                        msg = (f"✅ CONFIRMED: {ticker} bounced off {entry['or_low']:.2f}-{entry['or_high']:.2f}. ENTER CALL.\n"
-                               f"Suggested stop: {entry['or_low'] - 0.5:.2f} (example). Use your RR rules.\n"
-                               f"Time: {datetime.utcnow().isoformat()} UTC")
+                        msg = (f"✅ CONFIRMED: {ticker} bounced off {entry['zone_low']:.2f}-{entry['zone_high']:.2f}. ENTER CALL.\n"
+                               f"Suggested stop: {entry['or_low'] - 0.5:.2f} (example). Time UTC: {datetime.utcnow().isoformat()}")
                     else:
-                        msg = (f"✅ CONFIRMED: {ticker} bounced off {entry['or_low']:.2f}-{entry['or_high']:.2f}. ENTER PUT.\n"
-                               f"Suggested stop: {entry['or_high'] + 0.5:.2f} (example). Use your RR rules.\n"
-                               f"Time: {datetime.utcnow().isoformat()} UTC")
+                        msg = (f"✅ CONFIRMED: {ticker} bounced off {entry['zone_low']:.2f}-{entry['zone_high']:.2f}. ENTER PUT.\n"
+                               f"Suggested stop: {entry['or_high'] + 0.5:.2f} (example). Time UTC: {datetime.utcnow().isoformat()}")
                     send(msg)
-                    # mark confirmed and persist then stop monitoring this ticker
                     entry["confirmed"] = True
                     entry["confirmed_at"] = datetime.utcnow().isoformat()
                     save_retest_state(retest_state)
-                    # optionally remove after confirmation so we free the slot:
                     try:
                         del retest_state[ticker]
                         save_retest_state(retest_state)
@@ -344,7 +358,7 @@ def fast_monitor_loop():
             time.sleep(RETEST_POLL)
 
 # -------------------------
-# Scoring engine (keeps current momentum scoring)
+# scoring (same momentum filter)
 # -------------------------
 def score_stock_quick(stock):
     try:
@@ -359,7 +373,7 @@ def score_stock_quick(stock):
         return 0,0,0,0
 
 # -------------------------
-# Main scan loop (universe builder + top N publish)
+# main scan: build universe, find top, detect breakout+FVG
 # -------------------------
 def build_universe():
     print("Building universe...")
@@ -377,7 +391,7 @@ def run_scan(universe, phase):
             s, rv, ch, price = score_stock_quick(rec)
             if s > 6 and rv > RETEST_MIN_RELVOL:
                 pool.append((rec.get("code"), s, rv, ch, price))
-        except Exception as e:
+        except Exception:
             continue
 
     pool.sort(key=lambda x: x[1], reverse=True)
@@ -386,56 +400,54 @@ def run_scan(universe, phase):
         print("No elite movers this cycle")
         return
 
-    # Publish top 5 (summary)
     header = "🔥 WAR MACHINE — ELITE ACTIVE TOP 5"
     if phase == "premarket":
         header = "🌅 PREMARKET WATCH (ELITE)"
     elif phase == "afterhours":
         header = "🌙 AFTER HOURS WATCH (ELITE)"
-
     msg = header + "\n\n"
     for t in top:
         msg += f"{t[0]} | Score {round(t[1],2)} | RelVol {round(t[2],2)} | Move {round(t[3],2)}% | ${round(t[4],2)}\n"
     send(msg)
 
-    # For each top ticker, compute opening range & detect post-OR breakout; if breakout, arm for retest
+    # For each top ticker, compute OR, detect breakout, then strict FVG, then arm only if FVG found
     for t in top:
         ticker = t[0]
-        bars = get_intraday_bars(ticker, limit=180)
+        bars = get_intraday_bars(ticker, limit=240)
+        if not bars:
+            continue
         or_high, or_low = compute_opening_range_from_bars(bars)
         if or_high is None or or_low is None:
             continue
-        breakout = detect_breakout_after_or(bars, or_high, or_low)
-        if breakout:
-            # arm
-            arm_ticker_for_retest(ticker, breakout, or_low, or_high)
+        direction, breakout_idx = detect_breakout_after_or(bars, or_high, or_low)
+        if direction and breakout_idx is not None:
+            # find FVG after breakout index
+            fvg_low, fvg_high = detect_fvg_after_break(bars, breakout_idx, direction)
+            if fvg_low and fvg_high:
+                # arm only when strict FVG exists
+                arm_ticker_for_retest(ticker, direction, fvg_low, fvg_high, or_low, or_high)
+            else:
+                print(f"{ticker} breakout but NO FVG found — skipping")
 
 # -------------------------
-# Start up
+# startup
 # -------------------------
 if __name__ == "__main__":
-    send("⚔️ WAR MACHINE ELITE ACTIVE v3 ONLINE — SNIPER LAYER ARMED")
-    # build universe once up front
+    send("⚔️ WAR MACHINE GOD MODE SNIPER v1 ONLINE — strict FVG enabled")
     universe = build_universe()
-
-    # start fast monitor thread
     monitor_thread = threading.Thread(target=fast_monitor_loop, daemon=True)
     monitor_thread.start()
-
     while True:
         phase = market_phase()
         if phase == "sleep":
             print("Sleeping until 8AM EST")
             time.sleep(600)
             continue
-
         print(f"Main scan phase: {phase} | {now_est().isoformat()}")
         if not universe:
             universe = build_universe()
-
         try:
             run_scan(universe, phase)
         except Exception as e:
             print("Main run_scan error:", e)
-
         time.sleep(SCAN_INTERVAL)
