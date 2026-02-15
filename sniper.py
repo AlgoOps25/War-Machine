@@ -1,96 +1,229 @@
-import config
-import targets
+# sniper.py
+import json
+import os
+import threading
+import time
+from datetime import datetime, timedelta
+import traceback
+from scanner_helpers import get_intraday_bars_for_logger
 import confirmations
+import targets
 import trade_logger
+import requests
 
-MAX_ARMED = config.MAX_ARMED
-RETEST_TIMEOUT_MINUTES = config.RETEST_TIMEOUT_MINUTES
+RETEST_STATE_FILE = "retest_state.json"
+MAX_ARMED = int(os.getenv("MAX_ARMED", "25"))
+RETEST_TIMEOUT_MINUTES = int(os.getenv("RETEST_TIMEOUT_MINUTES", "60"))
+DISCORD_WEBHOOK = os.getenv("DISCORD_WEBHOOK")
 
-armed_setups = {}
-
-
-def process_ticker(ticker, candles_1m, candles_5m, discord):
-    if len(candles_5m) < 5:
+def send_discord(msg: str):
+    if not DISCORD_WEBHOOK:
+        print("discord:", msg)
         return
+    try:
+        requests.post(DISCORD_WEBHOOK, json={"content": msg}, timeout=8)
+    except Exception as e:
+        print("discord send error:", e)
 
-    last = candles_5m[-1]
-    prev = candles_5m[-2]
+def load_state():
+    try:
+        with open(RETEST_STATE_FILE, "r") as f:
+            return json.load(f)
+    except:
+        return {}
 
-    # Simple BOS detection
-    if last["high"] > prev["high"]:
-        direction = "CALL"
-        bos_level = prev["high"]
-    elif last["low"] < prev["low"]:
-        direction = "PUT"
-        bos_level = prev["low"]
-    else:
+def save_state(st):
+    try:
+        with open(RETEST_STATE_FILE, "w") as f:
+            json.dump(st, f)
+    except Exception as e:
+        print("save_state error:", e)
+
+retest_state = load_state()
+
+def compute_opening_range_from_bars(bars):
+    # bars are ascending 1m bars with 'date' or 'datetime' timestamp strings (ISO)
+    try:
+        import pytz
+        from datetime import datetime as dt, time as dtime
+        est = pytz.timezone("US/Eastern")
+        today = datetime.now(est).date()
+        or_start = datetime.combine(today, dtime(hour=9, minute=30)).astimezone(est)
+        or_end = datetime.combine(today, dtime(hour=9, minute=40)).astimezone(est)
+        highs = []
+        lows = []
+        for b in bars:
+            ts = b.get("date") or b.get("datetime") or b.get("time")
+            if not ts:
+                continue
+            try:
+                d = datetime.fromisoformat(ts)
+                if d.tzinfo is None:
+                    import pytz as _p
+                    d = d.replace(tzinfo=_p.UTC).astimezone(est)
+                else:
+                    d = d.astimezone(est)
+            except:
+                continue
+            if d >= or_start and d <= or_end:
+                highs.append(float(b.get("high") or b.get("High") or 0))
+                lows.append(float(b.get("low") or b.get("Low") or 0))
+        if not highs or not lows:
+            return None, None
+        return max(highs), min(lows)
+    except Exception:
+        return None, None
+
+def detect_breakout_after_or(bars, or_high, or_low):
+    try:
+        import pytz
+        from datetime import datetime as dt, time as dtime
+        est = pytz.timezone("US/Eastern")
+        today = datetime.now(est).date()
+        or_end = datetime.combine(today, dtime(hour=9, minute=40)).astimezone(est)
+        for idx, b in enumerate(bars):
+            ts = b.get("date") or b.get("datetime") or b.get("time")
+            if not ts:
+                continue
+            try:
+                d = datetime.fromisoformat(ts)
+                if d.tzinfo is None:
+                    import pytz as _p
+                    d = d.replace(tzinfo=_p.UTC).astimezone(est)
+                else:
+                    d = d.astimezone(est)
+            except:
+                continue
+            if d <= or_end:
+                continue
+            h = float(b.get("high") or b.get("High") or 0)
+            l = float(b.get("low") or b.get("Low") or 0)
+            if h > (or_high or 0):
+                return "bull", idx
+            if l < (or_low or 0):
+                return "bear", idx
+        return None, None
+    except Exception:
+        return None, None
+
+def detect_fvg_after_break(bars, breakout_idx, direction):
+    try:
+        n = len(bars)
+        for i in range(breakout_idx, n - 2):
+            try:
+                b0 = bars[i]
+                b2 = bars[i + 2]
+                h0 = float(b0.get("high") or b0.get("High") or 0)
+                l0 = float(b0.get("low") or b0.get("Low") or 0)
+                h2 = float(b2.get("high") or b2.get("High") or 0)
+                l2 = float(b2.get("low") or b2.get("Low") or 0)
+            except:
+                continue
+            if direction == "bull":
+                if l2 > h0:
+                    # zone = h0 .. l2
+                    return min(h0, l2), max(h0, l2)
+            else:
+                if h2 < l0:
+                    return min(h2, l0), max(h2, l0)
+    except Exception:
+        pass
+    return None, None
+
+def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high):
+    global retest_state
+    key = f"{ticker}:{direction}"
+    if key in retest_state:
         return
+    if len(retest_state) >= MAX_ARMED:
+        # do not arm new setups if at capacity
+        return
+    retest_state[key] = {
+        "ticker": ticker,
+        "direction": direction,
+        "zone_low": zone_low,
+        "zone_high": zone_high,
+        "or_low": or_low,
+        "or_high": or_high,
+        "armed_at": datetime.utcnow().isoformat(),
+        "confirmed": False
+    }
+    save_state(retest_state)
+    send_discord(f"🔔 PRE-ALERT: {ticker} {direction} armed for retest zone {zone_low:.2f}-{zone_high:.2f}")
 
-    key = f"{ticker}_{direction}"
+def process_ticker(ticker: str):
+    try:
+        bars_1m = get_intraday_bars_for_logger(ticker, limit=400, interval="1m")
+        if not bars_1m or len(bars_1m) < 50:
+            return
+        or_high, or_low = compute_opening_range_from_bars(bars_1m)
+        if or_high is None:
+            return
+        direction, breakout_idx = detect_breakout_after_or(bars_1m, or_high, or_low)
+        if not direction:
+            return
+        fvg_low, fvg_high = detect_fvg_after_break(bars_1m, breakout_idx, direction)
+        if not fvg_low:
+            return
+        # normalize zone bounds (low < high)
+        zone_low, zone_high = min(fvg_low, fvg_high), max(fvg_low, fvg_high)
+        arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high)
+    except Exception as e:
+        print("process_ticker error:", e)
+        traceback.print_exc()
 
-    # Arm setup
-    if key not in armed_setups and len(armed_setups) < MAX_ARMED:
-        armed_setups[key] = {
-            "ticker": ticker,
-            "direction": direction,
-            "bos_level": bos_level,
-            "armed_time": last["datetime"],
-            "confirmed": False
-        }
+def fast_monitor_loop():
+    global retest_state
+    print("Sniper fast monitor started")
+    while True:
+        try:
+            keys = list(retest_state.keys())
+            for k in keys:
+                entry = retest_state.get(k)
+                if not entry:
+                    continue
+                # prune if old
+                armed_at = datetime.fromisoformat(entry["armed_at"])
+                if datetime.utcnow() - armed_at > timedelta(minutes=RETEST_TIMEOUT_MINUTES):
+                    try:
+                        del retest_state[k]
+                        save_state(retest_state)
+                    except:
+                        pass
+                    continue
+                if entry.get("confirmed"):
+                    continue
+                ok, bar, tf, grade = confirmations.check_confirmation_multi_timeframe(entry["ticker"], {
+                    "zone_low": entry["zone_low"],
+                    "zone_high": entry["zone_high"],
+                    "direction": entry["direction"],
+                    "or_low": entry["or_low"],
+                    "or_high": entry["or_high"]
+                })
+                if ok and grade in ("A+", "A"):
+                    # confirm
+                    entry_price = float(bar.get("close") or bar.get("Close") or 0)
+                    calc = targets.compute_stop_and_targets(entry_price, entry["or_low"], entry["or_high"], "bull" if entry["direction"]=="bull" or entry["direction"]=="CALL" else "bear", ticker=entry["ticker"])
+                    stop = calc.get("stop")
+                    t1 = calc.get("t1")
+                    t2 = calc.get("t2")
+                    chosen = calc.get("chosen")
+                    entry_ts = datetime.utcnow().isoformat()
+                    trade_id = trade_logger.log_confirmed_trade(entry["ticker"], entry["direction"], grade, entry_price, entry_ts, stop, t1, t2, chosen)
+                    send_discord(f"🚨 CONFIRMED: {entry['ticker']} {entry['direction']} — grade {grade} — tf {tf}\nEntry {entry_price:.2f} Stop {stop:.2f} T1 {t1:.2f} T2 {t2 if t2 else 'n/a'} (id {trade_id})")
+                    # mark confirmed & remove
+                    try:
+                        del retest_state[k]
+                        save_state(retest_state)
+                    except:
+                        pass
+            time.sleep(8)
+        except Exception as e:
+            print("fast_monitor error:", e)
+            traceback.print_exc()
+            time.sleep(8)
 
-        discord.send_message(
-            f"⚔️ {ticker} {direction} setup armed at {bos_level:.2f}"
-        )
-
-    # Check confirmations
-    for k in list(armed_setups.keys()):
-        setup = armed_setups[k]
-
-        if setup["confirmed"]:
-            continue
-
-        # timeout
-        # (simple skip for now)
-
-        # confirmation on 1m
-        recent = candles_1m[-1]
-
-        if setup["direction"] == "CALL":
-            if confirmations.is_strong_bullish_candle(recent):
-                confirm_trade(setup, recent, discord)
-
-        if setup["direction"] == "PUT":
-            if confirmations.is_strong_bearish_candle(recent):
-                confirm_trade(setup, recent, discord)
-
-
-def confirm_trade(setup, candle, discord):
-    ticker = setup["ticker"]
-    direction = setup["direction"]
-    entry = candle["close"]
-
-    stop, t1, t2 = targets.calculate_targets(
-        direction,
-        entry,
-        candle["high"],
-        candle["low"]
-    )
-
-    discord.send_message(
-        f"🔥 {ticker} {direction} CONFIRMED\n"
-        f"Entry: {entry:.2f}\n"
-        f"Stop: {stop:.2f}\n"
-        f"T1: {t1:.2f}\n"
-        f"T2: {t2:.2f}"
-    )
-
-    trade_logger.log_trade(
-        ticker,
-        direction,
-        entry,
-        stop,
-        t1,
-        t2
-    )
-
-    setup["confirmed"] = True
+def start_fast_monitor():
+    t = threading.Thread(target=fast_monitor_loop, daemon=True)
+    t.start()
+    return t
