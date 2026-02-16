@@ -7,6 +7,26 @@ from scanner_helpers import get_intraday_bars_for_logger
 import sniper
 import math
 
+from datetime import datetime
+import pytz
+
+eastern = pytz.timezone("US/Eastern")
+
+def market_is_open():
+    now = datetime.now(eastern)
+    hour = now.hour
+    minute = now.minute
+
+    # 8:00 AM to 4:00 PM EST
+    if hour < 8:
+        return False
+    if hour > 16:
+        return False
+    if hour == 16 and minute > 0:
+        return False
+
+    return True
+
 FORCE_WATCHLIST = ["SPY","NVDA","TSLA","META","AMD","AAPL","MSFT"]
 
 EODHD_API_KEY = os.getenv("EODHD_API_KEY")
@@ -59,7 +79,8 @@ def scan_cycle():
             code = rec.get("code")
             s, rv, ch = score_stock_quick(rec)
             #if s > 4 and rv > 1.2:
-            if s > 1.5:
+            #GOD MODE: include everything with movement
+            if abs(ch) > 0.2 or rv > 0.8:
                 pool.append((code, s, rv, ch))
         except:
             continue
@@ -86,15 +107,22 @@ def scan_cycle():
 def start_scanner_loop():
     print("Scanner loop started")
     # start sniper monitor thread (if not started already)
+    send_discord("⚔️ WAR MACHINE GOD MODE ACTIVE — Sniper + BOS/FVG engine running")
     try:
         sniper.start_fast_monitor()
     except Exception:
         pass
     while True:
-        try:
-            scan_cycle()
-        except Exception as e:
-            print("scan_cycle error:", e)
+
+        if not market_is_open():
+            print("Market closed — sniper sleeping")
+            time.sleep(300)
+            continue
+
+        print("⚔️ WAR MACHINE scanning (Elite Active Sniper Mode)")
+
+        scan_cycle()
+
         time.sleep(SCAN_INTERVAL)
 
 if __name__ == "__main__":
