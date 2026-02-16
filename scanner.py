@@ -27,13 +27,13 @@ def market_is_open():
 
     return True #GOD MODE 24/7
 
-FORCE_WATCHLIST = ["SPY","NVDA","TSLA","META","AMD","AAPL","MSFT"]
+FORCE_WATCHLIST = ["SPY"]]
 
 EODHD_API_KEY = os.getenv("EODHD_API_KEY")
 DISCORD_WEBHOOK = os.getenv("DISCORD_WEBHOOK")
 
-SCAN_INTERVAL = 120        # scan every 2 minutes
-TOP_SCAN_COUNT = 25        # scan more tickers
+SCAN_INTERVAL = 60         # scan every 2 minutes
+TOP_SCAN_COUNT = 1         # scan more tickers
 MARKET_CAP_MIN = 500000000 # allow mid caps (VERY IMPORTANT)
 
 #SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "300"))
@@ -99,10 +99,17 @@ def scan_cycle():
     # hand to sniper
     for t in top:
         try:
+            print(f"📡 Pulling data for {t} from EODHD...")
+            send_discord(f"📡 TEST: Pulling data for {t}")
+
             sniper.process_ticker(t)
+
+            print(f"✅ {t} processed by sniper")
+            send_discord(f"✅ TEST: {t} processed by sniper")
+
         except Exception as e:
             print("process_ticker error:", e)
-            # don't crash scanner
+            send_discord(f"❌ ERROR processing {t}: {e}")
 
 def start_scanner_loop():
     print("Scanner loop started")
