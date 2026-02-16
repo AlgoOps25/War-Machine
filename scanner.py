@@ -6,11 +6,53 @@ import sqlite3
 import math
 from datetime import datetime, time as dtime
 import pytz
+import json
 
 # existing modules in your repo
 import incremental_fetch
 import sniper
 from memory_reader import get_recent_bars_from_memory
+
+def init_prerank_db():
+    conn = sqlite3.connect("market_memory.db")
+    c = conn.cursor()
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS prerankers (
+        ticker TEXT,
+        score REAL,
+        options_score REAL,
+        relvol REAL,
+        timestamp TEXT
+    )
+    """)
+    conn.commit()
+    conn.close()
+
+init_prerank_db()
+
+def save_preranker(ticker, score, opt_score, relvol):
+    conn = sqlite3.connect("market_memory.db")
+    c = conn.cursor()
+    c.execute("""
+    INSERT INTO prerankers (ticker, score, options_score, relvol, timestamp)
+    VALUES (?, ?, ?, ?, ?)
+    """, (ticker, score, opt_score, relvol, datetime.utcnow().isoformat()))
+    conn.commit()
+    conn.close()
+
+def load_hot_prerankers(limit=10):
+    conn = sqlite3.connect("market_memory.db")
+    c = conn.cursor()
+    c.execute("""
+    SELECT ticker, AVG(score) as s
+    FROM prerankers
+    GROUP BY ticker
+    ORDER BY s DESC
+    LIMIT ?
+    """, (limit,))
+    rows = c.fetchall()
+    conn.close()
+    return [r[0] for r in rows]
 
 # centralize config convenience (if you have config.py)
 try:
@@ -68,13 +110,17 @@ def screener_top_by_marketcap(limit=200, min_market_cap=MARKET_CAP_MIN):
         return []
 
     url = f"{EODHD_BASE}/screener"
+    filters = [
+        ["market_cap", ">", min_market_cap],
+        ["exchange", "=", "US"]
+    ]
+
     params = {
         "api_token": EODHD_API_KEY,
         "limit": limit,
-        "exchange": "US",
-        "sort": "change_percent",  # momentum sorter
+        "sort": "change_percent",
         "order": "desc",
-        "filters": f"market_cap>{min_market_cap}"
+        "filters": json.dumps(filters)
     }
     try:
         r = requests.get(url, params=params, timeout=12)
@@ -169,34 +215,48 @@ def fetch_options_for_ticker(ticker):
         return None
 
 def analyze_options_flow(opt_bars):
-    """
-    Heuristic to detect 'unusual' options flow:
-    - total options volume across strikes in recent time window
-    - proportion of buys vs sells (if available)
-    Returns True if unusual activity detected and a score.
-    """
     if not opt_bars:
-        return False, 0.0
+        return False, 0, False
 
-    # Example heuristic: sum volumes for last N entries
-    total_vol = 0.0
-    recent_count = 0
-    for o in opt_bars[:120]:  # walk most recent records (depending on EODHD shape)
+    total_vol = 0
+    call_vol = 0
+    put_vol = 0
+    sweep_detected = False
+    large_trade = 0
+
+    for o in opt_bars[:200]:
         try:
             vol = float(o.get("volume") or o.get("Volume") or 0)
+            typ = str(o.get("type") or o.get("optionType") or "").lower()
+            premium = float(o.get("premium") or o.get("lastPrice") or 0) * vol
+
             total_vol += vol
-            recent_count += 1
+
+            if "call" in typ:
+                call_vol += vol
+            if "put" in typ:
+                put_vol += vol
+
+            # sweep detection
+            if premium > 50000 or vol > 1000:
+                sweep_detected = True
+                large_trade += premium
+
         except:
             continue
 
-    if recent_count == 0:
-        return False, 0.0
+    if total_vol == 0:
+        return False, 0, False
 
-    avg_vol = total_vol / recent_count
-    # treat > OPTIONS_VOL_MULT as unusual
-    score = avg_vol
-    unusual = avg_vol >= OPTIONS_VOL_MULT
-    return unusual, score
+    flow_ratio = (call_vol + 1) / (put_vol + 1)
+    bullish_flow = flow_ratio > 1.5
+    bearish_flow = flow_ratio < 0.6
+
+    score = math.log10(total_vol + 10) + (large_trade / 100000)
+
+    unusual = score > 2 or sweep_detected
+
+    return unusual, score, sweep_detected
 
 def has_volume_surge_underlying(ticker):
     """
@@ -222,6 +282,11 @@ def has_volume_surge_underlying(ticker):
         return False, 0.0
 
 def build_watchlist():
+    # preload institutional favorites
+    historical_hot = load_hot_prerankers(6)
+    for h in historical_hot:
+        if h not in candidates:
+            candidates.insert(0, h)
     """
     Build top-N watchlist using screener + underlying vol + options flow heuristics.
     """
@@ -244,7 +309,9 @@ def build_watchlist():
             unusual, opt_score = analyze_options_flow(opts)
             # Keep if options activity OR strong underlying vol
             if unusual or ratio >= (MIN_REL_VOL * 1.4):
+                score = ratio * (opt_score + 1)
                 strong.append((t, ratio, opt_score))
+                save_preranker(t, score, opt_score, ratio)
             # throttle to avoid limit
             time.sleep(PER_TICKER_SLEEP)
         except Exception as e:
