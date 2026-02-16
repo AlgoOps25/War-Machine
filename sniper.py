@@ -151,26 +151,48 @@ def detect_fvg_after_break(bars, breakout_idx, direction):
     return None, None
 
 def process_ticker(ticker: str):
-    send_discord(f"📊 {ticker} bars received: {len(bars)}")
-    print(f"{ticker} bars received:", len(bars))
-
     try:
+        # ===== PULL BARS FROM EODHD =====
         bars_1m = get_intraday_bars_for_logger(ticker, limit=400, interval="1m")
-        if not bars_1m or len(bars_1m) < 50:
+
+        if not bars_1m:
+            send_discord(f"❌ {ticker} NO DATA FROM EODHD")
+            print(f"❌ {ticker} no data returned")
             return
+
+        # ===== BAR COUNT DEBUG =====
+        bar_count = len(bars_1m)
+        print(f"📊 {ticker} bars received:", bar_count)
+        send_discord(f"📊 {ticker} bars received: {bar_count}")
+
+        if bar_count < 50:
+            print(f"{ticker}: not enough bars yet")
+            return
+
+        # ===== OPENING RANGE =====
         or_high, or_low = compute_opening_range_from_bars(bars_1m)
         if or_high is None:
+            print(f"{ticker}: OR not formed yet")
             return
+
+        # ===== BREAKOUT DETECTION =====
         direction, breakout_idx = detect_breakout_after_or(bars_1m, or_high, or_low)
         if not direction:
             return
+
+        # ===== FVG DETECTION =====
         fvg_low, fvg_high = detect_fvg_after_break(bars_1m, breakout_idx, direction)
         if not fvg_low:
             return
+
         zone_low, zone_high = min(fvg_low, fvg_high), max(fvg_low, fvg_high)
+
+        # ===== ARM TRADE =====
         arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high)
+
     except Exception as e:
         print("process_ticker error:", e)
+        send_discord(f"❌ SNIPER ERROR {ticker}: {e}")
         traceback.print_exc()
 
 def fast_monitor_loop():
