@@ -1,210 +1,148 @@
 # scanner_helpers.py
-import requests
-import os
+import requests, os, sqlite3
+from datetime import datetime
 
 EODHD_API_KEY = os.getenv("EODHD_API_KEY")
+DB_FILE = "market_memory.db"
 
+# ================================
+# DATABASE
+# ================================
+def get_db():
+    return sqlite3.connect(DB_FILE)
 
-# =========================================================
-# 🔥 CORE INTRADAY FETCH (FIXED + STABLE)
-# =========================================================
-def get_intraday_bars_for_logger(ticker, limit=120, interval="1m"):
-    """
-    Pull intraday bars from EODHD.
-    Returns list of bars sorted oldest -> newest
-    """
+def get_last_timestamp(ticker):
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT datetime FROM candles WHERE ticker=? ORDER BY datetime DESC LIMIT 1", (ticker,))
+        row = c.fetchone()
+        conn.close()
+        if row:
+            return row[0]
+        return None
+    except:
+        return None
 
-    if not EODHD_API_KEY:
-        print("❌ EODHD_API_KEY missing")
-        return []
+def store_bars(ticker, bars):
+    if not bars:
+        return
 
     try:
-        symbol = f"{ticker}.US"
+        conn = get_db()
+        c = conn.cursor()
 
-        url = (
-            f"https://eodhd.com/api/intraday/{symbol}"
-            f"?api_token={EODHD_API_KEY}"
-            f"&interval={interval}"
-            f"&fmt=json"
-            f"&limit={limit}"
-        )
+        for b in bars:
+            ts = b.get("datetime") or b.get("date")
+            if not ts:
+                continue
 
+            c.execute("""
+            INSERT OR IGNORE INTO candles
+            (ticker, datetime, open, high, low, close, volume)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (
+                ticker,
+                ts,
+                float(b.get("open",0)),
+                float(b.get("high",0)),
+                float(b.get("low",0)),
+                float(b.get("close",0)),
+                float(b.get("volume",0))
+            ))
+
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print("DB store error:", e)
+
+def load_recent_from_db(ticker, limit=400):
+    try:
+        conn = get_db()
+        c = conn.cursor()
+
+        c.execute("""
+        SELECT datetime, open, high, low, close, volume
+        FROM candles
+        WHERE ticker=?
+        ORDER BY datetime DESC
+        LIMIT ?
+        """, (ticker, limit))
+
+        rows = c.fetchall()
+        conn.close()
+
+        rows.reverse()
+
+        out = []
+        for r in rows:
+            out.append({
+                "datetime": r[0],
+                "open": r[1],
+                "high": r[2],
+                "low": r[3],
+                "close": r[4],
+                "volume": r[5]
+            })
+        return out
+    except:
+        return []
+
+# ================================
+# SMART FETCH (KEY PART)
+# ================================
+def fetch_new_bars_from_eodhd(ticker, limit=200, interval="1m"):
+    try:
+        url = f"https://eodhd.com/api/intraday/{ticker}.US?api_token={EODHD_API_KEY}&interval={interval}&limit={limit}"
         r = requests.get(url, timeout=15)
-
         if r.status_code != 200:
-            print(f"❌ EODHD HTTP {r.status_code} for {ticker}")
+            print("EODHD error:", r.text)
             return []
 
         data = r.json()
-
-        if not data:
-            print(f"❌ {ticker} NO DATA FROM EODHD")
-            return []
-
-        # Sometimes EODHD wraps in {"data": []}
         if isinstance(data, dict) and "data" in data:
-            bars = data["data"]
-        else:
-            bars = data
+            data = data["data"]
 
-        if not isinstance(bars, list) or len(bars) == 0:
-            print(f"❌ {ticker} EMPTY BAR LIST")
-            return []
-
-        # sort oldest -> newest
-        try:
-            bars.sort(key=lambda x: x.get("datetime") or x.get("date") or "")
-        except:
-            pass
-
-        print(f"✅ {ticker} bars fetched: {len(bars)}")
-        return bars
-
+        return data or []
     except Exception as e:
-        print(f"❌ EODHD fetch error {ticker}:", e)
+        print("Fetch error:", e)
         return []
 
+# ================================
+# MAIN FUNCTION USED BY SNIPER
+# ================================
+def get_intraday_bars_for_logger(ticker, limit=400, interval="1m"):
+    """
+    Smart loader:
+    1. Load recent history from DB
+    2. Pull only newest candles from EODHD
+    3. Store new candles
+    4. Return combined recent set
+    """
 
-# =========================================================
-# REALTIME QUOTE
-# =========================================================
+    # STEP 1 — get last stored timestamp
+    last_ts = get_last_timestamp(ticker)
+
+    # STEP 2 — fetch recent candles from API
+    new_bars = fetch_new_bars_from_eodhd(ticker, limit=200, interval=interval)
+
+    if new_bars:
+        # STEP 3 — store them
+        store_bars(ticker, new_bars)
+
+    # STEP 4 — load final recent set from DB
+    final = load_recent_from_db(ticker, limit=limit)
+
+    print(f"📊 {ticker} using MEMORY DB bars:", len(final))
+    return final
+
+# ================================
 def get_realtime_quote_for_logger(ticker):
     try:
-        symbol = f"{ticker}.US"
-        url = f"https://eodhd.com/api/real-time/{symbol}?api_token={EODHD_API_KEY}&fmt=json"
-
-        r = requests.get(url, timeout=8)
+        url = f"https://eodhd.com/api/real-time/{ticker}.US?api_token={EODHD_API_KEY}&fmt=json"
+        r = requests.get(url, timeout=6)
         if r.status_code != 200:
             return None
-
         return r.json()
-    except Exception as e:
-        print("quote error:", e)
+    except:
         return None
-
-
-# =========================================================
-# AGGREGATION (1m -> 2m/3m)
-# =========================================================
-def aggregate_bars(bars_1m, agg_n):
-    out = []
-
-    if not bars_1m or agg_n <= 1:
-        return bars_1m
-
-    chunk = []
-
-    for b in bars_1m:
-        chunk.append(b)
-
-        if len(chunk) == agg_n:
-            try:
-                openp = float(chunk[0].get("open", 0))
-                closep = float(chunk[-1].get("close", 0))
-                highs = [float(x.get("high", 0)) for x in chunk]
-                lows = [float(x.get("low", 0)) for x in chunk]
-                vol = sum([float(x.get("volume", 0)) for x in chunk])
-                ts = chunk[-1].get("datetime") or chunk[-1].get("date")
-
-                out.append({
-                    "open": openp,
-                    "high": max(highs),
-                    "low": min(lows),
-                    "close": closep,
-                    "volume": vol,
-                    "datetime": ts
-                })
-            except:
-                pass
-
-            chunk = []
-
-    return out
-
-
-# =========================================================
-# 🔥 MULTI TIMEFRAME CONFIRMATION ENGINE
-# =========================================================
-def check_confirmation_multi_timeframe(ticker, entry):
-    try:
-        zone_low = entry["zone_low"]
-        zone_high = entry["zone_high"]
-        direction = entry["direction"]
-
-        # ============================================
-        # 1️⃣ CHECK 5m FIRST (REAL 5m ENDPOINT)
-        # ============================================
-        bars_5m = get_intraday_bars_for_logger(ticker, limit=120, interval="5m")
-
-        def check_bars(bars, tf_label):
-            if not bars:
-                return None
-
-            for b in reversed(bars[-12:]):
-                try:
-                    low = float(b.get("low", 0))
-                    high = float(b.get("high", 0))
-                    openp = float(b.get("open", 0))
-                    closep = float(b.get("close", 0))
-                except:
-                    continue
-
-                body = abs(closep - openp)
-                zone_size = max(zone_high - zone_low, 0.01)
-
-                if direction == "bull":
-                    tapped = (low <= zone_high) and closep > openp
-                    if tapped and closep >= zone_low + 0.5 * zone_size:
-                        grade = "A+" if body > zone_size * 0.6 else "A"
-                        return {"bar": b, "grade": grade, "tf": tf_label}
-
-                else:
-                    tapped = (high >= zone_low) and closep < openp
-                    if tapped and closep <= zone_high - 0.5 * zone_size:
-                        grade = "A+" if body > zone_size * 0.6 else "A"
-                        return {"bar": b, "grade": grade, "tf": tf_label}
-
-            return None
-
-        if bars_5m:
-            res5 = check_bars(bars_5m, "5m")
-            if res5:
-                return True, res5["bar"], res5["tf"], res5["grade"]
-
-        # ============================================
-        # 2️⃣ GET 1m DATA
-        # ============================================
-        bars_1m = get_intraday_bars_for_logger(ticker, limit=200, interval="1m")
-
-        if not bars_1m:
-            print(f"❌ {ticker} NO 1M DATA")
-            return False, None, None, None
-
-        # ============================================
-        # 3️⃣ 3m
-        # ============================================
-        bars_3m = aggregate_bars(bars_1m, 3)
-        res3 = check_bars(bars_3m, "3m")
-        if res3:
-            return True, res3["bar"], res3["tf"], res3["grade"]
-
-        # ============================================
-        # 4️⃣ 2m
-        # ============================================
-        bars_2m = aggregate_bars(bars_1m, 2)
-        res2 = check_bars(bars_2m, "2m")
-        if res2:
-            return True, res2["bar"], res2["tf"], res2["grade"]
-
-        # ============================================
-        # 5️⃣ 1m FINAL
-        # ============================================
-        res1 = check_bars(bars_1m, "1m")
-        if res1:
-            return True, res1["bar"], res1["tf"], res1["grade"]
-
-        return False, None, None, None
-
-    except Exception as e:
-        print("confirmation error:", e)
-        return False, None, None, None
