@@ -95,7 +95,6 @@ def scan_cycle():
             send_discord(f"❌ ERROR processing {t}: {e}")
 
 def start_scanner_loop():
-    incremental_fetch.update_ticker(t)
     print("Scanner loop started")
     send_discord("⚔️ WAR MACHINE GOD MODE ACTIVE — Sniper + BOS/FVG engine running")
 
