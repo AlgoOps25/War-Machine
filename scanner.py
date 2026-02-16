@@ -7,12 +7,18 @@ from scanner_helpers import get_intraday_bars_for_logger
 import sniper
 import math
 
+FORCE_WATCHLIST = ["SPY","NVDA","TSLA","META","AMD","AAPL","MSFT"]
+
 EODHD_API_KEY = os.getenv("EODHD_API_KEY")
 DISCORD_WEBHOOK = os.getenv("DISCORD_WEBHOOK")
 
-SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "300"))
-TOP_SCAN_COUNT = int(os.getenv("TOP_SCAN_COUNT", "10"))
-MARKET_CAP_MIN = int(os.getenv("MARKET_CAP_MIN", "2000000000"))
+SCAN_INTERVAL = 120        # scan every 2 minutes
+TOP_SCAN_COUNT = 25        # scan more tickers
+MARKET_CAP_MIN = 500000000 # allow mid caps (VERY IMPORTANT)
+
+#SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "300"))
+#TOP_SCAN_COUNT = int(os.getenv("TOP_SCAN_COUNT", "10"))
+#MARKET_CAP_MIN = int(os.getenv("MARKET_CAP_MIN", "2000000000"))
 
 def send_discord(msg):
     if not DISCORD_WEBHOOK:
@@ -52,12 +58,18 @@ def scan_cycle():
         try:
             code = rec.get("code")
             s, rv, ch = score_stock_quick(rec)
-            if s > 4 and rv > 1.2:
+            #if s > 4 and rv > 1.2:
+            if s > 1.5:
                 pool.append((code, s, rv, ch))
         except:
             continue
     pool.sort(key=lambda x: x[1], reverse=True)
     top = [p[0] for p in pool[:TOP_SCAN_COUNT]]
+
+    # Always include priority tickers
+    for t in FORCE_WATCHLIST:
+        if t not in top:
+            top.append(t)
     now = datetime.utcnow().isoformat()
     if top:
         send_discord(f"🔥 Top movers @ {now}: " + ", ".join(top))
