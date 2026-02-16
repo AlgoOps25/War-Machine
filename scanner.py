@@ -5,6 +5,7 @@ import requests
 from datetime import datetime
 import sniper
 import pytz
+import incremental_fetch
 
 eastern = pytz.timezone("US/Eastern")
 
@@ -94,6 +95,7 @@ def scan_cycle():
             send_discord(f"❌ ERROR processing {t}: {e}")
 
 def start_scanner_loop():
+    incremental_fetch.update_ticker(t)
     print("Scanner loop started")
     send_discord("⚔️ WAR MACHINE GOD MODE ACTIVE — Sniper + BOS/FVG engine running")
 
