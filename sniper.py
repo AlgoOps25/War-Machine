@@ -245,6 +245,18 @@ def fast_monitor_loop():
                         chosen = calc.get("chosen")
                         entry_ts = datetime.utcnow().isoformat()
                         trade_id = trade_logger.log_confirmed_trade(entry["ticker"], entry["direction"], grade, entry_price, entry_ts, stop, t1, t2, chosen)
+                        # === LEARNING LOG ===
+                        try:
+                            import learning_memory
+                            learning_memory.log_trade_result(
+                                entry["ticker"],
+                                entry["direction"],
+                                tf,
+                                grade,
+                                "OPEN"
+                            )
+                        except Exception as e:
+                            print("learning log fail:", e)
                         send_discord(f"🚨 CONFIRMED: {entry['ticker']} {entry['direction']} — grade {grade} — tf {tf}\nEntry {entry_price:.2f} Stop {stop:.2f} T1 {t1:.2f} T2 {t2 if t2 else 'n/a'}\nCONFIDENCE: {conf*100:.0f}% (min {min_conf*100:.0f}%) TradeId {trade_id}")
                         # mark confirmed and remove
                         try:
