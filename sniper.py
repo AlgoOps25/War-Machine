@@ -1,4 +1,4 @@
-# sniper.py
+# sniper.py (policy-aware)
 import json
 import os
 import threading
@@ -10,6 +10,7 @@ import confirmations
 import targets
 import trade_logger
 import requests
+import learning_policy
 
 RETEST_STATE_FILE = "retest_state.json"
 MAX_ARMED = int(os.getenv("MAX_ARMED", "25"))
@@ -25,24 +26,43 @@ def send_discord(msg: str):
     except Exception as e:
         print("discord send error:", e)
 
-def load_state():
+def _load_state():
     try:
         with open(RETEST_STATE_FILE, "r") as f:
             return json.load(f)
     except:
         return {}
 
-def save_state(st):
+def _save_state(st):
     try:
         with open(RETEST_STATE_FILE, "w") as f:
             json.dump(st, f)
     except Exception as e:
         print("save_state error:", e)
 
-retest_state = load_state()
+retest_state = _load_state()
+
+def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high):
+    key = f"{ticker}:{direction}"
+    if key in retest_state:
+        return
+    if len(retest_state) >= MAX_ARMED:
+        return
+    retest_state[key] = {
+        "ticker": ticker,
+        "direction": direction,
+        "zone_low": zone_low,
+        "zone_high": zone_high,
+        "or_low": or_low,
+        "or_high": or_high,
+        "armed_at": datetime.utcnow().isoformat(),
+        "confirmed": False
+    }
+    _save_state(retest_state)
+    send_discord(f"🔔 PRE-ALERT: {ticker} {direction} armed for FVG {zone_low:.2f}-{zone_high:.2f}")
 
 def compute_opening_range_from_bars(bars):
-    # bars are ascending 1m bars with 'date' or 'datetime' timestamp strings (ISO)
+    # identical to previous implementation — keep same logic
     try:
         import pytz
         from datetime import datetime as dt, time as dtime
@@ -74,6 +94,7 @@ def compute_opening_range_from_bars(bars):
     except Exception:
         return None, None
 
+# detect breakout and FVG (same approach as before)
 def detect_breakout_after_or(bars, or_high, or_low):
     try:
         import pytz
@@ -121,7 +142,6 @@ def detect_fvg_after_break(bars, breakout_idx, direction):
                 continue
             if direction == "bull":
                 if l2 > h0:
-                    # zone = h0 .. l2
                     return min(h0, l2), max(h0, l2)
             else:
                 if h2 < l0:
@@ -129,27 +149,6 @@ def detect_fvg_after_break(bars, breakout_idx, direction):
     except Exception:
         pass
     return None, None
-
-def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high):
-    global retest_state
-    key = f"{ticker}:{direction}"
-    if key in retest_state:
-        return
-    if len(retest_state) >= MAX_ARMED:
-        # do not arm new setups if at capacity
-        return
-    retest_state[key] = {
-        "ticker": ticker,
-        "direction": direction,
-        "zone_low": zone_low,
-        "zone_high": zone_high,
-        "or_low": or_low,
-        "or_high": or_high,
-        "armed_at": datetime.utcnow().isoformat(),
-        "confirmed": False
-    }
-    save_state(retest_state)
-    send_discord(f"🔔 PRE-ALERT: {ticker} {direction} armed for retest zone {zone_low:.2f}-{zone_high:.2f}")
 
 def process_ticker(ticker: str):
     try:
@@ -165,7 +164,6 @@ def process_ticker(ticker: str):
         fvg_low, fvg_high = detect_fvg_after_break(bars_1m, breakout_idx, direction)
         if not fvg_low:
             return
-        # normalize zone bounds (low < high)
         zone_low, zone_high = min(fvg_low, fvg_high), max(fvg_low, fvg_high)
         arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high)
     except Exception as e:
@@ -174,7 +172,7 @@ def process_ticker(ticker: str):
 
 def fast_monitor_loop():
     global retest_state
-    print("Sniper fast monitor started")
+    print("Sniper fast monitor started (policy-aware)")
     while True:
         try:
             keys = list(retest_state.keys())
@@ -182,17 +180,20 @@ def fast_monitor_loop():
                 entry = retest_state.get(k)
                 if not entry:
                     continue
-                # prune if old
+
+                # prune old
                 armed_at = datetime.fromisoformat(entry["armed_at"])
                 if datetime.utcnow() - armed_at > timedelta(minutes=RETEST_TIMEOUT_MINUTES):
                     try:
                         del retest_state[k]
-                        save_state(retest_state)
+                        _save_state(retest_state)
                     except:
                         pass
                     continue
+
                 if entry.get("confirmed"):
                     continue
+
                 ok, bar, tf, grade = confirmations.check_confirmation_multi_timeframe(entry["ticker"], {
                     "zone_low": entry["zone_low"],
                     "zone_high": entry["zone_high"],
@@ -200,23 +201,35 @@ def fast_monitor_loop():
                     "or_low": entry["or_low"],
                     "or_high": entry["or_high"]
                 })
-                if ok and grade in ("A+", "A"):
-                    # confirm
-                    entry_price = float(bar.get("close") or bar.get("Close") or 0)
-                    calc = targets.compute_stop_and_targets(entry_price, entry["or_low"], entry["or_high"], "bull" if entry["direction"]=="bull" or entry["direction"]=="CALL" else "bear", ticker=entry["ticker"])
-                    stop = calc.get("stop")
-                    t1 = calc.get("t1")
-                    t2 = calc.get("t2")
-                    chosen = calc.get("chosen")
-                    entry_ts = datetime.utcnow().isoformat()
-                    trade_id = trade_logger.log_confirmed_trade(entry["ticker"], entry["direction"], grade, entry_price, entry_ts, stop, t1, t2, chosen)
-                    send_discord(f"🚨 CONFIRMED: {entry['ticker']} {entry['direction']} — grade {grade} — tf {tf}\nEntry {entry_price:.2f} Stop {stop:.2f} T1 {t1:.2f} T2 {t2 if t2 else 'n/a'} (id {trade_id})")
-                    # mark confirmed & remove
-                    try:
-                        del retest_state[k]
-                        save_state(retest_state)
-                    except:
-                        pass
+
+                if ok:
+                    # compute confidence via learning_policy
+                    conf = learning_policy.compute_confidence(grade, tf, entry["ticker"])
+                    policy = learning_policy.get_policy()
+                    min_conf = float(policy.get("min_confidence", 0.8))
+                    # apply final decision: only accept if conf >= min_conf
+                    if conf >= min_conf:
+                        # compute stops & targets
+                        entry_price = float(bar.get("close") or bar.get("Close") or 0)
+                        calc = targets.compute_stop_and_targets(entry_price, entry["or_low"], entry["or_high"],
+                                                                "bull" if entry["direction"] in ("bull","CALL") else "bear",
+                                                                ticker=entry["ticker"])
+                        stop = calc.get("stop")
+                        t1 = calc.get("t1")
+                        t2 = calc.get("t2")
+                        chosen = calc.get("chosen")
+                        entry_ts = datetime.utcnow().isoformat()
+                        trade_id = trade_logger.log_confirmed_trade(entry["ticker"], entry["direction"], grade, entry_price, entry_ts, stop, t1, t2, chosen)
+                        send_discord(f"🚨 CONFIRMED: {entry['ticker']} {entry['direction']} — grade {grade} — tf {tf}\nEntry {entry_price:.2f} Stop {stop:.2f} T1 {t1:.2f} T2 {t2 if t2 else 'n/a'}\nCONFIDENCE: {conf*100:.0f}% (min {min_conf*100:.0f}%) TradeId {trade_id}")
+                        # mark confirmed and remove
+                        try:
+                            del retest_state[k]
+                            _save_state(retest_state)
+                        except:
+                            pass
+                    else:
+                        print(f"Skipped confirmation for {entry['ticker']} grade {grade} tf {tf} conf {conf:.2f} (min {min_conf})")
+
             time.sleep(8)
         except Exception as e:
             print("fast_monitor error:", e)
