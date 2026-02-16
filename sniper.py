@@ -151,6 +151,9 @@ def detect_fvg_after_break(bars, breakout_idx, direction):
     return None, None
 
 def process_ticker(ticker: str):
+    send_discord(f"📊 {ticker} bars received: {len(bars)}")
+    print(f"{ticker} bars received:", len(bars))
+
     try:
         bars_1m = get_intraday_bars_for_logger(ticker, limit=400, interval="1m")
         if not bars_1m or len(bars_1m) < 50:
