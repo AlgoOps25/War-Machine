@@ -27,7 +27,7 @@ def market_is_open():
 
     return True #GOD MODE 24/7
 
-FORCE_WATCHLIST = ["SPY"]]
+FORCE_WATCHLIST = ["SPY"]
 
 EODHD_API_KEY = os.getenv("EODHD_API_KEY")
 DISCORD_WEBHOOK = os.getenv("DISCORD_WEBHOOK")
