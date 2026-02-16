@@ -13,19 +13,19 @@ import pytz
 eastern = pytz.timezone("US/Eastern")
 
 def market_is_open():
-    now = datetime.now(eastern)
-    hour = now.hour
-    minute = now.minute
+    #now = datetime.now(eastern)
+    #hour = now.hour
+    #minute = now.minute
 
     # 8:00 AM to 4:00 PM EST
-    if hour < 8:
-        return False
-    if hour > 16:
-        return False
-    if hour == 16 and minute > 0:
-        return False
+    #if hour < 8:
+        #return False
+    #if hour > 16:
+        #return False
+    #if hour == 16 and minute > 0:
+        #return False
 
-    return True
+    return True #GOD MODE 24/7
 
 FORCE_WATCHLIST = ["SPY","NVDA","TSLA","META","AMD","AAPL","MSFT"]
 
