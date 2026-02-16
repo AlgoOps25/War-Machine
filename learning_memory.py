@@ -1,18 +1,18 @@
-# learning_memory.py
+# learning_memory.py — GOD MODE LEARNING CORE
 import sqlite3
 from datetime import datetime
 
 DB = "market_memory.db"
 
-def get_conn():
+def conn():
     return sqlite3.connect(DB)
 
-def init_learning_table():
-    conn = get_conn()
-    c = conn.cursor()
+def init():
+    c = conn().cursor()
 
+    # individual trades
     c.execute("""
-    CREATE TABLE IF NOT EXISTS setup_stats (
+    CREATE TABLE IF NOT EXISTS trades (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         ticker TEXT,
         direction TEXT,
@@ -23,47 +23,104 @@ def init_learning_table():
     )
     """)
 
-    conn.commit()
-    conn.close()
+    # aggregated stats
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS stats (
+        key TEXT PRIMARY KEY,
+        wins INTEGER,
+        losses INTEGER
+    )
+    """)
 
-def log_trade_result(ticker, direction, timeframe, grade, result):
-    """
-    result = WIN / LOSS
-    """
+    conn().commit()
+
+init()
+
+# ===============================
+# LOG TRADE
+# ===============================
+def log_trade(ticker, direction, timeframe, grade, result):
     try:
-        conn = get_conn()
-        c = conn.cursor()
+        db = conn()
+        c = db.cursor()
 
         c.execute("""
-        INSERT INTO setup_stats
-        (ticker, direction, timeframe, grade, result, timestamp)
-        VALUES (?, ?, ?, ?, ?, ?)
-        """, (
-            ticker,
-            direction,
-            timeframe,
-            grade,
-            result,
-            datetime.utcnow().isoformat()
-        ))
+        INSERT INTO trades
+        (ticker,direction,timeframe,grade,result,timestamp)
+        VALUES (?,?,?,?,?,?)
+        """,(ticker,direction,timeframe,grade,result,datetime.utcnow().isoformat()))
 
-        conn.commit()
-        conn.close()
+        db.commit()
+        db.close()
     except Exception as e:
         print("learning log error:", e)
 
-def get_stats():
-    conn = get_conn()
-    c = conn.cursor()
+# ===============================
+# UPDATE RESULT (WIN/LOSS)
+# ===============================
+def update_result(ticker, timeframe, grade, result):
+    try:
+        key = f"{timeframe}_{grade}"
 
-    c.execute("""
-    SELECT timeframe, grade, result, COUNT(*)
-    FROM setup_stats
-    GROUP BY timeframe, grade, result
-    """)
+        db = conn()
+        c = db.cursor()
 
-    rows = c.fetchall()
-    conn.close()
-    return rows
+        c.execute("SELECT wins,losses FROM stats WHERE key=?", (key,))
+        row = c.fetchone()
 
-init_learning_table()
+        if not row:
+            wins, losses = 0,0
+        else:
+            wins, losses = row
+
+        if result == "WIN":
+            wins += 1
+        else:
+            losses += 1
+
+        c.execute("""
+        INSERT OR REPLACE INTO stats (key,wins,losses)
+        VALUES (?,?,?)
+        """,(key,wins,losses))
+
+        db.commit()
+        db.close()
+    except Exception as e:
+        print("stat update error:", e)
+
+# ===============================
+# GET CONFIDENCE BOOST
+# ===============================
+def get_confidence_boost(timeframe, grade):
+    try:
+        key = f"{timeframe}_{grade}"
+
+        db = conn()
+        c = db.cursor()
+        c.execute("SELECT wins,losses FROM stats WHERE key=?", (key,))
+        row = c.fetchone()
+        db.close()
+
+        if not row:
+            return 0
+
+        wins, losses = row
+        total = wins + losses
+        if total < 5:
+            return 0
+
+        winrate = wins / total
+
+        # boost or punish
+        if winrate > 0.7:
+            return 0.15
+        if winrate > 0.6:
+            return 0.08
+        if winrate < 0.4:
+            return -0.15
+        if winrate < 0.5:
+            return -0.08
+
+        return 0
+    except:
+        return 0

@@ -230,6 +230,14 @@ def fast_monitor_loop():
                 if ok:
                     # compute confidence via learning_policy
                     conf = learning_policy.compute_confidence(grade, tf, entry["ticker"])
+                    # === APPLY LEARNING BOOST ===
+                    try:
+                        import learning_memory
+                        boost = learning_memory.get_confidence_boost(tf, grade)
+                        conf += boost
+                        conf = max(0, min(conf, 1))
+                    except:
+                        pass
                     policy = learning_policy.get_policy()
                     min_conf = float(policy.get("min_confidence", 0.8))
                     # apply final decision: only accept if conf >= min_conf
@@ -245,10 +253,10 @@ def fast_monitor_loop():
                         chosen = calc.get("chosen")
                         entry_ts = datetime.utcnow().isoformat()
                         trade_id = trade_logger.log_confirmed_trade(entry["ticker"], entry["direction"], grade, entry_price, entry_ts, stop, t1, t2, chosen)
-                        # === LEARNING LOG ===
+                        # === GOD MODE LEARNING LOG ===
                         try:
                             import learning_memory
-                            learning_memory.log_trade_result(
+                            learning_memory.log_trade(
                                 entry["ticker"],
                                 entry["direction"],
                                 tf,
@@ -256,7 +264,7 @@ def fast_monitor_loop():
                                 "OPEN"
                             )
                         except Exception as e:
-                            print("learning log fail:", e)
+                            print("learning log error:", e)
                         send_discord(f"🚨 CONFIRMED: {entry['ticker']} {entry['direction']} — grade {grade} — tf {tf}\nEntry {entry_price:.2f} Stop {stop:.2f} T1 {t1:.2f} T2 {t2 if t2 else 'n/a'}\nCONFIDENCE: {conf*100:.0f}% (min {min_conf*100:.0f}%) TradeId {trade_id}")
                         # mark confirmed and remove
                         try:
