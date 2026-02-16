@@ -153,7 +153,7 @@ def detect_fvg_after_break(bars, breakout_idx, direction):
 def process_ticker(ticker: str):
     try:
         # ===== PULL BARS FROM EODHD =====
-        bars_1m = get_intraday_bars_for_logger(ticker, limit=400, interval="1m")
+        bars_1m = get_intraday_bars_for_logger(ticker, limit=300, interval="1m")
 
         if not bars_1m:
             send_discord(f"❌ {ticker} NO DATA FROM EODHD")

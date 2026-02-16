@@ -6,11 +6,22 @@ from datetime import datetime
 import sniper
 import pytz
 import incremental_fetch
+import config
 
 eastern = pytz.timezone("US/Eastern")
 
 def market_is_open():
-    return True  # GOD MODE 24/7
+    if config.GOD_MODE_24_7:
+        return True
+    now = datetime.now(pytz.timezone("US/Eastern"))
+    # market open Mon-Fri 9:30-16:00
+    if now.weekday() >= 5:
+        return False
+    if now.hour < 9 or (now.hour == 9 and now.minute < 30):
+        return False
+    if now.hour > 16 or (now.hour == 16 and now.minute > 0):
+        return False
+    return True
 
 FORCE_WATCHLIST = ["SPY"]
 
@@ -82,9 +93,16 @@ def scan_cycle():
 
     for t in top:
         try:
-            print(f"📡 Pulling data for {t} from EODHD...")
-            send_discord(f"📡 TEST: Pulling data for {t}")
+            print(f"📡 Pulling incremental data for {t}")
+            send_discord(f"📡 TEST: Pulling incremental data for {t}")
 
+            # ensure we fetch & store only newest bars into DB (incremental)
+            try:
+                incremental_fetch.update_ticker(t)
+            except Exception as e:
+                print("incremental_fetch.update_ticker error:", e)
+
+            # now run the sniper (sniper will use get_intraday_bars_for_logger which reads DB)
             sniper.process_ticker(t)
 
             print(f"✅ {t} processed by sniper")
