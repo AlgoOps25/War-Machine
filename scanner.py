@@ -23,13 +23,13 @@ def market_is_open():
         return False
     return True
 
-FORCE_WATCHLIST = ["SPY"]
+FORCE_WATCHLIST = []
 
 EODHD_API_KEY = os.getenv("EODHD_API_KEY")
 DISCORD_WEBHOOK = os.getenv("DISCORD_WEBHOOK")
 
 SCAN_INTERVAL = 60
-TOP_SCAN_COUNT = 1
+TOP_SCAN_COUNT = 10
 MARKET_CAP_MIN = 500000000
 
 def send_discord(msg):
