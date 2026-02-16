@@ -3,22 +3,17 @@ from datetime import datetime, timedelta
 
 DB = "market_memory.db"
 
-def get_recent_bars(ticker, minutes=120):
-    """
-    Pull recent candles from local DB instead of EODHD
-    """
+def get_recent_bars_from_memory(ticker, limit=300):
     conn = sqlite3.connect(DB)
     c = conn.cursor()
 
-    cutoff = datetime.utcnow() - timedelta(minutes=minutes)
-
     c.execute("""
-    SELECT datetime, open, high, low, close, volume
-    FROM candles
-    WHERE ticker=?
-    ORDER BY datetime DESC
-    LIMIT ?
-    """,(ticker, minutes))
+        SELECT datetime, open, high, low, close, volume
+        FROM candles
+        WHERE ticker=?
+        ORDER BY datetime DESC
+        LIMIT ?
+    """, (ticker, limit))
 
     rows = c.fetchall()
     conn.close()
