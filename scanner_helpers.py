@@ -1,6 +1,8 @@
 # scanner_helpers.py
 import requests, os, sqlite3
 from datetime import datetime
+import requests
+import os
 
 EODHD_API_KEY = os.getenv("EODHD_API_KEY")
 DB_FILE = "market_memory.db"
@@ -146,3 +148,58 @@ def get_realtime_quote_for_logger(ticker):
         return r.json()
     except:
         return None
+
+EODHD_API_KEY = os.getenv("EODHD_API_KEY")
+
+def get_darkpool_trades(ticker, limit=50):
+    try:
+        url = f"https://eodhd.com/api/dark-pool/{ticker}.US"
+        params = {
+            "api_token": EODHD_API_KEY,
+            "limit": limit,
+            "fmt": "json"
+        }
+        r = requests.get(url, params=params, timeout=15)
+
+        if r.status_code != 200:
+            print("darkpool http", r.status_code, r.text[:120])
+            return []
+
+        data = r.json()
+        if isinstance(data, dict):
+            return []
+
+        return data
+    except Exception as e:
+        print("darkpool fetch error:", e)
+        return []
+    
+def analyze_darkpool(trades):
+    if not trades:
+        return False, 0
+
+    total_value = 0
+    big_prints = 0
+
+    for t in trades[:50]:
+        try:
+            size = float(t.get("size") or 0)
+            price = float(t.get("price") or 0)
+            value = size * price
+
+            total_value += value
+
+            if value > 200000:  # big block
+                big_prints += 1
+
+        except:
+            continue
+
+    if total_value == 0:
+        return False, 0
+
+    score = total_value / 1_000_000  # millions traded
+    accumulation = score > 2 or big_prints >= 3
+
+    return accumulation, score
+

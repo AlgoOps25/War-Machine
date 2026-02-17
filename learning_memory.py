@@ -124,3 +124,23 @@ def get_confidence_boost(timeframe, grade):
         return 0
     except:
         return 0
+
+def get_ticker_score(ticker):
+    try:
+        import sqlite3
+        conn = sqlite3.connect("war_machine_trades.db")
+        c = conn.cursor()
+
+        c.execute("SELECT outcome FROM trades WHERE ticker=?", (ticker,))
+        rows = c.fetchall()
+        conn.close()
+
+        if not rows:
+            return 0
+
+        wins = sum(1 for r in rows if r[0] in ("T1","T2"))
+        wr = wins / len(rows)
+
+        return (wr - 0.5) * 4  # boost/penalty
+    except:
+        return 0

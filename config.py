@@ -31,7 +31,7 @@ LEARNING_POLICY_FILE = os.getenv("LEARNING_POLICY_FILE", "policy.json")
 # Debug / mode
 GOD_MODE_24_7 = os.getenv("GOD_MODE_24_7", "false").lower() in ("1","true","yes")
 
-PREMARKET_START_HOUR = 3
+PREMARKET_START_HOUR = 7
 PREMARKET_START_MIN = 30
 TOP_SCAN_COUNT = 10
 MARKET_CAP_MIN = 10000000000

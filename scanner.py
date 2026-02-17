@@ -74,6 +74,8 @@ MIN_REL_VOL = float(os.getenv("MIN_REL_VOL", "1.5"))  # underlying relative volu
 OPTIONS_VOL_MULT = float(os.getenv("OPTIONS_VOL_MULT", "2.0"))  # options vol multiplier threshold
 OPTIONS_CACHE_TTL = int(os.getenv("OPTIONS_CACHE_TTL", "60"))  # seconds to cache options response per ticker
 EODHD_BASE = "https://eodhd.com/api"
+ELITE_LIMIT = 3
+WATCHLIST_LIMIT = 10
 
 # timezone
 EST = pytz.timezone("US/Eastern")
@@ -258,6 +260,12 @@ def analyze_options_flow(opt_bars):
 
     return unusual, score, sweep_detected
 
+# ===== DARK POOL =====
+from scanner_helpers import get_darkpool_trades, analyze_darkpool
+
+dark_trades = get_darkpool_trades()
+dark_accum, dark_score = analyze_darkpool(dark_trades)
+
 def has_volume_surge_underlying(ticker):
     """
     Compute recent relative volume from memory DB (compare last 5 bars vs prior 25).
@@ -282,45 +290,58 @@ def has_volume_surge_underlying(ticker):
         return False, 0.0
 
 def build_watchlist():
-    # preload institutional favorites
+    """
+    Build top-N watchlist using screener + underlying vol + options flow heuristics.
+    ALWAYS returns something.
+    """
+
+    candidates = get_top_candidates()
+
+    # fallback if screener fails
+    if not candidates:
+        print("⚠️ Screener returned nothing — using fallback list")
+        candidates = ["SPY", "QQQ", "NVDA", "TSLA", "AAPL", "MSFT", "META"]
+
+    # inject historical winners
     historical_hot = load_hot_prerankers(6)
     for h in historical_hot:
         if h not in candidates:
             candidates.insert(0, h)
-    """
-    Build top-N watchlist using screener + underlying vol + options flow heuristics.
-    """
-    candidates = get_top_candidates()
-    if not candidates:
-        return []
 
     strong = []
+
     for t in candidates:
         try:
-            # ensure memory has bars
             incremental_fetch.update_ticker(t)
-            # underlying vol check
-            vol_ok, ratio = has_volume_surge_underlying(t)
-            if not vol_ok:
-                # skip weak underlying volume
-                continue
-            # options flow check
-            opts = fetch_options_for_ticker(t)
-            unusual, opt_score = analyze_options_flow(opts)
-            # Keep if options activity OR strong underlying vol
-            if unusual or ratio >= (MIN_REL_VOL * 1.4):
-                score = ratio * (opt_score + 1)
-                strong.append((t, ratio, opt_score))
-                save_preranker(t, score, opt_score, ratio)
-            # throttle to avoid limit
-            time.sleep(PER_TICKER_SLEEP)
-        except Exception as e:
-            print("watchlist build error for", t, e)
-            continue
 
-    # sort by combined strength (underlying ratio * options score)
-    strong.sort(key=lambda x: (x[1] * (x[2] or 1.0)), reverse=True)
+            # underlying volume check
+            vol_ok, ratio = has_volume_surge_underlying(t)
+
+            # options flow
+            opts = fetch_options_for_ticker(t)
+            unusual, opt_score, sweep = analyze_options_flow(opts)
+
+            if sweep:
+                send_discord(f"🐳 OPTIONS SWEEP detected: {t}")
+
+            if vol_ok or unusual or sweep:
+                final_score = ratio * (opt_score + 1)
+                strong.append((t, final_score))
+                save_preranker(t, final_score, opt_score, ratio)
+
+            time.sleep(PER_TICKER_SLEEP)
+
+        except Exception as e:
+            print("watchlist error:", t, e)
+
+    strong.sort(key=lambda x: x[1], reverse=True)
+
     final = [s[0] for s in strong[:TOP_SCAN_COUNT]]
+
+    # final fallback
+    if not final:
+        final = candidates[:TOP_SCAN_COUNT]
+
     return final
 
 def scan_cycle():
