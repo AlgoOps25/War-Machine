@@ -1,4 +1,4 @@
-# scanner.py - War Machine premarket+market top-mover scanner (options-aware)
+# scanner.py - WAR MACHINE institutional scanner (FINAL STABLE)
 import os
 import time
 import requests
@@ -8,12 +8,53 @@ from datetime import datetime, time as dtime
 import pytz
 import json
 
-# existing modules in your repo
 import incremental_fetch
 import sniper
-from memory_reader import get_recent_bars_from_memory
 
-def init_prerank_db():
+############################################
+# CONFIG
+############################################
+
+try:
+    import config
+except:
+    config = None
+
+EODHD_API_KEY = os.getenv("EODHD_API_KEY") or getattr(config, "EODHD_API_KEY", "")
+DISCORD_WEBHOOK = os.getenv("DISCORD_WEBHOOK") or getattr(config, "DISCORD_WEBHOOK", "")
+
+TOP_SCAN_COUNT = 10
+MARKET_CAP_MIN = 5_000_000_000
+SCAN_INTERVAL = 60
+
+PREMARKET_START = (6, 0)   # 6:00am EST recommended start
+MARKET_CLOSE = (16, 0)
+
+MIN_REL_VOL = 1.5
+OPTIONS_CACHE_TTL = 90
+PER_TICKER_SLEEP = 0.35
+
+EST = pytz.timezone("US/Eastern")
+_options_cache = {}
+
+############################################
+# DISCORD
+############################################
+
+def send_discord(msg):
+    print(msg)
+    if not DISCORD_WEBHOOK:
+        return
+    try:
+        requests.post(DISCORD_WEBHOOK, json={"content": msg}, timeout=8)
+    except:
+        pass
+
+############################################
+# DATABASE
+############################################
+
+def init_db():
     conn = sqlite3.connect("market_memory.db")
     c = conn.cursor()
     c.execute("""
@@ -28,257 +69,166 @@ def init_prerank_db():
     conn.commit()
     conn.close()
 
-init_prerank_db()
+init_db()
 
 def save_preranker(ticker, score, opt_score, relvol):
     conn = sqlite3.connect("market_memory.db")
     c = conn.cursor()
-    c.execute("""
-    INSERT INTO prerankers (ticker, score, options_score, relvol, timestamp)
-    VALUES (?, ?, ?, ?, ?)
-    """, (ticker, score, opt_score, relvol, datetime.utcnow().isoformat()))
+    c.execute("INSERT INTO prerankers VALUES (?,?,?,?,?)",
+              (ticker, score, opt_score, relvol, datetime.utcnow().isoformat()))
     conn.commit()
     conn.close()
 
-def load_hot_prerankers(limit=10):
-    conn = sqlite3.connect("market_memory.db")
-    c = conn.cursor()
-    c.execute("""
-    SELECT ticker, AVG(score) as s
-    FROM prerankers
-    GROUP BY ticker
-    ORDER BY s DESC
-    LIMIT ?
-    """, (limit,))
-    rows = c.fetchall()
-    conn.close()
-    return [r[0] for r in rows]
+############################################
+# TIME FILTER
+############################################
 
-# centralize config convenience (if you have config.py)
-try:
-    import config
-except Exception:
-    config = None
-
-EODHD_API_KEY = os.getenv("EODHD_API_KEY") or (getattr(config, "EODHD_API_KEY", "") if config else "")
-DISCORD_WEBHOOK = os.getenv("DISCORD_WEBHOOK") or (getattr(config, "DISCORD_WEBHOOK", "") if config else "")
-
-# Operation params (override in config.py or env)
-TOP_SCAN_COUNT = int(os.getenv("TOP_SCAN_COUNT", getattr(config, "TOP_SCAN_COUNT", 10) if config else 10))
-MARKET_CAP_MIN = int(os.getenv("MARKET_CAP_MIN", getattr(config, "MARKET_CAP_MIN", 10_000_000_000) if config else 10_000_000_000))
-SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", getattr(config, "SCAN_INTERVAL", 60) if config else 60))
-PREMARKET_START_HOUR = int(os.getenv("PREMARKET_START_HOUR", getattr(config, "PREMARKET_START_HOUR", 3) if config else 3))  # 3 => 03:00
-PREMARKET_START_MIN = int(os.getenv("PREMARKET_START_MIN", getattr(config, "PREMARKET_START_MIN", 30) if config else 30))  # 03:30
-MARKET_CLOSE_HOUR = int(os.getenv("MARKET_CLOSE_HOUR", getattr(config, "MARKET_CLOSE_HOUR", 16) if config else 16))
-MIN_REL_VOL = float(os.getenv("MIN_REL_VOL", "1.5"))  # underlying relative volume threshold
-OPTIONS_VOL_MULT = float(os.getenv("OPTIONS_VOL_MULT", "2.0"))  # options vol multiplier threshold
-OPTIONS_CACHE_TTL = int(os.getenv("OPTIONS_CACHE_TTL", "60"))  # seconds to cache options response per ticker
-EODHD_BASE = "https://eodhd.com/api"
-ELITE_LIMIT = 3
-WATCHLIST_LIMIT = 10
-
-# timezone
-EST = pytz.timezone("US/Eastern")
-
-# small throttle to avoid hitting limits when scanning many tickers
-PER_TICKER_SLEEP = float(os.getenv("PER_TICKER_SLEEP", "0.35"))
-
-# simple in-memory cache for options data {ticker: (fetched_at_epoch, data)}
-_options_cache = {}
-
-def send_discord(msg: str):
-    if not DISCORD_WEBHOOK:
-        print(msg)
-        return
-    try:
-        requests.post(DISCORD_WEBHOOK, json={"content": msg}, timeout=8)
-    except Exception as e:
-        print("discord send error:", e)
-
-def market_is_open_or_premarket():
+def market_is_active():
     now = datetime.now(EST).time()
-    pre_start = dtime(PREMARKET_START_HOUR, PREMARKET_START_MIN)
-    market_open = dtime(9, 30)
-    market_close = dtime(MARKET_CLOSE_HOUR, 0)
-    # active window: pre_start .. market_close
-    return pre_start <= now <= market_close
+    pre = dtime(PREMARKET_START[0], PREMARKET_START[1])
+    close = dtime(MARKET_CLOSE[0], MARKET_CLOSE[1])
+    return pre <= now <= close
 
-def screener_top_by_marketcap(limit=50):
+############################################
+# EODHD SCREENER (FIXED)
+############################################
 
+def screener_top(limit=200):
     url = "https://eodhd.com/api/screener"
 
     payload = {
         "api_token": EODHD_API_KEY,
-        "sort": "market_cap",
-        "order": "desc",
-        "limit": limit,
-        "exchange": "US"
+        "filters": json.dumps([
+            {"field": "market_capitalization", "operator": ">", "value": MARKET_CAP_MIN},
+            {"field": "exchange", "operator": "=", "value": "US"}
+        ]),
+        "sort": json.dumps([
+            {"field": "volume", "direction": "desc"}
+        ]),
+        "limit": limit
     }
 
     try:
         r = requests.get(url, params=payload, timeout=20)
-
         if r.status_code != 200:
-            print("screener http", r.status_code, r.text[:120])
+            print("screener error", r.status_code, r.text[:200])
             return []
 
         data = r.json()
         return data.get("data", [])
-
     except Exception as e:
-        print("screener error:", e)
+        print("screener fail:", e)
         return []
 
-def score_stock_quick(rec):
-    """
-    Quick heuristic score using pct change and relative volume if available in screener result.
-    """
-    try:
-        change = float(rec.get("change_p", 0) or 0)
-        volume = float(rec.get("volume", 0) or 0)
-        avgvol = float(rec.get("avgVolume", 1) or 1)
-        relvol = volume / avgvol if avgvol > 0 else 0
-        score = abs(change) * 1.8 + relvol * 2.2
-        return score, relvol, change
-    except:
-        return 0, 0, 0
-
-def get_top_candidates():
-    """
-    Build candidate list from screener, filtered by relative volume threshold.
-    Returns list of tickers (strings).
-    """
-    recs = screener_top_by_marketcap(limit=500, min_market_cap=MARKET_CAP_MIN)
-    pool = []
-    for rec in recs:
-        try:
-            code = rec.get("code")
-            s, rv, ch = score_stock_quick(rec)
-            # prefer large relative volume or decent change
-            if rv >= MIN_REL_VOL or abs(ch) >= 0.5:
-                pool.append((code, s, rv, ch))
-        except:
-            continue
-    pool.sort(key=lambda x: x[1], reverse=True)
-    top = [p[0] for p in pool[:TOP_SCAN_COUNT * 3]]  # fetch extra for options filter
-    return list(dict.fromkeys(top))[:TOP_SCAN_COUNT]  # dedupe preserve order, crop to TOP_SCAN_COUNT
+############################################
+# OPTIONS FETCH (REAL FIX)
+############################################
 
 def fetch_options_for_ticker(ticker):
     if not EODHD_API_KEY:
         return []
 
-    symbol = f"{ticker}.US"
+    now = time.time()
+    if ticker in _options_cache:
+        ts, data = _options_cache[ticker]
+        if now - ts < OPTIONS_CACHE_TTL:
+            return data
 
-    url = f"https://eodhd.com/api/options/real-time/{symbol}?api_token={EODHD_API_KEY}&fmt=json"
+    symbols = [f"{ticker}.US", ticker]
 
-    try:
-        r = requests.get(url, timeout=20)
+    for sym in symbols:
+        url = f"https://eodhd.com/api/unicornbay/options/{sym}?api_token={EODHD_API_KEY}&fmt=json"
 
-        if r.status_code != 200:
-            print(f"options http {r.status_code} for {ticker} ->", r.text[:120])
-            return []
+        try:
+            r = requests.get(url, timeout=15)
 
-        data = r.json()
+            if r.status_code == 200:
+                data = r.json()
 
-        if not data:
-            print("No options returned")
-            return []
+                if isinstance(data, dict):
+                    if "data" in data and "options" in data["data"]:
+                        result = data["data"]["options"]
+                    elif "options" in data:
+                        result = data["options"]
+                    else:
+                        result = []
 
-        # some responses wrap inside "data"
-        if isinstance(data, dict) and "data" in data:
-            return data["data"]
+                    _options_cache[ticker] = (now, result)
+                    return result
 
-        return data
+            else:
+                print(f"options http {r.status_code} {sym}")
 
-    except Exception as e:
-        print("options fetch error:", e)
-        return []
+        except Exception as e:
+            print("options error:", e)
 
-def analyze_options_flow(opt_bars):
-    if not opt_bars:
+    return []
+
+############################################
+# OPTIONS ANALYSIS
+############################################
+
+def analyze_options_flow(opts):
+    if not opts:
         return False, 0, False
 
-    total_vol = 0
-    call_vol = 0
-    put_vol = 0
-    sweep_detected = False
-    large_trade = 0
+    total = 0
+    premium_total = 0
+    sweep = False
 
-    for o in opt_bars[:200]:
+    for o in opts[:150]:
         try:
-            vol = float(o.get("volume") or o.get("Volume") or 0)
-            typ = str(o.get("type") or o.get("optionType") or "").lower()
-            premium = float(o.get("premium") or o.get("lastPrice") or 0) * vol
+            vol = float(o.get("volume", 0))
+            price = float(o.get("lastPrice", 0))
+            prem = vol * price
 
-            total_vol += vol
+            total += vol
+            premium_total += prem
 
-            if "call" in typ:
-                call_vol += vol
-            if "put" in typ:
-                put_vol += vol
-
-            # sweep detection
-            if premium > 50000 or vol > 1000:
-                sweep_detected = True
-                large_trade += premium
+            if prem > 50000 or vol > 1500:
+                sweep = True
 
         except:
             continue
 
-    if total_vol == 0:
+    if total == 0:
         return False, 0, False
 
-    flow_ratio = (call_vol + 1) / (put_vol + 1)
-    bullish_flow = flow_ratio > 1.5
-    bearish_flow = flow_ratio < 0.6
+    score = math.log10(total + 10) + (premium_total / 150000)
 
-    score = math.log10(total_vol + 10) + (large_trade / 100000)
+    unusual = score > 2 or sweep
+    return unusual, score, sweep
 
-    unusual = score > 2 or sweep_detected
-
-    return unusual, score, sweep_detected
-
-def has_volume_surge_underlying(ticker):
-    """
-    Compute recent relative volume from memory DB (compare last 5 bars vs prior 25).
-    """
-    try:
-        conn = sqlite3.connect("market_memory.db")
-        c = conn.cursor()
-        c.execute("SELECT volume FROM candles WHERE ticker=? ORDER BY datetime DESC LIMIT 30", (ticker,))
-        rows = c.fetchall()
-        conn.close()
-        if len(rows) < 12:
-            return False, 0.0
-        vols = [r[0] for r in rows]
-        recent = sum(vols[:5]) / 5
-        baseline = sum(vols[5:30]) / max(1, len(vols[5:30]))
-        if baseline == 0:
-            return False, 0.0
-        ratio = recent / baseline
-        return (ratio >= MIN_REL_VOL), ratio
-    except Exception as e:
-        print("volume surge error:", e)
-        return False, 0.0
+############################################
+# BUILD WATCHLIST
+############################################
 
 def build_watchlist():
-    """
-    Build top-N watchlist using screener + underlying vol + options flow heuristics.
-    ALWAYS returns something.
-    """
 
-    candidates = get_top_candidates()
+    recs = screener_top()
+    if not recs:
+        send_discord("⚠️ Screener failed — fallback list used")
+        return ["SPY","QQQ","NVDA","TSLA","META","AAPL","MSFT"]
 
-    # fallback if screener fails
-    if not candidates:
-        print("⚠️ Screener returned nothing — using fallback list")
-        candidates = ["SPY", "QQQ", "NVDA", "TSLA", "AAPL", "MSFT", "META"]
+    pool = []
 
-    # inject historical winners
-    historical_hot = load_hot_prerankers(6)
-    for h in historical_hot:
-        if h not in candidates:
-            candidates.insert(0, h)
+    for r in recs:
+        try:
+            t = r["code"]
+            vol = float(r.get("volume", 0))
+            avg = float(r.get("avgVolume", 1))
+            rel = vol/avg if avg else 0
+            change = abs(float(r.get("change_p",0)))
+
+            score = rel*2 + change
+
+            if rel >= MIN_REL_VOL or change > 1:
+                pool.append((t, score, rel))
+        except:
+            pass
+
+    pool.sort(key=lambda x: x[1], reverse=True)
+    candidates = [x[0] for x in pool[:30]]
 
     strong = []
 
@@ -286,70 +236,67 @@ def build_watchlist():
         try:
             incremental_fetch.update_ticker(t)
 
-            # underlying volume check
-            vol_ok, ratio = has_volume_surge_underlying(t)
-
-            # options flow
             opts = fetch_options_for_ticker(t)
             unusual, opt_score, sweep = analyze_options_flow(opts)
 
             if sweep:
-                send_discord(f"🐳 OPTIONS SWEEP detected: {t}")
+                send_discord(f"🐳 OPTIONS SWEEP: {t}")
 
-            if vol_ok or unusual or sweep:
-                final_score = ratio * (opt_score + 1)
-                strong.append((t, final_score))
-                save_preranker(t, final_score, opt_score, ratio)
+            final = opt_score + 1
+            strong.append((t, final))
+
+            save_preranker(t, final, opt_score, 1)
 
             time.sleep(PER_TICKER_SLEEP)
 
         except Exception as e:
-            print("watchlist error:", t, e)
+            print("watchlist err", t, e)
 
     strong.sort(key=lambda x: x[1], reverse=True)
 
-    final = [s[0] for s in strong[:TOP_SCAN_COUNT]]
+    final = [x[0] for x in strong[:TOP_SCAN_COUNT]]
 
-    # final fallback
     if not final:
         final = candidates[:TOP_SCAN_COUNT]
 
     return final
 
+############################################
+# MAIN SCAN
+############################################
+
 def scan_cycle():
-    # enforce time gate
-    if not market_is_open_or_premarket():
-        send_discord("Captain Hook: Waiting for premarket (system sleeping)")
+
+    if not market_is_active():
+        send_discord("Captain Hook: Waiting for premarket")
         return
 
-    now = datetime.utcnow().isoformat()
-    send_discord(f"🔥 Building watchlist @ {now}")
+    send_discord("🔥 Building institutional watchlist")
+
     watch = build_watchlist()
-    if not watch:
-        send_discord("Captain Hook: No strong movers detected.")
-        return
 
-    send_discord("🔥 Top Watchlist: " + ", ".join(watch))
+    send_discord("🔥 WATCHLIST: " + ", ".join(watch))
 
-    # hand over to sniper for each symbol
     for t in watch:
         try:
             incremental_fetch.update_ticker(t)
             sniper.process_ticker(t)
         except Exception as e:
-            print("process_ticker error for", t, e)
-            send_discord(f"❌ ERROR processing {t}: {e}")
+            send_discord(f"Error {t}: {e}")
+
+############################################
+# LOOP
+############################################
 
 def start_scanner_loop():
-    print("Scanner loop started (premarket+market)")
-    send_discord("⚔️ WAR MACHINE SCANNER STARTING (premarket+market)")
+    send_discord("⚔️ WAR MACHINE ONLINE")
+    print("scanner started")
 
     while True:
         try:
             scan_cycle()
         except Exception as e:
-            print("scan loop error:", e)
-            send_discord(f"Scanner loop error: {e}")
+            send_discord(f"Scanner crash: {e}")
         time.sleep(SCAN_INTERVAL)
 
 if __name__ == "__main__":
