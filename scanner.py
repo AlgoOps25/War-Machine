@@ -103,41 +103,28 @@ def market_is_open_or_premarket():
     # active window: pre_start .. market_close
     return pre_start <= now <= market_close
 
-def screener_top_by_marketcap(limit=200, min_market_cap=MARKET_CAP_MIN):
-    """
-    Use EODHD screener to pull US large caps ordered by % change / volume.
-    """
-    if not EODHD_API_KEY:
-        print("No EODHD_API_KEY set")
-        return []
+def screener_top_by_marketcap(limit=50):
 
-    url = f"{EODHD_BASE}/screener"
-    filters = [
-        ["market_cap", ">", min_market_cap],
-        ["exchange", "=", "US"]
-    ]
+    url = "https://eodhd.com/api/screener"
 
-    params = {
+    payload = {
         "api_token": EODHD_API_KEY,
-        "limit": limit,
-        "sort": "change_percent",
+        "sort": "market_cap",
         "order": "desc",
-        "filters": json.dumps(filters)
+        "limit": limit,
+        "exchange": "US"
     }
+
     try:
-        r = requests.get(url, params=params, timeout=12)
+        r = requests.get(url, params=payload, timeout=20)
+
         if r.status_code != 200:
-            print("screener http", r.status_code, r.text[:200])
+            print("screener http", r.status_code, r.text[:120])
             return []
+
         data = r.json()
-        # some responses return list, some return dict->data
-        if isinstance(data, dict) and "data" in data:
-            recs = data["data"] or []
-        elif isinstance(data, list):
-            recs = data
-        else:
-            recs = []
-        return recs
+        return data.get("data", [])
+
     except Exception as e:
         print("screener error:", e)
         return []
@@ -177,44 +164,35 @@ def get_top_candidates():
     return list(dict.fromkeys(top))[:TOP_SCAN_COUNT]  # dedupe preserve order, crop to TOP_SCAN_COUNT
 
 def fetch_options_for_ticker(ticker):
-    """
-    Fetch options summary for ticker from EODHD Options API.
-    Caches results for OPTIONS_CACHE_TTL seconds to avoid hammering.
-    """
     if not EODHD_API_KEY:
-        return None
+        return []
 
-    now_ts = time.time()
-    cached = _options_cache.get(ticker)
-    if cached and (now_ts - cached[0]) < OPTIONS_CACHE_TTL:
-        return cached[1]
+    symbol = f"{ticker}.US"
 
-    # Example endpoint (EODHD docs): /options/{symbol}.US?api_token=...
-    # Adjust to your plan endpoints if different.
-    url = f"{EODHD_BASE}/options/{ticker}.US"
-    params = {"api_token": EODHD_API_KEY, "fmt": "json", "limit": 100}
+    url = f"https://eodhd.com/api/options/real-time/{symbol}?api_token={EODHD_API_KEY}&fmt=json"
+
     try:
-        r = requests.get(url, params=params, timeout=12)
+        r = requests.get(url, timeout=20)
+
         if r.status_code != 200:
-            print(f"options http {r.status_code} for {ticker} -> {r.text[:200]}")
-            _options_cache[ticker] = (now_ts, None)
-            return None
+            print(f"options http {r.status_code} for {ticker} ->", r.text[:120])
+            return []
+
         data = r.json()
-        # shape may be {"data":[...]} or list
+
+        if not data:
+            print("No options returned")
+            return []
+
+        # some responses wrap inside "data"
         if isinstance(data, dict) and "data" in data:
-            opt = data["data"] or []
-        elif isinstance(data, list):
-            opt = data
-        else:
-            opt = []
-        _options_cache[ticker] = (now_ts, opt)
-        # small throttle
-        time.sleep(PER_TICKER_SLEEP)
-        return opt
+            return data["data"]
+
+        return data
+
     except Exception as e:
         print("options fetch error:", e)
-        _options_cache[ticker] = (now_ts, None)
-        return None
+        return []
 
 def analyze_options_flow(opt_bars):
     if not opt_bars:
@@ -259,12 +237,6 @@ def analyze_options_flow(opt_bars):
     unusual = score > 2 or sweep_detected
 
     return unusual, score, sweep_detected
-
-# ===== DARK POOL =====
-from scanner_helpers import get_darkpool_trades, analyze_darkpool
-
-dark_trades = get_darkpool_trades()
-dark_accum, dark_score = analyze_darkpool(dark_trades)
 
 def has_volume_surge_underlying(ticker):
     """
