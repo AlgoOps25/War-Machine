@@ -1,11 +1,24 @@
-discord-webhook
+# War Machine - Python Dependencies
+# Python 3.9+ required (zoneinfo is built-in)
+
+# HTTP requests
 requests>=2.31.0
-pandas
-schedule
-pytz
-python-dotenv>=1.0.0
-requests>=2.31.0
-requests>=2.31.0
-python-dotenv>=1.0.0
-psycopg2-binary>=2.9.9
+
+# Discord alerts
+discord-webhook>=1.3.0
+
+# Data processing
 numpy>=1.24.0
+pandas>=2.0.0
+
+# Scheduling
+schedule>=1.2.0
+
+# Timezone (fallback for older environments)
+pytz>=2023.3
+
+# Environment variables
+python-dotenv>=1.0.0
+
+# PostgreSQL (Railway DATABASE_URL - optional fallback to SQLite)
+psycopg2-binary>=2.9.9
