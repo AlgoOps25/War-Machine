@@ -1,7 +1,7 @@
 discord-webhook
-requests
+requests>=2.31.0
 pandas
 numpy
-requests
 schedule
 pytz
+python-dotenv>=1.0.0

@@ -5,13 +5,6 @@ Opening Range Breakout + Fair Value Gap + Candle Confirmation
 
 import traceback
 from datetime import datetime, time
-from scanner_helpers import get_recent_bars_from_memory
-import incremental_fetch
-from discord_helpers import send_options_signal_alert
-from options_filter import get_options_recommendation
-from targets import compute_stop_and_targets
-from learning_policy import compute_confidence
-from candle_confirmation import wait_for_confirmation
 
 # Global dictionary to track armed signals
 armed_signals = {}
@@ -164,17 +157,15 @@ def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high,
 
 
 def process_ticker(ticker: str):
-    """
-    Main CFW6 strategy processor:
-    1. Get bars from memory DB
-    2. Compute Opening Range (9:30-9:40)
-    3. Detect breakout
-    4. Detect FVG after breakout
-    5. Wait for CFW6 confirmation candle
-    6. Calculate stops/targets
-    7. Get options recommendation
-    8. ARM and send alert
-    """
+    """Main CFW6 strategy processor."""
+    # Import dependencies here to avoid circular imports
+    from scanner_helpers import get_recent_bars_from_memory
+    import incremental_fetch
+    from discord_helpers import send_options_signal_alert
+    from options_filter import get_options_recommendation
+    from targets import compute_stop_and_targets
+    from learning_policy import compute_confidence
+    from candle_confirmation import wait_for_confirmation
     try:
         # STEP 1 — update memory DB
         incremental_fetch.update_ticker(ticker)
