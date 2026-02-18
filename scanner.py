@@ -1,8 +1,8 @@
 # scanner.py
 import requests
+import os
 
-API_KEY = "YOUR_EODHD_KEY"
-
+API_KEY = os.getenv("EODHD_API_KEY", "")
 
 # -------------------------------------------------
 # BUILD INSTITUTIONAL WATCHLIST
@@ -64,6 +64,45 @@ def build_watchlist():
         print(f"⚠️ Screener error: {e}")
         return fallback_list()
 
+def start_scanner_loop():
+    """
+    Main scanner loop - builds watchlist and processes tickers continuously.
+    Called by main.py to start the scanning engine.
+    """
+    import time
+    from sniper import process_ticker
+    import config
+    
+    print(f"[SCANNER] Starting scanner loop with {config.SCAN_INTERVAL}s interval")
+    
+    while True:
+        try:
+            # Build fresh watchlist
+            watchlist = build_watchlist()
+            
+            if not watchlist:
+                print("[SCANNER] No tickers in watchlist, using fallback")
+                watchlist = fallback_list()
+            
+            print(f"[SCANNER] Processing {len(watchlist)} tickers")
+            
+            # Process each ticker through the sniper
+            for ticker in watchlist:
+                try:
+                    process_ticker(ticker)
+                except Exception as e:
+                    print(f"[SCANNER] Error processing {ticker}: {e}")
+                    continue
+            
+            print(f"[SCANNER] Cycle complete. Sleeping {config.SCAN_INTERVAL}s")
+            time.sleep(config.SCAN_INTERVAL)
+            
+        except KeyboardInterrupt:
+            print("[SCANNER] Scanner stopped by user")
+            break
+        except Exception as e:
+            print(f"[SCANNER] Scanner loop error: {e}")
+            time.sleep(30)  # Wait 30s on error before retrying
 
 # -------------------------------------------------
 # FALLBACK (if API fails)

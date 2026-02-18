@@ -87,19 +87,63 @@ def compute_confidence(base_grade: str, tf_label: str, ticker: str = None):
     """
     base_grade: 'A+', 'A', 'A-' -> map to base score
     tf_label: '5m','3m','2m','1m'
-    ticker: optional ticker string to apply boost
+    ticker: optional ticker string to apply boost and dark pool analysis
     Returns a float 0..1
     """
     grade_map = {"A+": 0.98, "A": 0.88, "A-": 0.76}
     base = grade_map.get(base_grade, 0.7)
+    
     p = get_policy()
     tf_w = p.get("timeframe_weights", {}).get(tf_label, 0.9)
     ticker_boosts = p.get("ticker_boosts", {})
     tboost = ticker_boosts.get(ticker, 1.0) if ticker else 1.0
+    
     conf = base * tf_w * tboost
-    # clamp 0..1
+    
+    # DARK POOL INTEGRATION
+    if ticker:
+        try:
+            from scanner_helpers import analyze_darkpool
+            import config
+            
+            dp_data = analyze_darkpool(ticker)
+            if dp_data:
+                total_dp_volume = dp_data.get("total_volume_usd", 0)
+                if total_dp_volume >= config.DARKPOOL_BOOST_THRESHOLD:
+                    dark_pool_boost = config.DARKPOOL_BOOST_FACTOR
+                    conf += dark_pool_boost
+                    print(f"[LEARNING] {ticker} dark pool boost: ${total_dp_volume:,.0f} (+{dark_pool_boost*100:.1f}%)")
+        except Exception as e:
+            print(f"[LEARNING] Dark pool check failed for {ticker}: {e}")
+    
+    # Clamp 0..1
     if conf > 1.0:
         conf = 1.0
     if conf < 0.0:
         conf = 0.0
+    
+    return round(conf, 4)
+    
+    # DARK POOL INTEGRATION
+    if ticker:
+        try:
+            from scanner_helpers import analyze_darkpool
+            import config
+            
+            dp_data = analyze_darkpool(ticker)
+            if dp_data:
+                total_dp_volume = dp_data.get("total_volume_usd", 0)
+                if total_dp_volume >= config.DARKPOOL_BOOST_THRESHOLD:
+                    dark_pool_boost = config.DARKPOOL_BOOST_FACTOR
+                    conf += dark_pool_boost
+                    print(f"[LEARNING] {ticker} dark pool boost: ${total_dp_volume:,.0f} (+{dark_pool_boost*100:.1f}%)")
+        except Exception as e:
+            print(f"[LEARNING] Dark pool check failed for {ticker}: {e}")
+    
+    # Clamp 0..1
+    if conf > 1.0:
+        conf = 1.0
+    if conf < 0.0:
+        conf = 0.0
+    
     return round(conf, 4)

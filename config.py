@@ -1,42 +1,88 @@
-# config.py — central configuration (can be checked into repo, override via env if needed)
 import os
+from datetime import time
 
-# External keys (keep secrets out of repo; use envs in Railway)
+# ══════════════════════════════════════════════════════════════════════════════
+# API & DISCORD CONFIGURATION
+# ══════════════════════════════════════════════════════════════════════════════
 EODHD_API_KEY = os.getenv("EODHD_API_KEY", "")
-DISCORD_WEBHOOK = os.getenv("DISCORD_WEBHOOK", "")
+DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
 
-# Scanner / universe
-SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "60"))         # seconds between scan cycles
-TOP_SCAN_COUNT = int(os.getenv("TOP_SCAN_COUNT", "5"))
-MARKET_CAP_MIN = int(os.getenv("MARKET_CAP_MIN", "500000000"))
+# ══════════════════════════════════════════════════════════════════════════════
+# MARKET TIMING
+# ══════════════════════════════════════════════════════════════════════════════
+MARKET_OPEN = time(9, 30)
+MARKET_CLOSE = time(16, 0)
+OPENING_RANGE_MINUTES = 30
 
-# Sniper / retest
-MAX_ARMED = int(os.getenv("MAX_ARMED", "25"))
-RETEST_TIMEOUT_MINUTES = int(os.getenv("RETEST_TIMEOUT_MINUTES", "60"))
+# ══════════════════════════════════════════════════════════════════════════════
+# SCANNER SETTINGS
+# ══════════════════════════════════════════════════════════════════════════════
+SCAN_INTERVAL = 120  # seconds between full scanner cycles
+TOP_SCAN_COUNT = 50  # number of top tickers to process
+MARKET_CAP_MIN = 1_000_000_000  # $1B minimum market cap
 
-# Confirmation tuning
-CONFIRM_CLOSE_ABOVE_RATIO = float(os.getenv("CONFIRM_CLOSE_ABOVE_RATIO", "0.5"))
-CONFIRM_BODY_REL = float(os.getenv("CONFIRM_BODY_REL", "0.25"))
+# Volume & liquidity filters
+MIN_REL_VOL = 1.5  # minimum relative volume threshold
+OPTIONS_VOL_MULT = 2.0  # options volume multiplier for boost
 
-# Targets / risk
-STOP_BUFFER_DOLLARS = float(os.getenv("STOP_BUFFER_DOLLARS", "0.5"))
-MIN_RISK_PX = float(os.getenv("MIN_RISK_PX", "0.01"))
+# ══════════════════════════════════════════════════════════════════════════════
+# SIGNAL DETECTION PARAMETERS
+# ══════════════════════════════════════════════════════════════════════════════
+# ORB (Opening Range Breakout) settings
+ORB_BREAK_THRESHOLD = 0.001  # 0.1% minimum breakout threshold
 
-# Trade logger
-LEARNING_DB_PATH = os.getenv("LEARNING_DB_PATH", "war_machine_trades.db")
+# FVG (Fair Value Gap) settings
+FVG_MIN_SIZE_PCT = 0.002  # 0.2% minimum FVG size
 
-# Learning policy file
-LEARNING_POLICY_FILE = os.getenv("LEARNING_POLICY_FILE", "policy.json")
+# Multi-timeframe confirmation
+CONFIRMATION_TIMEFRAMES = ["5m", "1m"]
 
-# Debug / mode
-GOD_MODE_24_7 = os.getenv("GOD_MODE_24_7", "false").lower() in ("1","true","yes")
+# ══════════════════════════════════════════════════════════════════════════════
+# RISK MANAGEMENT
+# ══════════════════════════════════════════════════════════════════════════════
+STOP_ATR_MULT = 1.5  # ATR multiplier for stop loss
+TARGET_1_RR = 2.0    # Risk:Reward for first target
+TARGET_2_RR = 3.5    # Risk:Reward for second target
 
-PREMARKET_START_HOUR = 7
-PREMARKET_START_MIN = 30
-TOP_SCAN_COUNT = 10
-MARKET_CAP_MIN = 10000000000
-MIN_REL_VOL = 1.5
-OPTIONS_VOL_MULT = 2.0
-PER_TICKER_SLEEP = 0.35
-OPTIONS_CACHE_TTL = 60
-SCAN_INTERVAL = 60
+# ══════════════════════════════════════════════════════════════════════════════
+# LEARNING ENGINE SETTINGS
+# ══════════════════════════════════════════════════════════════════════════════
+LEARNING_LOOKBACK_DAYS = 30
+MIN_TRADES_FOR_LEARNING = 10
+CONFIDENCE_SMOOTHING = 0.7  # EMA smoothing factor for confidence adjustments
+
+# Initial confidence thresholds (will be adjusted by learning engine)
+INITIAL_MIN_CONFIDENCE = 0.75
+INITIAL_TARGET_WIN_RATE = 0.65
+
+# ══════════════════════════════════════════════════════════════════════════════
+# OPTIONS TRADING SETTINGS (NEW)
+# ══════════════════════════════════════════════════════════════════════════════
+# IV filters
+IV_RANK_MIN = 20  # minimum IV rank for consideration
+IV_RANK_MAX = 80  # maximum IV rank (avoid IV crush scenarios)
+
+# Liquidity filters
+MIN_OPTION_OI = 500  # minimum open interest
+MIN_OPTION_VOLUME = 100  # minimum daily volume
+MAX_BID_ASK_SPREAD_PCT = 0.10  # 10% max spread as % of mid
+
+# Greeks preferences
+TARGET_DELTA_MIN = 0.35  # minimum delta for directional trades
+TARGET_DELTA_MAX = 0.55  # maximum delta for directional trades
+MAX_THETA_DECAY_PCT = 0.05  # max acceptable daily theta decay as % of premium
+
+# DTE (Days to Expiration) preferences
+MIN_DTE = 7   # minimum days to expiration
+MAX_DTE = 45  # maximum days to expiration
+IDEAL_DTE = 21  # target DTE for signals
+
+# Dark pool integration
+DARKPOOL_BOOST_THRESHOLD = 1000000  # $1M+ dark pool volume adds confidence boost
+DARKPOOL_BOOST_FACTOR = 0.05  # +5% confidence boost for dark pool activity
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DATABASE & LOGGING
+# ══════════════════════════════════════════════════════════════════════════════
+DB_PATH = "market_memory.db"
+LOG_LEVEL = "INFO"

@@ -7,13 +7,20 @@ import time
 from datetime import datetime, timedelta
 import traceback
 import requests
-
 import confirmations
 import targets
 import trade_logger
 import learning_policy
 import incremental_fetch
 from memory_reader import get_recent_bars_from_memory
+from options_filter import get_options_recommendation
+import traceback
+from options_filter import get_options_recommendation
+from discord_helpers import send_options_signal_alert
+from targets import compute_stop_and_targets
+
+# Global dictionary to track armed signals
+armed_signals = {}
 
 RETEST_STATE_FILE = "retest_state.json"
 MAX_ARMED = int(os.getenv("MAX_ARMED", "25"))
@@ -165,10 +172,28 @@ def process_ticker(ticker: str):
 
         zone_low, zone_high = min(fvg_low, fvg_high), max(fvg_low, fvg_high)
 
-        arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high)
+        # Get entry, stop, targets before arming
+        from targets import compute_stop_and_targets
+        entry_price = bars[-1]["close"]  # Current price
+        stop_price, t1, t2 = compute_stop_and_targets(
+            bars, direction, or_high, or_low, entry_price
+        )
+
+        # OPTIONS INTEGRATION - Get options recommendation
+        from options_filter import get_options_recommendation
+        options_rec = get_options_recommendation(
+            ticker=ticker,
+            direction=direction,
+            entry_price=entry_price,
+            target_price=t1  # Use T1 as target for options
+        )
+
+        # ARM with options data
+        arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high, 
+                   entry_price, stop_price, t1, t2, options_rec)
 
     except Exception as e:
-        print("process_ticker error:", e)
+        print(f"process_ticker error for {ticker}:", e)
         traceback.print_exc()
 
 # ================= FAST MONITOR =================
@@ -241,6 +266,65 @@ def fast_monitor_loop():
             print("fast_monitor error:", e)
             traceback.print_exc()
             time.sleep(6)
+# ================= ARM TICKER =================
+def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high, 
+               entry_price, stop_price, t1, t2, options_rec=None):
+    """
+    Arms a ticker after signal confirmation and sends Discord alert.
+    
+    Args:
+        ticker: Ticker symbol
+        direction: "bull" or "bear"
+        zone_low: FVG zone low
+        zone_high: FVG zone high
+        or_low: Opening range low
+        or_high: Opening range high
+        entry_price: Entry price
+        stop_price: Stop loss price
+        t1: Target 1 price
+        t2: Target 2 price
+        options_rec: dict from get_options_recommendation() or None
+    """
+    print(f"✅ {ticker} ARMED: {direction.upper()} | Entry: ${entry_price:.2f} | Stop: ${stop_price:.2f}")
+    print(f"   Zone: ${zone_low:.2f}-${zone_high:.2f} | OR: ${or_low:.2f}-${or_high:.2f}")
+    print(f"   Targets: T1=${t1:.2f} T2=${t2:.2f}")
+    
+    # Compute confidence with dark pool integration
+    from learning_policy import compute_confidence
+    confidence = compute_confidence("A+", "5m", ticker)
+    
+    # Send Discord alert with options data
+    from discord_helpers import send_options_signal_alert
+    send_options_signal_alert(
+        ticker=ticker,
+        direction=direction,
+        entry=entry_price,
+        stop=stop_price,
+        t1=t1,
+        t2=t2,
+        confidence=confidence,
+        timeframe="5m",
+        options_data=options_rec
+    )
+    
+    # Store armed signal for tracking
+    from datetime import datetime
+    armed_signals[ticker] = {
+        "direction": direction,
+        "entry": entry_price,
+        "stop": stop_price,
+        "t1": t1,
+        "t2": t2,
+        "zone_low": zone_low,
+        "zone_high": zone_high,
+        "or_low": or_low,
+        "or_high": or_high,
+        "armed_time": datetime.now().isoformat(),
+        "confidence": confidence,
+        "options": options_rec
+    }
+    
+    print(f"[ARMED] {ticker} added to armed signals tracker")
 
 def start_fast_monitor():
     t = threading.Thread(target=fast_monitor_loop, daemon=True)
