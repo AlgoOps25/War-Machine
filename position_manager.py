@@ -364,6 +364,45 @@ class PositionManager:
             }
         return stats
 
+def generate_report(self) -> str:
+    """Generate end-of-day performance report string."""
+    stats = self.get_daily_stats()
+    win_rate_data = self.get_win_rate(lookback_days=30)
+
+    trades    = stats.get("trades", 0)
+    wins      = stats.get("wins", 0)
+    losses    = stats.get("losses", 0)
+    total_pnl = stats.get("total_pnl", 0.0)
+    win_rate  = stats.get("win_rate", 0.0)
+
+    lines = [
+        "=" * 50,
+        "WAR MACHINE — END OF DAY REPORT",
+        "=" * 50,
+        f"Date:         {datetime.now().strftime('%A, %B %d, %Y')}",
+        f"Total Trades: {trades}",
+        f"Winners:      {wins}",
+        f"Losers:       {losses}",
+        f"Win Rate:     {win_rate:.1f}%",
+        f"Net P&L:      ${total_pnl:+.2f}",
+        "",
+        "— 30-Day Grade Breakdown —"
+    ]
+
+    if win_rate_data:
+        for grade in ["A+", "A", "A-"]:
+            if grade in win_rate_data:
+                g = win_rate_data[grade]
+                lines.append(
+                    f"  {grade}: {g['total']} trades | "
+                    f"{g['win_rate']:.1f}% WR | "
+                    f"Avg P&L: ${g['avg_pnl']:+.2f}"
+                )
+    else:
+        lines.append("  No grade data yet.")
+
+    lines.append("=" * 50)
+    return "\n".join(lines)
 
 # Global singleton
 position_manager = PositionManager()
