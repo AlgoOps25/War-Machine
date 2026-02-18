@@ -103,7 +103,7 @@ dmypy.json
 *.swo
 *~
 
-# Project-specific
+# Project-specific - War Machine
 *.db
 *.sqlite
 *.sqlite3
@@ -112,3 +112,7 @@ policy.json
 *.json.bak
 *.log
 .DS_Store
+
+# Backup files
+*-backup/
+War-Machine-backup/

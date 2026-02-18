@@ -1,3 +1,8 @@
+"""
+War Machine Configuration
+Complete CFW6 + Options Integration
+"""
+
 import os
 from datetime import time
 
@@ -12,7 +17,7 @@ DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
 # ══════════════════════════════════════════════════════════════════════════════
 MARKET_OPEN = time(9, 30)
 MARKET_CLOSE = time(16, 0)
-OPENING_RANGE_MINUTES = 30
+OPENING_RANGE_MINUTES = 10  # CFW6: 9:30 - 9:40 (10 minutes)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SCANNER SETTINGS
@@ -26,7 +31,7 @@ MIN_REL_VOL = 1.5  # minimum relative volume threshold
 OPTIONS_VOL_MULT = 2.0  # options volume multiplier for boost
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SIGNAL DETECTION PARAMETERS
+# CFW6 SIGNAL DETECTION PARAMETERS
 # ══════════════════════════════════════════════════════════════════════════════
 # ORB (Opening Range Breakout) settings
 ORB_BREAK_THRESHOLD = 0.001  # 0.1% minimum breakout threshold
@@ -34,8 +39,11 @@ ORB_BREAK_THRESHOLD = 0.001  # 0.1% minimum breakout threshold
 # FVG (Fair Value Gap) settings
 FVG_MIN_SIZE_PCT = 0.002  # 0.2% minimum FVG size
 
+# CFW6 Confirmation settings
+MAX_WAIT_CANDLES = 20  # Maximum candles to wait for confirmation after FVG
+
 # Multi-timeframe confirmation
-CONFIRMATION_TIMEFRAMES = ["5m", "1m"]
+CONFIRMATION_TIMEFRAMES = ["5m", "3m", "2m", "1m"]  # Priority order: highest to lowest
 
 # ══════════════════════════════════════════════════════════════════════════════
 # RISK MANAGEMENT
@@ -56,7 +64,7 @@ INITIAL_MIN_CONFIDENCE = 0.75
 INITIAL_TARGET_WIN_RATE = 0.65
 
 # ══════════════════════════════════════════════════════════════════════════════
-# OPTIONS TRADING SETTINGS (NEW)
+# OPTIONS TRADING SETTINGS
 # ══════════════════════════════════════════════════════════════════════════════
 # IV filters
 IV_RANK_MIN = 20  # minimum IV rank for consideration

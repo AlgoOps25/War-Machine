@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 import config
 
+
 class OptionsFilter:
     """Filters and analyzes options chains for trading signals."""
     
@@ -29,20 +30,6 @@ class OptionsFilter:
             print(f"[OPTIONS] Error fetching chain for {ticker}: {e}")
             return None
     
-    def calculate_iv_rank(self, current_iv: float, iv_history: List[float]) -> float:
-        """Calculate IV rank (where current IV falls in 52-week range)."""
-        if not iv_history or len(iv_history) < 2:
-            return 50.0  # default to midpoint if no history
-            
-        iv_min = min(iv_history)
-        iv_max = max(iv_history)
-        
-        if iv_max == iv_min:
-            return 50.0
-            
-        iv_rank = ((current_iv - iv_min) / (iv_max - iv_min)) * 100
-        return round(iv_rank, 2)
-    
     def filter_by_liquidity(self, option: Dict) -> bool:
         """Check if option meets minimum liquidity requirements."""
         oi = option.get("openInterest", 0)
@@ -50,13 +37,11 @@ class OptionsFilter:
         bid = option.get("bid", 0)
         ask = option.get("ask", 0)
         
-        # Check OI and volume
         if oi < config.MIN_OPTION_OI:
             return False
         if volume < config.MIN_OPTION_VOLUME:
             return False
             
-        # Check bid-ask spread
         if ask > 0 and bid > 0:
             mid = (bid + ask) / 2
             spread_pct = (ask - bid) / mid if mid > 0 else 999
@@ -65,11 +50,9 @@ class OptionsFilter:
                 
         return True
     
-    def filter_by_delta(self, option: Dict, is_call: bool) -> bool:
+    def filter_by_delta(self, option: Dict) -> bool:
         """Check if option delta is in target range."""
         delta = option.get("delta", 0)
-        
-        # For puts, delta is negative
         delta_abs = abs(delta)
         
         if delta_abs < config.TARGET_DELTA_MIN:
@@ -80,7 +63,7 @@ class OptionsFilter:
         return True
     
     def filter_by_dte(self, expiration_date: str) -> Tuple[bool, int]:
-        """Check if expiration is in acceptable DTE range. Returns (is_valid, dte)."""
+        """Check if expiration is in acceptable DTE range."""
         try:
             exp_date = datetime.strptime(expiration_date, "%Y-%m-%d")
             today = datetime.now()
@@ -97,32 +80,12 @@ class OptionsFilter:
     
     def calculate_expected_move(self, price: float, iv: float, dte: int) -> float:
         """Calculate expected move based on IV and DTE."""
-        # Expected move = Price × IV × sqrt(DTE / 365)
         expected_move = price * iv * ((dte / 365) ** 0.5)
         return round(expected_move, 2)
     
-    def find_best_strike(
-        self, 
-        ticker: str, 
-        direction: str,  # "bull" or "bear"
-        entry_price: float,
-        target_price: float
-    ) -> Optional[Dict]:
-        """
-        Find the optimal option strike for a given signal.
-        
-        Returns dict with:
-        - strike: strike price
-        - expiration: expiration date
-        - delta: option delta
-        - oi: open interest
-        - volume: volume
-        - bid: bid price
-        - ask: ask price
-        - iv: implied volatility
-        - dte: days to expiration
-        - expected_move: calculated expected move
-        """
+    def find_best_strike(self, ticker: str, direction: str, 
+                        entry_price: float, target_price: float) -> Optional[Dict]:
+        """Find the optimal option strike for a given signal."""
         chain = self.get_options_chain(ticker)
         if not chain:
             return None
@@ -131,12 +94,10 @@ class OptionsFilter:
         best_score = -1
         
         for expiration_date, options_data in chain.get("data", {}).items():
-            # Check DTE
             is_valid_dte, dte = self.filter_by_dte(expiration_date)
             if not is_valid_dte:
                 continue
                 
-            # Determine if we're looking at calls or puts
             is_call = (direction == "bull")
             option_type = "calls" if is_call else "puts"
             
@@ -146,14 +107,11 @@ class OptionsFilter:
             for strike_str, option in options_data[option_type].items():
                 strike = float(strike_str)
                 
-                # Basic filters
                 if not self.filter_by_liquidity(option):
                     continue
-                if not self.filter_by_delta(option, is_call):
+                if not self.filter_by_delta(option):
                     continue
                     
-                # For calls: strike should be near or slightly above entry
-                # For puts: strike should be near or slightly below entry
                 if is_call:
                     if strike < entry_price * 0.95 or strike > entry_price * 1.10:
                         continue
@@ -161,7 +119,6 @@ class OptionsFilter:
                     if strike > entry_price * 1.05 or strike < entry_price * 0.90:
                         continue
                 
-                # Score this option (prefer closer to ideal DTE, higher OI, tighter spreads)
                 dte_score = 100 - abs(dte - config.IDEAL_DTE)
                 oi_score = min(option.get("openInterest", 0) / 1000, 100)
                 
@@ -197,48 +154,31 @@ class OptionsFilter:
         
         return best_option
     
-    def validate_signal_for_options(
-        self, 
-        ticker: str, 
-        direction: str,
-        entry_price: float,
-        target_price: float
-    ) -> Tuple[bool, Optional[Dict], str]:
-        """
-        Validate if a signal is suitable for options trading.
-        
-        Returns:
-        - is_valid: bool
-        - options_data: dict with strike recommendation or None
-        - reason: string explanation
-        """
+    def validate_signal_for_options(self, ticker: str, direction: str,
+                                    entry_price: float, target_price: float) -> Tuple[bool, Optional[Dict], str]:
+        """Validate if a signal is suitable for options trading."""
         best_strike = self.find_best_strike(ticker, direction, entry_price, target_price)
         
         if not best_strike:
             return False, None, "No suitable options found meeting liquidity/delta requirements"
         
-        # Check if expected move supports the target
         expected_move = best_strike["expected_move"]
         price_move_needed = abs(target_price - entry_price)
         
         if price_move_needed > expected_move * 2:
-            return False, best_strike, f"Target requires {price_move_needed:.2f} move but expected move is only {expected_move:.2f}"
+            return False, best_strike, f"Target requires ${price_move_needed:.2f} but expected move only ${expected_move:.2f}"
         
-        # Check IV rank
         iv = best_strike["iv"]
-        # Note: We'd need historical IV to calculate true IV rank
-        # For now, we'll just check if IV is reasonable (not too high)
-        if iv > 1.0:  # IV > 100% might indicate earnings or high risk
+        if iv > 1.0:
             return False, best_strike, f"IV too high at {iv*100:.1f}%"
         
-        # Check theta decay relative to expected move
         dte = best_strike["dte"]
         bid = best_strike["bid"]
         ask = best_strike["ask"]
         mid = (bid + ask) / 2 if (bid and ask) else 0
         
         if mid > 0 and dte > 0:
-            daily_theta_est = mid / dte  # Rough estimate
+            daily_theta_est = mid / dte
             theta_pct = (daily_theta_est / mid) if mid > 0 else 0
             
             if theta_pct > config.MAX_THETA_DECAY_PCT:
@@ -247,19 +187,17 @@ class OptionsFilter:
         return True, best_strike, "Options signal validated"
 
 
-# Convenience function for use in other modules
-def get_options_recommendation(ticker: str, direction: str, entry_price: float, target_price: float) -> Optional[Dict]:
-    """
-    Simplified interface to get options recommendation for a signal.
-    Returns None if no suitable option found.
-    """
+def get_options_recommendation(ticker: str, direction: str, 
+                               entry_price: float, target_price: float) -> Optional[Dict]:
+    """Simplified interface to get options recommendation for a signal."""
     filter_engine = OptionsFilter()
     is_valid, options_data, reason = filter_engine.validate_signal_for_options(
         ticker, direction, entry_price, target_price
     )
     
     if is_valid and options_data:
+        print(f"[OPTIONS] ✅ {ticker} options validated: {reason}")
         return options_data
     else:
-        print(f"[OPTIONS] {ticker} signal not suitable for options: {reason}")
+        print(f"[OPTIONS] ⚠️ {ticker} not suitable: {reason}")
         return None
