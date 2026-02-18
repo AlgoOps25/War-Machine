@@ -7,9 +7,11 @@ import os
 import time
 from datetime import datetime, time as dtime
 import config
-from position_tracker import position_tracker
-from win_rate_tracker import win_rate_tracker
 from premarket_scanner import build_premarket_watchlist
+
+from data_manager import cleanup_old_bars
+from position_manager import position_manager as position_tracker
+from position_manager import position_manager as win_rate_tracker
 
 # API key from environment variable
 API_KEY = os.getenv("EODHD_API_KEY", "")

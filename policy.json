@@ -1,8 +1,0 @@
-{
-  "min_confidence": 0.80,
-  "timeframe_weights": {"5m": 1.0, "3m": 0.95, "2m": 0.9, "1m": 0.8},
-  "ticker_boosts": {},
-  "max_ticker_boost": 1.5,
-  "min_ticker_boost": 0.5,
-  "last_updated": null
-}

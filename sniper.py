@@ -6,15 +6,14 @@ INTEGRATED: Position Tracker, AI Learning, Confirmation Layers
 import traceback
 from datetime import datetime, time
 from scanner_helpers import get_recent_bars_from_memory
-import incremental_fetch
 from discord_helpers import send_options_signal_alert
 from options_filter import get_options_recommendation
-from targets import compute_stop_and_targets
-from learning_policy import compute_confidence
-from candle_confirmation import wait_for_confirmation
-from position_tracker import position_tracker
 from ai_learning import learning_engine
-from confirmation_layers import grade_signal_with_confirmations
+
+from cfw6_confirmation import wait_for_confirmation, grade_signal_with_confirmations
+from trade_calculator import compute_stop_and_targets, apply_confidence_decay, calculate_atr
+from data_manager import data_manager, update_ticker, cleanup_old_bars
+from position_manager import position_manager
 
 # Global dictionary to track armed signals
 armed_signals = {}
