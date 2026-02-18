@@ -138,63 +138,78 @@ def detect_fvg_after_break(bars, breakout_idx, direction):
 
     return None, None
 
-# ================= PROCESS =================
 def process_ticker(ticker: str):
     try:
-        # STEP 1 — update memory DB only
-        incremental_fetch.update_ticker(ticker)
-
-        # STEP 2 — use memory DB (NOT EODHD directly)
-        bars = get_recent_bars_from_memory(ticker, limit=300)
-
-        if not bars or len(bars) < 50:
-            print(f"{ticker}: not enough memory bars")
-            return
-
-        print(f"📊 {ticker} using MEMORY bars:", len(bars))
-        send_discord(f"📊 {ticker} bars received: {len(bars)}")
-
-        # OPENING RANGE
-        or_high, or_low = compute_opening_range_from_bars(bars)
-        if or_high is None:
-            print(f"{ticker}: OR not formed yet")
-            return
-
-        # BREAKOUT
-        direction, breakout_idx = detect_breakout_after_or(bars, or_high, or_low)
-        if not direction:
-            return
-
+        # ... existing code up to FVG detection ...
+        
         # FVG
         fvg_low, fvg_high = detect_fvg_after_break(bars, breakout_idx, direction)
         if not fvg_low:
             return
 
         zone_low, zone_high = min(fvg_low, fvg_high), max(fvg_low, fvg_high)
-
-        # Get entry, stop, targets before arming
+        
+        # NEW: Wait for CFW6-style confirmation candle
+        from candle_confirmation import wait_for_confirmation
+        
+        found, entry_price, grade, confirm_idx = wait_for_confirmation(
+            bars, direction, (zone_low, zone_high), breakout_idx + 1
+        )
+        
+        if not found:
+            print(f"{ticker}: FVG formed but no valid confirmation candle")
+            return
+        
+        print(f"✅ {ticker}: {grade} confirmation at ${entry_price:.2f}")
+        
+        # Calculate stops and targets
         from targets import compute_stop_and_targets
-        entry_price = bars[-1]["close"]  # Current price
         stop_price, t1, t2 = compute_stop_and_targets(
             bars, direction, or_high, or_low, entry_price
         )
-
-        # OPTIONS INTEGRATION - Get options recommendation
+        
+        # Get options recommendation
         from options_filter import get_options_recommendation
         options_rec = get_options_recommendation(
             ticker=ticker,
             direction=direction,
             entry_price=entry_price,
-            target_price=t1  # Use T1 as target for options
+            target_price=t1
         )
-
-        # ARM with options data
-        arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high, 
+        
+        # Compute confidence using the confirmation grade
+        from learning_policy import compute_confidence
+        confidence = compute_confidence(grade, "5m", ticker)
+        
+        # ARM and send alert
+        arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high,
                    entry_price, stop_price, t1, t2, options_rec)
 
     except Exception as e:
         print(f"process_ticker error for {ticker}:", e)
         traceback.print_exc()
+
+def compute_premarket_range(bars: list) -> tuple:
+    """
+    Compute pre-market high/low from 4am-9:30am EST.
+    Returns (pm_high, pm_low) or (None, None) if not available.
+    """
+    from datetime import time
+    
+    pm_bars = []
+    for bar in bars:
+        bar_time = bar.get("datetime")
+        if bar_time:
+            if time(4, 0) <= bar_time.time() < time(9, 30):
+                pm_bars.append(bar)
+    
+    if len(pm_bars) < 10:
+        return None, None
+    
+    pm_high = max(b["high"] for b in pm_bars)
+    pm_low = min(b["low"] for b in pm_bars)
+    
+    return pm_high, pm_low
 
 # ================= FAST MONITOR =================
 def fast_monitor_loop():
