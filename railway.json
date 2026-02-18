@@ -1,6 +1,6 @@
 {
   "$schema": "https://railway.app/railway.schema.json",
   "deploy": {
-    "startCommand": "python test_startup.py"
+    "startCommand": "python main.py"
   }
 }
