@@ -203,3 +203,51 @@ def analyze_darkpool(trades):
 
     return accumulation, score
 
+def get_screener_tickers(min_market_cap: int = 1_000_000_000, limit: int = 50) -> list:
+    """
+    Fetch top tickers from EODHD screener based on market cap and volume.
+    
+    Args:
+        min_market_cap: Minimum market cap filter (default $1B)
+        limit: Maximum number of tickers to return
+    
+    Returns:
+        List of ticker symbols
+    """
+    import requests
+    import config
+    
+    url = "https://eodhd.com/api/screener"
+    
+    params = {
+        "api_token": config.EODHD_API_KEY,
+        "filters": json.dumps([
+            ["market_capitalization", ">=", min_market_cap],
+            ["volume", ">=", 1000000],  # Min 1M volume
+            ["exchange", "=", "US"]
+        ]),
+        "limit": limit,
+        "sort": "volume.desc"
+    }
+    
+    try:
+        response = requests.get(url, params=params, timeout=15)
+        response.raise_for_status()
+        data = response.json()
+        
+        tickers = []
+        if isinstance(data, dict) and "data" in data:
+            for item in data["data"]:
+                code = item.get("code")
+                if code:
+                    # Remove .US suffix if present
+                    ticker = code.replace(".US", "")
+                    tickers.append(ticker)
+        
+        print(f"[SCREENER] Fetched {len(tickers)} tickers from screener")
+        return tickers[:limit]
+        
+    except Exception as e:
+        print(f"[SCREENER] Error fetching tickers: {e}")
+        return []
+
