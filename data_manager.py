@@ -58,64 +58,64 @@ class DataManager:
         
         print(f"[DATA] Database initialized: {self.db_path}")
     
-    def fetch_intraday_bars(self, ticker: str, interval: str = "1m", 
-                           from_date: Optional[str] = None,
-                           to_date: Optional[str] = None) -> List[Dict]:
+    def fetch_intraday_bars(self, ticker: str, interval: str = "1m",
+                            from_date: str = None, to_date: str = None) -> List[Dict]:
         """
-        Fetch intraday bars from EODHD API
-        
-        Args:
-            ticker: Stock symbol
-            interval: "1m", "5m", "1h" etc.
-            from_date: Start date (YYYY-MM-DD)
-            to_date: End date (YYYY-MM-DD)
+        Fetch intraday bars from EODHD API.
+        FIX: Uses Unix timestamps — date strings cause 422 errors on this endpoint.
         """
-        # Default to today if not specified
-        if not to_date:
-            to_date = datetime.now().strftime("%Y-%m-%d")
-        
-        if not from_date:
-            from_date = (datetime.now() - timedelta(days=5)).strftime("%Y-%m-%d")
-        
+        from datetime import datetime, timedelta
+
+        # Build Unix timestamps (EODHD intraday requires these, NOT date strings)
+        now_dt  = datetime.utcnow()
+        from_dt = now_dt - timedelta(days=5)
+        from_ts = int(from_dt.timestamp())
+        to_ts   = int(now_dt.timestamp())
+
         url = f"https://eodhd.com/api/intraday/{ticker}.US"
         params = {
             "api_token": self.api_key,
-            "interval": interval,
-            "from": from_date,
-            "to": to_date,
-            "fmt": "json"
+            "interval":  interval,
+            "from":      from_ts,   # ← Unix int, NOT "YYYY-MM-DD"
+            "to":        to_ts,     # ← Unix int, NOT "YYYY-MM-DD"
+            "fmt":       "json"
         }
-        
+
         try:
-            print(f"[DATA] Fetching {ticker} {interval} bars from {from_date} to {to_date}...")
+            print(f"[DATA] Fetching {ticker} {interval} bars (last 5 days)...")
             response = requests.get(url, params=params, timeout=30)
             response.raise_for_status()
             data = response.json()
-            
+
             if not data:
                 print(f"[DATA] No data returned for {ticker}")
                 return []
-            
+
             bars = []
             for bar in data:
-                bars.append({
-                    "datetime": datetime.fromtimestamp(bar["timestamp"]),
-                    "open": bar["open"],
-                    "high": bar["high"],
-                    "low": bar["low"],
-                    "close": bar["close"],
-                    "volume": bar["volume"]
-                })
-            
-            print(f"[DATA] ✅ Fetched {len(bars)} bars for {ticker}")
+                try:
+                    bars.append({
+                        "datetime": datetime.utcfromtimestamp(bar["timestamp"]),
+                        "open":     float(bar["open"]),
+                        "high":     float(bar["high"]),
+                        "low":      float(bar["low"]),
+                        "close":    float(bar["close"]),
+                        "volume":   int(bar["volume"])
+                    })
+                except Exception as e:
+                    print(f"[DATA] Bar parse error for {ticker}: {e}")
+                    continue
+
+            print(f"[DATA] ✅ {ticker}: {len(bars)} bars fetched")
             return bars
-            
-        except requests.exceptions.RequestException as e:
+
+        except requests.exceptions.HTTPError as e:
             print(f"[DATA] ❌ API Error for {ticker}: {e}")
             return []
         except Exception as e:
             print(f"[DATA] ❌ Unexpected error for {ticker}: {e}")
             return []
+
     
     def store_bars(self, ticker: str, bars: List[Dict]):
         """Store bars in database (upsert to avoid duplicates)"""
@@ -191,48 +191,28 @@ class DataManager:
         
         return bars
     
-    def update_ticker(self, ticker: str, force: bool = False):
-        """
-        Incremental update: Fetch only new bars since last update
-        
-        Args:
-            ticker: Stock symbol
-            force: If True, fetch full 5 days regardless of last update
-        """
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        # Check last fetch time
-        cursor.execute("""
-            SELECT last_fetch, last_bar_time 
-            FROM fetch_metadata 
-            WHERE ticker = ?
-        """, (ticker,))
-        
-        result = cursor.fetchone()
-        conn.close()
-        
-        # Determine fetch window
-        if force or not result:
-            # Full fetch: last 5 days
-            from_date = (datetime.now() - timedelta(days=5)).strftime("%Y-%m-%d")
-            print(f"[DATA] Full fetch for {ticker} (5 days)")
-        else:
-            last_fetch = datetime.fromisoformat(result[0])
-            
-            # Only fetch if last update was > 2 minutes ago
-            if (datetime.now() - last_fetch).total_seconds() < 120:
-                print(f"[DATA] {ticker} recently updated, skipping...")
-                return
-            
-            # Incremental: fetch from last bar time
-            from_date = datetime.fromisoformat(result[1]).strftime("%Y-%m-%d")
-            print(f"[DATA] Incremental fetch for {ticker} from {from_date}")
-        
-        # Fetch and store
-        bars = self.fetch_intraday_bars(ticker, interval="1m", from_date=from_date)
-        if bars:
-            self.store_bars(ticker, bars)
+    def update_ticker(self, ticker: str):
+        """Fetch latest bars and store in database."""
+        try:
+            # Check if we have existing bars
+            existing = self.get_bars_from_memory(ticker, limit=1)
+
+            if not existing:
+                print(f"[DATA] Full fetch for {ticker} (5 days)")
+            else:
+                print(f"[DATA] Incremental fetch for {ticker}")
+
+            # fetch_intraday_bars now handles timestamps internally
+            bars = self.fetch_intraday_bars(ticker)
+
+            if bars:
+                self.store_bars(ticker, bars)
+            else:
+                print(f"[DATA] ⚠️ No bars returned for {ticker}")
+
+        except Exception as e:
+            print(f"[DATA] ❌ Error updating {ticker}: {e}")
+
     
     def cleanup_old_bars(self, days_to_keep: int = 7):
         """Remove bars older than specified days to save space"""
