@@ -43,3 +43,46 @@ if __name__ == "__main__":
         scanner.start_scanner_loop()
     except Exception as e:
         print("Scanner crashed:", e)
+
+def main():
+    import os
+    import sys
+    
+    print("\n" + "="*60)
+    print("WAR MACHINE - STARTUP DIAGNOSTICS")
+    print("="*60)
+    
+    # Check Python version
+    print(f"Python: {sys.version}")
+    
+    # Check environment variables
+    api_key = os.getenv("EODHD_API_KEY", "")
+    webhook = os.getenv("DISCORD_WEBHOOK_URL", "")
+    
+    print(f"EODHD API Key: {'✅ Set (' + api_key[:10] + '...)' if api_key else '❌ MISSING'}")
+    print(f"Discord Webhook: {'✅ Set (' + webhook[:30] + '...)' if webhook else '❌ MISSING'}")
+    
+    # Check current time
+    from datetime import datetime
+    now = datetime.now()
+    print(f"Current Time: {now.strftime('%I:%M:%S %p EST')} on {now.strftime('%A, %B %d, %Y')}")
+    
+    # Check if market hours
+    from scanner import is_market_open
+    print(f"Market Status: {'🟢 OPEN' if is_market_open() else '🔴 CLOSED'}")
+    
+    print("="*60 + "\n")
+    
+    if not api_key:
+        print("❌ FATAL: EODHD_API_KEY not set. Cannot continue.")
+        return
+    
+    if not webhook:
+        print("⚠️ WARNING: DISCORD_WEBHOOK_URL not set. No alerts will be sent.")
+    
+    # Start scanner
+    from scanner import start_scanner_loop
+    start_scanner_loop()
+
+if __name__ == "__main__":
+    main()
