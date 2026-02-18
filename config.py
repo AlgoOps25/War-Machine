@@ -11,9 +11,9 @@ from dotenv import load_dotenv
 # ══════════════════════════════════════════════════════════════════════════════
 # API & DISCORD CONFIGURATION
 # ══════════════════════════════════════════════════════════════════════════════
-EODHD_API_KEY      = os.getenv("EODHD_API_KEY", "")
-DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
-
+EODHD_API_KEY       = os.getenv("EODHD_API_KEY", "").strip()
+DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
+DATABASE_URL        = os.getenv("DATABASE_URL", "").strip()
 # ══════════════════════════════════════════════════════════════════════════════
 # MARKET TIMING
 # ══════════════════════════════════════════════════════════════════════════════
