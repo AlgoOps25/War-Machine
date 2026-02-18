@@ -1,6 +1,6 @@
 """
 Scanner Module - Intelligent Watchlist Builder & Scanner Loop
-INTEGRATED: Pre-Market Scanner, Win Rate Tracker, Position Monitoring
+INTEGRATED: Pre-Market Scanner, Win Rate Tracker, Position Monitoring, Database Cleanup
 """
 
 import os
@@ -39,10 +39,7 @@ def build_watchlist() -> list:
 
 
 def fallback_list() -> list:
-    """
-    High-quality, liquid tickers for CFW6 strategy.
-    Returns list of ticker symbols.
-    """
+    """High-quality, liquid tickers for CFW6 strategy."""
     fallback = [
         # Mega cap tech
         "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA",
@@ -76,7 +73,6 @@ def monitor_open_positions():
     
     print(f"\n[MONITOR] Checking {len(open_positions)} open positions...")
     
-    # Fetch current prices for all open tickers
     from scanner_helpers import get_recent_bars_from_memory
     
     current_prices = {}
@@ -86,16 +82,14 @@ def monitor_open_positions():
         if bars:
             current_prices[ticker] = bars[-1]["close"]
     
-    # Check exit conditions
     position_tracker.check_exits(current_prices)
-
 
 def start_scanner_loop():
     """
     Main scanner loop with intelligent scheduling:
     - PRE-MARKET (4 AM - 9:30 AM): Build watchlist, monitor pre-market action
     - MARKET HOURS (9:30 AM - 4 PM): Scan for CFW6 signals, monitor positions
-    - AFTER HOURS (4 PM - 4 AM): Rest, generate reports
+    - AFTER HOURS (4 PM - 4 AM): Rest, generate reports, cleanup database
     """
     from sniper import process_ticker
     from discord_helpers import send_simple_message
@@ -137,7 +131,6 @@ def start_scanner_loop():
                         premarket_watchlist = build_premarket_watchlist()
                         premarket_built = True
                         
-                        # Send to Discord
                         watchlist_msg = f"📋 **Pre-Market Watchlist Ready**\n"
                         watchlist_msg += f"**{len(premarket_watchlist)} tickers** identified for today\n"
                         watchlist_msg += f"```\n{', '.join(premarket_watchlist[:20])}\n```"
@@ -197,7 +190,7 @@ def start_scanner_loop():
                 print(f"\n[SCANNER] ✅ Cycle #{cycle_count} complete")
                 print(f"[SCANNER] 💤 Sleeping {config.SCAN_INTERVAL}s...\n")
                 time.sleep(config.SCAN_INTERVAL)
-            
+
             # ═══════════════════════════════════════════════════════
             # AFTER HOURS (4 PM - 4 AM)
             # ═══════════════════════════════════════════════════════
@@ -211,8 +204,7 @@ def start_scanner_loop():
                     # Close any remaining positions at market close
                     open_positions = position_tracker.get_open_positions()
                     if open_positions:
-                        print(f"[EOD] Closing {len(open_positions)} remaining positions...")
-                        # Implementation: close at current price or mark as carried overnight
+                        print(f"[EOD] {len(open_positions)} positions still open - marking for review")
                     
                     # Generate daily performance report
                     daily_stats = position_tracker.get_daily_stats()
@@ -223,18 +215,30 @@ def start_scanner_loop():
                     eod_report += f"**P&L:** ${daily_stats['total_pnl']:+.2f}\n\n"
                     
                     # Add win rate analysis
-                    win_rate_report = win_rate_tracker.generate_report()
-                    eod_report += f"```{win_rate_report}```"
+                    try:
+                        win_rate_report = win_rate_tracker.generate_report()
+                        eod_report += f"```{win_rate_report}```"
+                    except Exception as e:
+                        print(f"[EOD] Win rate report error: {e}")
                     
                     send_simple_message(eod_report)
                     
                     # Run AI learning optimization
                     print("[AI] Running optimization...")
-                    learning_engine.optimize_confirmation_weights()
-                    learning_engine.optimize_fvg_threshold()
+                    try:
+                        learning_engine.optimize_confirmation_weights()
+                        learning_engine.optimize_fvg_threshold()
+                        print(learning_engine.generate_performance_report())
+                    except Exception as e:
+                        print(f"[AI] Optimization error: {e}")
                     
-                    # Print performance report
-                    print(learning_engine.generate_performance_report())
+                    # Clean up old bars (keep last 7 days)
+                    print("[CLEANUP] Removing old bars...")
+                    try:
+                        from incremental_fetch import cleanup_old_bars
+                        cleanup_old_bars(days_to_keep=7)
+                    except Exception as e:
+                        print(f"[CLEANUP] Error: {e}")
                     
                     last_report_day = current_day
                     

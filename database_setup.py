@@ -1,6 +1,7 @@
 """
 PostgreSQL Database Setup
 Migrates from SQLite to PostgreSQL for better performance
+Uses private network to avoid Railway egress fees
 """
 
 import os
@@ -12,8 +13,12 @@ from typing import List, Dict
 
 class DatabaseManager:
     def __init__(self):
-        # Railway provides DATABASE_URL environment variable
-        self.db_url = os.getenv("DATABASE_URL")
+        # Use private network to avoid egress fees
+        self.db_url = (
+            os.getenv("DATABASE_PRIVATE_URL") or  # Railway private network
+            os.getenv("DATABASE_URL") or           # Standard connection
+            None
+        )
         
         if not self.db_url:
             print("⚠️ DATABASE_URL not set, using SQLite fallback")
@@ -185,7 +190,6 @@ class DatabaseManager:
                 "volume": int(row[5])
             })
         
-        # Return in chronological order
         return list(reversed(bars))
     
     def insert_signal(self, signal: Dict) -> int:
@@ -344,7 +348,6 @@ class DatabaseManager:
             print("PostgreSQL connection closed")
 
 
-# Initialize and setup
 def setup_database():
     """Initialize PostgreSQL database."""
     db = DatabaseManager()
