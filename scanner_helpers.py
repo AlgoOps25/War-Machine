@@ -1,157 +1,161 @@
-# scanner_helpers.py
-import requests, os, sqlite3
-from datetime import datetime
+"""
+Scanner Helpers - Data Fetching and Caching
+"""
+
 import requests
+import sqlite3
 import os
+import json
+from datetime import datetime, timedelta
+from typing import List, Dict
+import config
 
+
+# Initialize SQLite memory cache
+DB_PATH = "market_memory.db"
 EODHD_API_KEY = os.getenv("EODHD_API_KEY")
-DB_FILE = "market_memory.db"
 
-# ================================
-# DATABASE
-# ================================
-def get_db():
-    return sqlite3.connect(DB_FILE)
 
-def get_last_timestamp(ticker):
-    try:
-        conn = get_db()
-        c = conn.cursor()
-        c.execute("SELECT datetime FROM candles WHERE ticker=? ORDER BY datetime DESC LIMIT 1", (ticker,))
-        row = c.fetchone()
-        conn.close()
-        if row:
-            return row[0]
-        return None
-    except:
-        return None
+def init_memory_db():
+    """Initialize SQLite database for bar caching."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS bars (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticker TEXT NOT NULL,
+            datetime TEXT NOT NULL,
+            open REAL,
+            high REAL,
+            low REAL,
+            close REAL,
+            volume INTEGER,
+            timeframe TEXT DEFAULT '1m',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(ticker, datetime, timeframe)
+        )
+    """)
+    
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_ticker_datetime 
+        ON bars(ticker, datetime DESC)
+    """)
+    
+    conn.commit()
+    conn.close()
 
-def store_bars(ticker, bars):
-    if not bars:
-        return
 
-    try:
-        conn = get_db()
-        c = conn.cursor()
+# Initialize on module load
+init_memory_db()
 
-        for b in bars:
-            ts = b.get("datetime") or b.get("date")
-            if not ts:
-                continue
 
-            c.execute("""
-            INSERT OR IGNORE INTO candles
-            (ticker, datetime, open, high, low, close, volume)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+def insert_bars_to_memory(ticker: str, bars: List[Dict]):
+    """Insert bars into SQLite memory cache."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    for bar in bars:
+        try:
+            dt = bar["datetime"]
+            if isinstance(dt, datetime):
+                dt_str = dt.isoformat()
+            else:
+                dt_str = dt
+                
+            cursor.execute("""
+                INSERT OR IGNORE INTO bars (ticker, datetime, open, high, low, close, volume)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
             """, (
                 ticker,
-                ts,
-                float(b.get("open",0)),
-                float(b.get("high",0)),
-                float(b.get("low",0)),
-                float(b.get("close",0)),
-                float(b.get("volume",0))
+                dt_str,
+                bar["open"],
+                bar["high"],
+                bar["low"],
+                bar["close"],
+                bar["volume"]
             ))
+        except Exception as e:
+            print(f"Error inserting bar: {e}")
+            continue
+    
+    conn.commit()
+    conn.close()
 
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        print("DB store error:", e)
 
-def load_recent_from_db(ticker, limit=400):
-    try:
-        conn = get_db()
-        c = conn.cursor()
-
-        c.execute("""
+def get_recent_bars_from_memory(ticker: str, limit: int = 300) -> List[Dict]:
+    """
+    Retrieve recent bars from SQLite memory cache.
+    Returns list of bar dictionaries.
+    """
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    cursor.execute("""
         SELECT datetime, open, high, low, close, volume
-        FROM candles
-        WHERE ticker=?
+        FROM bars
+        WHERE ticker = ?
         ORDER BY datetime DESC
         LIMIT ?
-        """, (ticker, limit))
-
-        rows = c.fetchall()
-        conn.close()
-
-        rows.reverse()
-
-        out = []
-        for r in rows:
-            out.append({
-                "datetime": r[0],
-                "open": r[1],
-                "high": r[2],
-                "low": r[3],
-                "close": r[4],
-                "volume": r[5]
+    """, (ticker, limit))
+    
+    rows = cursor.fetchall()
+    conn.close()
+    
+    bars = []
+    for row in rows:
+        try:
+            bars.append({
+                "datetime": datetime.fromisoformat(row[0]),
+                "open": float(row[1]),
+                "high": float(row[2]),
+                "low": float(row[3]),
+                "close": float(row[4]),
+                "volume": int(row[5])
             })
-        return out
-    except:
-        return []
+        except Exception as e:
+            print(f"Error parsing bar: {e}")
+            continue
+    
+    # Return in chronological order (oldest first)
+    return list(reversed(bars))
 
-# ================================
-# SMART FETCH (KEY PART)
-# ================================
-def fetch_new_bars_from_eodhd(ticker, limit=200, interval="1m"):
+
+def fetch_intraday_bars(ticker: str, interval: str = "1m") -> List[Dict]:
+    """Fetch intraday bars from EODHD API."""
+    url = f"https://eodhd.com/api/intraday/{ticker}.US"
+    
+    params = {
+        "api_token": EODHD_API_KEY,
+        "interval": interval,
+        "fmt": "json"
+    }
+    
     try:
-        url = f"https://eodhd.com/api/intraday/{ticker}.US?api_token={EODHD_API_KEY}&interval={interval}&limit={limit}"
-        r = requests.get(url, timeout=15)
-        if r.status_code != 200:
-            print("EODHD error:", r.text)
-            return []
-
-        data = r.json()
-        if isinstance(data, dict) and "data" in data:
-            data = data["data"]
-
-        return data or []
+        response = requests.get(url, params=params, timeout=15)
+        response.raise_for_status()
+        data = response.json()
+        
+        bars = []
+        for bar in data:
+            bars.append({
+                "datetime": datetime.fromtimestamp(bar["timestamp"]),
+                "open": bar["open"],
+                "high": bar["high"],
+                "low": bar["low"],
+                "close": bar["close"],
+                "volume": bar["volume"]
+            })
+        
+        return bars
+    
     except Exception as e:
-        print("Fetch error:", e)
+        print(f"[FETCH] Error fetching {ticker}: {e}")
         return []
 
-# ================================
-# MAIN FUNCTION USED BY SNIPER
-# ================================
-def get_intraday_bars_for_logger(ticker, limit=400, interval="1m"):
-    """
-    Smart loader:
-    1. Load recent history from DB
-    2. Pull only newest candles from EODHD
-    3. Store new candles
-    4. Return combined recent set
-    """
 
-    # STEP 1 — get last stored timestamp
-    last_ts = get_last_timestamp(ticker)
-
-    # STEP 2 — fetch recent candles from API
-    new_bars = fetch_new_bars_from_eodhd(ticker, limit=200, interval=interval)
-
-    if new_bars:
-        # STEP 3 — store them
-        store_bars(ticker, new_bars)
-
-    # STEP 4 — load final recent set from DB
-    final = load_recent_from_db(ticker, limit=limit)
-
-    print(f"📊 {ticker} using MEMORY DB bars:", len(final))
-    return final
-
-# ================================
-def get_realtime_quote_for_logger(ticker):
-    try:
-        url = f"https://eodhd.com/api/real-time/{ticker}.US?api_token={EODHD_API_KEY}&fmt=json"
-        r = requests.get(url, timeout=6)
-        if r.status_code != 200:
-            return None
-        return r.json()
-    except:
-        return None
-
-EODHD_API_KEY = os.getenv("EODHD_API_KEY")
-
-def get_darkpool_trades(ticker, limit=50):
+def get_darkpool_trades(ticker: str, limit: int = 50) -> List[Dict]:
+    """Fetch dark pool trades from EODHD."""
     try:
         url = f"https://eodhd.com/api/dark-pool/{ticker}.US"
         params = {
@@ -159,71 +163,68 @@ def get_darkpool_trades(ticker, limit=50):
             "limit": limit,
             "fmt": "json"
         }
-        r = requests.get(url, params=params, timeout=15)
-
-        if r.status_code != 200:
-            print("darkpool http", r.status_code, r.text[:120])
+        response = requests.get(url, params=params, timeout=15)
+        
+        if response.status_code != 200:
             return []
-
-        data = r.json()
-        if isinstance(data, dict):
-            return []
-
-        return data
-    except Exception as e:
-        print("darkpool fetch error:", e)
+        
+        data = response.json()
+        
+        # EODHD returns list of trades
+        if isinstance(data, list):
+            return data
+        
         return []
     
-def analyze_darkpool(trades):
-    if not trades:
-        return False, 0
+    except Exception as e:
+        print(f"[DARKPOOL] Error fetching {ticker}: {e}")
+        return []
 
+
+def analyze_darkpool(ticker: str) -> Dict:
+    """Analyze dark pool activity for a ticker."""
+    trades = get_darkpool_trades(ticker)
+    
+    if not trades:
+        return None
+    
+    total_volume = 0
     total_value = 0
     big_prints = 0
-
-    for t in trades[:50]:
+    
+    for trade in trades[:50]:
         try:
-            size = float(t.get("size") or 0)
-            price = float(t.get("price") or 0)
+            size = float(trade.get("size", 0))
+            price = float(trade.get("price", 0))
             value = size * price
-
+            
+            total_volume += size
             total_value += value
-
-            if value > 200000:  # big block
+            
+            if value > 200000:  # $200K+ block
                 big_prints += 1
-
-        except:
+        
+        except Exception:
             continue
-
-    if total_value == 0:
-        return False, 0
-
-    score = total_value / 1_000_000  # millions traded
-    accumulation = score > 2 or big_prints >= 3
-
-    return accumulation, score
-
-def get_screener_tickers(min_market_cap: int = 1_000_000_000, limit: int = 50) -> list:
-    """
-    Fetch top tickers from EODHD screener based on market cap and volume.
     
-    Args:
-        min_market_cap: Minimum market cap filter (default $1B)
-        limit: Maximum number of tickers to return
-    
-    Returns:
-        List of ticker symbols
-    """
-    import requests
-    import config
-    
+    return {
+        "total_volume": total_volume,
+        "total_volume_usd": total_value,
+        "trade_count": len(trades),
+        "big_prints": big_prints,
+        "accumulation": (total_value / 1_000_000 > 2) or (big_prints >= 3)
+    }
+
+
+def get_screener_tickers(min_market_cap: int = 1_000_000_000, limit: int = 50) -> List[str]:
+    """Fetch top tickers from EODHD screener."""
     url = "https://eodhd.com/api/screener"
     
     params = {
-        "api_token": config.EODHD_API_KEY,
+        "api_token": EODHD_API_KEY,
         "filters": json.dumps([
             ["market_capitalization", ">=", min_market_cap],
-            ["volume", ">=", 1000000],  # Min 1M volume
+            ["volume", ">=", 1000000],
             ["exchange", "=", "US"]
         ]),
         "limit": limit,
@@ -238,16 +239,28 @@ def get_screener_tickers(min_market_cap: int = 1_000_000_000, limit: int = 50) -
         tickers = []
         if isinstance(data, dict) and "data" in data:
             for item in data["data"]:
-                code = item.get("code")
+                code = item.get("code", "").replace(".US", "")
                 if code:
-                    # Remove .US suffix if present
-                    ticker = code.replace(".US", "")
-                    tickers.append(ticker)
+                    tickers.append(code)
         
-        print(f"[SCREENER] Fetched {len(tickers)} tickers from screener")
         return tickers[:limit]
-        
+    
     except Exception as e:
-        print(f"[SCREENER] Error fetching tickers: {e}")
+        print(f"[SCREENER] Error: {e}")
         return []
 
+
+def get_realtime_quote(ticker: str) -> Dict:
+    """Get real-time quote for ticker."""
+    try:
+        url = f"https://eodhd.com/api/real-time/{ticker}.US"
+        params = {"api_token": EODHD_API_KEY, "fmt": "json"}
+        
+        response = requests.get(url, params=params, timeout=6)
+        response.raise_for_status()
+        
+        return response.json()
+    
+    except Exception as e:
+        print(f"[QUOTE] Error fetching {ticker}: {e}")
+        return None
