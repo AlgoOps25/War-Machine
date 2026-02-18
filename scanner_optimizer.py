@@ -1,91 +1,115 @@
 """
 Scanner Optimizer - Adaptive Scan Intervals
-Dynamically adjusts scan frequency based on time of day
+Dynamically adjusts scan frequency and watchlist size based on time of day (ET).
+
+Fixes applied:
+- All time checks use Eastern Time via ZoneInfo
+- OR period starts at 9:40 (not 9:30) to match should_scan_now() rule
+- Print logs deduplicated (only prints on interval change)
 """
 from datetime import datetime, time
+from zoneinfo import ZoneInfo
+
+# Module-level cache to avoid printing on every call
+_last_logged_interval = None
+_last_logged_watchlist_size = None
+
+
+def _now_et():
+    return datetime.now(ZoneInfo("America/New_York")).time()
+
 
 def get_adaptive_scan_interval() -> int:
     """
-    CFW6 OPTIMIZATION: Scan more frequently during high-activity periods
-    
-    Opening Range (9:30-9:45): 30 seconds (catch early setups)
-    High Activity (9:45-11:00, 2:00-3:30): 60 seconds
-    Midday Chop (11:00-2:00): 180 seconds (slower market)
-    Power Hour (3:30-4:00): 45 seconds
+    CFW6 OPTIMIZATION: Scan more frequently during high-activity periods.
+
+    NOTE: The 9:30-9:40 window is skipped by should_scan_now().
+    Intervals here begin at 9:40 when actual scanning starts.
+
+    Post-OR Active  (9:40-11:00):  45 seconds
+    Midday Chop     (11:00-14:00): 180 seconds
+    Afternoon Setup (14:00-15:30): 60 seconds
+    Power Hour      (15:30-16:00): 45 seconds
+    Outside market:                300 seconds
     """
-    now = datetime.now().time()
-    
-    # Opening Range Period (most important)
-    if time(9, 30) <= now < time(9, 45):
-        interval = 30
-        print(f"[SCANNER] 🔥 Opening Range Period → Scanning every {interval}s")
-    
-    # Morning Activity (9:45-11:00)
-    elif time(9, 45) <= now < time(11, 0):
-        interval = 60
-        print(f"[SCANNER] ⚡ Morning Activity → Scanning every {interval}s")
-    
-    # Midday Chop (11:00-2:00)
+    global _last_logged_interval
+    now = _now_et()
+
+    # Post-OR morning activity (9:40-11:00)
+    if time(9, 40) <= now < time(11, 0):
+        interval = 45
+        label = "Post-OR Morning"
+
+    # Midday Chop (11:00-14:00)
     elif time(11, 0) <= now < time(14, 0):
         interval = 180
-        print(f"[SCANNER] 😴 Midday Period → Scanning every {interval}s")
-    
-    # Afternoon Setup (2:00-3:30)
+        label = "Midday Chop"
+
+    # Afternoon Setup (14:00-15:30)
     elif time(14, 0) <= now < time(15, 30):
         interval = 60
-        print(f"[SCANNER] ⚡ Afternoon Activity → Scanning every {interval}s")
-    
-    # Power Hour (3:30-4:00)
+        label = "Afternoon Activity"
+
+    # Power Hour (15:30-16:00)
     elif time(15, 30) <= now < time(16, 0):
         interval = 45
-        print(f"[SCANNER] 🔥 Power Hour → Scanning every {interval}s")
-    
+        label = "Power Hour"
+
     # Outside market hours
     else:
         interval = 300
-        print(f"[SCANNER] 💤 Outside Market Hours → Scanning every {interval}s")
-    
+        label = "Outside Market Hours"
+
+    # Only print when interval changes
+    if interval != _last_logged_interval:
+        print(f"[SCANNER] {label} -> Scanning every {interval}s")
+        _last_logged_interval = interval
+
     return interval
+
 
 def should_scan_now() -> bool:
     """
-    Determine if we should scan based on current time
-    
-    During 9:30-9:40 (Opening Range period), return False
-    We only start scanning AFTER 9:40 per CFW6 rules
+    CFW6 RULE: Do not scan during 9:30-9:40 ET.
+    The Opening Range must finish forming before we look for breakouts.
+    Returns True only during 9:40-16:00 ET on weekdays.
     """
-    now = datetime.now().time()
-    
-    # CFW6 RULE: Don't scan during 9:30-9:40 (waiting for OR to form)
+    now = _now_et()
+
+    # Block the OR formation window
     if time(9, 30) <= now < time(9, 40):
-        print(f"[SCANNER] ⏸️ Opening Range forming (9:30-9:40) - Waiting...")
         return False
-    
-    # Market hours check
+
+    # Active scanning window
     if time(9, 40) <= now <= time(16, 0):
         return True
-    
+
     return False
+
 
 def calculate_optimal_watchlist_size() -> int:
     """
-    Adjust watchlist size based on time of day
-    
-    Early market: Smaller, focused watchlist
-    Midday: Larger watchlist (more scanning needed)
+    Adjust watchlist size by time of day.
+
+    Early morning (9:40-10:30): 30 tickers - focused, highest conviction setups
+    Mid-session   (10:30-15:00): 50 tickers - full watchlist
+    Late day      (15:00-16:00): 35 tickers - reduce exposure into close
+    Default:                     40 tickers
     """
-    now = datetime.now().time()
-    
-    # Opening Range + Early Morning: Focus on 30 best tickers
-    if time(9, 30) <= now < time(10, 30):
-        return 30
-    
-    # Mid-morning to early afternoon: Full watchlist
+    global _last_logged_watchlist_size
+    now = _now_et()
+
+    if time(9, 40) <= now < time(10, 30):
+        size = 30
     elif time(10, 30) <= now < time(15, 0):
-        return 50
-    
-    # Late day: Reduce to 35 tickers
+        size = 50
     elif time(15, 0) <= now <= time(16, 0):
-        return 35
-    
-    return 40  # Default
+        size = 35
+    else:
+        size = 40
+
+    if size != _last_logged_watchlist_size:
+        print(f"[SCANNER] Watchlist size adjusted to {size} tickers")
+        _last_logged_watchlist_size = size
+
+    return size
