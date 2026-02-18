@@ -182,15 +182,44 @@ def send_simple_message(message: str):
 
 def _send_to_discord(payload: Dict):
     """Shared HTTP helper — all functions route through here."""
-    if not config.DISCORD_WEBHOOK_URL:
-        print("[DISCORD] No webhook URL configured.")
+    # Strip any invisible whitespace/newlines from URL (Railway injection bug)
+    webhook_url = (config.DISCORD_WEBHOOK_URL or "").strip().rstrip("\n").rstrip("\r")
+
+    if not webhook_url:
+        print("[DISCORD] ❌ No webhook URL configured.")
         return
+
+    print(f"[DISCORD] Sending to: {webhook_url[:60]}...")
+
     try:
         response = requests.post(
-            config.DISCORD_WEBHOOK_URL,
+            webhook_url,
             json=payload,
             timeout=10
         )
+        print(f"[DISCORD] Response: {response.status_code}")
+        if response.status_code not in (200, 204):
+            print(f"[DISCORD] Body: {response.text[:200]}")
         response.raise_for_status()
     except Exception as e:
         print(f"[DISCORD] Error: {e}")
+
+def test_webhook():
+    """Call once at startup to verify Discord is working."""
+    webhook_url = (config.DISCORD_WEBHOOK_URL or "").strip()
+    if not webhook_url:
+        print("[DISCORD] ❌ DISCORD_WEBHOOK_URL is empty!")
+        return False
+
+    # Show exactly what URL we have (check for hidden characters)
+    print(f"[DISCORD] URL length: {len(webhook_url)} chars")
+    print(f"[DISCORD] URL ends with: {repr(webhook_url[-10:])}")  # Shows hidden chars
+
+    try:
+        r = requests.post(webhook_url, json={"content": "🚀 War Machine Online!"}, timeout=10)
+        print(f"[DISCORD] Test result: {r.status_code}")
+        return r.status_code in (200, 204)
+    except Exception as e:
+        print(f"[DISCORD] Test failed: {e}")
+        return False
+

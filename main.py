@@ -8,6 +8,8 @@ import sys
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from discord_helpers import test_webhook
+test_webhook()
 
 def _now_et():
     return datetime.now(ZoneInfo("America/New_York"))
