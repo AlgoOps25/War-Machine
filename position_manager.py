@@ -1,13 +1,14 @@
 \"\"\"
 Position Manager - Consolidated Position Tracking, Sizing, and Win Rate Analysis
 Replaces: position_tracker.py, position_sizing.py, win_rate_tracker.py
-Handles Scaling Out (closing 50% at T1) and Moving Stop to Break Even
+Handles Scaling Out (closing 50% at T1), Moving Stop to BE, and Discord Alerts
 \"\"\"
 import sqlite3
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 import os
 import config
+from discord_helpers import send_scaling_alert, send_exit_alert
 
 class PositionManager:
     def __init__(self, db_path: str = config.TRADES_DB_PATH):
@@ -109,9 +110,6 @@ class PositionManager:
         conn.close()
         
         print(f\"[POSITION] Opened {ticker} {direction.upper()} - ID: {position_id}\")
-        print(f\" Entry: ${entry:.2f} | Stop: ${stop:.2f} | T1: ${t1:.2f} | T2: ${t2:.2f}\")
-        print(f\" Contracts: {contracts} | Grade: {grade} | Confidence: {confidence:.1%}\")
-        
         return position_id
     
     def check_exits(self, current_prices: Dict[str, float]):
@@ -134,16 +132,12 @@ class PositionManager:
             t1_hit = pos.get(\"t1_hit\", False)
             
             if direction == \"bull\":
-                # Check Stop Loss
                 if current_price <= stop:
                     self.close_position(pos[\"id\"], stop, \"STOP LOSS\")
-                # Check Target 2
                 elif current_price >= t2:
                     self.close_position(pos[\"id\"], t2, \"TARGET 2\")
-                # Check Target 1 (only if not already hit)
                 elif not t1_hit and current_price >= t1:
                     self.scale_out(pos[\"id\"], t1, \"TARGET 1\")
-                    
             else: # bear
                 if current_price >= stop:
                     self.close_position(pos[\"id\"], stop, \"STOP LOSS\")
@@ -162,24 +156,19 @@ class PositionManager:
         
         sell_count = remaining // 2
         new_remaining = remaining - sell_count
-        
-        # Calculate P&L for the half sold
         pnl = (price - entry if direction == \"bull\" else entry - price) * 100 * sell_count
         
         cursor.execute(\"\"\"
             UPDATE positions 
-            SET remaining_contracts = ?, 
-                stop_price = entry_price, 
-                t1_hit = 1,
-                pnl = pnl + ?
+            SET remaining_contracts = ?, stop_price = entry_price, t1_hit = 1, pnl = pnl + ?
             WHERE id = ?
         \"\"\", (new_remaining, pnl, position_id))
         
         conn.commit()
         conn.close()
         
-        print(f\"[SCALING] Scaled out 50% ({sell_count} contracts) of {ticker} at ${price:.2f} ({reason})\")
-        print(f\"[SCALING] Stop moved to break even at ${entry:.2f}. Remaining: {new_remaining}\")
+        print(f\"[SCALING] Scaled out 50% of {ticker} at ${price:.2f}\")
+        send_scaling_alert(ticker, price, new_remaining, pnl)
 
     def close_position(self, position_id: int, exit_price: float, exit_reason: str):
         \"\"\"Close remaining position and finalize P&L\"\"\"
@@ -191,27 +180,21 @@ class PositionManager:
         if not row: return
         
         ticker, direction, entry, remaining, grade, confidence, current_pnl = row
-        
-        # Calculate P&L for remaining
         pnl_final = (exit_price - entry if direction == \"bull\" else entry - exit_price) * 100 * remaining
         total_pnl = current_pnl + pnl_final
         
         cursor.execute(\"\"\"
             UPDATE positions 
-            SET exit_price = ?, exit_reason = ?, pnl = ?, 
-                exit_time = CURRENT_TIMESTAMP, status = 'CLOSED', remaining_contracts = 0
+            SET exit_price = ?, exit_reason = ?, pnl = ?, exit_time = CURRENT_TIMESTAMP, status = 'CLOSED', remaining_contracts = 0
             WHERE id = ?
         \"\"\", (exit_price, exit_reason, total_pnl, position_id))
         
         conn.commit()
         conn.close()
         
-        win_loss = \"✅ WIN\" if total_pnl > 0 else \"❌ LOSS\"
-        print(f\"\
-[EXIT] {win_loss} - {ticker} {direction.upper()} ({exit_reason})\")
-        print(f\" Total P&L: ${total_pnl:+.2f} | Final Exit: ${exit_price:.2f}\")
+        print(f\"[EXIT] Closed {ticker} at ${exit_price:.2f} ({exit_reason}). Total P&L: ${total_pnl:+.2f}\")
+        send_exit_alert(ticker, exit_price, exit_reason, total_pnl)
         
-        # Record to AI learning
         try:
             from ai_learning import learning_engine
             learning_engine.record_trade({
@@ -228,13 +211,8 @@ class PositionManager:
         cursor.execute(\"SELECT * FROM positions WHERE status = 'OPEN'\")
         rows = [dict(row) for row in cursor.fetchall()]
         conn.close()
-        
-        # Map DB keys to internal keys
         for r in rows:
-            r['entry'] = r['entry_price']
-            r['stop'] = r['stop_price']
-            r['t1'] = r['t1_price']
-            r['t2'] = r['t2_price']
+            r['entry'] = r['entry_price']; r['stop'] = r['stop_price']; r['t1'] = r['t1_price']; r['t2'] = r['t2_price']
         return rows
 
     def get_daily_stats(self) -> Dict:
@@ -242,12 +220,25 @@ class PositionManager:
         cursor = conn.cursor()
         today = datetime.now().strftime(\"%Y-%m-%d\")
         cursor.execute(\"\"\"
-            SELECT COUNT(*), SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END), COALESCE(SUM(pnl), 0)
+            SELECT COUNT(*), 
+                   SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN pnl <= 0 THEN 1 ELSE 0 END),
+                   COALESCE(SUM(pnl), 0)
             FROM positions WHERE DATE(entry_time) = ? AND status = 'CLOSED'
         \"\"\", (today,))
         row = cursor.fetchone()
         conn.close()
-        return {\"trades\": row[0] or 0, \"wins\": row[1] or 0, \"total_pnl\": row[2] or 0}
+        
+        trades = row[0] or 0
+        wins = row[1] or 0
+        losses = row[2] or 0
+        total_pnl = row[3] or 0
+        win_rate = (wins / trades * 100) if trades > 0 else 0
+        
+        return {
+            \"trades\": trades, \"wins\": wins, \"losses\": losses,
+            \"win_rate\": win_rate, \"total_pnl\": total_pnl
+        }
 
 # Global instance
 position_manager = PositionManager()
