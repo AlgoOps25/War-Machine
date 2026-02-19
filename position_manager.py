@@ -8,11 +8,14 @@ from typing import Dict, List, Optional
 import db_connection
 from db_connection import get_conn, ph, dict_cursor, serial_pk
 
+
 class PositionManager:
+
     def __init__(self, db_path: str = None):
         self.db_path = db_path or config.TRADES_DB_PATH
         self.positions = []  # Active positions cache
         self._initialize_database()
+
 
     def _initialize_database(self):
         """Create positions table if not exists."""
@@ -44,9 +47,11 @@ class PositionManager:
         conn.commit()
         conn.close()
 
+
     def calculate_position_size(self, confidence: float, grade: str,
                                 account_size: float = None,
                                 risk_per_share: float = 1.0) -> Dict:
+        """Calculate contract size based on confidence, grade, and risk."""
         account_size = account_size or getattr(config, "ACCOUNT_SIZE", 25_000)
 
         if confidence >= 0.85 and grade == "A+":
@@ -73,22 +78,44 @@ class PositionManager:
             "allocation_type": f"{round(risk_pct * 100, 1)}% risk"
         }
 
-    def open_position(self, ticker: str, direction: str, entry: float,
-                    stop: float, t1: float, t2: float, grade: str,
-                    confidence: float, contracts: int = 1) -> int:
-        """Open a new position and return position ID."""
-        p = ph()
-        values = (ticker, direction, entry, stop, t1, t2,
-                contracts, contracts, grade, confidence)
 
-        conn = get_conn(self.db_path)
+    def open_position(self, ticker: str, direction: str,
+                      zone_low: float, zone_high: float,
+                      or_low: float, or_high: float,
+                      entry_price: float, stop_price: float,
+                      t1: float, t2: float,
+                      confidence: float, grade: str,
+                      options_rec=None) -> int:
+        """Open a new position and return position ID."""
+        # Cast numpy types to native Python BEFORE SQL
+        entry_price = float(entry_price)
+        stop_price  = float(stop_price)
+        zone_low    = float(zone_low)
+        zone_high   = float(zone_high)
+        or_low      = float(or_low)
+        or_high     = float(or_high)
+        t1          = float(t1)
+        t2          = float(t2)
+        confidence  = float(confidence)
+
+        # Size the position based on actual stop distance
+        risk_per_share = round(abs(entry_price - stop_price), 4) or 1.0
+        sizing    = self.calculate_position_size(confidence, grade,
+                                                 risk_per_share=risk_per_share)
+        contracts = sizing["contracts"]
+
+        p      = ph()
+        values = (ticker, direction, entry_price, stop_price, t1, t2,
+                  contracts, contracts, grade, confidence)
+
+        conn   = get_conn(self.db_path)
         cursor = dict_cursor(conn)
 
         if db_connection.USE_POSTGRES:
             cursor.execute(f"""
                 INSERT INTO positions
                     (ticker, direction, entry_price, stop_price, t1_price, t2_price,
-                    contracts, remaining_contracts, grade, confidence, status)
+                     contracts, remaining_contracts, grade, confidence, status)
                 VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p},{p},'OPEN')
                 RETURNING id
             """, values)
@@ -97,7 +124,7 @@ class PositionManager:
             cursor.execute(f"""
                 INSERT INTO positions
                     (ticker, direction, entry_price, stop_price, t1_price, t2_price,
-                    contracts, remaining_contracts, grade, confidence, status)
+                     contracts, remaining_contracts, grade, confidence, status)
                 VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p},{p},'OPEN')
             """, values)
             position_id = cursor.lastrowid
@@ -106,16 +133,26 @@ class PositionManager:
         conn.close()
 
         self.positions.append({
-            "id": position_id, "ticker": ticker, "direction": direction,
-            "entry": entry, "stop": stop, "t1": t1, "t2": t2,
-            "contracts": contracts, "remaining_contracts": contracts,
-            "grade": grade, "confidence": confidence,
-            "t1_hit": False, "pnl": 0.0
+            "id":                   position_id,
+            "ticker":               ticker,
+            "direction":            direction,
+            "entry":                entry_price,
+            "stop":                 stop_price,
+            "t1":                   t1,
+            "t2":                   t2,
+            "contracts":            contracts,
+            "remaining_contracts":  contracts,
+            "grade":                grade,
+            "confidence":           confidence,
+            "t1_hit":               False,
+            "pnl":                  0.0
         })
 
         print(f"[POSITION] Opened {ticker} {direction.upper()} - ID {position_id}")
-        print(f"  Entry: {entry:.2f}  Stop: {stop:.2f}  T1: {t1:.2f}  T2: {t2:.2f}")
-        print(f"  Contracts: {contracts}  Grade: {grade}  Confidence: {confidence:.1%}")
+        print(f"  Entry: {entry_price:.2f}  Stop: {stop_price:.2f}  "
+              f"T1: {t1:.2f}  T2: {t2:.2f}")
+        print(f"  Contracts: {contracts}  Grade: {grade}  "
+              f"Confidence: {confidence:.1%}  Risk/share: ${risk_per_share:.2f}")
         return position_id
 
 
@@ -131,28 +168,21 @@ class PositionManager:
                 continue
 
             current_price = current_prices[ticker]
-            direction = pos["direction"]
-            stop = pos["stop_price"]
-            t1 = pos["t1_price"]
-            t2 = pos["t2_price"]
-            entry = pos["entry_price"]
-            t1_hit = bool(pos["t1_hit"])
-            remaining = pos["remaining_contracts"]
-            pos_id = pos["id"]
+            direction     = pos["direction"]
+            stop          = pos["stop_price"]
+            t1            = pos["t1_price"]
+            t2            = pos["t2_price"]
+            entry         = pos["entry_price"]
+            t1_hit        = bool(pos["t1_hit"])
+            pos_id        = pos["id"]
 
             if direction == "bull":
-                # Stop loss
                 if current_price <= stop:
                     self.close_position(pos_id, current_price, "STOP LOSS")
-
-                # T1 scale-out (only once)
                 elif current_price >= t1 and not t1_hit:
                     self._scale_out(pos_id, current_price, entry)
-
-                # T2 full exit
                 elif current_price >= t2 and t1_hit:
                     self.close_position(pos_id, current_price, "TARGET 2")
-
             else:  # bear
                 if current_price >= stop:
                     self.close_position(pos_id, current_price, "STOP LOSS")
@@ -161,9 +191,11 @@ class PositionManager:
                 elif current_price <= t2 and t1_hit:
                     self.close_position(pos_id, current_price, "TARGET 2")
 
+
     def _scale_out(self, position_id: int, exit_price: float, entry_price: float):
-        p = ph()
-        conn = get_conn(self.db_path)
+        """Close half the position at T1 and move stop to breakeven."""
+        p      = ph()
+        conn   = get_conn(self.db_path)
         cursor = dict_cursor(conn)
         cursor.execute(f"SELECT * FROM positions WHERE id = {p}", (position_id,))
         pos = cursor.fetchone()
@@ -171,47 +203,53 @@ class PositionManager:
             conn.close()
             return
 
-        ticker           = pos["ticker"]
-        direction        = pos["direction"]
-        remaining        = pos["remaining_contracts"]
+        ticker             = pos["ticker"]
+        direction          = pos["direction"]
+        remaining          = pos["remaining_contracts"]
         contracts_to_close = max(1, remaining // 2)
-        contracts_left   = remaining - contracts_to_close
+        contracts_left     = remaining - contracts_to_close
 
-        pnl_per_share = (exit_price - entry_price) if direction == "bull" else (entry_price - exit_price)
-        partial_pnl   = pnl_per_share * 100 * contracts_to_close
+        pnl_per_share = (
+            (exit_price - entry_price) if direction == "bull"
+            else (entry_price - exit_price)
+        )
+        partial_pnl = pnl_per_share * 100 * contracts_to_close
 
         cursor.execute(f"""
             UPDATE positions
-            SET t1_hit = 1,
+            SET t1_hit              = 1,
                 remaining_contracts = {p},
-                stop_price = {p},
-                pnl = COALESCE(pnl, 0) + {p}
+                stop_price          = {p},
+                pnl                 = COALESCE(pnl, 0) + {p}
             WHERE id = {p}
         """, (contracts_left, entry_price, partial_pnl, position_id))
         conn.commit()
         conn.close()
 
-        for pos_cache in self.positions:
-            if pos_cache["id"] == position_id:
-                pos_cache["t1_hit"]              = True
-                pos_cache["remaining_contracts"] = contracts_left
-                pos_cache["stop"]               = entry_price
-                pos_cache["pnl"]                = pos_cache.get("pnl", 0) + partial_pnl
+        for cached in self.positions:
+            if cached["id"] == position_id:
+                cached["t1_hit"]             = True
+                cached["remaining_contracts"] = contracts_left
+                cached["stop"]               = entry_price
+                cached["pnl"]                = cached.get("pnl", 0) + partial_pnl
                 break
 
         print(f"[POSITION] ⚡ SCALE OUT {ticker} @ {exit_price:.2f}")
         print(f"  Closed {contracts_to_close} contracts | Remaining: {contracts_left}")
-        print(f"  Partial P&L: ${partial_pnl:.2f} | Stop moved to BE: {entry_price:.2f}")
+        print(f"  Partial P&L: ${partial_pnl:.2f} | Stop → BE: {entry_price:.2f}")
 
         try:
             from discord_helpers import send_scaling_alert
-            send_scaling_alert(ticker, exit_price, contracts_to_close, contracts_left, partial_pnl, entry_price)
+            send_scaling_alert(ticker, exit_price, contracts_to_close,
+                               contracts_left, partial_pnl, entry_price)
         except Exception as e:
             print(f"[POSITION] Discord scale alert failed: {e}")
 
+
     def close_position(self, position_id: int, exit_price: float, exit_reason: str):
-        p = ph()
-        conn = get_conn(self.db_path)
+        """Close a position fully and record final P&L."""
+        p      = ph()
+        conn   = get_conn(self.db_path)
         cursor = dict_cursor(conn)
         cursor.execute(f"SELECT * FROM positions WHERE id = {p}", (position_id,))
         pos = cursor.fetchone()
@@ -219,25 +257,31 @@ class PositionManager:
             conn.close()
             return
 
-        ticker     = pos["ticker"]
-        direction  = pos["direction"]
-        entry      = pos["entry_price"]
-        remaining  = pos["remaining_contracts"]
-        prior_pnl  = pos["pnl"] or 0.0
+        ticker    = pos["ticker"]
+        direction = pos["direction"]
+        entry     = pos["entry_price"]
+        remaining = pos["remaining_contracts"]
+        prior_pnl = pos["pnl"] or 0.0
 
-        pnl_per_share = (exit_price - entry) if direction == "bull" else (entry - exit_price)
-        final_pnl     = prior_pnl + (pnl_per_share * 100 * remaining)
+        pnl_per_share = (
+            (exit_price - entry) if direction == "bull"
+            else (entry - exit_price)
+        )
+        final_pnl = prior_pnl + (pnl_per_share * 100 * remaining)
 
         cursor.execute(f"""
             UPDATE positions
-            SET exit_price = {p}, exit_reason = {p}, pnl = {p},
-                exit_time = CURRENT_TIMESTAMP, status = 'CLOSED'
+            SET exit_price  = {p},
+                exit_reason = {p},
+                pnl         = {p},
+                exit_time   = CURRENT_TIMESTAMP,
+                status      = 'CLOSED'
             WHERE id = {p}
         """, (exit_price, exit_reason, final_pnl, position_id))
         conn.commit()
         conn.close()
 
-        self.positions = [pos for pos in self.positions if pos["id"] != position_id]
+        self.positions = [p for p in self.positions if p["id"] != position_id]
 
         emoji = "✅" if final_pnl > 0 else "❌"
         print(f"[POSITION] {emoji} CLOSED {ticker} @ {exit_price:.2f} | {exit_reason}")
@@ -255,29 +299,31 @@ class PositionManager:
         open_positions = self.get_open_positions()
         for pos in open_positions:
             ticker = pos["ticker"]
-            price = current_prices.get(ticker, pos["entry_price"])
+            price  = current_prices.get(ticker, pos["entry_price"])
             self.close_position(pos["id"], price, "EOD CLOSE")
 
+
     def get_open_positions(self) -> List[Dict]:
-        p = ph()
-        conn = get_conn(self.db_path)
+        """Return all currently open positions from the database."""
+        conn   = get_conn(self.db_path)
         cursor = dict_cursor(conn)
         cursor.execute("SELECT * FROM positions WHERE status = 'OPEN'")
-        rows = cursor.fetchall()
+        rows   = cursor.fetchall()
         conn.close()
         return [dict(row) for row in rows]
 
 
     def get_daily_stats(self) -> Dict:
-        p = ph()
-        conn = get_conn(self.db_path)
+        """Return win/loss/P&L stats for today's closed trades."""
+        p      = ph()
+        conn   = get_conn(self.db_path)
         cursor = dict_cursor(conn)
-        today = datetime.now().strftime("%Y-%m-%d")
+        today  = datetime.now().strftime("%Y-%m-%d")
         cursor.execute(f"""
-            SELECT COUNT(*) as trades,
-                SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
-                SUM(CASE WHEN pnl <= 0 THEN 1 ELSE 0 END) as losses,
-                SUM(pnl) as total_pnl
+            SELECT COUNT(*)                                  AS trades,
+                   SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) AS wins,
+                   SUM(CASE WHEN pnl <= 0 THEN 1 ELSE 0 END) AS losses,
+                   SUM(pnl)                                  AS total_pnl
             FROM positions
             WHERE status = 'CLOSED' AND DATE(exit_time) = {p}
         """, (today,))
@@ -300,15 +346,16 @@ class PositionManager:
 
 
     def get_win_rate(self, lookback_days: int = 30) -> Dict:
-        p = ph()
-        conn = get_conn(self.db_path)
+        """Return per-grade win rate stats over the last N days."""
+        p     = ph()
+        conn  = get_conn(self.db_path)
         cursor = dict_cursor(conn)
         since = (datetime.now() - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
         cursor.execute(f"""
             SELECT grade,
-                COUNT(*) as total,
-                SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
-                AVG(pnl) as avg_pnl
+                   COUNT(*)                                  AS total,
+                   SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) AS wins,
+                   AVG(pnl)                                  AS avg_pnl
             FROM positions
             WHERE status = 'CLOSED' AND DATE(exit_time) >= {p}
             GROUP BY grade
@@ -330,16 +377,16 @@ class PositionManager:
         return stats
 
 
-    def generate_report(self) -> str:   # ← 4-space indent = INSIDE class ✅
+    def generate_report(self) -> str:
         """Generate end-of-day performance report string."""
-        stats = self.get_daily_stats()
+        stats         = self.get_daily_stats()
         win_rate_data = self.get_win_rate(lookback_days=30)
 
-        trades    = stats.get("trades", 0)
-        wins      = stats.get("wins", 0)
-        losses    = stats.get("losses", 0)
+        trades    = stats.get("trades",    0)
+        wins      = stats.get("wins",      0)
+        losses    = stats.get("losses",    0)
         total_pnl = stats.get("total_pnl", 0.0)
-        win_rate  = stats.get("win_rate", 0.0)
+        win_rate  = stats.get("win_rate",  0.0)
 
         lines = [
             "=" * 50,
@@ -386,60 +433,3 @@ def cleanup_old_bars(days_to_keep: int = 7):
     """Legacy function — calls DataManager."""
     from data_manager import data_manager
     data_manager.cleanup_old_bars(days_to_keep)
-
-
-    def generate_report(self) -> str:
-        """Generate end-of-day performance report string."""
-        stats = self.get_daily_stats()
-        win_rate_data = self.get_win_rate(lookback_days=30)
-
-        trades    = stats.get("trades", 0)
-        wins      = stats.get("wins", 0)
-        losses    = stats.get("losses", 0)
-        total_pnl = stats.get("total_pnl", 0.0)
-        win_rate  = stats.get("win_rate", 0.0)
-
-        lines = [
-            "=" * 50,
-            "WAR MACHINE — END OF DAY REPORT",
-            "=" * 50,
-            f"Date:         {datetime.now().strftime('%A, %B %d, %Y')}",
-            f"Total Trades: {trades}",
-            f"Winners:      {wins}",
-            f"Losers:       {losses}",
-            f"Win Rate:     {win_rate:.1f}%",
-            f"Net P&L:      ${total_pnl:+.2f}",
-            "",
-            "— 30-Day Grade Breakdown —"
-        ]
-
-        if win_rate_data:
-            for grade in ["A+", "A", "A-"]:
-                if grade in win_rate_data:
-                    g = win_rate_data[grade]
-                    lines.append(
-                        f"  {grade}: {g['total']} trades | "
-                        f"{g['win_rate']:.1f}% WR | "
-                        f"Avg P&L: ${g['avg_pnl']:+.2f}"
-                    )
-        else:
-            lines.append("  No grade data yet.")
-
-        lines.append("=" * 50)
-        return "\n".join(lines)
-
-
-    # Global singleton
-    position_manager = PositionManager()
-
-    # Legacy compatibility shims
-    def update_ticker(ticker: str):
-        """Legacy function — calls DataManager."""
-        from data_manager import data_manager
-        data_manager.update_ticker(ticker)
-
-
-    def cleanup_old_bars(days_to_keep: int = 7):
-        """Legacy function — calls DataManager."""
-        from data_manager import data_manager
-        data_manager.cleanup_old_bars(days_to_keep)
