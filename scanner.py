@@ -53,7 +53,7 @@ def fallback_list() -> list:
 
 
 def monitor_open_positions():
-    from scanner_helpers import get_recent_bars_from_memory
+    from data_manager import data_manager               # ← correct
     open_positions = position_manager.get_open_positions()
     if not open_positions:
         return
@@ -61,11 +61,11 @@ def monitor_open_positions():
     current_prices = {}
     for pos in open_positions:
         ticker = pos["ticker"]
-        bars = get_recent_bars_from_memory(ticker, limit=1)
+        bars = data_manager.get_bars_from_memory(ticker, limit=1)  # ← correct
         if bars:
             current_prices[ticker] = bars[-1]["close"]
     position_manager.check_exits(current_prices)
-
+    
 
 def start_scanner_loop():
     from sniper import process_ticker, clear_armed_signals
