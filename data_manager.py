@@ -203,29 +203,6 @@ def store_bars(self, ticker: str, bars: List[Dict]):
             })
         return bars
     
-    def update_ticker(self, ticker: str):
-        """Fetch latest bars and store in database."""
-        try:
-            # Check if we have existing bars
-            existing = self.get_bars_from_memory(ticker, limit=1)
-
-            if not existing:
-                print(f"[DATA] Full fetch for {ticker} (5 days)")
-            else:
-                print(f"[DATA] Incremental fetch for {ticker}")
-
-            # fetch_intraday_bars now handles timestamps internally
-            bars = self.fetch_intraday_bars(ticker)
-
-            if bars:
-                self.store_bars(ticker, bars)
-            else:
-                print(f"[DATA] ⚠️ No bars returned for {ticker}")
-
-        except Exception as e:
-            print(f"[DATA] ❌ Error updating {ticker}: {e}")
-
-    
     def cleanup_old_bars(self, days_to_keep: int = 7):
         """Remove bars older than specified days."""
         cutoff_date = datetime.now() - timedelta(days=days_to_keep)
