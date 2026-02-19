@@ -233,3 +233,4 @@ def get_screener_tickers(min_market_cap: int = 1_000_000_000, limit: int = 50) -
     except Exception as e:
         print(f"[SCREENER] Error: {e}")
         return []
+
