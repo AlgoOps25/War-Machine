@@ -1,0 +1,4 @@
+I have EOD+Intraday —
+All World Extended and US Stock Options Data API
+
+Find trend patterns between tickers to see if multiples move in the same direction at once.
