@@ -5,13 +5,16 @@ Replaces: incremental_fetch.py, historical_loader.py, database_setup.py
 Two data paths:
   1. Historical (EODHD /api/intraday/)  — completed sessions, fetched once per hour
   2. Live       (EODHD /api/real-time/) — current session, polled every scanner cycle
+
+Note: EODHD returns extended-hours data (4 AM – 8 PM ET), so a full day is ~960 bars.
+      Always query by DATE, never by row-count limit, when you need a full session.
 """
 import time
 import os
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time as dtime
 from zoneinfo import ZoneInfo
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 import config
 import db_connection
 from db_connection import get_conn, ph, dict_cursor, serial_pk, upsert_bar_sql, upsert_metadata_sql
@@ -100,8 +103,7 @@ class DataManager:
                             from_date: str = None, to_date: str = None) -> List[Dict]:
         """
         Fetch historical intraday bars from EODHD /api/intraday/.
-        Returns completed sessions only (no live in-progress day).
-        Bars are stored as ET-naive datetimes.
+        EODHD returns extended-hours data (4 AM – 8 PM ET) as ET-naive datetimes.
         """
         now_dt  = datetime.utcnow()
         from_dt = now_dt - timedelta(days=5)
@@ -211,7 +213,7 @@ class DataManager:
             print(f"[DATA] \u26a0\ufe0f No bars returned for {ticker}")
 
     def get_bars_from_memory(self, ticker: str, limit: int = 390) -> List[Dict]:
-        """Retrieve historical bars from database (latest `limit` bars)."""
+        """Retrieve the N most recent bars for a ticker (useful for quick price lookups)."""
         p = ph()
         conn = get_conn(self.db_path)
         cursor = dict_cursor(conn)
@@ -245,6 +247,79 @@ class DataManager:
             })
         return bars
 
+    def get_latest_session_bars(self, ticker: str) -> Tuple[List[Dict], object]:
+        """
+        Get ALL bars for the most recent trading date.
+
+        WHY NOT limit=390:
+          EODHD returns extended-hours data (4 AM – 8 PM ET), so a full day is
+          ~960 bars.  Using a row-count limit (390) only captures the afternoon +
+          after-hours portion and misses the 9:30 AM Opening Range entirely.
+
+        This method queries by date so it always returns the complete session
+        regardless of how many extended-hours bars exist.
+
+        Returns:
+            (bars_list, date)  or  ([], None) if ticker has no stored data.
+        """
+        p = ph()
+        conn = get_conn(self.db_path)
+        cursor = dict_cursor(conn)
+
+        # Step 1 — find the latest datetime for this ticker
+        cursor.execute(f"""
+            SELECT datetime
+            FROM intraday_bars
+            WHERE ticker = {p}
+            ORDER BY datetime DESC
+            LIMIT 1
+        """, (ticker,))
+        row = cursor.fetchone()
+        if not row:
+            conn.close()
+            return [], None
+
+        last_dt = row["datetime"]
+        if isinstance(last_dt, str):
+            last_dt = datetime.fromisoformat(last_dt)
+        if hasattr(last_dt, "tzinfo") and last_dt.tzinfo is not None:
+            last_dt = last_dt.replace(tzinfo=None)
+        latest_date = last_dt.date()
+
+        # Step 2 — fetch every bar on that calendar date
+        date_start = datetime.combine(latest_date, dtime(0, 0, 0))
+        date_end   = datetime.combine(latest_date, dtime(23, 59, 59))
+
+        cursor.execute(f"""
+            SELECT datetime, open, high, low, close, volume
+            FROM intraday_bars
+            WHERE ticker   = {p}
+              AND datetime >= {p}
+              AND datetime <= {p}
+            ORDER BY datetime ASC
+        """, (ticker, date_start, date_end))
+
+        rows = cursor.fetchall()
+        conn.close()
+
+        bars = []
+        for row in rows:
+            dt = row["datetime"]
+            if isinstance(dt, str):
+                dt = datetime.fromisoformat(dt)
+            if hasattr(dt, "tzinfo") and dt.tzinfo is not None:
+                dt = dt.replace(tzinfo=None)
+            bars.append({
+                "datetime": dt,
+                "open":     row["open"],
+                "high":     row["high"],
+                "low":      row["low"],
+                "close":    row["close"],
+                "volume":   row["volume"]
+            })
+
+        return bars, latest_date
+
     # ═════════════════════════════════════════════════════════════
     # LIVE DATA (EODHD /api/real-time/) — current in-progress session
     # ═════════════════════════════════════════════════════════════
@@ -253,11 +328,6 @@ class DataManager:
         """
         Fetch real-time price snapshots for up to 50 tickers in ONE API call.
         Uses EODHD /api/real-time/{primary}?s={rest} bulk endpoint.
-
-        Response fields used:
-          close    → current price (15-min delayed on standard plan)
-          volume   → cumulative day volume (used to compute per-minute delta)
-          timestamp → Unix UTC timestamp of the quote
         """
         if not tickers:
             return {}
@@ -274,7 +344,6 @@ class DataManager:
             r.raise_for_status()
             data = r.json()
 
-            # API returns a dict for single ticker, list for multiple
             if isinstance(data, dict):
                 data = [data]
 
@@ -300,15 +369,8 @@ class DataManager:
 
     def _accumulate_bar(self, ticker: str, snapshot: Dict):
         """
-        Insert a single real-time snapshot into the in-memory 1-minute bar store.
-
-        Since /api/real-time/ returns current price + cumulative day volume (not
-        per-minute OHLCV), we build 1-minute bars by:
-          open   → first price seen in that minute
-          high   → running max price in that minute
-          low    → running min price in that minute
-          close  → latest price in that minute
-          volume → delta of cumulative volume vs previous minute's cum_vol
+        Insert a real-time price snapshot into the in-memory 1-minute bar store.
+        Builds OHLCV bars from cumulative-volume deltas.
         """
         dt      = snapshot["datetime"]
         minute  = dt.replace(second=0, microsecond=0)
@@ -321,13 +383,12 @@ class DataManager:
         bars = _live_minute_data[ticker]
 
         if minute not in bars:
-            # New 1-minute bar — compute volume delta from previous minute
             prev_keys = sorted(m for m in bars if m < minute)
             if prev_keys:
                 last_cum = bars[prev_keys[-1]]["cum_vol"]
                 bar_vol  = max(0, cum_vol - last_cum)
             else:
-                bar_vol  = cum_vol  # first bar of the session
+                bar_vol  = cum_vol
 
             bars[minute] = {
                 "datetime": minute,
@@ -336,35 +397,27 @@ class DataManager:
                 "low":      price,
                 "close":    price,
                 "volume":   bar_vol,
-                "cum_vol":  cum_vol   # internal — stripped in get_live_bars_today
+                "cum_vol":  cum_vol
             }
         else:
             b = bars[minute]
-            b["high"]   = max(b["high"], price)
-            b["low"]    = min(b["low"],  price)
-            b["close"]  = price
+            b["high"]    = max(b["high"], price)
+            b["low"]     = min(b["low"],  price)
+            b["close"]   = price
             b["cum_vol"] = cum_vol
-            # Recompute volume delta
             prev_keys = sorted(m for m in bars if m < minute)
             if prev_keys:
                 b["volume"] = max(0, cum_vol - bars[prev_keys[-1]]["cum_vol"])
 
     def bulk_update_live_bars(self, tickers: List[str]) -> int:
-        """
-        One call per scanner cycle — fetches all tickers in bulk and
-        accumulates each snapshot into its 1-minute bar.
-        Returns the number of tickers successfully updated.
-        """
+        """One call per scanner cycle — bulk fetch + accumulate for all tickers."""
         snapshots = self.bulk_fetch_live_snapshots(tickers)
         for ticker, snap in snapshots.items():
             self._accumulate_bar(ticker, snap)
         return len(snapshots)
 
     def get_live_bars_today(self, ticker: str) -> List[Dict]:
-        """
-        Return today's accumulated live 1-minute bars sorted chronologically.
-        Strips the internal 'cum_vol' field before returning.
-        """
+        """Return today's accumulated live 1-minute bars sorted chronologically."""
         if ticker not in _live_minute_data:
             return []
         today = datetime.now(ET).date()
