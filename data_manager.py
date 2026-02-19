@@ -3,6 +3,7 @@ Data Manager - Consolidated Data Fetching, Storage, and Database Management
 Replaces: incremental_fetch.py, historical_loader.py, database_setup.py
 Handles all data operations for War Machine
 """
+import time
 import os
 import requests
 from datetime import datetime, timedelta
@@ -115,36 +116,50 @@ class DataManager:
             print(f"[DATA] ❌ Unexpected error for {ticker}: {e}")
             return []
 
-    
-    def store_bars(self, ticker: str, bars: List[Dict]):
-        """Store bars in database (upsert to avoid duplicates)."""
-        if not bars:
-            return
 
-        conn = get_conn(self.db_path)
-        cursor = conn.cursor()
-        inserted = 0
+def store_bars(self, ticker: str, bars: List[Dict]):
+    if not bars:
+        return
 
-        for bar in bars:
-            try:
-                cursor.execute(upsert_bar_sql(), (
-                    ticker,
-                    bar["datetime"],
-                    bar["open"],
-                    bar["high"],
-                    bar["low"],
-                    bar["close"],
-                    bar["volume"]
-                ))
-                inserted += 1
-            except Exception as e:
-                print(f"[DATA] Error inserting bar: {e}")
-                continue
+    max_retries = 3
+    for attempt in range(max_retries):
+        conn = None
+        try:
+            conn = get_conn(self.db_path)
+            cursor = dict_cursor(conn)
 
-        cursor.execute(upsert_metadata_sql(), (ticker, bars[-1]["datetime"], len(bars)))
-        conn.commit()
-        conn.close()
-        print(f"[DATA] Stored {inserted} bars for {ticker}")
+            # Bulk insert — ONE round trip, not 1900 separate inserts
+            data = [
+                (ticker, bar['datetime'], bar['open'], bar['high'],
+                 bar['low'], bar['close'], bar['volume'])
+                for bar in bars
+            ]
+            cursor.executemany(upsert_bar_sql(), data)
+            cursor.execute(upsert_metadata_sql(),
+                           (ticker, bars[-1]['datetime'], len(bars)))
+            conn.commit()
+            print(f"[DATA] Stored {len(bars)} bars for {ticker}")
+            return  # success — exit
+
+        except Exception as e:
+            if conn:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+            print(f"[DATA] Store attempt {attempt + 1}/{max_retries} failed for {ticker}: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(1)  # brief pause before retry
+
+        finally:
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+    print(f"[DATA] ❌ All {max_retries} store attempts failed for {ticker}")
+
     
     def get_bars_from_memory(self, ticker: str, limit: int = 300) -> List[Dict]:
         """Retrieve bars from database."""
