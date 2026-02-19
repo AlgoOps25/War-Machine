@@ -214,21 +214,27 @@ def clear_armed_signals():
 def process_ticker(ticker: str):
     """
     Main CFW6 strategy processor:
-    1. Guard: skip if already armed today
-    2. Update memory DB via data_manager
-    3. Get bars from memory, filter to TODAY only
-    4. Compute Opening Range (9:30-9:40 ET)
-    5. Detect ORB breakout
-    6. Detect FVG after breakout
-    7. CFW6 candle confirmation (A+/A/A-)
-    8. Multi-factor confirmation layers
-    9. Calculate stops & targets
+    1.  Guard: skip if already armed today
+    2.  Update memory DB via data_manager
+    3.  Get bars from memory
+    3b. Filter to LATEST AVAILABLE DATE
+        NOTE: EODHD intraday endpoint has a ~1 trading-day delay — it does not
+        include the current live session.  We use the most recent date present
+        in the returned data so the pipeline runs on the freshest complete
+        session.  Replace with a real-time feed (Alpaca / IBKR) to get same-day
+        signals.
+    4.  Compute Opening Range (9:30-9:40 ET)
+    5.  Detect ORB breakout
+    6.  Detect FVG after breakout
+    7.  CFW6 candle confirmation (A+/A/A-)
+    8.  Multi-factor confirmation layers
+    9.  Calculate stops & targets
     10. Get options recommendation
     11. Compute final confidence (AI + MTF boost)
     12. ARM ticker & open position
     """
     try:
-        # STEP 1 — Re-arm guard: one signal per ticker per day
+        # STEP 1 — Re-arm guard: one signal per ticker per session
         if ticker in armed_signals:
             return
 
@@ -236,16 +242,21 @@ def process_ticker(ticker: str):
         data_manager.update_ticker(ticker)
 
         # STEP 3 — Get bars from memory (multi-day pool)
-        bars = data_manager.get_bars_from_memory(ticker, limit=300)
+        bars = data_manager.get_bars_from_memory(ticker, limit=390)
         if not bars or len(bars) < 50:
             return
 
-        # STEP 3b — Filter to TODAY only (prevents stale breakouts from prior sessions)
-        today = _now_et().date()
-        bars_today = [b for b in bars if b["datetime"].date() == today]
+        # STEP 3b — Use the latest available date in the dataset
+        # EODHD intraday API returns completed sessions only; today's live
+        # session is NOT included.  latest_date gives us the most recent
+        # full trading day (e.g. yesterday).
+        latest_date = max(b["datetime"].date() for b in bars)
+        bars_today  = [b for b in bars if b["datetime"].date() == latest_date]
         if len(bars_today) < 20:
-            print(f"[{ticker}] Only {len(bars_today)} bars today — skipping")
+            print(f"[{ticker}] Only {len(bars_today)} bars for {latest_date} — skipping")
             return
+
+        print(f"[{ticker}] Scanning {latest_date} ({len(bars_today)} bars)")
 
         # STEP 4 — OPENING RANGE (9:30-9:40 ET)
         or_high, or_low = compute_opening_range_from_bars(bars_today)
