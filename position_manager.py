@@ -333,19 +333,19 @@ class PositionManager:
         }
 
     def get_win_rate(self, lookback_days: int = 30) -> Dict:
-        """Return win rate over a lookback period."""
+        #Return win rate over a lookback period.#
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         since = (datetime.now() - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
         cursor.execute("""
             SELECT grade,
-                   COUNT(*) as total,
-                   SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
-                   AVG(pnl) as avg_pnl
+                    COUNT(*) as total,
+                    SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
+                    AVG(pnl) as avg_pnl
             FROM positions
             WHERE status = 'CLOSED'
-              AND DATE(exit_time) >= ?
+                AND DATE(exit_time) >= ?
             GROUP BY grade
         """, (since,))
         rows = cursor.fetchall()
@@ -364,51 +364,52 @@ class PositionManager:
             }
         return stats
 
-def generate_report(self) -> str:
-    """Generate end-of-day performance report string."""
-    stats = self.get_daily_stats()
-    win_rate_data = self.get_win_rate(lookback_days=30)
+    def generate_report(self) -> str:   # ← 4-space indent = INSIDE class ✅
+        """Generate end-of-day performance report string."""
+        stats = self.get_daily_stats()
+        win_rate_data = self.get_win_rate(lookback_days=30)
 
-    trades    = stats.get("trades", 0)
-    wins      = stats.get("wins", 0)
-    losses    = stats.get("losses", 0)
-    total_pnl = stats.get("total_pnl", 0.0)
-    win_rate  = stats.get("win_rate", 0.0)
+        trades    = stats.get("trades", 0)
+        wins      = stats.get("wins", 0)
+        losses    = stats.get("losses", 0)
+        total_pnl = stats.get("total_pnl", 0.0)
+        win_rate  = stats.get("win_rate", 0.0)
 
-    lines = [
-        "=" * 50,
-        "WAR MACHINE — END OF DAY REPORT",
-        "=" * 50,
-        f"Date:         {datetime.now().strftime('%A, %B %d, %Y')}",
-        f"Total Trades: {trades}",
-        f"Winners:      {wins}",
-        f"Losers:       {losses}",
-        f"Win Rate:     {win_rate:.1f}%",
-        f"Net P&L:      ${total_pnl:+.2f}",
-        "",
-        "— 30-Day Grade Breakdown —"
-    ]
+        lines = [
+            "=" * 50,
+            "WAR MACHINE — END OF DAY REPORT",
+            "=" * 50,
+            f"Date:         {datetime.now().strftime('%A, %B %d, %Y')}",
+            f"Total Trades: {trades}",
+            f"Winners:      {wins}",
+            f"Losers:       {losses}",
+            f"Win Rate:     {win_rate:.1f}%",
+            f"Net P&L:      ${total_pnl:+.2f}",
+            "",
+            "— 30-Day Grade Breakdown —"
+        ]
 
-    if win_rate_data:
-        for grade in ["A+", "A", "A-"]:
-            if grade in win_rate_data:
-                g = win_rate_data[grade]
-                lines.append(
-                    f"  {grade}: {g['total']} trades | "
-                    f"{g['win_rate']:.1f}% WR | "
-                    f"Avg P&L: ${g['avg_pnl']:+.2f}"
-                )
-    else:
-        lines.append("  No grade data yet.")
+        if win_rate_data:
+            for grade in ["A+", "A", "A-"]:
+                if grade in win_rate_data:
+                    g = win_rate_data[grade]
+                    lines.append(
+                        f"  {grade}: {g['total']} trades | "
+                        f"{g['win_rate']:.1f}% WR | "
+                        f"Avg P&L: ${g['avg_pnl']:+.2f}"
+                    )
+        else:
+            lines.append("  No grade data yet.")
 
-    lines.append("=" * 50)
-    return "\n".join(lines)
+        lines.append("=" * 50)
+        return "\n".join(lines)
 
-# Global singleton
+
+# ── Global singleton ──────────────────────────────────────────
 position_manager = PositionManager()
 
 
-# Legacy compatibility shims
+# ── Legacy compatibility shims ────────────────────────────────
 def update_ticker(ticker: str):
     """Legacy function — calls DataManager."""
     from data_manager import data_manager
@@ -419,3 +420,60 @@ def cleanup_old_bars(days_to_keep: int = 7):
     """Legacy function — calls DataManager."""
     from data_manager import data_manager
     data_manager.cleanup_old_bars(days_to_keep)
+
+
+    def generate_report(self) -> str:
+        """Generate end-of-day performance report string."""
+        stats = self.get_daily_stats()
+        win_rate_data = self.get_win_rate(lookback_days=30)
+
+        trades    = stats.get("trades", 0)
+        wins      = stats.get("wins", 0)
+        losses    = stats.get("losses", 0)
+        total_pnl = stats.get("total_pnl", 0.0)
+        win_rate  = stats.get("win_rate", 0.0)
+
+        lines = [
+            "=" * 50,
+            "WAR MACHINE — END OF DAY REPORT",
+            "=" * 50,
+            f"Date:         {datetime.now().strftime('%A, %B %d, %Y')}",
+            f"Total Trades: {trades}",
+            f"Winners:      {wins}",
+            f"Losers:       {losses}",
+            f"Win Rate:     {win_rate:.1f}%",
+            f"Net P&L:      ${total_pnl:+.2f}",
+            "",
+            "— 30-Day Grade Breakdown —"
+        ]
+
+        if win_rate_data:
+            for grade in ["A+", "A", "A-"]:
+                if grade in win_rate_data:
+                    g = win_rate_data[grade]
+                    lines.append(
+                        f"  {grade}: {g['total']} trades | "
+                        f"{g['win_rate']:.1f}% WR | "
+                        f"Avg P&L: ${g['avg_pnl']:+.2f}"
+                    )
+        else:
+            lines.append("  No grade data yet.")
+
+        lines.append("=" * 50)
+        return "\n".join(lines)
+
+
+    # Global singleton
+    position_manager = PositionManager()
+
+    # Legacy compatibility shims
+    def update_ticker(ticker: str):
+        """Legacy function — calls DataManager."""
+        from data_manager import data_manager
+        data_manager.update_ticker(ticker)
+
+
+    def cleanup_old_bars(days_to_keep: int = 7):
+        """Legacy function — calls DataManager."""
+        from data_manager import data_manager
+        data_manager.cleanup_old_bars(days_to_keep)
