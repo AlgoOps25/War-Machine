@@ -119,6 +119,8 @@ POSITION_RISK = {
     "conservative":       0.014         # 1.4% for marginal signals
 }
 
+ACCOUNT_SIZE   = 25_000     # ← ADD: Your trading account size in dollars
+MAX_CONTRACTS  = 10         # ← ADD: Hard cap on contracts per trade
 # ══════════════════════════════════════════════════════════════════════════════
 # CONFIDENCE DECAY SETTINGS
 # ══════════════════════════════════════════════════════════════════════════════

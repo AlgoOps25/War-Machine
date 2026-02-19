@@ -8,65 +8,126 @@ import os
 from datetime import datetime, timedelta
 from typing import Dict, List
 import numpy as np
-
+import db_connection
 
 class AILearningEngine:
     def __init__(self, db_path: str = "learning_data.json"):
         self.db_path = db_path
+        self._init_learning_table()
         self.data = self.load_data()
+    
+    def _init_learning_table(self):
+        """Create AI learning state table in PostgreSQL."""
+        if not db_connection.USE_POSTGRES:
+            return
+        try:
+            conn = db_connection.get_conn()
+            cursor = conn.cursor()
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS ai_learning_state (
+                    id INTEGER PRIMARY KEY DEFAULT 1,
+                    data JSONB NOT NULL,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    CONSTRAINT single_row CHECK (id = 1)
+                )
+            """)
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"[AI] Error creating learning table: {e}")
         
     def load_data(self) -> Dict:
-        """Load historical learning data."""
-        if os.path.exists(self.db_path):
-            with open(self.db_path, 'r') as f:
-                return json.load(f)
-        
-        return {
+        """Load learning data from PostgreSQL or JSON file."""
+        default_data = {
             "trades": [],
             "pattern_performance": {},
             "ticker_performance": {},
             "timeframe_performance": {},
             "confirmation_weights": {
-                "vwap": 1.0,
-                "prev_day": 1.0,
-                "institutional": 1.0,
-                "options_flow": 1.0
+                "vwap": 1.0, "prev_day": 1.0,
+                "institutional": 1.0, "options_flow": 1.0
             },
             "fvg_size_optimal": 0.002,
             "or_break_threshold_optimal": 0.001,
             "last_update": None
         }
+
+        if db_connection.USE_POSTGRES:
+            try:
+                conn = db_connection.get_conn()
+                cursor = db_connection.dict_cursor(conn)
+                cursor.execute("SELECT data FROM ai_learning_state WHERE id = 1")
+                row = cursor.fetchone()
+                conn.close()
+                if row:
+                    d = row["data"]
+                    return d if isinstance(d, dict) else json.loads(d)
+            except Exception as e:
+                print(f"[AI] Error loading from PostgreSQL: {e}")
+            return default_data
+
+        # SQLite: load from JSON file
+        if os.path.exists(self.db_path):
+            try:
+                with open(self.db_path, "r") as f:
+                    return json.load(f)
+            except Exception as e:
+                print(f"[AI] Error loading JSON: {e}")
+        return default_data
+
     
     def save_data(self):
-        """Save learning data to disk."""
+        """Save learning data to PostgreSQL or JSON file."""
         self.data["last_update"] = datetime.now().isoformat()
-        with open(self.db_path, 'w') as f:
-            json.dump(self.data, f, indent=2)
-    
-    def record_trade(self, trade: Dict):
-        """Record a completed trade for learning."""
-        trade_record = {
-            "timestamp": datetime.now().isoformat(),
-            "ticker": trade["ticker"],
-            "direction": trade["direction"],
-            "grade": trade["grade"],
-            "entry": trade["entry"],
-            "exit": trade["exit"],
-            "pnl": trade["pnl"],
-            "win": trade["pnl"] > 0,
-            "hold_duration": trade.get("hold_duration", 0),
-            "fvg_size": trade.get("fvg_size", 0),
-            "or_break_size": trade.get("or_break_size", 0),
-            "confirmations": trade.get("confirmations", {}),
-            "timeframe": trade.get("timeframe", "1m")
-        }
+
+        if db_connection.USE_POSTGRES:
+            try:
+                conn = db_connection.get_conn()
+                cursor = conn.cursor()
+                cursor.execute("""
+                    INSERT INTO ai_learning_state (id, data, updated_at)
+                    VALUES (1, %s::jsonb, CURRENT_TIMESTAMP)
+                    ON CONFLICT (id) DO UPDATE SET
+                        data       = EXCLUDED.data,
+                        updated_at = CURRENT_TIMESTAMP
+                """, (json.dumps(self.data),))
+                conn.commit()
+                conn.close()
+            except Exception as e:
+                print(f"[AI] Error saving to PostgreSQL: {e}")
+            return
+
+        # SQLite: save to JSON file
+        try:
+            with open(self.db_path, "w") as f:
+                json.dump(self.data, f, indent=2)
+        except Exception as e:
+            print(f"[AI] Error saving JSON: {e}")
         
-        self.data["trades"].append(trade_record)
-        self.update_performance_metrics(trade_record)
-        self.save_data()
-        
-        print(f"[AI] Trade recorded: {trade['ticker']} {trade['direction']} → "
-              f"{'WIN' if trade_record['win'] else 'LOSS'} ${trade['pnl']:+.2f}")
+        def record_trade(self, trade: Dict):
+            """Record a completed trade for learning."""
+            trade_record = {
+                "timestamp": datetime.now().isoformat(),
+                "ticker": trade["ticker"],
+                "direction": trade["direction"],
+                "grade": trade["grade"],
+                "entry": trade["entry"],
+                "exit": trade["exit"],
+                "pnl": trade["pnl"],
+                "win": trade["pnl"] > 0,
+                "hold_duration": trade.get("hold_duration", 0),
+                "fvg_size": trade.get("fvg_size", 0),
+                "or_break_size": trade.get("or_break_size", 0),
+                "confirmations": trade.get("confirmations", {}),
+                "timeframe": trade.get("timeframe", "1m")
+            }
+            
+            self.data["trades"].append(trade_record)
+            self.update_performance_metrics(trade_record)
+            self.save_data()
+            
+            print(f"[AI] Trade recorded: {trade['ticker']} {trade['direction']} → "
+                f"{'WIN' if trade_record['win'] else 'LOSS'} ${trade['pnl']:+.2f}")
     
     def update_performance_metrics(self, trade: Dict):
         """Update performance tracking by pattern, ticker, timeframe."""

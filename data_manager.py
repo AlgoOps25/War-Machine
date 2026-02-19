@@ -3,12 +3,14 @@ Data Manager - Consolidated Data Fetching, Storage, and Database Management
 Replaces: incremental_fetch.py, historical_loader.py, database_setup.py
 Handles all data operations for War Machine
 """
-import sqlite3
-import requests
 import os
+import requests
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 import config
+import db_connection
+from db_connection import get_conn, ph, dict_cursor, serial_pk, upsert_bar_sql, upsert_metadata_sql
+
 
 class DataManager:
     def __init__(self, db_path: str = "market_memory.db"):
@@ -17,14 +19,13 @@ class DataManager:
         self.initialize_database()
     
     def initialize_database(self):
-        """Create all necessary database tables"""
-        conn = sqlite3.connect(self.db_path)
+    #Create all necessary database tables#
+        conn = get_conn(self.db_path)
         cursor = conn.cursor()
-        
-        # Intraday bars table
-        cursor.execute("""
+
+        cursor.execute(f"""
             CREATE TABLE IF NOT EXISTS intraday_bars (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id {serial_pk()},
                 ticker TEXT NOT NULL,
                 datetime TIMESTAMP NOT NULL,
                 open REAL NOT NULL,
@@ -36,14 +37,12 @@ class DataManager:
                 UNIQUE(ticker, datetime)
             )
         """)
-        
-        # Create index for faster queries
+
         cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_ticker_datetime 
+            CREATE INDEX IF NOT EXISTS idx_ticker_datetime
             ON intraday_bars(ticker, datetime DESC)
         """)
-        
-        # Metadata table to track last update times
+
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS fetch_metadata (
                 ticker TEXT PRIMARY KEY,
@@ -52,12 +51,12 @@ class DataManager:
                 bar_count INTEGER DEFAULT 0
             )
         """)
-        
+
         conn.commit()
         conn.close()
-        
-        print(f"[DATA] Database initialized: {self.db_path}")
-    
+        db_type = "PostgreSQL" if db_connection.USE_POSTGRES else self.db_path
+        print(f"[DATA] Database initialized: {db_type}")
+
     def fetch_intraday_bars(self, ticker: str, interval: str = "1m",
                             from_date: str = None, to_date: str = None) -> List[Dict]:
         """
@@ -118,21 +117,17 @@ class DataManager:
 
     
     def store_bars(self, ticker: str, bars: List[Dict]):
-        """Store bars in database (upsert to avoid duplicates)"""
+        """Store bars in database (upsert to avoid duplicates)."""
         if not bars:
             return
-        
-        conn = sqlite3.connect(self.db_path)
+
+        conn = get_conn(self.db_path)
         cursor = conn.cursor()
-        
         inserted = 0
+
         for bar in bars:
             try:
-                cursor.execute("""
-                    INSERT OR REPLACE INTO intraday_bars 
-                    (ticker, datetime, open, high, low, close, volume)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                """, (
+                cursor.execute(upsert_bar_sql(), (
                     ticker,
                     bar["datetime"],
                     bar["open"],
@@ -145,50 +140,45 @@ class DataManager:
             except Exception as e:
                 print(f"[DATA] Error inserting bar: {e}")
                 continue
-        
-        # Update metadata
-        cursor.execute("""
-            INSERT OR REPLACE INTO fetch_metadata 
-            (ticker, last_fetch, last_bar_time, bar_count)
-            VALUES (?, CURRENT_TIMESTAMP, ?, ?)
-        """, (ticker, bars[-1]["datetime"], len(bars)))
-        
+
+        cursor.execute(upsert_metadata_sql(), (ticker, bars[-1]["datetime"], len(bars)))
         conn.commit()
         conn.close()
-        
         print(f"[DATA] Stored {inserted} bars for {ticker}")
     
     def get_bars_from_memory(self, ticker: str, limit: int = 300) -> List[Dict]:
-        """Retrieve bars from local database"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute("""
+        """Retrieve bars from database."""
+        p = ph()
+        conn = get_conn(self.db_path)
+        cursor = dict_cursor(conn)
+
+        cursor.execute(f"""
             SELECT datetime, open, high, low, close, volume
             FROM intraday_bars
-            WHERE ticker = ?
+            WHERE ticker = {p}
             ORDER BY datetime DESC
-            LIMIT ?
+            LIMIT {p}
         """, (ticker, limit))
-        
+
         rows = cursor.fetchall()
         conn.close()
-        
+
         if not rows:
             return []
-        
-        # Convert to dict format (reverse to chronological order)
+
         bars = []
         for row in reversed(rows):
+            dt = row["datetime"]
+            if isinstance(dt, str):          # SQLite returns string
+                dt = datetime.fromisoformat(dt)
             bars.append({
-                "datetime": datetime.fromisoformat(row[0]),
-                "open": row[1],
-                "high": row[2],
-                "low": row[3],
-                "close": row[4],
-                "volume": row[5]
+                "datetime": dt,
+                "open":     row["open"],
+                "high":     row["high"],
+                "low":      row["low"],
+                "close":    row["close"],
+                "volume":   row["volume"]
             })
-        
         return bars
     
     def update_ticker(self, ticker: str):
@@ -215,52 +205,46 @@ class DataManager:
 
     
     def cleanup_old_bars(self, days_to_keep: int = 7):
-        """Remove bars older than specified days to save space"""
+        """Remove bars older than specified days."""
         cutoff_date = datetime.now() - timedelta(days=days_to_keep)
-        
-        conn = sqlite3.connect(self.db_path)
+        p = ph()
+        conn = get_conn(self.db_path)
         cursor = conn.cursor()
-        
-        cursor.execute("""
-            DELETE FROM intraday_bars 
-            WHERE datetime < ?
-        """, (cutoff_date,))
-        
+        cursor.execute(f"DELETE FROM intraday_bars WHERE datetime < {p}", (cutoff_date,))
         deleted = cursor.rowcount
         conn.commit()
         conn.close()
-        
         print(f"[CLEANUP] Removed {deleted} old bars (keeping last {days_to_keep} days)")
-    
+
     def get_database_stats(self) -> Dict:
-        """Get database statistics"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        # Total bars
-        cursor.execute("SELECT COUNT(*) FROM intraday_bars")
-        total_bars = cursor.fetchone()[0]
-        
-        # Unique tickers
-        cursor.execute("SELECT COUNT(DISTINCT ticker) FROM intraday_bars")
-        unique_tickers = cursor.fetchone()[0]
-        
-        # Date range
-        cursor.execute("SELECT MIN(datetime), MAX(datetime) FROM intraday_bars")
-        date_range = cursor.fetchone()
-        
-        # Database size
-        db_size = os.path.getsize(self.db_path) / (1024 * 1024)  # MB
-        
+        """Get database statistics."""
+        conn = get_conn(self.db_path)
+        cursor = dict_cursor(conn)
+
+        cursor.execute("SELECT COUNT(*) as cnt FROM intraday_bars")
+        total_bars = cursor.fetchone()["cnt"]
+
+        cursor.execute("SELECT COUNT(DISTINCT ticker) as cnt FROM intraday_bars")
+        unique_tickers = cursor.fetchone()["cnt"]
+
+        cursor.execute("SELECT MIN(datetime) as mn, MAX(datetime) as mx FROM intraday_bars")
+        row = cursor.fetchone()
+        date_range = (row["mn"], row["mx"])
+
+        if db_connection.USE_POSTGRES:
+            cursor.execute("SELECT pg_size_pretty(pg_database_size(current_database())) as sz")
+            db_size = cursor.fetchone()["sz"]
+        else:
+            db_size = f"{os.path.getsize(self.db_path) / (1024 * 1024):.1f} MB"
+
         conn.close()
-        
         return {
-            "total_bars": total_bars,
+            "total_bars":     total_bars,
             "unique_tickers": unique_tickers,
-            "date_range": date_range,
-            "size_mb": db_size
+            "date_range":     date_range,
+            "size":           db_size
         }
-    
+
     def load_historical_data(self, ticker: str, days: int = 30) -> List[Dict]:
         """
         Load historical data for backtesting
