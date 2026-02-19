@@ -218,8 +218,9 @@ def process_ticker(ticker: str):
     Data source priority:
       1. Today's LIVE bars (from /api/real-time/ accumulator, pre-polled in bulk
          by scanner.py before this loop).  Available after ~9:45 AM ET (15-min delay).
-      2. Latest HISTORICAL session (from /api/intraday/, completed sessions only).
-         Used as fallback when live bars are insufficient (<20 bars).
+      2. Latest HISTORICAL session (from /api/intraday/).  Uses get_latest_session_bars()
+         which queries by DATE so the full day (including 9:30 AM) is always present.
+         EODHD returns extended-hours data; a row-count limit would miss the open.
     """
     try:
         # STEP 1 — Re-arm guard: one signal per ticker per session
@@ -233,27 +234,26 @@ def process_ticker(ticker: str):
         bars_live = data_manager.get_live_bars_today(ticker)
 
         if len(bars_live) >= 20:
+            # ✅ Live data available — use today's real session
             bars_session  = bars_live
             session_label = f"LIVE {_now_et().date()}"
         else:
-            bars = data_manager.get_bars_from_memory(ticker, limit=390)
-            if not bars or len(bars) < 50:
-                print(f"[{ticker}] ⚠️ Insufficient bars in DB: {len(bars) if bars else 0}")
+            # ⏳ Live not ready yet — fall back to latest completed session
+            # IMPORTANT: use get_latest_session_bars() (date query) NOT get_bars_from_memory(limit=390)
+            # EODHD extended-hours days are ~960 bars; a limit of 390 would cut off the 9:30 AM open.
+            bars_session, latest_date = data_manager.get_latest_session_bars(ticker)
+            if not bars_session or len(bars_session) < 50:
+                print(f"[{ticker}] \u26a0\ufe0f Insufficient session bars: {len(bars_session) if bars_session else 0}")
                 return
-            latest_date  = max(b["datetime"].date() for b in bars)
-            bars_session = [b for b in bars if b["datetime"].date() == latest_date]
             session_label = f"HIST {latest_date}"
-            if len(bars_session) < 20:
-                print(f"[{ticker}] Only {len(bars_session)} bars for {latest_date} — skipping")
-                return
 
         print(f"[{ticker}] Scanning {session_label} ({len(bars_session)} bars)")
 
-        # — Debug: show first/last bar times so we can confirm the window —
+        # — Debug: confirm bar window covers the opening range —
         if bars_session:
             t_first = _bar_time(bars_session[0])
             t_last  = _bar_time(bars_session[-1])
-            print(f"[{ticker}] Bar window: {t_first} → {t_last}")
+            print(f"[{ticker}] Bar window: {t_first} \u2192 {t_last}")
 
         # STEP 4 — OPENING RANGE (9:30-9:40 ET)
         or_high, or_low = compute_opening_range_from_bars(bars_session)
@@ -262,20 +262,20 @@ def process_ticker(ticker: str):
                 1 for b in bars_session
                 if _bar_time(b) and time(9, 30) <= _bar_time(b) < time(9, 40)
             )
-            print(f"[{ticker}] ❌ No OR: only {or_count} bars in 9:30–9:40 window")
+            print(f"[{ticker}] \u274c No OR: only {or_count} bars in 9:30\u20139:40 window")
             return
         print(f"[{ticker}] OR: low=${or_low:.2f} high=${or_high:.2f} range=${or_high - or_low:.3f}")
 
         # STEP 5 — BREAKOUT DETECTION
         direction, breakout_idx = detect_breakout_after_or(bars_session, or_high, or_low)
         if not direction:
-            print(f"[{ticker}] — No ORB breakout (threshold {config.ORB_BREAK_THRESHOLD*100:.2f}%)")
+            print(f"[{ticker}] \u2014 No ORB breakout (threshold {config.ORB_BREAK_THRESHOLD*100:.2f}%)")
             return
 
         # STEP 6 — FVG DETECTION
         fvg_low, fvg_high = detect_fvg_after_break(bars_session, breakout_idx, direction)
         if not fvg_low:
-            print(f"[{ticker}] — No FVG after {direction.upper()} breakout (min size {config.FVG_MIN_SIZE_PCT*100:.2f}%)")
+            print(f"[{ticker}] \u2014 No FVG after {direction.upper()} breakout (min size {config.FVG_MIN_SIZE_PCT*100:.2f}%)")
             return
         zone_low  = min(fvg_low, fvg_high)
         zone_high = max(fvg_low, fvg_high)
@@ -286,7 +286,7 @@ def process_ticker(ticker: str):
         )
         found, entry_price, base_grade, confirm_idx, confirm_type = result
         if not found or base_grade == "reject":
-            print(f"[{ticker}] — No confirmation candle (found={found}, grade={base_grade})")
+            print(f"[{ticker}] \u2014 No confirmation candle (found={found}, grade={base_grade})")
             return
 
         # STEP 8 — MULTI-FACTOR CONFIRMATION LAYERS
@@ -300,7 +300,7 @@ def process_ticker(ticker: str):
         )
         final_grade = confirmation_result["final_grade"]
         if final_grade == "reject":
-            print(f"[{ticker}] — Signal rejected after confirmation layers (base={base_grade})")
+            print(f"[{ticker}] \u2014 Signal rejected after confirmation layers (base={base_grade})")
             return
 
         # STEP 9 — CALCULATE STOPS & TARGETS
