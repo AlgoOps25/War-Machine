@@ -1,7 +1,6 @@
 """
 Data Manager - Consolidated Data Fetching, Storage, and Database Management
 Replaces: incremental_fetch.py, historical_loader.py, database_setup.py
-Handles all data operations for War Machine
 """
 import time
 import os
@@ -18,9 +17,9 @@ class DataManager:
         self.db_path = db_path
         self.api_key = config.EODHD_API_KEY
         self.initialize_database()
-    
+
     def initialize_database(self):
-    #Create all necessary database tables#
+        """Create all necessary database tables."""
         conn = get_conn(self.db_path)
         cursor = conn.cursor()
 
@@ -60,13 +59,7 @@ class DataManager:
 
     def fetch_intraday_bars(self, ticker: str, interval: str = "1m",
                             from_date: str = None, to_date: str = None) -> List[Dict]:
-        """
-        Fetch intraday bars from EODHD API.
-        FIX: Uses Unix timestamps — date strings cause 422 errors on this endpoint.
-        """
-        from datetime import datetime, timedelta
-
-        # Build Unix timestamps (EODHD intraday requires these, NOT date strings)
+        """Fetch intraday bars from EODHD API using Unix timestamps."""
         now_dt  = datetime.utcnow()
         from_dt = now_dt - timedelta(days=5)
         from_ts = int(from_dt.timestamp())
@@ -76,8 +69,8 @@ class DataManager:
         params = {
             "api_token": self.api_key,
             "interval":  interval,
-            "from":      from_ts,   # ← Unix int, NOT "YYYY-MM-DD"
-            "to":        to_ts,     # ← Unix int, NOT "YYYY-MM-DD"
+            "from":      from_ts,
+            "to":        to_ts,
             "fmt":       "json"
         }
 
@@ -116,58 +109,69 @@ class DataManager:
             print(f"[DATA] ❌ Unexpected error for {ticker}: {e}")
             return []
 
+    def store_bars(self, ticker: str, bars: List[Dict]):
+        """Bulk insert bars with retry on connection drop."""
+        if not bars:
+            return
 
-def store_bars(self, ticker: str, bars: List[Dict]):
-    if not bars:
-        return
+        max_retries = 3
+        for attempt in range(max_retries):
+            conn = None
+            try:
+                conn = get_conn(self.db_path)
+                cursor = dict_cursor(conn)
 
-    max_retries = 3
-    for attempt in range(max_retries):
-        conn = None
+                data = [
+                    (ticker, bar['datetime'], bar['open'], bar['high'],
+                     bar['low'], bar['close'], bar['volume'])
+                    for bar in bars
+                ]
+                cursor.executemany(upsert_bar_sql(), data)
+                cursor.execute(upsert_metadata_sql(),
+                               (ticker, bars[-1]['datetime'], len(bars)))
+                conn.commit()
+                print(f"[DATA] Stored {len(bars)} bars for {ticker}")
+                return
+
+            except Exception as e:
+                if conn:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                print(f"[DATA] Store attempt {attempt + 1}/{max_retries} failed for {ticker}: {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(1)
+
+            finally:
+                if conn:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+
+        print(f"[DATA] ❌ All {max_retries} store attempts failed for {ticker}")
+
+    def update_ticker(self, ticker: str):
+        """Fetch latest bars and store in database. Called by sniper.py."""
         try:
-            conn = get_conn(self.db_path)
-            cursor = dict_cursor(conn)
+            existing = self.get_bars_from_memory(ticker, limit=1)
 
-            # Bulk insert — ONE round trip, not 1900 separate inserts
-            data = [
-                (ticker, bar['datetime'], bar['open'], bar['high'],
-                 bar['low'], bar['close'], bar['volume'])
-                for bar in bars
-            ]
-            cursor.executemany(upsert_bar_sql(), data)
-            cursor.execute(upsert_metadata_sql(),
-                           (ticker, bars[-1]['datetime'], len(bars)))
-            conn.commit()
-            print(f"[DATA] Stored {len(bars)} bars for {ticker}")
-            return  # success — exit
+            if not existing:
+                print(f"[DATA] Full fetch for {ticker} (5 days)")
+            else:
+                print(f"[DATA] Incremental fetch for {ticker}")
+
+            bars = self.fetch_intraday_bars(ticker)
+
+            if bars:
+                self.store_bars(ticker, bars)
+            else:
+                print(f"[DATA] ⚠️ No bars returned for {ticker}")
 
         except Exception as e:
-            if conn:
-                try:
-                    conn.rollback()
-                except Exception:
-                    pass
-            print(f"[DATA] Store attempt {attempt + 1}/{max_retries} failed for {ticker}: {e}")
-            if attempt < max_retries - 1:
-                time.sleep(1)  # brief pause before retry
+            print(f"[DATA] ❌ Error updating {ticker}: {e}")
 
-        finally:
-            if conn:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
-
-    print(f"[DATA] ❌ All {max_retries} store attempts failed for {ticker}")
-
-    def update_ticker(self, ticker: str) -> list:
-        """Fetch latest bars and store them. Called by sniper.py."""
-        bars = self.fetch_intraday_bars(ticker)
-        if bars:
-            self.store_bars(ticker, bars)
-        return bars or []
-
-    
     def get_bars_from_memory(self, ticker: str, limit: int = 300) -> List[Dict]:
         """Retrieve bars from database."""
         p = ph()
@@ -191,7 +195,7 @@ def store_bars(self, ticker: str, bars: List[Dict]):
         bars = []
         for row in reversed(rows):
             dt = row["datetime"]
-            if isinstance(dt, str):          # SQLite returns string
+            if isinstance(dt, str):
                 dt = datetime.fromisoformat(dt)
             bars.append({
                 "datetime": dt,
@@ -202,7 +206,7 @@ def store_bars(self, ticker: str, bars: List[Dict]):
                 "volume":   row["volume"]
             })
         return bars
-    
+
     def cleanup_old_bars(self, days_to_keep: int = 7):
         """Remove bars older than specified days."""
         cutoff_date = datetime.now() - timedelta(days=days_to_keep)
@@ -245,31 +249,16 @@ def store_bars(self, ticker: str, bars: List[Dict]):
         }
 
     def load_historical_data(self, ticker: str, days: int = 30) -> List[Dict]:
-        """
-        Load historical data for backtesting
-        
-        Args:
-            ticker: Stock symbol
-            days: Number of days to load
-        """
-        from_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
-        to_date = datetime.now().strftime("%Y-%m-%d")
-        
+        """Load historical data for backtesting."""
         print(f"[HISTORICAL] Loading {days} days for {ticker}...")
-        
-        bars = self.fetch_intraday_bars(ticker, interval="1m", 
-                                        from_date=from_date, 
-                                        to_date=to_date)
-        
+        bars = self.fetch_intraday_bars(ticker, interval="1m")
         if bars:
             self.store_bars(ticker, bars)
-        
         return bars
-    
+
     def bulk_update(self, tickers: List[str]):
-        """Update multiple tickers efficiently"""
+        """Update multiple tickers efficiently."""
         print(f"[BULK] Updating {len(tickers)} tickers...")
-        
         for idx, ticker in enumerate(tickers, 1):
             print(f"[{idx}/{len(tickers)}] {ticker}")
             try:
@@ -277,17 +266,16 @@ def store_bars(self, ticker: str, bars: List[Dict]):
             except Exception as e:
                 print(f"[BULK] Error updating {ticker}: {e}")
                 continue
-        
         print(f"[BULK] ✅ Update complete")
 
-# Global instance
+
+# Global singleton
 data_manager = DataManager()
 
-# Helper functions for backward compatibility
+
+# Legacy compatibility shims
 def update_ticker(ticker: str):
-    """Legacy function - calls DataManager"""
     data_manager.update_ticker(ticker)
 
 def cleanup_old_bars(days_to_keep: int = 7):
-    """Legacy function - calls DataManager"""
     data_manager.cleanup_old_bars(days_to_keep)
