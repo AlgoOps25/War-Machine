@@ -6,10 +6,13 @@ import time
 import os
 import requests
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from typing import List, Dict, Optional
 import config
 import db_connection
 from db_connection import get_conn, ph, dict_cursor, serial_pk, upsert_bar_sql, upsert_metadata_sql
+
+ET = ZoneInfo("America/New_York")
 
 
 class DataManager:
@@ -52,6 +55,21 @@ class DataManager:
             )
         """)
 
+        # ── Migration v2: clear UTC-stored bars, switch to ET storage ──────────
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS db_version (version INTEGER UNIQUE)
+        """)
+        cursor.execute("SELECT version FROM db_version LIMIT 1")
+        row = cursor.fetchone()
+        current_version = (row[0] if isinstance(row, (list, tuple)) else row["version"]) if row else 0
+        if current_version < 2:
+            cursor.execute("DELETE FROM intraday_bars")
+            cursor.execute("DELETE FROM fetch_metadata")
+            cursor.execute("DELETE FROM db_version")
+            cursor.execute("INSERT INTO db_version (version) VALUES (2)")
+            print("[DATA] Migration v2: Cleared UTC bars — switching to ET-naive storage")
+        # ──────────────────────────────────────────────────────────────────────
+
         conn.commit()
         conn.close()
         db_type = "PostgreSQL" if db_connection.USE_POSTGRES else self.db_path
@@ -59,7 +77,10 @@ class DataManager:
 
     def fetch_intraday_bars(self, ticker: str, interval: str = "1m",
                             from_date: str = None, to_date: str = None) -> List[Dict]:
-        """Fetch intraday bars from EODHD API using Unix timestamps."""
+        """
+        Fetch intraday bars from EODHD API.
+        Bars are stored as ET-naive datetimes so time comparisons in sniper.py work correctly.
+        """
         now_dt  = datetime.utcnow()
         from_dt = now_dt - timedelta(days=5)
         from_ts = int(from_dt.timestamp())
@@ -87,8 +108,11 @@ class DataManager:
             bars = []
             for bar in data:
                 try:
+                    # Convert Unix timestamp → ET-aware → strip tz → ET-naive
+                    # This ensures bar times (9:30, 9:31 ...) match ET time comparisons in sniper.py
+                    dt_et = datetime.fromtimestamp(bar["timestamp"], tz=ET).replace(tzinfo=None)
                     bars.append({
-                        "datetime": datetime.utcfromtimestamp(bar["timestamp"]),
+                        "datetime": dt_et,
                         "open":     float(bar["open"]),
                         "high":     float(bar["high"]),
                         "low":      float(bar["low"]),
@@ -99,14 +123,14 @@ class DataManager:
                     print(f"[DATA] Bar parse error for {ticker}: {e}")
                     continue
 
-            print(f"[DATA] ✅ {ticker}: {len(bars)} bars fetched")
+            print(f"[DATA] \u2705 {ticker}: {len(bars)} bars fetched")
             return bars
 
         except requests.exceptions.HTTPError as e:
-            print(f"[DATA] ❌ API Error for {ticker}: {e}")
+            print(f"[DATA] \u274c API Error for {ticker}: {e}")
             return []
         except Exception as e:
-            print(f"[DATA] ❌ Unexpected error for {ticker}: {e}")
+            print(f"[DATA] \u274c Unexpected error for {ticker}: {e}")
             return []
 
     def store_bars(self, ticker: str, bars: List[Dict]):
@@ -150,7 +174,7 @@ class DataManager:
                     except Exception:
                         pass
 
-        print(f"[DATA] ❌ All {max_retries} store attempts failed for {ticker}")
+        print(f"[DATA] \u274c All {max_retries} store attempts failed for {ticker}")
 
     def update_ticker(self, ticker: str):
         """Fetch latest bars and store in database. Called by sniper.py."""
@@ -167,10 +191,10 @@ class DataManager:
             if bars:
                 self.store_bars(ticker, bars)
             else:
-                print(f"[DATA] ⚠️ No bars returned for {ticker}")
+                print(f"[DATA] \u26a0\ufe0f No bars returned for {ticker}")
 
         except Exception as e:
-            print(f"[DATA] ❌ Error updating {ticker}: {e}")
+            print(f"[DATA] \u274c Error updating {ticker}: {e}")
 
     def get_bars_from_memory(self, ticker: str, limit: int = 300) -> List[Dict]:
         """Retrieve bars from database."""
@@ -197,6 +221,9 @@ class DataManager:
             dt = row["datetime"]
             if isinstance(dt, str):
                 dt = datetime.fromisoformat(dt)
+            # Strip any timezone info so comparisons stay ET-naive
+            if hasattr(dt, "tzinfo") and dt.tzinfo is not None:
+                dt = dt.replace(tzinfo=None)
             bars.append({
                 "datetime": dt,
                 "open":     row["open"],
@@ -266,7 +293,7 @@ class DataManager:
             except Exception as e:
                 print(f"[BULK] Error updating {ticker}: {e}")
                 continue
-        print(f"[BULK] ✅ Update complete")
+        print(f"[BULK] \u2705 Update complete")
 
 
 # Global singleton
