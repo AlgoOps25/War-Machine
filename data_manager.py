@@ -160,6 +160,13 @@ def store_bars(self, ticker: str, bars: List[Dict]):
 
     print(f"[DATA] ❌ All {max_retries} store attempts failed for {ticker}")
 
+    def update_ticker(self, ticker: str) -> list:
+        """Fetch latest bars and store them. Called by sniper.py."""
+        bars = self.fetch_intraday_bars(ticker)
+        if bars:
+            self.store_bars(ticker, bars)
+        return bars or []
+
     
     def get_bars_from_memory(self, ticker: str, limit: int = 300) -> List[Dict]:
         """Retrieve bars from database."""
