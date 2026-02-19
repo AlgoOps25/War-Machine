@@ -3,16 +3,27 @@ db_connection.py — Dual-mode database utility
 Automatically uses PostgreSQL on Railway (when DATABASE_URL is set),
 falls back to SQLite for local development.
 Import this instead of hardcoding sqlite3 anywhere.
+
+NOTE: Railway provides DATABASE_URL as postgres:// — psycopg2 requires
+postgresql:// — we normalize it automatically here.
 """
 import os
 import sqlite3
 
-DATABASE_URL = os.getenv("DATABASE_URL", "")
-USE_POSTGRES  = bool(DATABASE_URL and "postgresql" in DATABASE_URL)
+# Normalize Railway's postgres:// to postgresql:// for psycopg2
+_raw_url = os.getenv("DATABASE_URL", "")
+if _raw_url.startswith("postgres://"):
+    _raw_url = _raw_url.replace("postgres://", "postgresql://", 1)
+
+DATABASE_URL = _raw_url
+USE_POSTGRES  = bool(DATABASE_URL and DATABASE_URL.startswith("postgresql://"))
 
 if USE_POSTGRES:
     import psycopg2
     import psycopg2.extras
+    print(f"[DB] PostgreSQL mode active")
+else:
+    print(f"[DB] SQLite fallback mode")
 
 
 def get_conn(sqlite_path: str = "war_machine.db"):
@@ -77,5 +88,5 @@ def upsert_metadata_sql() -> str:
     return f"""
         INSERT OR REPLACE INTO fetch_metadata
             (ticker, last_fetch, last_bar_time, bar_count)
-        VALUES ({p}, CURRENT_TIMESTAMP, {p}, {p})
+        Values ({p}, CURRENT_TIMESTAMP, {p}, {p})
     """
