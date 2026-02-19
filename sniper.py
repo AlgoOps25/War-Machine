@@ -172,7 +172,7 @@ def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high,
         timeframe="5m",
         grade=grade,         
         options_data=options_rec
-)
+  )
 
     # Open position in position_manager
     position_id = position_manager.open_position(
