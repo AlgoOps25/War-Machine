@@ -152,8 +152,8 @@ def detect_fvg_after_break(bars: list, breakout_idx: int, direction: str) -> tup
 def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high,
                entry_price, stop_price, t1, t2, confidence, grade, options_rec=None):
     """Arms a ticker after signal confirmation and sends Discord alert."""
-    # ── Minimum stop distance guard (prevents noise-level stops like $0.02) ──
-    # FIX #2: enforce at least 0.20% of entry price as stop distance
+
+    # Minimum stop distance guard (prevents noise-level stops like $0.02)
     MIN_STOP_PCT = 0.002
     min_stop_dist = entry_price * MIN_STOP_PCT
     actual_stop_dist = abs(entry_price - stop_price)
@@ -180,17 +180,21 @@ def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high,
         options_data=options_rec
     )
 
-    # FIX #1: corrected keyword args — was entry= and stop=
+    # Pass all required params; open_position() calculates contracts internally
     position_id = position_manager.open_position(
         ticker=ticker,
         direction=direction,
-        entry_price=entry_price,   # ← FIXED (was: entry=entry_price)
-        stop_price=stop_price,     # ← FIXED (was: stop=stop_price)
+        zone_low=zone_low,
+        zone_high=zone_high,
+        or_low=or_low,
+        or_high=or_high,
+        entry_price=entry_price,
+        stop_price=stop_price,
         t1=t1,
         t2=t2,
-        contracts=1,
+        confidence=confidence,
         grade=grade,
-        confidence=confidence
+        options_rec=options_rec
     )
 
     armed_signals[ticker] = {
@@ -242,10 +246,7 @@ def process_ticker(ticker: str):
         # STEP 3 — Choose data source: live today vs latest historical
         bars_live = data_manager.get_live_bars_today(ticker)
 
-        # FIX #3: raise the live bar threshold so midday scans use today's data.
-        # At 1 PM ET, today should have ~210 bars. 20 is too low — raise to 60
-        # so that HIST fallback only triggers before ~10 AM when truly not ready.
-        if len(bars_live) >= 60:
+        if len(bars_live) >= 20:
             # ✅ Live data available — use today's real session
             bars_session  = bars_live
             session_label = f"LIVE {_now_et().date()}"
