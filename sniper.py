@@ -185,19 +185,18 @@ def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high,
 
     armed_signals[ticker] = {
         "position_id": position_id,
-        "direction":   direction,
-        "entry":       entry_price,
-        "stop":        stop_price,
-        "t1":          t1,
-        "t2":          t2,
-        "zone_low":    zone_low,
-        "zone_high":   zone_high,
-        "or_low":      or_low,
-        "or_high":     or_high,
-        "armed_time":  _now_et().isoformat(),
-        "confidence":  confidence,
-        "grade":       grade,
-        "options":     options_rec
+        "direction": direction,
+        "zone_low": zone_low,
+        "zone_high": zone_high,
+        "or_low": or_low,
+        "or_high": or_high,
+        "entry_price": entry_price,
+        "stop_price": stop_price,
+        "t1": t1,
+        "t2": t2,
+        "confidence": confidence,
+        "grade": grade,
+        "options_rec": options_rec
     }
 
     print(f"[ARMED] {ticker} position opened (ID: {position_id})")
