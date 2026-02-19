@@ -30,7 +30,7 @@ def check_environment():
     print(f"\nEnvironment Variables:")
     print(f"  EODHD_API_KEY:       {'Set (' + api_key[:10] + '...)' if api_key else 'MISSING'}")
     print(f"  DISCORD_WEBHOOK_URL: {'Set' if webhook else 'MISSING'}")
-    print(f"  DATABASE_URL:        {'PostgreSQL' if db_url else 'SQLite Fallback'}")
+    print(f"  DATABASE_URL:        {'Set (' + db_url[:12] + '...)' if db_url and 'postgresql' in db_url else 'SQLite Fallback'}")
 
     now = _now_et()
     print(f"\nCurrent Time (ET): {now.strftime('%I:%M:%S %p')}")
@@ -55,12 +55,13 @@ def check_environment():
 
 
 def initialize_database():
-    """Initialize SQLite database via DataManager."""
+    """Initialize database via DataManager."""
     print("[INIT] Initializing database...")
     try:
         from data_manager import data_manager
         stats = data_manager.get_database_stats()
-        print(f"Database ready: {stats['total_bars']} bars, {stats['unique_tickers']} tickers, {stats['size_mb']:.1f} MB")
+        # 'size' is a string (e.g. "55.6 MB" for PG, "55.6 MB" for SQLite)
+        print(f"Database ready: {stats['total_bars']} bars, {stats['unique_tickers']} tickers, {stats['size']}")
         return data_manager
     except Exception as e:
         print(f"Database initialization error: {e}")
@@ -97,7 +98,7 @@ def load_position_tracker():
         if open_positions:
             print(f"  {len(open_positions)} open positions from previous session:")
             for pos in open_positions:
-                print(f"    {pos['ticker']} {pos['direction'].upper()} | Entry: ${pos['entry']:.2f}")
+                print(f"    {pos['ticker']} {pos['direction'].upper()} | Entry: ${pos['entry_price']:.2f}")
         else:
             print(f"  No open positions")
         return position_manager
