@@ -2,7 +2,6 @@
 db_connection.py — Dual-mode database utility
 Automatically uses PostgreSQL on Railway (when DATABASE_URL is set),
 falls back to SQLite for local development.
-Import this instead of hardcoding sqlite3 anywhere.
 
 NOTE: Railway provides DATABASE_URL as postgres:// — psycopg2 requires
 postgresql:// — we normalize it automatically here.
@@ -10,18 +9,26 @@ postgresql:// — we normalize it automatically here.
 import os
 import sqlite3
 
-# Normalize Railway's postgres:// to postgresql:// for psycopg2
-_raw_url = os.getenv("DATABASE_URL", "")
+# Strip whitespace/newlines, then normalize postgres:// → postgresql://
+_raw_url = os.getenv("DATABASE_URL", "").strip()
 if _raw_url.startswith("postgres://"):
     _raw_url = _raw_url.replace("postgres://", "postgresql://", 1)
 
 DATABASE_URL = _raw_url
 USE_POSTGRES  = bool(DATABASE_URL and DATABASE_URL.startswith("postgresql://"))
 
+# Test the connection at startup — fall back to SQLite if it fails
 if USE_POSTGRES:
-    import psycopg2
-    import psycopg2.extras
-    print(f"[DB] PostgreSQL mode active")
+    try:
+        import psycopg2
+        import psycopg2.extras
+        _test = psycopg2.connect(DATABASE_URL)
+        _test.close()
+        print(f"[DB] PostgreSQL mode active")
+    except Exception as e:
+        print(f"[DB] PostgreSQL connection failed: {e}")
+        print(f"[DB] Falling back to SQLite")
+        USE_POSTGRES = False
 else:
     print(f"[DB] SQLite fallback mode")
 
@@ -88,5 +95,5 @@ def upsert_metadata_sql() -> str:
     return f"""
         INSERT OR REPLACE INTO fetch_metadata
             (ticker, last_fetch, last_bar_time, bar_count)
-        Values ({p}, CURRENT_TIMESTAMP, {p}, {p})
+        VALUES ({p}, CURRENT_TIMESTAMP, {p}, {p})
     """
