@@ -213,63 +213,55 @@ def clear_armed_signals():
 
 def process_ticker(ticker: str):
     """
-    Main CFW6 strategy processor:
-    1.  Guard: skip if already armed today
-    2.  Update memory DB via data_manager
-    3.  Get bars from memory
-    3b. Filter to LATEST AVAILABLE DATE
-        NOTE: EODHD intraday endpoint has a ~1 trading-day delay — it does not
-        include the current live session.  We use the most recent date present
-        in the returned data so the pipeline runs on the freshest complete
-        session.  Replace with a real-time feed (Alpaca / IBKR) to get same-day
-        signals.
-    4.  Compute Opening Range (9:30-9:40 ET)
-    5.  Detect ORB breakout
-    6.  Detect FVG after breakout
-    7.  CFW6 candle confirmation (A+/A/A-)
-    8.  Multi-factor confirmation layers
-    9.  Calculate stops & targets
-    10. Get options recommendation
-    11. Compute final confidence (AI + MTF boost)
-    12. ARM ticker & open position
+    Main CFW6 strategy processor.
+
+    Data source priority:
+      1. Today's LIVE bars (from /api/real-time/ accumulator, pre-polled in bulk
+         by scanner.py before this loop).  Available after ~9:45 AM ET (15-min delay).
+      2. Latest HISTORICAL session (from /api/intraday/, completed sessions only).
+         Used as fallback when live bars are insufficient (<20 bars).
     """
     try:
         # STEP 1 — Re-arm guard: one signal per ticker per session
         if ticker in armed_signals:
             return
 
-        # STEP 2 — Update memory DB
+        # STEP 2 — Ensure historical bars are fresh (TTL-cached, ~1 fetch/hour)
         data_manager.update_ticker(ticker)
 
-        # STEP 3 — Get bars from memory (multi-day pool)
-        bars = data_manager.get_bars_from_memory(ticker, limit=390)
-        if not bars or len(bars) < 50:
-            return
+        # STEP 3 — Choose data source: live today vs latest historical
+        bars_live = data_manager.get_live_bars_today(ticker)
 
-        # STEP 3b — Use the latest available date in the dataset
-        # EODHD intraday API returns completed sessions only; today's live
-        # session is NOT included.  latest_date gives us the most recent
-        # full trading day (e.g. yesterday).
-        latest_date = max(b["datetime"].date() for b in bars)
-        bars_today  = [b for b in bars if b["datetime"].date() == latest_date]
-        if len(bars_today) < 20:
-            print(f"[{ticker}] Only {len(bars_today)} bars for {latest_date} — skipping")
-            return
+        if len(bars_live) >= 20:
+            # ✅ Live data available — use today's real session
+            bars_session  = bars_live
+            session_label = f"LIVE {_now_et().date()}"
+        else:
+            # ⏳ Live not ready yet — fall back to latest completed session
+            bars = data_manager.get_bars_from_memory(ticker, limit=390)
+            if not bars or len(bars) < 50:
+                return
+            latest_date  = max(b["datetime"].date() for b in bars)
+            bars_session = [b for b in bars if b["datetime"].date() == latest_date]
+            session_label = f"HIST {latest_date}"
+            if len(bars_session) < 20:
+                print(f"[{ticker}] Only {len(bars_session)} bars for {latest_date} — skipping")
+                return
 
-        print(f"[{ticker}] Scanning {latest_date} ({len(bars_today)} bars)")
+        print(f"[{ticker}] Scanning {session_label} ({len(bars_session)} bars)")
 
         # STEP 4 — OPENING RANGE (9:30-9:40 ET)
-        or_high, or_low = compute_opening_range_from_bars(bars_today)
+        or_high, or_low = compute_opening_range_from_bars(bars_session)
         if or_high is None:
             return
 
         # STEP 5 — BREAKOUT DETECTION
-        direction, breakout_idx = detect_breakout_after_or(bars_today, or_high, or_low)
+        direction, breakout_idx = detect_breakout_after_or(bars_session, or_high, or_low)
         if not direction:
             return
 
         # STEP 6 — FVG DETECTION
-        fvg_low, fvg_high = detect_fvg_after_break(bars_today, breakout_idx, direction)
+        fvg_low, fvg_high = detect_fvg_after_break(bars_session, breakout_idx, direction)
         if not fvg_low:
             return
         zone_low  = min(fvg_low, fvg_high)
@@ -277,7 +269,7 @@ def process_ticker(ticker: str):
 
         # STEP 7 — CFW6 CONFIRMATION CANDLE
         result = wait_for_confirmation(
-            bars_today, direction, (zone_low, zone_high), breakout_idx + 1
+            bars_session, direction, (zone_low, zone_high), breakout_idx + 1
         )
         found, entry_price, base_grade, confirm_idx, confirm_type = result
         if not found or base_grade == "reject":
@@ -287,7 +279,7 @@ def process_ticker(ticker: str):
         confirmation_result = grade_signal_with_confirmations(
             ticker=ticker,
             direction=direction,
-            bars=bars_today,
+            bars=bars_session,
             current_price=entry_price,
             breakout_idx=breakout_idx,
             base_grade=base_grade
@@ -299,7 +291,7 @@ def process_ticker(ticker: str):
 
         # STEP 9 — CALCULATE STOPS & TARGETS
         stop_price, t1, t2 = compute_stop_and_targets(
-            bars_today, direction, or_high, or_low, entry_price
+            bars_session, direction, or_high, or_low, entry_price
         )
 
         # STEP 10 — OPTIONS RECOMMENDATION

@@ -1,6 +1,10 @@
 """
 Data Manager - Consolidated Data Fetching, Storage, and Database Management
 Replaces: incremental_fetch.py, historical_loader.py, database_setup.py
+
+Two data paths:
+  1. Historical (EODHD /api/intraday/)  — completed sessions, fetched once per hour
+  2. Live       (EODHD /api/real-time/) — current session, polled every scanner cycle
 """
 import time
 import os
@@ -14,12 +18,26 @@ from db_connection import get_conn, ph, dict_cursor, serial_pk, upsert_bar_sql, 
 
 ET = ZoneInfo("America/New_York")
 
+# ─────────────────────────────────────────────────────────────
+# In-memory live bar stores (per session, not persisted)
+# ─────────────────────────────────────────────────────────────
+# {ticker: {minute_dt: {open, high, low, close, volume, cum_vol}}}
+_live_minute_data: Dict[str, Dict] = {}
+
+# TTL cache — avoid re-fetching historical bars on every cycle
+_last_historical_fetch: Dict[str, datetime] = {}
+HISTORICAL_FETCH_TTL = timedelta(minutes=60)
+
 
 class DataManager:
     def __init__(self, db_path: str = "market_memory.db"):
         self.db_path = db_path
         self.api_key = config.EODHD_API_KEY
         self.initialize_database()
+
+    # ═════════════════════════════════════════════════════════════
+    # DATABASE
+    # ═════════════════════════════════════════════════════════════
 
     def initialize_database(self):
         """Create all necessary database tables."""
@@ -55,7 +73,7 @@ class DataManager:
             )
         """)
 
-        # ── Migration v2: clear UTC-stored bars, switch to ET storage ──────────
+        # ── Migration v2: clear UTC-stored bars, switch to ET storage ──
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS db_version (version INTEGER UNIQUE)
         """)
@@ -68,18 +86,22 @@ class DataManager:
             cursor.execute("DELETE FROM db_version")
             cursor.execute("INSERT INTO db_version (version) VALUES (2)")
             print("[DATA] Migration v2: Cleared UTC bars — switching to ET-naive storage")
-        # ──────────────────────────────────────────────────────────────────────
 
         conn.commit()
         conn.close()
         db_type = "PostgreSQL" if db_connection.USE_POSTGRES else self.db_path
         print(f"[DATA] Database initialized: {db_type}")
 
+    # ═════════════════════════════════════════════════════════════
+    # HISTORICAL DATA (EODHD /api/intraday/)
+    # ═════════════════════════════════════════════════════════════
+
     def fetch_intraday_bars(self, ticker: str, interval: str = "1m",
                             from_date: str = None, to_date: str = None) -> List[Dict]:
         """
-        Fetch intraday bars from EODHD API.
-        Bars are stored as ET-naive datetimes so time comparisons in sniper.py work correctly.
+        Fetch historical intraday bars from EODHD /api/intraday/.
+        Returns completed sessions only (no live in-progress day).
+        Bars are stored as ET-naive datetimes.
         """
         now_dt  = datetime.utcnow()
         from_dt = now_dt - timedelta(days=5)
@@ -108,8 +130,6 @@ class DataManager:
             bars = []
             for bar in data:
                 try:
-                    # Convert Unix timestamp → ET-aware → strip tz → ET-naive
-                    # This ensures bar times (9:30, 9:31 ...) match ET time comparisons in sniper.py
                     dt_et = datetime.fromtimestamp(bar["timestamp"], tz=ET).replace(tzinfo=None)
                     bars.append({
                         "datetime": dt_et,
@@ -144,7 +164,6 @@ class DataManager:
             try:
                 conn = get_conn(self.db_path)
                 cursor = dict_cursor(conn)
-
                 data = [
                     (ticker, bar['datetime'], bar['open'], bar['high'],
                      bar['low'], bar['close'], bar['volume'])
@@ -156,7 +175,6 @@ class DataManager:
                 conn.commit()
                 print(f"[DATA] Stored {len(bars)} bars for {ticker}")
                 return
-
             except Exception as e:
                 if conn:
                     try:
@@ -166,7 +184,6 @@ class DataManager:
                 print(f"[DATA] Store attempt {attempt + 1}/{max_retries} failed for {ticker}: {e}")
                 if attempt < max_retries - 1:
                     time.sleep(1)
-
             finally:
                 if conn:
                     try:
@@ -177,31 +194,27 @@ class DataManager:
         print(f"[DATA] \u274c All {max_retries} store attempts failed for {ticker}")
 
     def update_ticker(self, ticker: str):
-        """Fetch latest bars and store in database. Called by sniper.py."""
-        try:
-            existing = self.get_bars_from_memory(ticker, limit=1)
+        """
+        Fetch latest historical bars and store.
+        Uses a 60-minute TTL to avoid hammering the API on every cycle.
+        """
+        now = datetime.utcnow()
+        last = _last_historical_fetch.get(ticker)
+        if last and (now - last) < HISTORICAL_FETCH_TTL:
+            return  # Already fresh — skip
 
-            if not existing:
-                print(f"[DATA] Full fetch for {ticker} (5 days)")
-            else:
-                print(f"[DATA] Incremental fetch for {ticker}")
+        bars = self.fetch_intraday_bars(ticker)
+        if bars:
+            self.store_bars(ticker, bars)
+            _last_historical_fetch[ticker] = now
+        else:
+            print(f"[DATA] \u26a0\ufe0f No bars returned for {ticker}")
 
-            bars = self.fetch_intraday_bars(ticker)
-
-            if bars:
-                self.store_bars(ticker, bars)
-            else:
-                print(f"[DATA] \u26a0\ufe0f No bars returned for {ticker}")
-
-        except Exception as e:
-            print(f"[DATA] \u274c Error updating {ticker}: {e}")
-
-    def get_bars_from_memory(self, ticker: str, limit: int = 300) -> List[Dict]:
-        """Retrieve bars from database."""
+    def get_bars_from_memory(self, ticker: str, limit: int = 390) -> List[Dict]:
+        """Retrieve historical bars from database (latest `limit` bars)."""
         p = ph()
         conn = get_conn(self.db_path)
         cursor = dict_cursor(conn)
-
         cursor.execute(f"""
             SELECT datetime, open, high, low, close, volume
             FROM intraday_bars
@@ -209,7 +222,6 @@ class DataManager:
             ORDER BY datetime DESC
             LIMIT {p}
         """, (ticker, limit))
-
         rows = cursor.fetchall()
         conn.close()
 
@@ -221,7 +233,6 @@ class DataManager:
             dt = row["datetime"]
             if isinstance(dt, str):
                 dt = datetime.fromisoformat(dt)
-            # Strip any timezone info so comparisons stay ET-naive
             if hasattr(dt, "tzinfo") and dt.tzinfo is not None:
                 dt = dt.replace(tzinfo=None)
             bars.append({
@@ -233,6 +244,145 @@ class DataManager:
                 "volume":   row["volume"]
             })
         return bars
+
+    # ═════════════════════════════════════════════════════════════
+    # LIVE DATA (EODHD /api/real-time/) — current in-progress session
+    # ═════════════════════════════════════════════════════════════
+
+    def bulk_fetch_live_snapshots(self, tickers: List[str]) -> Dict[str, Dict]:
+        """
+        Fetch real-time price snapshots for up to 50 tickers in ONE API call.
+        Uses EODHD /api/real-time/{primary}?s={rest} bulk endpoint.
+
+        Response fields used:
+          close    → current price (15-min delayed on standard plan)
+          volume   → cumulative day volume (used to compute per-minute delta)
+          timestamp → Unix UTC timestamp of the quote
+        """
+        if not tickers:
+            return {}
+
+        primary = f"{tickers[0]}.US"
+        extras  = ",".join(f"{t}.US" for t in tickers[1:])
+        url     = f"https://eodhd.com/api/real-time/{primary}"
+        params  = {"api_token": self.api_key, "fmt": "json"}
+        if extras:
+            params["s"] = extras
+
+        try:
+            r = requests.get(url, params=params, timeout=15)
+            r.raise_for_status()
+            data = r.json()
+
+            # API returns a dict for single ticker, list for multiple
+            if isinstance(data, dict):
+                data = [data]
+
+            result = {}
+            for d in data:
+                code  = d.get("code", "").replace(".US", "")
+                ts    = d.get("timestamp")
+                close = d.get("close") or d.get("last")
+                if code and ts and close:
+                    dt_et = datetime.fromtimestamp(int(ts), tz=ET).replace(tzinfo=None)
+                    result[code] = {
+                        "datetime": dt_et,
+                        "close":    float(close),
+                        "volume":   int(d.get("volume", 0))
+                    }
+
+            print(f"[LIVE] \u2705 Bulk snapshot: {len(result)}/{len(tickers)} tickers")
+            return result
+
+        except Exception as e:
+            print(f"[LIVE] \u274c Bulk snapshot error: {e}")
+            return {}
+
+    def _accumulate_bar(self, ticker: str, snapshot: Dict):
+        """
+        Insert a single real-time snapshot into the in-memory 1-minute bar store.
+
+        Since /api/real-time/ returns current price + cumulative day volume (not
+        per-minute OHLCV), we build 1-minute bars by:
+          open   → first price seen in that minute
+          high   → running max price in that minute
+          low    → running min price in that minute
+          close  → latest price in that minute
+          volume → delta of cumulative volume vs previous minute's cum_vol
+        """
+        dt      = snapshot["datetime"]
+        minute  = dt.replace(second=0, microsecond=0)
+        price   = snapshot["close"]
+        cum_vol = snapshot["volume"]
+
+        if ticker not in _live_minute_data:
+            _live_minute_data[ticker] = {}
+
+        bars = _live_minute_data[ticker]
+
+        if minute not in bars:
+            # New 1-minute bar — compute volume delta from previous minute
+            prev_keys = sorted(m for m in bars if m < minute)
+            if prev_keys:
+                last_cum = bars[prev_keys[-1]]["cum_vol"]
+                bar_vol  = max(0, cum_vol - last_cum)
+            else:
+                bar_vol  = cum_vol  # first bar of the session
+
+            bars[minute] = {
+                "datetime": minute,
+                "open":     price,
+                "high":     price,
+                "low":      price,
+                "close":    price,
+                "volume":   bar_vol,
+                "cum_vol":  cum_vol   # internal — stripped in get_live_bars_today
+            }
+        else:
+            b = bars[minute]
+            b["high"]   = max(b["high"], price)
+            b["low"]    = min(b["low"],  price)
+            b["close"]  = price
+            b["cum_vol"] = cum_vol
+            # Recompute volume delta
+            prev_keys = sorted(m for m in bars if m < minute)
+            if prev_keys:
+                b["volume"] = max(0, cum_vol - bars[prev_keys[-1]]["cum_vol"])
+
+    def bulk_update_live_bars(self, tickers: List[str]) -> int:
+        """
+        One call per scanner cycle — fetches all tickers in bulk and
+        accumulates each snapshot into its 1-minute bar.
+        Returns the number of tickers successfully updated.
+        """
+        snapshots = self.bulk_fetch_live_snapshots(tickers)
+        for ticker, snap in snapshots.items():
+            self._accumulate_bar(ticker, snap)
+        return len(snapshots)
+
+    def get_live_bars_today(self, ticker: str) -> List[Dict]:
+        """
+        Return today's accumulated live 1-minute bars sorted chronologically.
+        Strips the internal 'cum_vol' field before returning.
+        """
+        if ticker not in _live_minute_data:
+            return []
+        today = datetime.now(ET).date()
+        bars  = [
+            {k: v for k, v in b.items() if k != "cum_vol"}
+            for b in _live_minute_data[ticker].values()
+            if b["datetime"].date() == today
+        ]
+        return sorted(bars, key=lambda b: b["datetime"])
+
+    def clear_live_bars(self):
+        """Reset live bar accumulator at EOD."""
+        _live_minute_data.clear()
+        print("[LIVE] Cleared all live bar data for new trading day")
+
+    # ═════════════════════════════════════════════════════════════
+    # UTILITIES
+    # ═════════════════════════════════════════════════════════════
 
     def cleanup_old_bars(self, days_to_keep: int = 7):
         """Remove bars older than specified days."""
@@ -284,7 +434,7 @@ class DataManager:
         return bars
 
     def bulk_update(self, tickers: List[str]):
-        """Update multiple tickers efficiently."""
+        """Update multiple tickers historically (used for initial seed)."""
         print(f"[BULK] Updating {len(tickers)} tickers...")
         for idx, ticker in enumerate(tickers, 1):
             print(f"[{idx}/{len(tickers)}] {ticker}")
@@ -292,11 +442,12 @@ class DataManager:
                 self.update_ticker(ticker)
             except Exception as e:
                 print(f"[BULK] Error updating {ticker}: {e}")
-                continue
         print(f"[BULK] \u2705 Update complete")
 
 
+# ─────────────────────────────────────────────────────────────
 # Global singleton
+# ─────────────────────────────────────────────────────────────
 data_manager = DataManager()
 
 

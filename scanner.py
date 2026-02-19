@@ -53,7 +53,7 @@ def fallback_list() -> list:
 
 
 def monitor_open_positions():
-    from data_manager import data_manager               # ← correct
+    from data_manager import data_manager
     open_positions = position_manager.get_open_positions()
     if not open_positions:
         return
@@ -61,11 +61,11 @@ def monitor_open_positions():
     current_prices = {}
     for pos in open_positions:
         ticker = pos["ticker"]
-        bars = data_manager.get_bars_from_memory(ticker, limit=1)  # ← correct
+        bars = data_manager.get_bars_from_memory(ticker, limit=1)
         if bars:
             current_prices[ticker] = bars[-1]["close"]
     position_manager.check_exits(current_prices)
-    
+
 
 def start_scanner_loop():
     from sniper import process_ticker, clear_armed_signals
@@ -133,6 +133,14 @@ def start_scanner_loop():
                 daily_stats = position_manager.get_daily_stats()
                 print(f"[TODAY] Trades: {daily_stats['trades']} W/L: {daily_stats['wins']}/{daily_stats['losses']} WR: {daily_stats['win_rate']:.1f}% P&L: ${daily_stats['total_pnl']:+.2f}\n")
 
+                # ── LIVE BAR UPDATE — single bulk API call for all tickers ──
+                try:
+                    updated = data_manager.bulk_update_live_bars(watchlist)
+                    print(f"[LIVE] Updated {updated} tickers via real-time API")
+                except Exception as e:
+                    print(f"[LIVE] Bulk update error: {e}")
+                # ──────────────────────────────────────────────────────
+
                 for idx, ticker in enumerate(watchlist, 1):
                     try:
                         print(f"\n--- [{idx}/{len(watchlist)}] {ticker} ---")
@@ -184,6 +192,7 @@ def start_scanner_loop():
                     premarket_built = False
                     cycle_count = 0
                     clear_armed_signals()
+                    data_manager.clear_live_bars()
 
                 print(f"[AFTER-HOURS] {current_time_str} - Market closed")
                 time.sleep(600)
@@ -233,4 +242,3 @@ def get_screener_tickers(min_market_cap: int = 1_000_000_000, limit: int = 50) -
     except Exception as e:
         print(f"[SCREENER] Error: {e}")
         return []
-
