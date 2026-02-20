@@ -7,6 +7,9 @@ Design principles:
   - TODAY's bars are supplied by ws_feed.py (EODHD WebSocket real-time feed).
     startup_backfill_today() fetches 30 days of HISTORICAL data (up to yesterday)
     so OR and prior-day context are available even after a midday restart.
+    startup_intraday_backfill_today() makes a best-effort REST fetch of today's
+    bars (04:00 ET -> now) to fill the 9:30-now gap on mid-session restarts;
+    silent no-op if EODHD doesn't serve same-day intraday on the current plan.
   - Each scan cycle, update_ticker() skips today's fetch when WS is connected
     (the WS feed owns today). For prior days, incremental fetches still run.
   - 1m bars  -> intraday_bars table.
@@ -16,10 +19,10 @@ Design principles:
   - Historical data accumulates over time for future backtesting.
 
 EODHD endpoint rules:
-  - /api/intraday/ : historical bars only — today's data is NOT available until
-    ~2-3 hours after after-hours close (~10-11 PM ET). Use for prior-day backfill.
+  - /api/intraday/ : primary bar source — prior-day data is always available;
+    same-day data availability depends on plan (All-In-One may serve it sooner).
   - /api/real-time/ : live price snapshot — used by bulk_fetch_live_snapshots().
-  - WebSocket (ws_feed.py): real-time tick stream — the sole source for today's bars.
+  - WebSocket (ws_feed.py): real-time tick stream — the primary source for today's bars.
   - from/to MUST be Unix timestamps (int) — date strings cause 422 errors.
   - Returns ET-naive datetimes (extended hours 4 AM - 8 PM ET, ~960 bars/day).
 """
@@ -142,8 +145,6 @@ class DataManager:
         Core EODHD intraday fetch.
         from_ts / to_ts are UTC Unix timestamps (int).
         Returns bars with ET-naive datetimes stored as local ET.
-        NOTE: /api/intraday/ only serves completed prior-day data.
-              Today's bars are supplied by ws_feed.py (WebSocket).
         """
         url = f"https://eodhd.com/api/intraday/{ticker}.US"
         params = {
@@ -195,8 +196,11 @@ class DataManager:
         """
         Fetch 30 days of historical bars (up to yesterday's close) for every ticker.
 
-        TODAY's bars are handled by ws_feed.py (EODHD WebSocket).
-        This method only seeds prior-day OHLCV data so that OR levels,
+        TODAY's bars are handled by ws_feed.py (EODHD WebSocket) as the primary
+        source, with startup_intraday_backfill_today() as a best-effort REST
+        supplement for mid-session restarts.
+
+        This method seeds prior-day OHLCV data so that OR levels,
         prior-day high/low, and backtesting context are available in DB.
 
         Must be called ONCE at startup before the scanner loop begins,
@@ -204,7 +208,7 @@ class DataManager:
         today's ticks by the time the scanner starts.
         """
         now_et = datetime.now(ET)
-        # Fetch up to end of yesterday — WS feed owns today
+        # Fetch up to end of yesterday — WS feed owns today as primary source
         today_midnight = now_et.replace(hour=0, minute=0, second=0, microsecond=0)
         from_ts = int((today_midnight - timedelta(days=30)).timestamp())
         to_ts   = int((today_midnight - timedelta(seconds=1)).timestamp())
@@ -227,6 +231,52 @@ class DataManager:
                 print(f"[DATA] [{idx}/{len(tickers)}] {ticker} backfill error: {e}")
 
         print("[DATA] Startup backfill complete — WebSocket feed handles today's bars\n")
+
+    def startup_intraday_backfill_today(self, tickers: List[str]):
+        """
+        Best-effort REST fetch of today's intraday bars for mid-session restarts.
+
+        Attempts to pull bars from 04:00 ET today -> now via /api/intraday/.
+        Same-day data availability depends on the EODHD plan:
+          - All-In-One / EOD+Intraday plans often serve same-day bars with a
+            short delay (typically 15-30 min behind real-time).
+          - If EODHD returns nothing, logs a clear warning; the WS feed is the
+            fallback and will accumulate bars from this point forward.
+
+        This fills the 9:30-now OR gap that occurs when the container restarts
+        mid-session and the WS has no historical context to replay.
+
+        Must be called AFTER startup_backfill_today() and AFTER start_ws_feed()
+        so the WS is already streaming and this supplements rather than races.
+        """
+        now_et   = datetime.now(ET)
+        today_et = now_et.date()
+        from_dt  = datetime.combine(today_et, dtime(4, 0, 0))
+        from_ts  = int(from_dt.replace(tzinfo=ET).timestamp())
+        to_ts    = int(now_et.timestamp())
+
+        print(f"[DATA] Today's REST backfill: {len(tickers)} tickers | "
+              f"04:00 ET -> {now_et.strftime('%H:%M ET')} (best-effort, WS is primary)")
+
+        filled = 0
+        for ticker in tickers:
+            try:
+                bars = self._fetch_range(ticker, from_ts, to_ts)
+                # Keep only bars dated today — some endpoints bleed prior-day bars
+                bars = [b for b in bars if b["datetime"].date() == today_et]
+                if bars:
+                    self.store_bars(ticker, bars)
+                    self.materialize_5m_bars(ticker)
+                    filled += 1
+            except Exception as e:
+                print(f"[DATA] Today REST backfill error for {ticker}: {e}")
+
+        if filled:
+            print(f"[DATA] Today REST backfill complete: {filled}/{len(tickers)} tickers "
+                  f"had same-day data — OR bars available\n")
+        else:
+            print(f"[DATA] Today REST backfill: no same-day data returned by EODHD "
+                  f"(plan/delay limitation) — WS-only session; OR bars accumulating via WebSocket\n")
 
     # =============================================================
     # INCREMENTAL UPDATE  (called each scan cycle per ticker)

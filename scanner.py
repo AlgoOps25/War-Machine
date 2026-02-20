@@ -18,6 +18,19 @@ from scanner_optimizer import (
 
 API_KEY = os.getenv("EODHD_API_KEY", "")
 
+# ── Module-level watchlist — single source of truth ───────────────────────────
+# ws_feed.py imports FALLBACK_WATCHLIST to subscribe to real-time ticks.
+# scanner.py uses it for scan targets.  Both MUST reference the same list so
+# every scanned ticker has live WebSocket data flowing into the DB.
+FALLBACK_WATCHLIST = [
+    "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA",
+    "AMD",  "NFLX", "ADBE",  "CRM",  "ORCL", "INTC", "CSCO",
+    "JPM",  "BAC",  "GS",    "MS",   "WFC",
+    "UNH",  "JNJ",  "PFE",   "ABBV", "MRK",
+    "WMT",  "HD",   "COST",  "NKE",  "MCD",
+    "SPY",  "QQQ",  "IWM",   "DIA",
+]
+
 
 def _now_et():
     return datetime.now(ZoneInfo("America/New_York"))
@@ -40,16 +53,8 @@ def build_watchlist() -> list:
 
 
 def fallback_list() -> list:
-    fallback = [
-        "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA",
-        "AMD", "NFLX", "ADBE", "CRM", "ORCL", "INTC", "CSCO",
-        "JPM", "BAC", "GS", "MS", "WFC",
-        "UNH", "JNJ", "PFE", "ABBV", "MRK",
-        "WMT", "HD", "COST", "NKE", "MCD",
-        "SPY", "QQQ", "IWM", "DIA"
-    ]
-    print(f"[SCANNER] Using fallback watchlist: {len(fallback)} tickers")
-    return fallback
+    print(f"[SCANNER] Using fallback watchlist: {len(FALLBACK_WATCHLIST)} tickers")
+    return list(FALLBACK_WATCHLIST)
 
 
 def monitor_open_positions():
@@ -89,13 +94,16 @@ def start_scanner_loop():
     cycle_count = 0
     last_report_day = None
 
-    # ── STARTUP BACKFILL ─────────────────────────────────────────
-    # Fetch today's full session (04:00 ET -> now) for all tickers
-    # so OR bars (9:30-9:40) are in DB regardless of restart time.
-    # Must run BEFORE the scan loop starts.
+    # ── STARTUP BACKFILL ──────────────────────────────────────────────────────
+    # Step 1: 30-day historical REST backfill (up to yesterday's close).
+    #         Seeds prior-day H/L, OR context, and backtesting history.
+    # Step 2: Best-effort today's REST backfill (04:00 ET -> now).
+    #         Fills the 9:30-now gap on mid-session container restarts.
+    #         Silent no-op if EODHD doesn't serve same-day intraday yet.
     startup_watchlist = fallback_list()
     data_manager.startup_backfill_today(startup_watchlist)
-    # ─────────────────────────────────────────────────────────────
+    data_manager.startup_intraday_backfill_today(startup_watchlist)
+    # ──────────────────────────────────────────────────────────────────────────
 
     while True:
         try:
