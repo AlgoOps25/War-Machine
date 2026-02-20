@@ -89,6 +89,14 @@ def start_scanner_loop():
     cycle_count = 0
     last_report_day = None
 
+    # ── STARTUP BACKFILL ─────────────────────────────────────────
+    # Fetch today's full session (04:00 ET -> now) for all tickers
+    # so OR bars (9:30-9:40) are in DB regardless of restart time.
+    # Must run BEFORE the scan loop starts.
+    startup_watchlist = fallback_list()
+    data_manager.startup_backfill_today(startup_watchlist)
+    # ─────────────────────────────────────────────────────────────
+
     while True:
         try:
             now_et = _now_et()
@@ -133,13 +141,13 @@ def start_scanner_loop():
                 daily_stats = position_manager.get_daily_stats()
                 print(f"[TODAY] Trades: {daily_stats['trades']} W/L: {daily_stats['wins']}/{daily_stats['losses']} WR: {daily_stats['win_rate']:.1f}% P&L: ${daily_stats['total_pnl']:+.2f}\n")
 
-                # ── LIVE BAR UPDATE — single bulk API call for all tickers ──
+                # ── LIVE SNAPSHOT — single bulk API call for position monitoring ──
                 try:
                     updated = data_manager.bulk_update_live_bars(watchlist)
-                    print(f"[LIVE] Updated {updated} tickers via real-time API")
+                    print(f"[LIVE] Snapshot: {updated} tickers")
                 except Exception as e:
                     print(f"[LIVE] Bulk update error: {e}")
-                # ──────────────────────────────────────────────────────
+                # ───────────────────────────────────────────────────────────────
 
                 for idx, ticker in enumerate(watchlist, 1):
                     try:
@@ -183,7 +191,7 @@ def start_scanner_loop():
                         print(f"[AI] Optimization error: {e}")
 
                     try:
-                        cleanup_old_bars(days_to_keep=7)
+                        cleanup_old_bars(days_to_keep=60)
                     except Exception as e:
                         print(f"[CLEANUP] Error: {e}")
 
@@ -192,7 +200,6 @@ def start_scanner_loop():
                     premarket_built = False
                     cycle_count = 0
                     clear_armed_signals()
-                    data_manager.clear_live_bars()
 
                 print(f"[AFTER-HOURS] {current_time_str} - Market closed")
                 time.sleep(600)
