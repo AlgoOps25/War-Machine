@@ -1,15 +1,16 @@
 """
 Options Chain Filter Module
 Analyzes options chains to validate signal quality and suggest optimal strikes.
-INTEGRATED: IV Rank (IVR) + Unusual Options Activity (UOA).
+INTEGRATED: IV Rank (IVR) + Unusual Options Activity (UOA) + GEX Levels.
 """
 
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Dict, Optional, Tuple
 import config
-from iv_tracker import store_iv_observation, compute_ivr, ivr_to_confidence_multiplier
-from uoa_scanner import scan_chain_for_uoa
+from iv_tracker   import store_iv_observation, compute_ivr, ivr_to_confidence_multiplier
+from uoa_scanner  import scan_chain_for_uoa
+from gex_engine   import compute_gex_levels, get_gex_signal_context
 
 
 class OptionsFilter:
@@ -32,45 +33,35 @@ class OptionsFilter:
             return None
 
     def filter_by_liquidity(self, option: Dict) -> bool:
-        """Check if option meets minimum liquidity requirements."""
         oi     = option.get("openInterest", 0)
         volume = option.get("volume", 0)
         bid    = option.get("bid", 0)
         ask    = option.get("ask", 0)
-        if oi < config.MIN_OPTION_OI:
-            return False
-        if volume < config.MIN_OPTION_VOLUME:
+        if oi < config.MIN_OPTION_OI or volume < config.MIN_OPTION_VOLUME:
             return False
         if ask > 0 and bid > 0:
-            mid        = (bid + ask) / 2
-            spread_pct = (ask - bid) / mid if mid > 0 else 999
-            if spread_pct > config.MAX_BID_ASK_SPREAD_PCT:
+            mid = (bid + ask) / 2
+            if mid > 0 and (ask - bid) / mid > config.MAX_BID_ASK_SPREAD_PCT:
                 return False
         return True
 
     def filter_by_delta(self, option: Dict) -> bool:
-        """Check if option delta is in target range."""
-        delta_abs = abs(option.get("delta", 0))
-        return config.TARGET_DELTA_MIN <= delta_abs <= config.TARGET_DELTA_MAX
+        d = abs(option.get("delta", 0))
+        return config.TARGET_DELTA_MIN <= d <= config.TARGET_DELTA_MAX
 
     def filter_by_dte(self, expiration_date: str) -> Tuple[bool, int]:
-        """Check if expiration is in acceptable DTE range."""
         try:
-            exp_date = datetime.strptime(expiration_date, "%Y-%m-%d")
-            dte      = (exp_date - datetime.now()).days
-            if dte < config.MIN_DTE or dte > config.MAX_DTE:
-                return False, dte
-            return True, dte
+            dte = (datetime.strptime(expiration_date, "%Y-%m-%d") - datetime.now()).days
+            return (config.MIN_DTE <= dte <= config.MAX_DTE), dte
         except Exception:
             return False, 0
 
     def calculate_expected_move(self, price: float, iv: float, dte: int) -> float:
-        """Calculate expected move based on IV and DTE."""
         return round(price * iv * ((dte / 365) ** 0.5), 2)
 
     def find_best_strike(self, ticker: str, direction: str,
                          entry_price: float, target_price: float) -> Optional[Dict]:
-        """Find the optimal option strike and enrich with IVR + UOA."""
+        """Find the optimal option strike and enrich with IVR + UOA + GEX."""
         chain = self.get_options_chain(ticker)
         if not chain:
             return None
@@ -83,24 +74,19 @@ class OptionsFilter:
             if not is_valid_dte:
                 continue
 
+            option_type = "calls" if direction == "bull" else "puts"
             is_call     = (direction == "bull")
-            option_type = "calls" if is_call else "puts"
 
             for strike_str, option in options_data.get(option_type, {}).items():
                 strike = float(strike_str)
-
                 if not self.filter_by_liquidity(option):
                     continue
                 if not self.filter_by_delta(option):
                     continue
-
-                # Strike proximity filter
-                if is_call:
-                    if not (entry_price * 0.95 <= strike <= entry_price * 1.10):
-                        continue
-                else:
-                    if not (entry_price * 0.90 <= strike <= entry_price * 1.05):
-                        continue
+                if is_call and not (entry_price * 0.95 <= strike <= entry_price * 1.10):
+                    continue
+                if not is_call and not (entry_price * 0.90 <= strike <= entry_price * 1.05):
+                    continue
 
                 bid = option.get("bid", 0)
                 ask = option.get("ask", 0)
@@ -109,12 +95,12 @@ class OptionsFilter:
                 dte_score    = 100 - abs(dte - config.IDEAL_DTE)
                 oi_score     = min(option.get("openInterest", 0) / 1000, 100)
                 spread_pct   = (ask - bid) / mid if mid > 0 else 999
-                spread_score = max(0, 100 - (spread_pct * 1000))
+                spread_score = max(0, 100 - spread_pct * 1000)
                 total_score  = dte_score + oi_score + spread_score
 
                 if total_score > best_score:
-                    best_score = total_score
-                    iv         = option.get("impliedVolatility", 0)
+                    best_score  = total_score
+                    iv          = option.get("impliedVolatility", 0)
                     best_option = {
                         "strike":        strike,
                         "expiration":    expiration_date,
@@ -139,15 +125,11 @@ class OptionsFilter:
             ivr, obs, reliable = compute_ivr(ticker, iv)
             mult, label        = ivr_to_confidence_multiplier(ivr, reliable)
             best_option.update({
-                "ivr":           ivr,
-                "ivr_obs":       obs,
-                "ivr_reliable":  reliable,
-                "ivr_multiplier": mult,
-                "ivr_label":     label
+                "ivr": ivr, "ivr_obs": obs, "ivr_reliable": reliable,
+                "ivr_multiplier": mult, "ivr_label": label
             })
             status = f"IVR={ivr:.0f}" if (ivr is not None and reliable) else "IVR-BUILDING"
-            print(f"[IVR] {ticker}: IV={iv*100:.1f}% | {status} "
-                  f"({obs} obs) | {mult:.2f}x [{label}]")
+            print(f"[IVR] {ticker}: IV={iv*100:.1f}% | {status} ({obs} obs) | {mult:.2f}x [{label}]")
         else:
             best_option.update({
                 "ivr": None, "ivr_obs": 0, "ivr_reliable": False,
@@ -155,37 +137,31 @@ class OptionsFilter:
             })
 
         # ── UOA enrichment ───────────────────────────────────────────────
-        # Scan the FULL chain (not just best strike) for unusual activity.
-        # Directional alignment is checked against our BOS direction.
         try:
-            uoa_result = scan_chain_for_uoa(chain, direction, entry_price)
+            uoa = scan_chain_for_uoa(chain, direction, entry_price)
             best_option.update({
-                "uoa_multiplier": uoa_result["multiplier"],
-                "uoa_label":      uoa_result["label"],
-                "uoa_detected":   uoa_result["uoa_detected"],
-                "uoa_aligned":    uoa_result["aligned"],
-                "uoa_opposing":   uoa_result["opposing"],
-                "uoa_max_score":  uoa_result["max_uoa_score"],
-                "uoa_top_aligned":  uoa_result.get("top_aligned",  []),
-                "uoa_top_opposing": uoa_result.get("top_opposing", [])
+                "uoa_multiplier":    uoa["multiplier"],
+                "uoa_label":         uoa["label"],
+                "uoa_detected":      uoa["uoa_detected"],
+                "uoa_aligned":       uoa["aligned"],
+                "uoa_opposing":      uoa["opposing"],
+                "uoa_max_score":     uoa["max_uoa_score"],
+                "uoa_top_aligned":   uoa.get("top_aligned",  []),
+                "uoa_top_opposing":  uoa.get("top_opposing", [])
             })
-            if uoa_result["uoa_detected"]:
-                print(f"[UOA] {ticker}: {uoa_result['label']} | "
-                      f"Aligned: {len(uoa_result['top_aligned'])} strikes | "
-                      f"Opposing: {len(uoa_result['top_opposing'])} strikes")
-                # Log top aligned hits
-                for hit in uoa_result["top_aligned"][:2]:
-                    print(f"  ⬆ {hit['type'].upper()} ${hit['strike']:.0f} "
-                          f"exp {hit['expiry']} | Vol {hit['volume']:,} "
-                          f"OI {hit['oi']:,} | UOA {hit['uoa_score']:.2f}x")
-                for hit in uoa_result["top_opposing"][:2]:
-                    print(f"  ⬇ {hit['type'].upper()} ${hit['strike']:.0f} "
-                          f"exp {hit['expiry']} | Vol {hit['volume']:,} "
-                          f"OI {hit['oi']:,} | UOA {hit['uoa_score']:.2f}x")
+            if uoa["uoa_detected"]:
+                print(f"[UOA] {ticker}: {uoa['label']} | "
+                      f"Aligned:{len(uoa['top_aligned'])} Opposing:{len(uoa['top_opposing'])}")
+                for h in uoa["top_aligned"][:2]:
+                    print(f"  \u2b06 {h['type'].upper()} ${h['strike']:.0f} "
+                          f"exp {h['expiry']} | Vol {h['volume']:,} OI {h['oi']:,} | {h['uoa_score']:.2f}x")
+                for h in uoa["top_opposing"][:2]:
+                    print(f"  \u2b07 {h['type'].upper()} ${h['strike']:.0f} "
+                          f"exp {h['expiry']} | Vol {h['volume']:,} OI {h['oi']:,} | {h['uoa_score']:.2f}x")
             else:
-                print(f"[UOA] {ticker}: No unusual activity detected")
+                print(f"[UOA] {ticker}: No unusual activity")
         except Exception as e:
-            print(f"[UOA] {ticker} scan error: {e}")
+            print(f"[UOA] {ticker} error: {e}")
             best_option.update({
                 "uoa_multiplier": 1.0, "uoa_label": "UOA-ERROR",
                 "uoa_detected": False, "uoa_aligned": False,
@@ -193,50 +169,79 @@ class OptionsFilter:
                 "uoa_top_aligned": [], "uoa_top_opposing": []
             })
 
+        # ── GEX enrichment ───────────────────────────────────────────────
+        try:
+            gex_data = compute_gex_levels(chain, entry_price)
+            if gex_data["has_data"]:
+                gex_mult, gex_label, gex_ctx = get_gex_signal_context(
+                    gex_data, direction, entry_price,
+                    best_option.get("strike", entry_price),   # stop proxy
+                    target_price
+                )
+                best_option.update({
+                    "gex_multiplier": gex_mult,
+                    "gex_label":      gex_label,
+                    "gamma_pin":      gex_data["gamma_pin"],
+                    "gamma_flip":     gex_data["gamma_flip"],
+                    "neg_gex_zone":   gex_data["neg_gex_zone"],
+                    "total_gex":      gex_data["total_gex"],
+                    "gex_top_pos":    gex_data["top_positive"],
+                    "gex_top_neg":    gex_data["top_negative"]
+                })
+                flip_str = f"${gex_data['gamma_flip']:.2f}" if gex_data["gamma_flip"] else "N/A"
+                pin_str  = f"${gex_data['gamma_pin']:.2f}"  if gex_data["gamma_pin"]  else "N/A"
+                zone     = "NEG" if gex_data["neg_gex_zone"] else "POS"
+                print(f"[GEX] {ticker}: Pin={pin_str} | Flip={flip_str} | "
+                      f"Zone={zone} | {gex_mult:.2f}x [{gex_label}]")
+            else:
+                print(f"[GEX] {ticker}: No gamma data in chain")
+                best_option.update({
+                    "gex_multiplier": 1.0, "gex_label": "GEX-NO-DATA",
+                    "gamma_pin": None, "gamma_flip": None,
+                    "neg_gex_zone": False, "total_gex": 0.0,
+                    "gex_top_pos": [], "gex_top_neg": []
+                })
+        except Exception as e:
+            print(f"[GEX] {ticker} error: {e}")
+            best_option.update({
+                "gex_multiplier": 1.0, "gex_label": "GEX-ERROR",
+                "gamma_pin": None, "gamma_flip": None,
+                "neg_gex_zone": False, "total_gex": 0.0,
+                "gex_top_pos": [], "gex_top_neg": []
+            })
+
         return best_option
 
-    def validate_signal_for_options(self, ticker: str, direction: str,
-                                    entry_price: float,
-                                    target_price: float) -> Tuple[bool, Optional[Dict], str]:
-        """Validate if a signal is suitable for options trading."""
+    def validate_signal_for_options(self, ticker, direction, entry_price,
+                                    target_price) -> Tuple[bool, Optional[Dict], str]:
         best_strike = self.find_best_strike(ticker, direction, entry_price, target_price)
         if not best_strike:
             return False, None, "No suitable options found"
 
-        expected_move     = best_strike["expected_move"]
-        price_move_needed = abs(target_price - entry_price)
-        if price_move_needed > expected_move * 2:
-            return False, best_strike, (
-                f"Target ${price_move_needed:.2f} exceeds 2x expected move ${expected_move:.2f}"
-            )
+        if abs(target_price - entry_price) > best_strike["expected_move"] * 2:
+            return False, best_strike, "Target exceeds 2x expected move"
 
-        iv = best_strike["iv"]
-        if iv > 1.0:
-            return False, best_strike, f"IV too high at {iv*100:.1f}% (hard cap)"
+        if best_strike.get("iv", 0) > 1.0:
+            return False, best_strike, f"IV too high ({best_strike['iv']*100:.1f}%)"
 
         dte = best_strike["dte"]
-        bid = best_strike["bid"]
-        ask = best_strike["ask"]
-        mid = (bid + ask) / 2 if (bid and ask) else 0
-        if mid > 0 and dte > 0:
-            theta_pct = (mid / dte) / mid
-            if theta_pct > config.MAX_THETA_DECAY_PCT:
-                return False, best_strike, f"Theta {theta_pct*100:.2f}%/day too high"
+        mid = (best_strike["bid"] + best_strike["ask"]) / 2 if (
+            best_strike.get("bid") and best_strike.get("ask")
+        ) else 0
+        if mid > 0 and dte > 0 and (mid / dte) / mid > config.MAX_THETA_DECAY_PCT:
+            return False, best_strike, "Theta decay too high"
 
         return True, best_strike, "Options signal validated"
 
 
-def get_options_recommendation(ticker: str, direction: str,
-                               entry_price: float,
-                               target_price: float) -> Optional[Dict]:
-    """Simplified interface to get options recommendation for a signal."""
+def get_options_recommendation(ticker, direction, entry_price,
+                               target_price) -> Optional[Dict]:
     f = OptionsFilter()
-    is_valid, options_data, reason = f.validate_signal_for_options(
+    is_valid, data, reason = f.validate_signal_for_options(
         ticker, direction, entry_price, target_price
     )
-    if is_valid and options_data:
-        print(f"[OPTIONS] ✅ {ticker}: {reason}")
-        return options_data
-    else:
-        print(f"[OPTIONS] ⚠️ {ticker}: {reason}")
-        return None
+    if is_valid and data:
+        print(f"[OPTIONS] \u2705 {ticker}: {reason}")
+        return data
+    print(f"[OPTIONS] \u26a0\ufe0f {ticker}: {reason}")
+    return None

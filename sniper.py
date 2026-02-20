@@ -5,6 +5,7 @@
 # EARNINGS GUARD: Skips tickers with earnings within 2 days
 # IV RANK: Confidence multiplier based on historical IV cheapness/expensiveness
 # UOA: Confidence multiplier based on unusual options activity alignment
+# GEX: Confidence multiplier based on gamma exposure environment + pin alignment
 import traceback
 import requests
 from datetime import datetime, time
@@ -130,12 +131,12 @@ def detect_fvg_after_break(bars, breakout_idx, direction):
         if direction == "bull":
             gap = c2["low"] - c0["high"]
             if gap > 0 and (gap / c0["high"]) >= config.FVG_MIN_SIZE_PCT:
-                print(f"[FVG] BULL ${c0['high']:.2f}-${c2['low']:.2f}")
+                print(f"[FVG] BULL ${c0['high']:.2f}–${c2['low']:.2f}")
                 return c0["high"], c2["low"]
         elif direction == "bear":
             gap = c0["low"] - c2["high"]
             if gap > 0 and (gap / c0["low"]) >= config.FVG_MIN_SIZE_PCT:
-                print(f"[FVG] BEAR ${c2['high']:.2f}-${c0['low']:.2f}")
+                print(f"[FVG] BEAR ${c2['high']:.2f}–${c0['low']:.2f}")
                 return c2["high"], c0["low"]
     return None, None
 
@@ -158,10 +159,10 @@ def detect_intraday_bos(bars, lookback=40):
         if bt is None or not (time(10,0) <= bt <= time(15,30)):
             continue
         if bar["close"] > sh * (1 + config.ORB_BREAK_THRESHOLD):
-            print(f"[INTRADAY BOS] BULL idx {i} ({bt}) ${bar['close']:.2f} > H ${sh:.2f}")
+            print(f"[INTRADAY BOS] BULL idx {i} ${bar['close']:.2f} > H ${sh:.2f}")
             return "bull", i, sh, sl
         if bar["close"] < sl * (1 - config.ORB_BREAK_THRESHOLD):
-            print(f"[INTRADAY BOS] BEAR idx {i} ({bt}) ${bar['close']:.2f} < L ${sl:.2f}")
+            print(f"[INTRADAY BOS] BEAR idx {i} ${bar['close']:.2f} < L ${sl:.2f}")
             return "bear", i, sh, sl
     return None, None, None, None
 
@@ -201,7 +202,7 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         bars_session, direction, or_high_ref, or_low_ref, entry_price
     )
 
-    # STEP 10 — OPTIONS (also computes IVR + UOA)
+    # STEP 10 — OPTIONS (computes IVR + UOA + GEX in one chain fetch)
     options_rec = get_options_recommendation(
         ticker=ticker, direction=direction,
         entry_price=entry_price, target_price=t1
@@ -222,16 +223,19 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
     ivr_label      = options_rec.get("ivr_label",      "IVR-N/A") if options_rec else "IVR-N/A"
     uoa_multiplier = options_rec.get("uoa_multiplier", 1.0) if options_rec else 1.0
     uoa_label      = options_rec.get("uoa_label",      "UOA-N/A") if options_rec else "UOA-N/A"
+    gex_multiplier = options_rec.get("gex_multiplier", 1.0) if options_rec else 1.0
+    gex_label      = options_rec.get("gex_label",      "GEX-N/A") if options_rec else "GEX-N/A"
 
     final_confidence = min(
         (base_confidence * ticker_multiplier * mode_decay
-         * ivr_multiplier * uoa_multiplier) + mtf_boost,
+         * ivr_multiplier * uoa_multiplier * gex_multiplier) + mtf_boost,
         1.0
     )
     print(
         f"[CONFIDENCE] Base:{base_confidence:.2f} × Ticker:{ticker_multiplier:.2f} "
         f"× Mode:{mode_decay:.2f} × IVR:{ivr_multiplier:.2f}[{ivr_label}] "
         f"× UOA:{uoa_multiplier:.2f}[{uoa_label}] "
+        f"× GEX:{gex_multiplier:.2f}[{gex_label}] "
         f"+ MTF:{mtf_boost:.2f} = {final_confidence:.2f}"
     )
 
@@ -253,8 +257,7 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
 def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high,
                entry_price, stop_price, t1, t2, confidence, grade,
                options_rec=None, signal_type="CFW6_OR"):
-    MIN_STOP_PCT = 0.002
-    if abs(entry_price - stop_price) < entry_price * MIN_STOP_PCT:
+    if abs(entry_price - stop_price) < entry_price * 0.002:
         print(f"[ARM] ⚠️ {ticker} stop too tight — skipping")
         return
 
@@ -306,47 +309,43 @@ def process_ticker(ticker: str):
         data_manager.update_ticker(ticker)
         bars_session = data_manager.get_today_session_bars(ticker)
         if not bars_session:
-            print(f"[{ticker}] No session bars yet")
+            print(f"[{ticker}] No session bars")
             return
 
-        print(f"[{ticker}] Scanning {_now_et().date()} ({len(bars_session)} bars) "
+        print(f"[{ticker}] {_now_et().date()} ({len(bars_session)} bars) "
               f"{_bar_time(bars_session[0])} → {_bar_time(bars_session[-1])}")
 
         if is_force_close_time(bars_session[-1]):
             position_manager.close_all_eod({ticker: bars_session[-1]["close"]})
             return
 
-        # STEP 3c — EARNINGS GUARD
         has_earns, earns_date = has_earnings_soon(ticker)
         if has_earns:
             print(f"[{ticker}] ❌ Earnings {earns_date} — skip")
             return
 
-        # STEP 4 — WATCHING STATE
+        # WATCHING STATE
         if ticker in watching_signals:
             w = watching_signals[ticker]
             bars_since = len(bars_session) - w["breakout_idx"]
             if bars_since > MAX_WATCH_BARS:
-                print(f"[{ticker}] ⏰ Watch expired ({bars_since} bars) — clearing")
+                print(f"[{ticker}] ⏰ Watch expired — clearing")
                 del watching_signals[ticker]
             else:
-                print(f"[{ticker}] 👁️ WATCHING [{bars_since}/{MAX_WATCH_BARS}] {w['direction'].upper()}")
+                print(f"[{ticker}] 👁️ WATCHING [{bars_since}/{MAX_WATCH_BARS}]")
                 zl, zh = detect_fvg_after_break(bars_session, w["breakout_idx"], w["direction"])
                 if zl is None:
-                    print(f"[{ticker}] — FVG not yet formed")
                     return
-                print(f"[{ticker}] ✅ FVG ${zl:.2f}–${zh:.2f} | Pipeline...")
                 _run_signal_pipeline(ticker, w["direction"], zl, zh,
                                      w["or_high"], w["or_low"], w["signal_type"],
                                      bars_session, w["breakout_idx"])
                 del watching_signals[ticker]
                 return
 
-        # STEP 5 — FRESH SCAN
+        # FRESH SCAN
         direction = breakout_idx = zone_low = zone_high = None
         or_high_ref = or_low_ref = scan_mode = None
 
-        # PATH A
         or_high, or_low = compute_opening_range_from_bars(bars_session)
         if or_high is not None:
             print(f"[{ticker}] OR: ${or_low:.2f}–${or_high:.2f}")
@@ -367,11 +366,10 @@ def process_ticker(ticker: str):
                             or_high, or_low, "CFW6_OR")
                     return
             else:
-                print(f"[{ticker}] No ORB — intraday scan")
+                print(f"[{ticker}] No ORB")
         else:
-            print(f"[{ticker}] No OR bars — intraday scan")
+            print(f"[{ticker}] No OR bars")
 
-        # PATH B
         if scan_mode is None:
             if len(bars_session) < 30:
                 return
