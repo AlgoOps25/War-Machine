@@ -181,7 +181,7 @@ DARKPOOL_BOOST_FACTOR    = 0.05         # +5% confidence for dark pool
 DB_PATH          = "market_memory.db"   # Main market data database
 TRADES_DB_PATH   = "war_machine_trades.db"  # Trade history database
 LOG_LEVEL        = "INFO"
-BARS_RETENTION_DAYS = 7                 # Auto-cleanup bars older than 7 days
+BARS_RETENTION_DAYS = 60                 # Auto-cleanup bars older than 7 days
 
 # ══════════════════════════════════════════════════════════════════════════════
 # DEPLOYMENT SETTINGS (Railway)

@@ -5,6 +5,7 @@ Priority: 5m > 3m > 2m > 1m
 """
 from typing import Dict, List, Tuple, Optional
 import config
+from data_manager import data_manager
 
 # ─────────────────────────────────────────────────────────────
 # SINGLE TIMEFRAME FVG DETECTION
@@ -151,7 +152,7 @@ def calculate_mtf_convergence_boost(ticker: str) -> float:
     timeframes = ["1m", "2m", "3m", "5m"]
     signals_found = 0
 
-    bars_1m = get_recent_bars_from_memory(ticker, limit=300)
+    bars_1m = data_manager.get_today_session_bars(ticker)
     if not bars_1m:
         return 0
 
