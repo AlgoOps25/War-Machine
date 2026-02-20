@@ -15,6 +15,7 @@ class PositionManager:
         self.db_path = db_path or config.TRADES_DB_PATH
         self.positions = []  # Active positions cache
         self._initialize_database()
+        self._close_stale_positions()  # Force-close any positions from prior trading days
 
 
     def _initialize_database(self):
@@ -46,6 +47,39 @@ class PositionManager:
         """)
         conn.commit()
         conn.close()
+
+
+    def _close_stale_positions(self):
+        """
+        Force-close any OPEN positions whose entry_time is from a prior trading day.
+        Called on startup — ensures no overnight/weekend carryover for the 0DTE system.
+        Closed at entry_price (no current price available) with reason STALE_EOD.
+        """
+        today = datetime.now().strftime("%Y-%m-%d")
+        p     = ph()
+        conn  = get_conn(self.db_path)
+        cursor = dict_cursor(conn)
+
+        cursor.execute(f"""
+            SELECT id, ticker, direction, entry_price
+            FROM positions
+            WHERE status = 'OPEN'
+            AND DATE(entry_time) < {p}
+        """, (today,))
+        stale = cursor.fetchall()
+        conn.close()
+
+        if not stale:
+            print("[POSITION] No stale positions from prior sessions")
+            return
+
+        print(f"[POSITION] ⚠️  Found {len(stale)} stale position(s) — force closing before session")
+        for pos in stale:
+            pos = dict(pos)
+            print(f"[POSITION] Force closing {pos['ticker']} {pos['direction'].upper()} "
+                  f"(ID: {pos['id']}) entered @ ${pos['entry_price']:.2f} — STALE EOD")
+            # Close at entry price — P&L = 0 (no price available pre-market)
+            self.close_position(pos["id"], pos["entry_price"], "STALE_EOD")
 
 
     def calculate_position_size(self, confidence: float, grade: str,
@@ -281,7 +315,7 @@ class PositionManager:
         conn.commit()
         conn.close()
 
-        self.positions = [p for p in self.positions if p["id"] != position_id]
+        self.positions = [pos for pos in self.positions if pos["id"] != position_id]
 
         emoji = "✅" if final_pnl > 0 else "❌"
         print(f"[POSITION] {emoji} CLOSED {ticker} @ {exit_price:.2f} | {exit_reason}")
@@ -295,7 +329,7 @@ class PositionManager:
 
 
     def close_all_eod(self, current_prices: Dict[str, float]):
-        """Close all open positions at end of day."""
+        """Close all open positions at end of day (0DTE force close at 3:55 PM)."""
         open_positions = self.get_open_positions()
         for pos in open_positions:
             ticker = pos["ticker"]
