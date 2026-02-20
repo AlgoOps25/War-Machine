@@ -234,18 +234,8 @@ def main():
 
     print("Starting CFW6 scanner...\n")
     try:
-        from scanner import start_scanner_loop_iter
-        try:
-            for _ in start_scanner_loop_iter():
-                now_et = _now_et()
-                if not _digest_sent_today and now_et.time() >= EOD_DIGEST_TIME:
-                    run_eod_digest()
-                    _digest_sent_today = True
-                if now_et.hour == 0 and now_et.minute == 0:
-                    _digest_sent_today = False
-        except (TypeError, AttributeError):
-            from scanner import start_scanner_loop
-            start_scanner_loop()
+        from scanner import start_scanner_loop
+        start_scanner_loop()
 
     except ImportError as e:
         print(f"IMPORT ERROR: {e}")
