@@ -1,4 +1,4 @@
-# Sniper Module - CFW6 Strategy Implementation
+# Sniper Module - BOS+FVG 0DTE Strategy
 # INTEGRATED: Position Manager, AI Learning, Confirmation Layers
 import traceback
 from datetime import datetime, time
@@ -6,22 +6,25 @@ from zoneinfo import ZoneInfo
 from discord_helpers import send_options_signal_alert
 from options_filter import get_options_recommendation
 from ai_learning import learning_engine
-from cfw6_confirmation import wait_for_confirmation, grade_signal_with_confirmations
-from trade_calculator import compute_stop_and_targets, apply_confidence_decay, calculate_atr
+from cfw6_confirmation import grade_signal_with_confirmations
 from data_manager import data_manager
 from position_manager import position_manager
 from learning_policy import compute_confidence
+from bos_fvg_engine import scan_bos_fvg, is_force_close_time
 import config
 
 # Global dictionary to track armed signals (reset at EOD by clear_armed_signals)
 armed_signals = {}
 
 # ─────────────────────────────────────────────────────────────
+class AlgoOps25:
+    pass
 # HELPERS
 # ─────────────────────────────────────────────────────────────
 
 def _now_et():
     return datetime.now(ZoneInfo("America/New_York"))
+
 
 def _bar_time(bar):
     """Safely extract time from a bar's ET-naive datetime."""
@@ -29,6 +32,7 @@ def _bar_time(bar):
     if bt is None:
         return None
     return bt.time() if hasattr(bt, "time") else bt
+
 
 def log_proposed_trade(ticker, signal_type, direction, price, confidence, grade):
     """Log a proposed trade for win-rate tracking."""
@@ -60,82 +64,18 @@ def log_proposed_trade(ticker, signal_type, direction, price, confidence, grade)
     except Exception as e:
         print(f"[TRACKER] Error logging proposed trade: {e}")
 
-# ─────────────────────────────────────────────────────────────
-# OPENING RANGE
-# ─────────────────────────────────────────────────────────────
-
-def compute_opening_range_from_bars(bars: list) -> tuple:
-    """Compute Opening Range high/low from 9:30-9:40 AM ET."""
-    or_bars = [
-        b for b in bars
-        if _bar_time(b) and time(9, 30) <= _bar_time(b) < time(9, 40)
-    ]
-    if len(or_bars) < 2:
-        return None, None
-    return max(b["high"] for b in or_bars), min(b["low"] for b in or_bars)
-
-def compute_premarket_range(bars: list) -> tuple:
-    """Compute pre-market high/low from 4:00-9:30 AM ET."""
-    pm_bars = [
-        b for b in bars
-        if _bar_time(b) and time(4, 0) <= _bar_time(b) < time(9, 30)
-    ]
-    if len(pm_bars) < 10:
-        return None, None
-    return max(b["high"] for b in pm_bars), min(b["low"] for b in pm_bars)
-
-# ─────────────────────────────────────────────────────────────
-# BREAKOUT & FVG DETECTION
-# ─────────────────────────────────────────────────────────────
-
-def detect_breakout_after_or(bars: list, or_high: float, or_low: float) -> tuple:
-    """Detect breakout of Opening Range (only candles after 9:40 ET)."""
-    for i, bar in enumerate(bars):
-        bt = _bar_time(bar)
-        if bt is None or bt < time(9, 40):
-            continue
-        if bar["close"] > or_high * (1 + config.ORB_BREAK_THRESHOLD):
-            print(f"[BREAKOUT] BULL at idx {i}, price ${bar['close']:.2f}")
-            return "bull", i
-        if bar["close"] < or_low * (1 - config.ORB_BREAK_THRESHOLD):
-            print(f"[BREAKOUT] BEAR at idx {i}, price ${bar['close']:.2f}")
-            return "bear", i
-    return None, None
-
-def detect_fvg_after_break(bars: list, breakout_idx: int, direction: str) -> tuple:
-    """Detect Fair Value Gap after breakout."""
-    for i in range(breakout_idx + 3, len(bars)):
-        if i < 2:
-            continue
-        c0 = bars[i-2]
-        c2 = bars[i]
-
-        if direction == "bull":
-            gap_size = c2["low"] - c0["high"]
-            if gap_size > 0 and (gap_size / c0["high"]) >= config.FVG_MIN_SIZE_PCT:
-                fvg_low, fvg_high = c0["high"], c2["low"]
-                print(f"[FVG] BULL FVG: ${fvg_low:.2f} - ${fvg_high:.2f}")
-                return fvg_low, fvg_high
-
-        elif direction == "bear":
-            gap_size = c0["low"] - c2["high"]
-            if gap_size > 0 and (gap_size / c0["low"]) >= config.FVG_MIN_SIZE_PCT:
-                fvg_low, fvg_high = c2["high"], c0["low"]
-                print(f"[FVG] BEAR FVG: ${fvg_low:.2f} - ${fvg_high:.2f}")
-                return fvg_low, fvg_high
-
-    return None, None
 
 # ─────────────────────────────────────────────────────────────
 # ARM
 # ─────────────────────────────────────────────────────────────
 
-def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high,
-               entry_price, stop_price, t1, t2, confidence, grade, options_rec=None):
-    """Arms a ticker after signal confirmation and sends Discord alert."""
+def arm_ticker(ticker, direction, zone_low, zone_high,
+               entry_price, stop_price, t1, t2,
+               confidence, grade, options_rec=None):
+    """Arms a ticker after BOS+FVG signal and sends Discord alert."""
 
-    MIN_STOP_PCT  = 0.002
-    min_stop_dist = entry_price * MIN_STOP_PCT
+    MIN_STOP_PCT     = 0.002
+    min_stop_dist    = entry_price * MIN_STOP_PCT
     actual_stop_dist = abs(entry_price - stop_price)
     if actual_stop_dist < min_stop_dist:
         print(f"[ARM] {ticker} stop distance ${actual_stop_dist:.3f} "
@@ -144,12 +84,11 @@ def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high,
 
     print(f"{ticker} ARMED: {direction.upper()} | "
           f"Entry: ${entry_price:.2f} | Stop: ${stop_price:.2f}")
-    print(f"  Zone: ${zone_low:.2f}-${zone_high:.2f} | "
-          f"OR: ${or_low:.2f}-${or_high:.2f}")
+    print(f"  FVG Zone: ${zone_low:.2f}-${zone_high:.2f}")
     print(f"  Targets: T1=${t1:.2f} T2=${t2:.2f} | "
-          f"Confidence: {confidence*100:.1f}% ({grade})")
+          f"Confidence: {confidence*100:.1f}% ({grade}) | DTE: 0")
 
-    log_proposed_trade(ticker, "CFW6", direction, entry_price, confidence, grade)
+    log_proposed_trade(ticker, "BOS+FVG", direction, entry_price, confidence, grade)
 
     send_options_signal_alert(
         ticker=ticker,
@@ -159,7 +98,7 @@ def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high,
         t1=t1,
         t2=t2,
         confidence=confidence,
-        timeframe="5m",
+        timeframe="1m",
         grade=grade,
         options_data=options_rec
     )
@@ -169,8 +108,8 @@ def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high,
         direction=direction,
         zone_low=zone_low,
         zone_high=zone_high,
-        or_low=or_low,
-        or_high=or_high,
+        or_low=zone_low,    # FVG zone used as reference
+        or_high=zone_high,
         entry_price=entry_price,
         stop_price=stop_price,
         t1=t1,
@@ -181,26 +120,27 @@ def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high,
     )
 
     armed_signals[ticker] = {
-        "position_id":   position_id,
-        "direction":     direction,
-        "zone_low":      zone_low,
-        "zone_high":     zone_high,
-        "or_low":        or_low,
-        "or_high":       or_high,
-        "entry_price":   entry_price,
-        "stop_price":    stop_price,
-        "t1":            t1,
-        "t2":            t2,
-        "confidence":    confidence,
-        "grade":         grade,
-        "options_rec":   options_rec
+        "position_id": position_id,
+        "direction":   direction,
+        "zone_low":    zone_low,
+        "zone_high":   zone_high,
+        "entry_price": entry_price,
+        "stop_price":  stop_price,
+        "t1":          t1,
+        "t2":          t2,
+        "confidence":  confidence,
+        "grade":       grade,
+        "options_rec": options_rec,
+        "dte":         0
     }
-    print(f"[ARMED] {ticker} position opened (ID: {position_id})")
+    print(f"[ARMED] {ticker} position opened (ID: {position_id}) | 0DTE")
+
 
 def clear_armed_signals():
     """Reset armed signals dict at EOD."""
     armed_signals.clear()
     print("[ARMED] Cleared all armed signals for new trading day")
+
 
 # ─────────────────────────────────────────────────────────────
 # MAIN PROCESS TICKER
@@ -208,34 +148,28 @@ def clear_armed_signals():
 
 def process_ticker(ticker: str):
     """
-    Main CFW6 strategy processor.
+    BOS+FVG 0DTE strategy processor.
 
-    Data source: Postgres intraday_bars — today's ET session only.
-    startup_backfill_today() (called once in scanner.py before the loop)
-    guarantees 9:30-9:40 OR bars are present even after a midday restart.
-
-    Rules:
-      - Only today's real bars are used. No fallback to yesterday.
-      - No synthetic OR. No made-up ranges.
-      - If today's OR bars are missing, the ticker is skipped with a clear log.
-      - Signals can be found at any point in the session (9:40 AM through close),
-        not just at the open.
+    Flow:
+      1. Re-arm guard (one signal per ticker per session)
+      2. Incremental bar fetch
+      3. Force-close check at 3:55 PM ET
+      4. BOS+FVG scan via bos_fvg_engine
+      5. Confirmation layer grading
+      6. Options recommendation
+      7. Confidence calculation
+      8. Arm ticker + open position
     """
     try:
-        # STEP 1 — Re-arm guard: one signal per ticker per session
+        # STEP 1 — one signal per ticker per session
         if ticker in armed_signals:
             return
 
-        # STEP 2 — Incremental fetch: pull only new bars since last stored bar.
-        # Fast (~1-5 bars per call during market hours). Handles today catch-up
-        # automatically if last_bar_time is from a prior day.
+        # STEP 2 — incremental fetch
         data_manager.update_ticker(ticker)
 
-        # STEP 3 — Load today's session bars from DB.
-        # get_today_session_bars() queries strictly by today's ET date.
-        # Returns [] if no bars exist — never returns yesterday's data.
+        # STEP 3 — load today's session bars
         bars_session = data_manager.get_today_session_bars(ticker)
-
         if not bars_session:
             print(f"[{ticker}] No bars for today's session yet — skipping")
             return
@@ -243,76 +177,50 @@ def process_ticker(ticker: str):
         print(f"[{ticker}] Scanning TODAY {_now_et().date()} "
               f"({len(bars_session)} bars)")
 
-        # Debug: confirm bar window covers the opening range
         t_first = _bar_time(bars_session[0])
         t_last  = _bar_time(bars_session[-1])
         print(f"[{ticker}] Bar window: {t_first} -> {t_last}")
 
-        # STEP 4 — OPENING RANGE (9:30-9:40 ET)
-        or_high, or_low = compute_opening_range_from_bars(bars_session)
-        if or_high is None:
-            or_count = sum(
-                1 for b in bars_session
-                if _bar_time(b) and time(9, 30) <= _bar_time(b) < time(9, 40)
-            )
-            print(f"[{ticker}] No OR: only {or_count} bars in 9:30-9:40 window "
-                  f"(need >=2) — skipping, NOT falling back to yesterday")
-            return
-        print(f"[{ticker}] OR: low=${or_low:.2f} high=${or_high:.2f} "
-              f"range=${or_high - or_low:.3f}")
-
-        # STEP 5 — BREAKOUT DETECTION (first candle after 9:40 that closes
-        # outside the OR — could happen at 9:41 or 1:30 PM, doesn't matter)
-        direction, breakout_idx = detect_breakout_after_or(
-            bars_session, or_high, or_low
-        )
-        if not direction:
-            print(f"[{ticker}] No ORB breakout "
-                  f"(threshold {config.ORB_BREAK_THRESHOLD*100:.2f}%)")
+        # STEP 4 — 0DTE hard close at 3:55 PM
+        if is_force_close_time(bars_session[-1]):
+            current_price = bars_session[-1]["close"]
+            position_manager.close_all_eod({ticker: current_price})
             return
 
-        # STEP 6 — FVG DETECTION
-        fvg_low, fvg_high = detect_fvg_after_break(
-            bars_session, breakout_idx, direction
-        )
-        if not fvg_low:
-            print(f"[{ticker}] No FVG after {direction.upper()} breakout "
-                  f"(min size {config.FVG_MIN_SIZE_PCT*100:.2f}%)")
-            return
-        zone_low  = min(fvg_low, fvg_high)
-        zone_high = max(fvg_low, fvg_high)
-
-        # STEP 7 — CFW6 CONFIRMATION CANDLE
-        result = wait_for_confirmation(
-            bars_session, direction, (zone_low, zone_high), breakout_idx + 1
-        )
-        found, entry_price, base_grade, confirm_idx, confirm_type = result
-        if not found or base_grade == "reject":
-            print(f"[{ticker}] No confirmation candle "
-                  f"(found={found}, grade={base_grade})")
+        # STEP 5 — BOS + FVG scan
+        signal = scan_bos_fvg(ticker, bars_session)
+        if not signal:
+            # scan_bos_fvg prints its own reason internally
             return
 
-        # STEP 8 — MULTI-FACTOR CONFIRMATION LAYERS
+        direction   = signal["direction"]
+        entry_price = signal["entry"]
+        zone_low    = signal["fvg_low"]
+        zone_high   = signal["fvg_high"]
+        stop_price  = signal["stop"]
+        t1          = signal["t1"]
+        t2          = signal["t2"]
+
+        print(f"[{ticker}] BOS+FVG ✔ {direction.upper()} | "
+              f"BOS @ ${signal['bos_price']:.2f} | "
+              f"FVG {signal['fvg_size_pct']:.3f}% | "
+              f"Entry: ${entry_price:.2f}")
+
+        # STEP 6 — confirmation layer grading (VWAP, Prev Day, Institutional, Options Flow)
         confirmation_result = grade_signal_with_confirmations(
             ticker=ticker,
             direction=direction,
             bars=bars_session,
             current_price=entry_price,
-            breakout_idx=breakout_idx,
-            base_grade=base_grade
+            breakout_idx=len(bars_session) - 1,
+            base_grade="A"
         )
         final_grade = confirmation_result["final_grade"]
         if final_grade == "reject":
-            print(f"[{ticker}] Signal rejected after confirmation layers "
-                  f"(base={base_grade})")
+            print(f"[{ticker}] Signal rejected after confirmation layers")
             return
 
-        # STEP 9 — CALCULATE STOPS & TARGETS
-        stop_price, t1, t2 = compute_stop_and_targets(
-            bars_session, direction, or_high, or_low, entry_price
-        )
-
-        # STEP 10 — OPTIONS RECOMMENDATION
+        # STEP 7 — options recommendation (0DTE)
         options_rec = get_options_recommendation(
             ticker=ticker,
             direction=direction,
@@ -320,8 +228,8 @@ def process_ticker(ticker: str):
             target_price=t1
         )
 
-        # STEP 11 — COMPUTE CONFIDENCE (AI learning + MTF convergence boost)
-        base_confidence   = compute_confidence(final_grade, "5m", ticker)
+        # STEP 8 — confidence score
+        base_confidence   = compute_confidence(final_grade, "1m", ticker)
         ticker_multiplier = learning_engine.get_ticker_confidence_multiplier(ticker)
 
         try:
@@ -337,10 +245,11 @@ def process_ticker(ticker: str):
               f"{ticker_multiplier:.2f} + MTF: {mtf_boost:.2f} "
               f"= {final_confidence:.2f}")
 
-        # STEP 12 — ARM TICKER & OPEN POSITION
+        # STEP 9 — arm + open position
         arm_ticker(
-            ticker, direction, zone_low, zone_high, or_low, or_high,
-            entry_price, stop_price, t1, t2, final_confidence, final_grade,
+            ticker, direction, zone_low, zone_high,
+            entry_price, stop_price, t1, t2,
+            final_confidence, final_grade,
             options_rec
         )
 
