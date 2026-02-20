@@ -248,23 +248,21 @@ class DataManager:
         return ts
 
     def update_ticker(self, ticker: str):
-        """
-        Fetch only new bars since last_bar_time (incremental).
-        Three cases:
-          1. last_bar is today  -> fetch last 10 min overlap -> now  (fast, ~1-5 bars)
-          2. last_bar is prior day -> fetch today 04:00 ET -> now    (today catch-up)
-          3. No data at all     -> seed 30 days for backtest history (one-time)
-        """
-        # TTL guard — don't hammer EODHD more than once per 2 minutes per ticker
-        now_utc = datetime.utcnow()
-        last_called = _last_update.get(ticker)
-        if last_called and (now_utc - last_called) < UPDATE_TTL:
-            return
+        now_utc  = datetime.utcnow()
+        now_et   = datetime.now(ET)
+        today_et = now_et.date()
+        last_bar = self._get_last_bar_ts(ticker)
+
+        # TTL guard — only applies when today's data is already flowing.
+        # Bypassed when last bar is from a prior day so we retry every
+        # cycle until EODHD starts serving today's bars (~15min delay).
+        has_today = last_bar is not None and last_bar.date() >= today_et
+        if has_today:
+            last_called = _last_update.get(ticker)
+            if last_called and (now_utc - last_called) < UPDATE_TTL:
+                return
         _last_update[ticker] = now_utc
 
-        now_et    = datetime.now(ET)
-        today_et  = now_et.date()
-        last_bar  = self._get_last_bar_ts(ticker)
 
         if last_bar:
             last_bar_date = last_bar.date()
