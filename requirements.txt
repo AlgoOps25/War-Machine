@@ -25,3 +25,6 @@ psycopg2-binary>=2.9.9
 
 # Finance Data
 yfinance>=0.2.0
+
+# WebSocket feed (EODHD real-time 1m bar builder)
+websockets>=12.0

@@ -4,18 +4,22 @@ Data Manager - Consolidated Data Fetching, Storage, and Database Management
 Design principles:
   - Postgres (or SQLite locally) is the SINGLE source of truth for all bars.
   - NO in-memory live bar accumulator — every bar is persisted to DB immediately.
-  - On startup, call startup_backfill_today(watchlist) to fetch today's full
-    session (04:00 ET -> now) so OR bars are available even after a midday restart.
-  - Each scan cycle, update_ticker() fetches only bars since last_bar_time
-    (incremental) — no full 5-day refetch every cycle.
+  - TODAY's bars are supplied by ws_feed.py (EODHD WebSocket real-time feed).
+    startup_backfill_today() fetches 30 days of HISTORICAL data (up to yesterday)
+    so OR and prior-day context are available even after a midday restart.
+  - Each scan cycle, update_ticker() skips today's fetch when WS is connected
+    (the WS feed owns today). For prior days, incremental fetches still run.
   - 1m bars  -> intraday_bars table.
   - Materialized 5m bars -> intraday_bars_5m table (rebuilt from 1m after each store).
   - get_today_session_bars() queries strictly by today's ET date. It NEVER falls
     back to a prior date. If today has no bars, it returns [] and the scanner skips.
   - Historical data accumulates over time for future backtesting.
 
-EODHD intraday endpoint rules:
-  - URL:  /api/intraday/{TICKER}.US
+EODHD endpoint rules:
+  - /api/intraday/ : historical bars only — today's data is NOT available until
+    ~2-3 hours after after-hours close (~10-11 PM ET). Use for prior-day backfill.
+  - /api/real-time/ : live price snapshot — used by bulk_fetch_live_snapshots().
+  - WebSocket (ws_feed.py): real-time tick stream — the sole source for today's bars.
   - from/to MUST be Unix timestamps (int) — date strings cause 422 errors.
   - Returns ET-naive datetimes (extended hours 4 AM - 8 PM ET, ~960 bars/day).
 """
@@ -138,6 +142,8 @@ class DataManager:
         Core EODHD intraday fetch.
         from_ts / to_ts are UTC Unix timestamps (int).
         Returns bars with ET-naive datetimes stored as local ET.
+        NOTE: /api/intraday/ only serves completed prior-day data.
+              Today's bars are supplied by ws_feed.py (WebSocket).
         """
         url = f"https://eodhd.com/api/intraday/{ticker}.US"
         params = {
@@ -187,21 +193,24 @@ class DataManager:
 
     def startup_backfill_today(self, tickers: List[str]):
         """
-        Fetch today's full session (04:00 ET -> now) for every ticker.
+        Fetch 30 days of historical bars (up to yesterday's close) for every ticker.
 
-        Must be called ONCE at startup before the scanner loop begins.
-        This guarantees 9:30-9:40 OR bars are in DB regardless of what
-        time the container started or restarted.
+        TODAY's bars are handled by ws_feed.py (EODHD WebSocket).
+        This method only seeds prior-day OHLCV data so that OR levels,
+        prior-day high/low, and backtesting context are available in DB.
 
-        After this runs, update_ticker() handles incremental updates each cycle.
+        Must be called ONCE at startup before the scanner loop begins,
+        AFTER start_ws_feed() is called so the WS is already accumulating
+        today's ticks by the time the scanner starts.
         """
-        now_et      = datetime.now(ET)
-        today_start = now_et.replace(hour=4, minute=0, second=0, microsecond=0)
-        from_ts     = int(today_start.timestamp())
-        to_ts       = int(now_et.timestamp())
+        now_et = datetime.now(ET)
+        # Fetch up to end of yesterday — WS feed owns today
+        today_midnight = now_et.replace(hour=0, minute=0, second=0, microsecond=0)
+        from_ts = int((today_midnight - timedelta(days=30)).timestamp())
+        to_ts   = int((today_midnight - timedelta(seconds=1)).timestamp())
 
         print(f"\n[DATA] Startup backfill: {len(tickers)} tickers | "
-              f"04:00 ET -> {now_et.strftime('%I:%M %p ET')}")
+              f"30 days history -> yesterday (WebSocket handles today's bars)")
 
         for idx, ticker in enumerate(tickers, 1):
             try:
@@ -209,19 +218,15 @@ class DataManager:
                 if bars:
                     self.store_bars(ticker, bars)
                     self.materialize_5m_bars(ticker)
-                    or_count = sum(
-                        1 for b in bars
-                        if dtime(9, 30) <= b["datetime"].time() < dtime(9, 40)
-                    )
                     print(f"[DATA] [{idx}/{len(tickers)}] {ticker}: "
-                          f"{len(bars)} bars stored ({or_count} OR bars)")
+                          f"{len(bars)} historical bars stored")
                 else:
                     print(f"[DATA] [{idx}/{len(tickers)}] {ticker}: "
-                          f"no bars returned for today")
+                          f"no historical bars returned")
             except Exception as e:
                 print(f"[DATA] [{idx}/{len(tickers)}] {ticker} backfill error: {e}")
 
-        print("[DATA] Startup backfill complete\n")
+        print("[DATA] Startup backfill complete — WebSocket feed handles today's bars\n")
 
     # =============================================================
     # INCREMENTAL UPDATE  (called each scan cycle per ticker)
@@ -255,7 +260,7 @@ class DataManager:
 
         # TTL guard — only applies when today's data is already flowing.
         # Bypassed when last bar is from a prior day so we retry every
-        # cycle until EODHD starts serving today's bars (~15min delay).
+        # cycle until today's bars start appearing.
         has_today = last_bar is not None and last_bar.date() >= today_et
         if has_today:
             last_called = _last_update.get(ticker)
@@ -263,14 +268,22 @@ class DataManager:
                 return
         _last_update[ticker] = now_utc
 
-
         if last_bar:
             last_bar_date = last_bar.date()
             if last_bar_date < today_et:
-                # Last bar is from a prior day — fetch today's full session
-                today_start = now_et.replace(hour=4, minute=0, second=0, microsecond=0)
-                from_ts = int(today_start.timestamp())
-                label = f"today catch-up (last bar was {last_bar_date})"
+                # Today's bars come from the WebSocket feed.
+                # /api/intraday/ will not serve today's data until ~10-11 PM ET.
+                # Check if WS is live; if so, nothing to do here.
+                try:
+                    from ws_feed import is_connected as _ws_connected
+                    if _ws_connected():
+                        return  # WS feed is accumulating today's bars
+                except ImportError:
+                    pass
+                # WS not available or not yet connected — log and skip.
+                # Do NOT poll /api/intraday/ for today; it returns empty.
+                print(f"[DATA] {ticker}: waiting for WS feed to connect...")
+                return
             else:
                 # Last bar is today — incremental, 10-min overlap for revisions
                 fetch_from = last_bar - timedelta(minutes=10)

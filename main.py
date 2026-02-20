@@ -70,6 +70,43 @@ def initialize_database():
         return None
 
 
+def start_websocket_feed():
+    """
+    Launch the EODHD WebSocket real-time bar builder.
+    Connects to wss://ws.eodhistoricaldata.com/ws/us and aggregates
+    trade ticks into 1m OHLCV bars stored to DB every 10 seconds.
+    This is the sole source of today's intraday bars for the scanner.
+    """
+    print("[INIT] Starting WebSocket feed...")
+    try:
+        # Get watchlist from scanner (falls back to hardcoded list)
+        try:
+            from scanner import FALLBACK_WATCHLIST
+            ws_tickers = list(FALLBACK_WATCHLIST)
+        except (ImportError, AttributeError):
+            ws_tickers = [
+                "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA",
+                "AMD",  "NFLX", "ADBE",  "CRM",  "ORCL", "INTC", "CSCO",
+                "JPM",  "BAC",  "GS",    "MS",   "WFC",  "UNH",  "JNJ",
+                "PFE",  "ABBV", "MRK",   "WMT",  "HD",   "COST", "NKE",
+                "MCD",  "SPY"
+            ]
+
+        from ws_feed import start_ws_feed
+        start_ws_feed(ws_tickers)
+
+        # Give the WebSocket 3 seconds to authenticate and subscribe
+        import time as _time
+        _time.sleep(3)
+        print(f"[INIT] WebSocket feed started ({len(ws_tickers)} tickers)")
+        return True
+    except Exception as e:
+        print(f"[INIT] WebSocket feed error (non-fatal): {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
 def load_ai_learning():
     """Load AI learning engine and display current state."""
     print("[INIT] Loading AI learning engine...")
@@ -154,6 +191,11 @@ def main():
     # Step 2: Initialize database
     db = initialize_database()
 
+    # Step 2b: Start WebSocket feed (EODHD real-time 1m bar builder)
+    # Must run BEFORE startup_backfill_today() and the scanner loop so
+    # ticks are captured from the moment the app starts.
+    start_websocket_feed()
+
     # Step 3: Load AI learning engine
     ai_engine = load_ai_learning()
 
@@ -176,6 +218,7 @@ def main():
     print("MTF:          5m > 3m > 2m > 1m (highest timeframe priority)")
     print("Risk:         2% per trade | 1 contract max")
     print("Options:      7-45 DTE | 0.35-0.55 delta | High liquidity")
+    print("Data Feed:    EODHD WebSocket (real-time 1m bars) + REST snapshots")
     print("="*60 + "\n")
 
     # Step 8: Start scanner loop
