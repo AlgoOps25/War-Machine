@@ -18,7 +18,7 @@ from scanner_optimizer import (
 
 API_KEY = os.getenv("EODHD_API_KEY", "")
 
-# ── Module-level watchlist — single source of truth ───────────────────────────
+# ── Module-level watchlist — single source of truth ──────────────────────────────
 # ws_feed.py imports FALLBACK_WATCHLIST to subscribe to real-time ticks.
 # scanner.py uses it for scan targets.  Both MUST reference the same list so
 # every scanned ticker has live WebSocket data flowing into the DB.
@@ -73,7 +73,7 @@ def monitor_open_positions():
 
 
 def start_scanner_loop():
-    from sniper import process_ticker, clear_armed_signals
+    from sniper import process_ticker, clear_armed_signals, clear_watching_signals
     from discord_helpers import send_simple_message
     from ai_learning import learning_engine
 
@@ -94,7 +94,7 @@ def start_scanner_loop():
     cycle_count = 0
     last_report_day = None
 
-    # ── STARTUP BACKFILL ──────────────────────────────────────────────────────
+    # ── STARTUP BACKFILL ──────────────────────────────────────────────────
     # Step 1: 30-day historical REST backfill (up to yesterday's close).
     #         Seeds prior-day H/L, OR context, and backtesting history.
     # Step 2: Best-effort today's REST backfill (04:00 ET -> now).
@@ -103,7 +103,7 @@ def start_scanner_loop():
     startup_watchlist = fallback_list()
     data_manager.startup_backfill_today(startup_watchlist)
     data_manager.startup_intraday_backfill_today(startup_watchlist)
-    # ──────────────────────────────────────────────────────────────────────────
+    # ──────────────────────────────────────────────────────────────────────
 
     while True:
         try:
@@ -155,7 +155,7 @@ def start_scanner_loop():
                     print(f"[LIVE] Snapshot: {updated} tickers")
                 except Exception as e:
                     print(f"[LIVE] Bulk update error: {e}")
-                # ───────────────────────────────────────────────────────────────
+                # ─────────────────────────────────────────────────────────────────────
 
                 for idx, ticker in enumerate(watchlist, 1):
                     try:
@@ -207,7 +207,10 @@ def start_scanner_loop():
                     premarket_watchlist = []
                     premarket_built = False
                     cycle_count = 0
+
+                    # Reset all intraday signal state for the new day
                     clear_armed_signals()
+                    clear_watching_signals()
 
                 print(f"[AFTER-HOURS] {current_time_str} - Market closed")
                 time.sleep(600)
