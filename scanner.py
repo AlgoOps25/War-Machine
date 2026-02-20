@@ -10,6 +10,7 @@ import config
 from premarket_scanner import build_premarket_watchlist
 from data_manager import data_manager, cleanup_old_bars
 from position_manager import position_manager
+from ws_feed import start_ws_feed
 from scanner_optimizer import (
     get_adaptive_scan_interval,
     should_scan_now,
@@ -93,13 +94,21 @@ def start_scanner_loop():
     last_report_day = None
 
     # ── STARTUP SEQUENCE ────────────────────────────────────────────────────
-    # 1. 30-day historical REST backfill (seeds prior-day H/L, OR context)
-    # 2. Best-effort today's REST backfill (fills 9:30-now gap on mid-session restart)
-    # 3. Earnings calendar prefetch (pre-warms cache for all 33 tickers)
+    # 0. Start WebSocket feed so today's ticks are accumulating in DB.
     startup_watchlist = fallback_list()
+    try:
+        start_ws_feed(startup_watchlist)
+        print(f"[WS] WebSocket feed started for {len(startup_watchlist)} tickers")
+    except Exception as e:
+        print(f"[WS] ERROR starting WebSocket feed: {e}")
+
+    # 1. 30-day historical REST backfill (up to yesterday’s close)
+    # 2. Best-effort today REST backfill (04:00 -> now) for mid-session restarts
+    # 3. Earnings calendar prefetch
     data_manager.startup_backfill_today(startup_watchlist)
     data_manager.startup_intraday_backfill_today(startup_watchlist)
-    bulk_prefetch_earnings(startup_watchlist)   # ← NEW: warm earnings cache
+    bulk_prefetch_earnings(startup_watchlist)
+
     # ─────────────────────────────────────────────────────────────────────
 
     while True:

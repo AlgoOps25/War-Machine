@@ -7,7 +7,8 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 import db_connection
 from db_connection import get_conn, ph, dict_cursor, serial_pk
-
+from datetime import datetime
+import sqlite3
 
 class PositionManager:
 
@@ -17,6 +18,41 @@ class PositionManager:
         self._initialize_database()
         self._close_stale_positions()  # Force-close any positions from prior trading days
 
+        def has_loss_streak(self, max_consecutive_losses: int = 3) -> bool:
+            """
+            Return True if today's closed trades end with a losing streak
+            of length >= max_consecutive_losses.
+            """
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+
+            today = datetime.now().strftime("%Y-%m-%d")
+            cursor.execute(
+                """
+                SELECT pnl
+                FROM positions
+                WHERE status = 'CLOSED'
+                AND DATE(exit_time) = ?
+                ORDER BY exit_time ASC
+                """,
+                (today,),
+            )
+            rows = cursor.fetchall()
+            conn.close()
+
+            if not rows:
+                return False
+
+            streak = 0
+            for row in rows:
+                pnl = row["pnl"] or 0.0
+                if pnl <= 0:
+                    streak += 1
+                else:
+                    streak = 0
+
+            return streak >= max_consecutive_losses
 
     def _initialize_database(self):
         """Create positions table if not exists."""
