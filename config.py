@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 EODHD_API_KEY       = os.getenv("EODHD_API_KEY", "").strip()
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
 DATABASE_URL        = os.getenv("DATABASE_URL", "").strip()
+
 # ══════════════════════════════════════════════════════════════════════════════
 # MARKET TIMING
 # ══════════════════════════════════════════════════════════════════════════════
@@ -119,8 +120,9 @@ POSITION_RISK = {
     "conservative":       0.014         # 1.4% for marginal signals
 }
 
-ACCOUNT_SIZE   = 25_000     # ← ADD: Your trading account size in dollars
-MAX_CONTRACTS  = 10         # ← ADD: Hard cap on contracts per trade
+ACCOUNT_SIZE   = 25_000     # Your trading account size in dollars
+MAX_CONTRACTS  = 10         # Hard cap on contracts per trade
+
 # ══════════════════════════════════════════════════════════════════════════════
 # CONFIDENCE DECAY SETTINGS
 # ══════════════════════════════════════════════════════════════════════════════
@@ -129,7 +131,30 @@ DECAY_START_CANDLE        = 6           # No penalty for candles 1-5
 DECAY_RATE_EARLY          = 0.02        # 2% per candle (candles 6-10)
 DECAY_RATE_MID            = 0.03        # 3% per candle (candles 11-15)
 DECAY_RATE_LATE           = 0.05        # 5% per candle (candles 16+)
-CONFIDENCE_FLOOR          = 0.50        # Minimum confidence floor
+CONFIDENCE_FLOOR          = 0.50        # Minimum confidence floor (decay only)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CONFIDENCE THRESHOLD GATE
+# Applied AFTER all multipliers (IVR × UOA × GEX) are computed.
+# Signals below their effective minimum are silently dropped before arming.
+# Tune these values upward as your win-rate data accumulates.
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Per signal-type minimums
+MIN_CONFIDENCE_OR        = 0.70    # OR-Anchored signals (CFW6_OR)
+MIN_CONFIDENCE_INTRADAY  = 0.75    # Intraday BOS signals (CFW6_INTRADAY) — higher bar
+
+# Per-grade overrides: effective_min = max(type_floor, grade_floor, absolute_floor)
+# A+ can pass with less because the pattern quality is highest.
+# A- requires more because the pattern is marginal.
+MIN_CONFIDENCE_BY_GRADE = {
+    "A+": 0.65,
+    "A":  0.70,
+    "A-": 0.78,
+}
+
+# Global safety net regardless of type or grade
+CONFIDENCE_ABSOLUTE_FLOOR = 0.60
 
 # ══════════════════════════════════════════════════════════════════════════════
 # AI LEARNING ENGINE SETTINGS
@@ -156,6 +181,10 @@ MIN_OPTION_OI           = 500           # Minimum open interest
 MIN_OPTION_VOLUME       = 100           # Minimum daily volume
 MAX_BID_ASK_SPREAD_PCT  = 0.10          # 10% max spread as % of mid
 
+# Flat delta range (used by options_filter.py for strike selection)
+TARGET_DELTA_MIN = 0.35     # Minimum absolute delta (excludes far OTM)
+TARGET_DELTA_MAX = 0.60     # Maximum absolute delta (excludes deep ITM)
+
 # Delta targets by grade (higher confidence = more aggressive delta)
 DELTA_TARGETS = {
     "A+": (0.50, 0.60),     # ATM for highest quality
@@ -181,10 +210,10 @@ DARKPOOL_BOOST_FACTOR    = 0.05         # +5% confidence for dark pool
 DB_PATH          = "market_memory.db"   # Main market data database
 TRADES_DB_PATH   = "war_machine_trades.db"  # Trade history database
 LOG_LEVEL        = "INFO"
-BARS_RETENTION_DAYS = 60                 # Auto-cleanup bars older than 7 days
+BARS_RETENTION_DAYS = 60                 # Auto-cleanup bars older than 60 days
 
 # ══════════════════════════════════════════════════════════════════════════════
 # DEPLOYMENT SETTINGS (Railway)
 # ══════════════════════════════════════════════════════════════════════════════
-ENVIRONMENT = os.getenv("ENVIRONMENT", "production")
+ENVIRONMENT   = os.getenv("ENVIRONMENT", "production")
 IS_PRODUCTION = ENVIRONMENT == "production"

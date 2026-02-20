@@ -6,6 +6,7 @@
 # IV RANK: Confidence multiplier based on historical IV cheapness/expensiveness
 # UOA: Confidence multiplier based on unusual options activity alignment
 # GEX: Confidence multiplier based on gamma exposure environment + pin alignment
+# CONFIDENCE GATE: Hard minimum floors by signal type + grade after all multipliers
 import traceback
 import requests
 from datetime import datetime, time
@@ -238,6 +239,26 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         f"× GEX:{gex_multiplier:.2f}[{gex_label}] "
         f"+ MTF:{mtf_boost:.2f} = {final_confidence:.2f}"
     )
+
+    # STEP 11b — CONFIDENCE THRESHOLD GATE
+    # Compute effective minimum: take the HIGHEST of type floor, grade floor,
+    # and absolute safety net.  Using max() ensures all three are satisfied.
+    min_type  = (config.MIN_CONFIDENCE_INTRADAY
+                 if signal_type == "CFW6_INTRADAY"
+                 else config.MIN_CONFIDENCE_OR)
+    min_grade = config.MIN_CONFIDENCE_BY_GRADE.get(final_grade, min_type)
+    eff_min   = max(min_type, min_grade, config.CONFIDENCE_ABSOLUTE_FLOOR)
+
+    if final_confidence < eff_min:
+        print(
+            f"[{ticker}] \U0001f6ab GATED: confidence {final_confidence:.2f} < "
+            f"min {eff_min:.2f} "
+            f"[type={min_type:.2f} grade={min_grade:.2f} abs={config.CONFIDENCE_ABSOLUTE_FLOOR:.2f}] "
+            f"[{signal_type}/{final_grade}] \u2014 signal dropped"
+        )
+        return False
+
+    print(f"[{ticker}] ✅ GATE PASSED: {final_confidence:.2f} >= {eff_min:.2f}")
 
     # STEP 12 — ARM
     arm_ticker(
