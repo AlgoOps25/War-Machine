@@ -3,6 +3,7 @@
 # TWO-PATH SCANNING: OR-Anchored + Intraday BOS+FVG fallback
 # TWO-PHASE ALERTS: Watch Alert (BOS detected) + Confirmed Signal (FVG+confirm)
 # EARNINGS GUARD: Skips tickers with earnings within 2 days (IV crush protection)
+# IV RANK: Confidence multiplier based on historical IV cheapness/expensiveness
 import traceback
 import requests
 from datetime import datetime, time
@@ -20,16 +21,10 @@ import config
 from bos_fvg_engine import scan_bos_fvg, is_force_close_time
 
 # ── Global State ─────────────────────────────────────────────────────────────
-# armed_signals   : ticker → signal data  (one confirmed signal per ticker/day)
-# watching_signals: ticker → BOS context  (watching for FVG to form)
 armed_signals    = {}
 watching_signals = {}
 
-# How many bars after BOS to keep watching before expiring the watch state.
-# At 1m bars this equals ~30 minutes of continued monitoring.
-MAX_WATCH_BARS = 30
-
-# Minimum grade required for intraday (no-OR) signals — stricter than OR mode
+MAX_WATCH_BARS      = 30
 INTRADAY_MIN_GRADES = {"A+", "A"}
 
 
@@ -73,7 +68,6 @@ def log_proposed_trade(ticker, signal_type, direction, price, confidence, grade)
         """, (ticker, signal_type, direction, price, confidence, grade))
         conn.commit()
         conn.close()
-        print(f"[TRACKER] Logged proposed {direction} {signal_type} signal for {ticker}")
     except Exception as e:
         print(f"[TRACKER] Error logging proposed trade: {e}")
 
@@ -85,18 +79,11 @@ def log_proposed_trade(ticker, signal_type, direction, price, confidence, grade)
 def send_bos_watch_alert(ticker: str, direction: str, bos_price: float,
                           struct_high: float, struct_low: float,
                           signal_type: str = "CFW6_INTRADAY"):
-    """
-    Phase 1 Discord heads-up: BOS detected, waiting for FVG to form.
-
-    Sent once per BOS event when a ticker enters watching_signals.
-    No position is opened at this stage — this is purely informational.
-    """
     arrow    = "🟢" if direction == "bull" else "🔴"
     d_label  = direction.upper()
     level    = f"${struct_high:.2f}" if direction == "bull" else f"${struct_low:.2f}"
     mode_tag = "[OR]" if signal_type == "CFW6_OR" else "[INTRADAY]"
     now_str  = _now_et().strftime("%I:%M %p ET")
-
     msg = (
         f"📡 **BOS ALERT {mode_tag}: {ticker}** — {arrow} {d_label}\n"
         f"Break Price : **${bos_price:.2f}**\n"
@@ -116,7 +103,6 @@ def send_bos_watch_alert(ticker: str, direction: str, bos_price: float,
 # ─────────────────────────────────────────────────────────────
 
 def compute_opening_range_from_bars(bars: list) -> tuple:
-    """Compute Opening Range high/low from 9:30-9:40 AM ET."""
     or_bars = [
         b for b in bars
         if _bar_time(b) and time(9, 30) <= _bar_time(b) < time(9, 40)
@@ -126,7 +112,6 @@ def compute_opening_range_from_bars(bars: list) -> tuple:
     return max(b["high"] for b in or_bars), min(b["low"] for b in or_bars)
 
 def compute_premarket_range(bars: list) -> tuple:
-    """Compute pre-market high/low from 4:00-9:30 AM ET."""
     pm_bars = [
         b for b in bars
         if _bar_time(b) and time(4, 0) <= _bar_time(b) < time(9, 30)
@@ -141,7 +126,6 @@ def compute_premarket_range(bars: list) -> tuple:
 # ─────────────────────────────────────────────────────────────
 
 def detect_breakout_after_or(bars: list, or_high: float, or_low: float) -> tuple:
-    """Detect breakout of Opening Range (only candles after 9:40 ET)."""
     for i, bar in enumerate(bars):
         bt = _bar_time(bar)
         if bt is None or bt < time(9, 40):
@@ -155,87 +139,57 @@ def detect_breakout_after_or(bars: list, or_high: float, or_low: float) -> tuple
     return None, None
 
 def detect_fvg_after_break(bars: list, breakout_idx: int, direction: str) -> tuple:
-    """Detect Fair Value Gap after breakout."""
     for i in range(breakout_idx + 3, len(bars)):
         if i < 2:
             continue
         c0 = bars[i - 2]
         c2 = bars[i]
-
         if direction == "bull":
             gap_size = c2["low"] - c0["high"]
             if gap_size > 0 and (gap_size / c0["high"]) >= config.FVG_MIN_SIZE_PCT:
                 fvg_low, fvg_high = c0["high"], c2["low"]
                 print(f"[FVG] BULL FVG: ${fvg_low:.2f} - ${fvg_high:.2f}")
                 return fvg_low, fvg_high
-
         elif direction == "bear":
             gap_size = c0["low"] - c2["high"]
             if gap_size > 0 and (gap_size / c0["low"]) >= config.FVG_MIN_SIZE_PCT:
                 fvg_low, fvg_high = c2["high"], c0["low"]
                 print(f"[FVG] BEAR FVG: ${fvg_low:.2f} - ${fvg_high:.2f}")
                 return fvg_low, fvg_high
-
     return None, None
 
 
 # ─────────────────────────────────────────────────────────────
-# INTRADAY BOS DETECTION (Path B — no OR required)
+# INTRADAY BOS DETECTION (Path B)
 # ─────────────────────────────────────────────────────────────
 
 def detect_intraday_bos(bars: list, lookback: int = 40) -> tuple:
-    """
-    Detect Intraday Break of Structure without Opening Range.
-
-    Uses a rolling lookback window to define swing structure (high/low),
-    then checks if the most recent 1-2 bars have closed outside that
-    structure — signaling a BOS (Break of Structure / MSB).
-
-    Logic:
-      - Reference window: bars[-(lookback+2):-2]  (established structure)
-      - Active bars:      bars[-2:]                (recent price action)
-      - BOS bull: active close > struct_high * (1 + ORB_BREAK_THRESHOLD)
-      - BOS bear: active close < struct_low  * (1 - ORB_BREAK_THRESHOLD)
-
-    Time filter: only scans between 10:00 AM and 3:30 PM ET to avoid
-    OR overlap on the open and late-session noise near the close.
-
-    Returns: (direction, bos_idx, struct_high, struct_low)
-         or  (None, None, None, None) if no BOS detected.
-    """
     if len(bars) < lookback + 3:
         return None, None, None, None
-
     ref_bars = bars[-(lookback + 2):-2]
     if len(ref_bars) < 10:
         return None, None, None, None
-
     struct_high = max(b["high"] for b in ref_bars)
     struct_low  = min(b["low"]  for b in ref_bars)
-
     for offset in [2, 1]:
         i   = len(bars) - offset
         bar = bars[i]
         bt  = _bar_time(bar)
-
         if bt is None or not (time(10, 0) <= bt <= time(15, 30)):
             continue
-
         if bar["close"] > struct_high * (1 + config.ORB_BREAK_THRESHOLD):
             print(f"[INTRADAY BOS] BULL at idx {i} ({bt}): "
                   f"${bar['close']:.2f} > struct H ${struct_high:.2f}")
             return "bull", i, struct_high, struct_low
-
         if bar["close"] < struct_low * (1 - config.ORB_BREAK_THRESHOLD):
             print(f"[INTRADAY BOS] BEAR at idx {i} ({bt}): "
                   f"${bar['close']:.2f} < struct L ${struct_low:.2f}")
             return "bear", i, struct_high, struct_low
-
     return None, None, None, None
 
 
 # ─────────────────────────────────────────────────────────────
-# PHASE 2 — SIGNAL PIPELINE (Steps 7-12, shared by both paths)
+# PHASE 2 — SIGNAL PIPELINE (Steps 7-12)
 # ─────────────────────────────────────────────────────────────
 
 def _run_signal_pipeline(ticker: str, direction: str,
@@ -243,14 +197,8 @@ def _run_signal_pipeline(ticker: str, direction: str,
                           or_high_ref: float, or_low_ref: float,
                           signal_type: str, bars_session: list,
                           breakout_idx: int) -> bool:
-    """
-    Steps 7-12: confirmation, sizing, and arming.
+    """Steps 7-12: confirmation, sizing, and arming."""
 
-    Called from process_ticker() for both OR-Anchored and Intraday BOS
-    paths, as well as when a watching ticker's FVG finally forms.
-
-    Returns True if the ticker was successfully armed, False otherwise.
-    """
     # STEP 7 — CFW6 CONFIRMATION CANDLE
     result = wait_for_confirmation(
         bars_session, direction, (zone_low, zone_high), breakout_idx + 1
@@ -261,10 +209,9 @@ def _run_signal_pipeline(ticker: str, direction: str,
               f"(found={found}, grade={base_grade})")
         return False
 
-    # STEP 7b — Grade filter (stricter for intraday signals)
+    # STEP 7b — Grade filter (intraday)
     if signal_type == "CFW6_INTRADAY" and base_grade not in INTRADAY_MIN_GRADES:
-        print(f"[{ticker}] — Intraday signal requires A or A+ "
-              f"(got {base_grade}) — skipping")
+        print(f"[{ticker}] — Intraday signal requires A or A+ (got {base_grade})")
         return False
 
     # STEP 8 — MULTI-FACTOR CONFIRMATION LAYERS
@@ -278,16 +225,15 @@ def _run_signal_pipeline(ticker: str, direction: str,
     )
     final_grade = confirmation_result["final_grade"]
     if final_grade == "reject":
-        print(f"[{ticker}] — Signal rejected after confirmation layers "
-              f"(base={base_grade})")
+        print(f"[{ticker}] — Signal rejected after confirmation layers")
         return False
 
-    # STEP 9 — CALCULATE STOPS & TARGETS
+    # STEP 9 — STOPS & TARGETS
     stop_price, t1, t2 = compute_stop_and_targets(
         bars_session, direction, or_high_ref, or_low_ref, entry_price
     )
 
-    # STEP 10 — OPTIONS RECOMMENDATION
+    # STEP 10 — OPTIONS RECOMMENDATION (also computes + stores IVR)
     options_rec = get_options_recommendation(
         ticker=ticker,
         direction=direction,
@@ -295,7 +241,7 @@ def _run_signal_pipeline(ticker: str, direction: str,
         target_price=t1
     )
 
-    # STEP 11 — COMPUTE CONFIDENCE (AI learning + MTF boost)
+    # STEP 11 — CONFIDENCE (AI + MTF + mode decay + IVR multiplier)
     base_confidence   = compute_confidence(final_grade, "5m", ticker)
     ticker_multiplier = learning_engine.get_ticker_confidence_multiplier(ticker)
 
@@ -306,14 +252,25 @@ def _run_signal_pipeline(ticker: str, direction: str,
         mtf_boost = 0.0
 
     mode_decay = 0.95 if signal_type == "CFW6_INTRADAY" else 1.0
-    final_confidence = min(
-        (base_confidence * ticker_multiplier * mode_decay) + mtf_boost, 1.0
-    )
-    print(f"[CONFIDENCE] Base: {base_confidence:.2f} × Ticker: "
-          f"{ticker_multiplier:.2f} × Mode: {mode_decay:.2f} "
-          f"+ MTF: {mtf_boost:.2f} = {final_confidence:.2f}")
 
-    # STEP 12 — ARM TICKER & OPEN POSITION
+    # Extract IVR multiplier from options recommendation (default 1.0 if unavailable)
+    ivr_multiplier = 1.0
+    ivr_label      = "IVR-N/A"
+    if options_rec and "ivr_multiplier" in options_rec:
+        ivr_multiplier = options_rec["ivr_multiplier"]
+        ivr_label      = options_rec.get("ivr_label", "IVR-?")
+
+    final_confidence = min(
+        (base_confidence * ticker_multiplier * mode_decay * ivr_multiplier) + mtf_boost,
+        1.0
+    )
+    print(
+        f"[CONFIDENCE] Base: {base_confidence:.2f} × Ticker: {ticker_multiplier:.2f} "
+        f"× Mode: {mode_decay:.2f} × IVR: {ivr_multiplier:.2f} [{ivr_label}] "
+        f"+ MTF: {mtf_boost:.2f} = {final_confidence:.2f}"
+    )
+
+    # STEP 12 — ARM
     arm_ticker(
         ticker, direction, zone_low, zone_high,
         or_low_ref, or_high_ref,
@@ -332,84 +289,58 @@ def _run_signal_pipeline(ticker: str, direction: str,
 def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high,
                entry_price, stop_price, t1, t2, confidence, grade,
                options_rec=None, signal_type="CFW6_OR"):
-    """Arms a ticker after signal confirmation and sends Discord alert."""
-
-    MIN_STOP_PCT  = 0.002
-    min_stop_dist = entry_price * MIN_STOP_PCT
+    MIN_STOP_PCT     = 0.002
+    min_stop_dist    = entry_price * MIN_STOP_PCT
     actual_stop_dist = abs(entry_price - stop_price)
     if actual_stop_dist < min_stop_dist:
-        print(f"[ARM] ⚠️ {ticker} stop distance ${actual_stop_dist:.3f} "
-              f"below minimum ${min_stop_dist:.3f} — skipping")
+        print(f"[ARM] ⚠️ {ticker} stop too tight (${actual_stop_dist:.3f}) — skipping")
         return
 
     mode_label = " [INTRADAY]" if signal_type == "CFW6_INTRADAY" else " [OR]"
     print(f"✅ {ticker} ARMED{mode_label}: {direction.upper()} | "
           f"Entry: ${entry_price:.2f} | Stop: ${stop_price:.2f}")
-    print(f"  Zone: ${zone_low:.2f}-${zone_high:.2f} | "
-          f"Struct/OR: ${or_low:.2f}-${or_high:.2f}")
     print(f"  Targets: T1=${t1:.2f} T2=${t2:.2f} | "
           f"Confidence: {confidence*100:.1f}% ({grade})")
 
     log_proposed_trade(ticker, signal_type, direction, entry_price, confidence, grade)
 
     send_options_signal_alert(
-        ticker=ticker,
-        direction=direction,
-        entry=entry_price,
-        stop=stop_price,
-        t1=t1,
-        t2=t2,
-        confidence=confidence,
-        timeframe="5m",
-        grade=grade,
-        options_data=options_rec
+        ticker=ticker, direction=direction,
+        entry=entry_price, stop=stop_price,
+        t1=t1, t2=t2,
+        confidence=confidence, timeframe="5m",
+        grade=grade, options_data=options_rec
     )
 
     position_id = position_manager.open_position(
-        ticker=ticker,
-        direction=direction,
-        zone_low=zone_low,
-        zone_high=zone_high,
-        or_low=or_low,
-        or_high=or_high,
-        entry_price=entry_price,
-        stop_price=stop_price,
-        t1=t1,
-        t2=t2,
-        confidence=confidence,
-        grade=grade,
+        ticker=ticker, direction=direction,
+        zone_low=zone_low, zone_high=zone_high,
+        or_low=or_low, or_high=or_high,
+        entry_price=entry_price, stop_price=stop_price,
+        t1=t1, t2=t2,
+        confidence=confidence, grade=grade,
         options_rec=options_rec
     )
 
     armed_signals[ticker] = {
-        "position_id":   position_id,
-        "direction":     direction,
-        "zone_low":      zone_low,
-        "zone_high":     zone_high,
-        "or_low":        or_low,
-        "or_high":       or_high,
-        "entry_price":   entry_price,
-        "stop_price":    stop_price,
-        "t1":            t1,
-        "t2":            t2,
-        "confidence":    confidence,
-        "grade":         grade,
-        "options_rec":   options_rec,
-        "signal_type":   signal_type
+        "position_id": position_id, "direction": direction,
+        "zone_low": zone_low, "zone_high": zone_high,
+        "or_low": or_low, "or_high": or_high,
+        "entry_price": entry_price, "stop_price": stop_price,
+        "t1": t1, "t2": t2,
+        "confidence": confidence, "grade": grade,
+        "options_rec": options_rec, "signal_type": signal_type
     }
-    print(f"[ARMED] {ticker} position opened (ID: {position_id}) | Type: {signal_type}")
+    print(f"[ARMED] {ticker} position opened (ID: {position_id})")
 
 
 def clear_armed_signals():
-    """Reset armed signals dict at EOD."""
     armed_signals.clear()
-    print("[ARMED] Cleared all armed signals for new trading day")
-
+    print("[ARMED] Cleared all armed signals")
 
 def clear_watching_signals():
-    """Reset watching signals dict at EOD."""
     watching_signals.clear()
-    print("[WATCHING] Cleared all watching signals for new trading day")
+    print("[WATCHING] Cleared all watching signals")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -417,20 +348,8 @@ def clear_watching_signals():
 # ─────────────────────────────────────────────────────────────
 
 def process_ticker(ticker: str):
-    """
-    Main CFW6 strategy processor — two-path scanning, two-phase alerts.
-
-    Guard order (fast-exit before any expensive work):
-      1.  Re-arm guard       — one confirmed signal per ticker per session
-      2.  Incremental fetch  — pull only new bars
-      3.  Session bars check — ensure data is available
-      3b. Force-close check  — EOD 3:55 PM hard stop
-      3c. Earnings guard     — skip if earnings within EARNINGS_WINDOW_DAYS
-      4.  Watching check     — resume FVG scan for previously-alerted BOS
-      5+. Fresh scan         — PATH A (OR-Anchored) or PATH B (Intraday BOS)
-    """
     try:
-        # STEP 1 — Re-arm guard: one confirmed signal per ticker per session
+        # STEP 1 — Re-arm guard
         if ticker in armed_signals:
             return
 
@@ -440,31 +359,27 @@ def process_ticker(ticker: str):
         # STEP 3 — Load today's session bars
         bars_session = data_manager.get_today_session_bars(ticker)
         if not bars_session:
-            print(f"[{ticker}] ⚠️  No bars for today's session yet — skipping")
+            print(f"[{ticker}] ⚠️  No session bars yet — skipping")
             return
 
-        print(f"[{ticker}] Scanning TODAY {_now_et().date()} "
-              f"({len(bars_session)} bars)")
+        print(f"[{ticker}] Scanning TODAY {_now_et().date()} ({len(bars_session)} bars)")
         t_first = _bar_time(bars_session[0])
         t_last  = _bar_time(bars_session[-1])
         print(f"[{ticker}] Bar window: {t_first} → {t_last}")
 
-        # STEP 3b — Force close check
+        # STEP 3b — Force close
         if is_force_close_time(bars_session[-1]):
             prices = {ticker: bars_session[-1]["close"]}
             position_manager.close_all_eod(prices)
             return
 
         # STEP 3c — EARNINGS GUARD
-        # Skip tickers with earnings today or tomorrow to avoid IV crush and
-        # erratic pre-earnings price action on options buys.
         has_earns, earns_date = has_earnings_soon(ticker)
         if has_earns:
-            print(f"[{ticker}] ❌ Earnings on {earns_date} — skipping "
-                  f"(IV crush / pre-earnings noise risk)")
+            print(f"[{ticker}] ❌ Earnings {earns_date} — skipping (IV crush risk)")
             return
 
-        # ── STEP 4: WATCHING STATE CHECK ──────────────────────────────────────
+        # ── STEP 4: WATCHING STATE ────────────────────────────────────────
         if ticker in watching_signals:
             watch        = watching_signals[ticker]
             breakout_idx = watch["breakout_idx"]
@@ -475,8 +390,7 @@ def process_ticker(ticker: str):
             bars_since   = len(bars_session) - breakout_idx
 
             if bars_since > MAX_WATCH_BARS:
-                print(f"[{ticker}] ⏰ Watch expired: {bars_since} bars since "
-                      f"{direction.upper()} BOS (max {MAX_WATCH_BARS}) — clearing")
+                print(f"[{ticker}] ⏰ Watch expired ({bars_since} bars) — clearing")
                 del watching_signals[ticker]
             else:
                 print(f"[{ticker}] 👁️  WATCHING [{bars_since}/{MAX_WATCH_BARS}] "
@@ -485,11 +399,9 @@ def process_ticker(ticker: str):
                     bars_session, breakout_idx, direction
                 )
                 if zone_low is None or zone_high is None:
-                    print(f"[{ticker}] — FVG not yet formed, holding watch state")
+                    print(f"[{ticker}] — FVG not yet formed")
                     return
-
-                print(f"[{ticker}] ✅ FVG formed: ${zone_low:.2f} – ${zone_high:.2f} "
-                      f"| Running confirmation pipeline...")
+                print(f"[{ticker}] ✅ FVG: ${zone_low:.2f}–${zone_high:.2f} | Running pipeline...")
                 _run_signal_pipeline(
                     ticker, direction, zone_low, zone_high,
                     or_high_ref, or_low_ref, signal_type,
@@ -498,103 +410,67 @@ def process_ticker(ticker: str):
                 del watching_signals[ticker]
                 return
 
-        # ── STEP 5: FRESH SCAN ───────────────────────────────────────────────
-        direction    = None
-        breakout_idx = None
-        zone_low     = None
-        zone_high    = None
-        or_high_ref  = None
-        or_low_ref   = None
-        scan_mode    = None
+        # ── STEP 5: FRESH SCAN ──────────────────────────────────────────
+        direction = breakout_idx = zone_low = zone_high = None
+        or_high_ref = or_low_ref = scan_mode = None
 
-        # ── PATH A: OR-ANCHORED ─────────────────────────────────────────────
+        # PATH A
         or_high, or_low = compute_opening_range_from_bars(bars_session)
         has_or = (or_high is not None and or_low is not None)
 
         if has_or:
-            print(f"[{ticker}] OR: ${or_low:.2f} – ${or_high:.2f} | "
-                  f"Attempting OR-Anchored scan...")
-            direction, breakout_idx = detect_breakout_after_or(
-                bars_session, or_high, or_low
-            )
+            print(f"[{ticker}] OR: ${or_low:.2f}–${or_high:.2f}")
+            direction, breakout_idx = detect_breakout_after_or(bars_session, or_high, or_low)
             if direction is not None:
-                zone_low, zone_high = detect_fvg_after_break(
-                    bars_session, breakout_idx, direction
-                )
+                zone_low, zone_high = detect_fvg_after_break(bars_session, breakout_idx, direction)
                 if zone_low is not None and zone_high is not None:
-                    scan_mode   = "OR_ANCHORED"
-                    or_high_ref = or_high
-                    or_low_ref  = or_low
+                    scan_mode = "OR_ANCHORED"
+                    or_high_ref, or_low_ref = or_high, or_low
                     print(f"[{ticker}] ✅ PATH A: OR-Anchored signal found")
                 else:
-                    print(f"[{ticker}] 📡 ORB detected — watching for FVG to form")
+                    print(f"[{ticker}] 📡 ORB — watching for FVG")
                     if ticker not in watching_signals:
                         watching_signals[ticker] = {
-                            "direction":    direction,
-                            "breakout_idx": breakout_idx,
-                            "or_high":      or_high,
-                            "or_low":       or_low,
-                            "signal_type":  "CFW6_OR"
+                            "direction": direction, "breakout_idx": breakout_idx,
+                            "or_high": or_high, "or_low": or_low, "signal_type": "CFW6_OR"
                         }
-                        send_bos_watch_alert(
-                            ticker, direction,
+                        send_bos_watch_alert(ticker, direction,
                             bars_session[breakout_idx]["close"],
-                            or_high, or_low,
-                            signal_type="CFW6_OR"
-                        )
+                            or_high, or_low, signal_type="CFW6_OR")
                     return
             else:
-                print(f"[{ticker}] No ORB breakout — trying intraday scan")
+                print(f"[{ticker}] No ORB — trying intraday")
         else:
-            print(f"[{ticker}] No OR bars (9:30–9:40) — going to intraday scan")
+            print(f"[{ticker}] No OR bars — intraday scan")
 
-        # ── PATH B: INTRADAY BOS+FVG ─────────────────────────────────────────
+        # PATH B
         if scan_mode is None:
             if len(bars_session) < 30:
-                print(f"[{ticker}] ⚠️  Insufficient bars ({len(bars_session)}) — skipping")
+                print(f"[{ticker}] ⚠️  Insufficient bars — skipping")
                 return
-
-            direction, breakout_idx, struct_high, struct_low = detect_intraday_bos(
-                bars_session
-            )
+            direction, breakout_idx, struct_high, struct_low = detect_intraday_bos(bars_session)
             if direction is None:
-                print(f"[{ticker}] — No intraday BOS detected")
+                print(f"[{ticker}] — No intraday BOS")
                 return
-
-            or_high_ref = struct_high
-            or_low_ref  = struct_low
-
-            zone_low, zone_high = detect_fvg_after_break(
-                bars_session, breakout_idx, direction
-            )
-
+            or_high_ref, or_low_ref = struct_high, struct_low
+            zone_low, zone_high = detect_fvg_after_break(bars_session, breakout_idx, direction)
             if zone_low is None or zone_high is None:
-                print(f"[{ticker}] 📡 Intraday BOS — watching for FVG to form")
+                print(f"[{ticker}] 📡 Intraday BOS — watching for FVG")
                 if ticker not in watching_signals:
                     watching_signals[ticker] = {
-                        "direction":    direction,
-                        "breakout_idx": breakout_idx,
-                        "or_high":      struct_high,
-                        "or_low":       struct_low,
-                        "signal_type":  "CFW6_INTRADAY"
+                        "direction": direction, "breakout_idx": breakout_idx,
+                        "or_high": struct_high, "or_low": struct_low,
+                        "signal_type": "CFW6_INTRADAY"
                     }
-                    send_bos_watch_alert(
-                        ticker, direction,
+                    send_bos_watch_alert(ticker, direction,
                         bars_session[breakout_idx]["close"],
-                        struct_high, struct_low,
-                        signal_type="CFW6_INTRADAY"
-                    )
+                        struct_high, struct_low, signal_type="CFW6_INTRADAY")
                 return
-
             scan_mode = "INTRADAY_BOS"
-            print(f"[{ticker}] ✅ PATH B: Intraday BOS+FVG | "
-                  f"Struct H: ${struct_high:.2f} L: ${struct_low:.2f}")
+            print(f"[{ticker}] ✅ PATH B: Intraday BOS+FVG")
 
         signal_type = "CFW6_OR" if scan_mode == "OR_ANCHORED" else "CFW6_INTRADAY"
-        print(f"[{ticker}] Mode: {scan_mode} | "
-              f"FVG zone: ${zone_low:.2f} – ${zone_high:.2f}")
-
-        # ── STEPS 7-12: CONFIRMATION PIPELINE ─────────────────────────────
+        print(f"[{ticker}] Mode: {scan_mode} | FVG: ${zone_low:.2f}–${zone_high:.2f}")
         _run_signal_pipeline(
             ticker, direction, zone_low, zone_high,
             or_high_ref, or_low_ref, signal_type,
@@ -607,7 +483,6 @@ def process_ticker(ticker: str):
 
 
 def send_discord(message: str):
-    """Simple discord message sender (backward compatibility)."""
     try:
         payload = {"content": message}
         requests.post(config.DISCORD_WEBHOOK_URL, json=payload, timeout=5)
