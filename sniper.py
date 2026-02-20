@@ -2,6 +2,7 @@
 # INTEGRATED: Position Manager, AI Learning, Confirmation Layers
 # TWO-PATH SCANNING: OR-Anchored + Intraday BOS+FVG fallback
 # TWO-PHASE ALERTS: Watch Alert (BOS detected) + Confirmed Signal (FVG+confirm)
+# EARNINGS GUARD: Skips tickers with earnings within 2 days (IV crush protection)
 import traceback
 import requests
 from datetime import datetime, time
@@ -14,10 +15,11 @@ from trade_calculator import compute_stop_and_targets, apply_confidence_decay, c
 from data_manager import data_manager
 from position_manager import position_manager
 from learning_policy import compute_confidence
+from earnings_filter import has_earnings_soon
 import config
 from bos_fvg_engine import scan_bos_fvg, is_force_close_time
 
-# ── Global State ──────────────────────────────────────────────────────────────
+# ── Global State ─────────────────────────────────────────────────────────────
 # armed_signals   : ticker → signal data  (one confirmed signal per ticker/day)
 # watching_signals: ticker → BOS context  (watching for FVG to form)
 armed_signals    = {}
@@ -204,7 +206,6 @@ def detect_intraday_bos(bars: list, lookback: int = 40) -> tuple:
     if len(bars) < lookback + 3:
         return None, None, None, None
 
-    # Reference window: established structure BEFORE the last 2 active bars
     ref_bars = bars[-(lookback + 2):-2]
     if len(ref_bars) < 10:
         return None, None, None, None
@@ -212,13 +213,11 @@ def detect_intraday_bos(bars: list, lookback: int = 40) -> tuple:
     struct_high = max(b["high"] for b in ref_bars)
     struct_low  = min(b["low"]  for b in ref_bars)
 
-    # Check the last 2 bars (bars[-2] first, then bars[-1]) for a fresh BOS
     for offset in [2, 1]:
         i   = len(bars) - offset
         bar = bars[i]
         bt  = _bar_time(bar)
 
-        # Time filter: 10:00 AM – 3:30 PM ET only
         if bt is None or not (time(10, 0) <= bt <= time(15, 30)):
             continue
 
@@ -306,7 +305,6 @@ def _run_signal_pipeline(ticker: str, direction: str,
     except ImportError:
         mtf_boost = 0.0
 
-    # 5% confidence decay for intraday signals (no OR context)
     mode_decay = 0.95 if signal_type == "CFW6_INTRADAY" else 1.0
     final_confidence = min(
         (base_confidence * ticker_multiplier * mode_decay) + mtf_boost, 1.0
@@ -422,45 +420,24 @@ def process_ticker(ticker: str):
     """
     Main CFW6 strategy processor — two-path scanning, two-phase alerts.
 
-    PHASE 1 — Watch Alert (📡):
-      When a BOS is detected but FVG has not yet formed, the ticker enters
-      watching_signals and a Discord heads-up is sent immediately. The
-      system then monitors that ticker on every subsequent scan cycle,
-      looking for the FVG to form.
-
-    PHASE 2 — Confirmed Signal (✅):
-      When a watched ticker's FVG finally forms (or BOS+FVG are both
-      found on the same cycle), the full confirmation pipeline runs:
-      CFW6 candle → layers → stops/targets → options → Discord signal.
-
-    SCAN MODES:
-      PATH A — OR-Anchored: Requires 9:30-9:40 OR bars. Grades: A+, A, A-
-      PATH B — Intraday BOS: 40-bar rolling swing. Grades: A+, A only.
-                             Time filter: 10:00 AM – 3:30 PM ET.
-
-    Flow per cycle:
-      1.  Re-arm guard (skip if already confirmed today)
-      2.  Incremental DB fetch
-      3.  Load today's session bars
-      3b. Force-close check (3:55 PM EOD rule)
-      4.  WATCHING CHECK: if ticker in watching_signals →
-              - Check FVG from stored BOS index
-              - If found: run signal pipeline (Phase 2)
-              - If expired (> MAX_WATCH_BARS): clear + fall through to fresh scan
-              - If still pending: return and check next cycle
-      5.  FRESH SCAN:
-              PATH A: OR → Breakout → FVG (immediate pipeline or watch)
-              PATH B: Intraday BOS → FVG (immediate pipeline or watch)
+    Guard order (fast-exit before any expensive work):
+      1.  Re-arm guard       — one confirmed signal per ticker per session
+      2.  Incremental fetch  — pull only new bars
+      3.  Session bars check — ensure data is available
+      3b. Force-close check  — EOD 3:55 PM hard stop
+      3c. Earnings guard     — skip if earnings within EARNINGS_WINDOW_DAYS
+      4.  Watching check     — resume FVG scan for previously-alerted BOS
+      5+. Fresh scan         — PATH A (OR-Anchored) or PATH B (Intraday BOS)
     """
     try:
         # STEP 1 — Re-arm guard: one confirmed signal per ticker per session
         if ticker in armed_signals:
             return
 
-        # STEP 2 — Incremental fetch: pull only new bars since last stored bar.
+        # STEP 2 — Incremental fetch
         data_manager.update_ticker(ticker)
 
-        # STEP 3 — Load today's session bars from DB.
+        # STEP 3 — Load today's session bars
         bars_session = data_manager.get_today_session_bars(ticker)
         if not bars_session:
             print(f"[{ticker}] ⚠️  No bars for today's session yet — skipping")
@@ -472,16 +449,22 @@ def process_ticker(ticker: str):
         t_last  = _bar_time(bars_session[-1])
         print(f"[{ticker}] Bar window: {t_first} → {t_last}")
 
-        # STEP 3b — Force close check: hard-close all positions at 3:55 PM ET
+        # STEP 3b — Force close check
         if is_force_close_time(bars_session[-1]):
             prices = {ticker: bars_session[-1]["close"]}
             position_manager.close_all_eod(prices)
             return
 
+        # STEP 3c — EARNINGS GUARD
+        # Skip tickers with earnings today or tomorrow to avoid IV crush and
+        # erratic pre-earnings price action on options buys.
+        has_earns, earns_date = has_earnings_soon(ticker)
+        if has_earns:
+            print(f"[{ticker}] ❌ Earnings on {earns_date} — skipping "
+                  f"(IV crush / pre-earnings noise risk)")
+            return
+
         # ── STEP 4: WATCHING STATE CHECK ──────────────────────────────────────
-        # If this ticker had a BOS alert sent in a prior cycle, skip BOS
-        # detection and scan directly for FVG from the stored breakout index.
-        # This ensures no missed opportunity between scan cycles.
         if ticker in watching_signals:
             watch        = watching_signals[ticker]
             breakout_idx = watch["breakout_idx"]
@@ -492,11 +475,9 @@ def process_ticker(ticker: str):
             bars_since   = len(bars_session) - breakout_idx
 
             if bars_since > MAX_WATCH_BARS:
-                # BOS did not follow through — clear and allow fresh scan
                 print(f"[{ticker}] ⏰ Watch expired: {bars_since} bars since "
                       f"{direction.upper()} BOS (max {MAX_WATCH_BARS}) — clearing")
                 del watching_signals[ticker]
-                # Fall through to fresh scan below
             else:
                 print(f"[{ticker}] 👁️  WATCHING [{bars_since}/{MAX_WATCH_BARS}] "
                       f"{direction.upper()} | Scanning for FVG...")
@@ -505,21 +486,19 @@ def process_ticker(ticker: str):
                 )
                 if zone_low is None or zone_high is None:
                     print(f"[{ticker}] — FVG not yet formed, holding watch state")
-                    return  # re-check next scan cycle
+                    return
 
-                # FVG formed — run Phase 2 confirmation pipeline
                 print(f"[{ticker}] ✅ FVG formed: ${zone_low:.2f} – ${zone_high:.2f} "
                       f"| Running confirmation pipeline...")
-                armed = _run_signal_pipeline(
+                _run_signal_pipeline(
                     ticker, direction, zone_low, zone_high,
                     or_high_ref, or_low_ref, signal_type,
                     bars_session, breakout_idx
                 )
-                # Clean up watch state regardless of pipeline outcome
                 del watching_signals[ticker]
                 return
 
-        # ── STEP 5: FRESH SCAN (no watching state active) ─────────────────────
+        # ── STEP 5: FRESH SCAN ───────────────────────────────────────────────
         direction    = None
         breakout_idx = None
         zone_low     = None
@@ -528,7 +507,7 @@ def process_ticker(ticker: str):
         or_low_ref   = None
         scan_mode    = None
 
-        # ── PATH A: OR-ANCHORED ───────────────────────────────────────────────
+        # ── PATH A: OR-ANCHORED ─────────────────────────────────────────────
         or_high, or_low = compute_opening_range_from_bars(bars_session)
         has_or = (or_high is not None and or_low is not None)
 
@@ -543,13 +522,11 @@ def process_ticker(ticker: str):
                     bars_session, breakout_idx, direction
                 )
                 if zone_low is not None and zone_high is not None:
-                    # Immediate BOS+FVG — run pipeline now
                     scan_mode   = "OR_ANCHORED"
                     or_high_ref = or_high
                     or_low_ref  = or_low
                     print(f"[{ticker}] ✅ PATH A: OR-Anchored signal found")
                 else:
-                    # BOS confirmed, FVG hasn't formed yet — enter watch mode
                     print(f"[{ticker}] 📡 ORB detected — watching for FVG to form")
                     if ticker not in watching_signals:
                         watching_signals[ticker] = {
@@ -565,13 +542,13 @@ def process_ticker(ticker: str):
                             or_high, or_low,
                             signal_type="CFW6_OR"
                         )
-                    return  # check FVG next cycle via watching state
+                    return
             else:
                 print(f"[{ticker}] No ORB breakout — trying intraday scan")
         else:
             print(f"[{ticker}] No OR bars (9:30–9:40) — going to intraday scan")
 
-        # ── PATH B: INTRADAY BOS+FVG ──────────────────────────────────────────
+        # ── PATH B: INTRADAY BOS+FVG ─────────────────────────────────────────
         if scan_mode is None:
             if len(bars_session) < 30:
                 print(f"[{ticker}] ⚠️  Insufficient bars ({len(bars_session)}) — skipping")
@@ -592,7 +569,6 @@ def process_ticker(ticker: str):
             )
 
             if zone_low is None or zone_high is None:
-                # BOS detected, FVG hasn't formed yet — enter watch mode
                 print(f"[{ticker}] 📡 Intraday BOS — watching for FVG to form")
                 if ticker not in watching_signals:
                     watching_signals[ticker] = {
@@ -608,9 +584,8 @@ def process_ticker(ticker: str):
                         struct_high, struct_low,
                         signal_type="CFW6_INTRADAY"
                     )
-                return  # check FVG next cycle via watching state
+                return
 
-            # BOS+FVG found on same cycle — run pipeline immediately
             scan_mode = "INTRADAY_BOS"
             print(f"[{ticker}] ✅ PATH B: Intraday BOS+FVG | "
                   f"Struct H: ${struct_high:.2f} L: ${struct_low:.2f}")
@@ -619,7 +594,7 @@ def process_ticker(ticker: str):
         print(f"[{ticker}] Mode: {scan_mode} | "
               f"FVG zone: ${zone_low:.2f} – ${zone_high:.2f}")
 
-        # ── STEPS 7-12: CONFIRMATION PIPELINE ────────────────────────────────
+        # ── STEPS 7-12: CONFIRMATION PIPELINE ─────────────────────────────
         _run_signal_pipeline(
             ticker, direction, zone_low, zone_high,
             or_high_ref, or_low_ref, signal_type,

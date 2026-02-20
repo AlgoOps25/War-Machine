@@ -15,13 +15,11 @@ from scanner_optimizer import (
     should_scan_now,
     calculate_optimal_watchlist_size
 )
+from earnings_filter import bulk_prefetch_earnings, clear_earnings_cache
 
 API_KEY = os.getenv("EODHD_API_KEY", "")
 
 # ── Module-level watchlist — single source of truth ──────────────────────────────
-# ws_feed.py imports FALLBACK_WATCHLIST to subscribe to real-time ticks.
-# scanner.py uses it for scan targets.  Both MUST reference the same list so
-# every scanned ticker has live WebSocket data flowing into the DB.
 FALLBACK_WATCHLIST = [
     "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA",
     "AMD",  "NFLX", "ADBE",  "CRM",  "ORCL", "INTC", "CSCO",
@@ -94,16 +92,15 @@ def start_scanner_loop():
     cycle_count = 0
     last_report_day = None
 
-    # ── STARTUP BACKFILL ──────────────────────────────────────────────────
-    # Step 1: 30-day historical REST backfill (up to yesterday's close).
-    #         Seeds prior-day H/L, OR context, and backtesting history.
-    # Step 2: Best-effort today's REST backfill (04:00 ET -> now).
-    #         Fills the 9:30-now gap on mid-session container restarts.
-    #         Silent no-op if EODHD doesn't serve same-day intraday yet.
+    # ── STARTUP SEQUENCE ────────────────────────────────────────────────────
+    # 1. 30-day historical REST backfill (seeds prior-day H/L, OR context)
+    # 2. Best-effort today's REST backfill (fills 9:30-now gap on mid-session restart)
+    # 3. Earnings calendar prefetch (pre-warms cache for all 33 tickers)
     startup_watchlist = fallback_list()
     data_manager.startup_backfill_today(startup_watchlist)
     data_manager.startup_intraday_backfill_today(startup_watchlist)
-    # ──────────────────────────────────────────────────────────────────────
+    bulk_prefetch_earnings(startup_watchlist)   # ← NEW: warm earnings cache
+    # ─────────────────────────────────────────────────────────────────────
 
     while True:
         try:
@@ -149,13 +146,11 @@ def start_scanner_loop():
                 daily_stats = position_manager.get_daily_stats()
                 print(f"[TODAY] Trades: {daily_stats['trades']} W/L: {daily_stats['wins']}/{daily_stats['losses']} WR: {daily_stats['win_rate']:.1f}% P&L: ${daily_stats['total_pnl']:+.2f}\n")
 
-                # ── LIVE SNAPSHOT — single bulk API call for position monitoring ──
                 try:
                     updated = data_manager.bulk_update_live_bars(watchlist)
                     print(f"[LIVE] Snapshot: {updated} tickers")
                 except Exception as e:
                     print(f"[LIVE] Bulk update error: {e}")
-                # ─────────────────────────────────────────────────────────────────────
 
                 for idx, ticker in enumerate(watchlist, 1):
                     try:
@@ -211,6 +206,7 @@ def start_scanner_loop():
                     # Reset all intraday signal state for the new day
                     clear_armed_signals()
                     clear_watching_signals()
+                    clear_earnings_cache()   # ← NEW: fresh earnings data next session
 
                 print(f"[AFTER-HOURS] {current_time_str} - Market closed")
                 time.sleep(600)
