@@ -213,14 +213,23 @@ def process_ticker(ticker: str):
 
     Data source: Postgres intraday_bars — today's ET session only.
     startup_backfill_today() (called once in scanner.py before the loop)
-    guarantees 9:30-9:40 OR bars are present even after a midday restart.
+    guarantees prior-day context is available. Today's bars stream in via
+    WebSocket (ws_feed.py) from container start.
 
-    Rules:
-      - Only today's real bars are used. No fallback to yesterday.
-      - No synthetic OR. No made-up ranges.
-      - If today's OR bars are missing, the ticker is skipped with a clear log.
-      - Signals can be found at any point in the session (9:40 AM through close),
-        not just at the open.
+    CFW6 Steps:
+      1. Re-arm guard
+      2. Incremental DB fetch
+      3. Load today's session bars
+      3b. Force-close check (3:55 PM EOD rule)
+      4. Compute Opening Range (9:30-9:40 ET)
+      5. Detect ORB breakout (bull/bear)
+      6. Detect FVG after breakout
+      7. Wait for CFW6 confirmation candle
+      8. Multi-factor confirmation layers (VWAP, Prev Day, Inst. Vol, Options)
+      9. Compute stops & targets
+      10. Get options recommendation
+      11. Compute confidence score (AI + MTF boost)
+      12. Arm ticker & open position
     """
     try:
         # STEP 1 — Re-arm guard: one signal per ticker per session
@@ -228,8 +237,6 @@ def process_ticker(ticker: str):
             return
 
         # STEP 2 — Incremental fetch: pull only new bars since last stored bar.
-        # Fast (1-5 bars per call during market hours). Handles today catch-up
-        # automatically if last_bar_time is from a prior day.
         data_manager.update_ticker(ticker)
 
         # STEP 3 — Load today's session bars from DB.
@@ -243,32 +250,36 @@ def process_ticker(ticker: str):
 
         print(f"[{ticker}] Scanning TODAY {_now_et().date()} "
               f"({len(bars_session)} bars)")
-
-        # Debug: confirm bar window covers the opening range
         t_first = _bar_time(bars_session[0])
         t_last  = _bar_time(bars_session[-1])
         print(f"[{ticker}] Bar window: {t_first} → {t_last}")
 
-        def process_ticker(ticker: str):
-            if ticker in armed_signals:
-                return
+        # STEP 3b — Force close check: hard-close all positions at 3:55 PM ET
+        if is_force_close_time(bars_session[-1]):
+            prices = {ticker: bars_session[-1]["close"]}
+            position_manager.close_all_eod(prices)
+            return
 
-            # Force close check — 0DTE rule
-            data_manager.update_ticker(ticker)
-            bars = data_manager.get_today_session_bars(ticker)
-            if not bars:
-                return
+        # STEP 4 — OPENING RANGE (9:30-9:40 ET)
+        or_high, or_low = compute_opening_range_from_bars(bars_session)
+        if or_high is None or or_low is None:
+            print(f"[{ticker}] ⚠️  No opening range bars (9:30-9:40) yet — skipping")
+            return
+        print(f"[{ticker}] OR: ${or_low:.2f} - ${or_high:.2f}")
 
-            # Hard close all positions at 3:55 PM
-            if is_force_close_time(bars[-1]):
-                prices = {ticker: bars[-1]["close"]}
-                position_manager.close_all_eod(prices)
-                return
+        # STEP 5 — BREAKOUT DETECTION (first close outside OR after 9:40)
+        direction, breakout_idx = detect_breakout_after_or(bars_session, or_high, or_low)
+        if direction is None:
+            print(f"[{ticker}] — No ORB breakout detected")
+            return
+        print(f"[{ticker}] Breakout: {direction.upper()} at bar idx {breakout_idx}")
 
-            # BOS + FVG scan
-            signal = scan_bos_fvg(ticker, bars)
-            if not signal:
-                return
+        # STEP 6 — FVG DETECTION (Fair Value Gap after breakout)
+        zone_low, zone_high = detect_fvg_after_break(bars_session, breakout_idx, direction)
+        if zone_low is None or zone_high is None:
+            print(f"[{ticker}] — No FVG found after breakout")
+            return
+        print(f"[{ticker}] FVG zone: ${zone_low:.2f} - ${zone_high:.2f}")
 
         # STEP 7 — CFW6 CONFIRMATION CANDLE
         result = wait_for_confirmation(
@@ -345,4 +356,3 @@ def send_discord(message: str):
         requests.post(config.DISCORD_WEBHOOK_URL, json=payload, timeout=5)
     except Exception as e:
         print(f"[DISCORD] Error: {e}")
-
