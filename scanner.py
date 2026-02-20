@@ -17,6 +17,7 @@ from scanner_optimizer import (
     calculate_optimal_watchlist_size
 )
 from earnings_filter import bulk_prefetch_earnings, clear_earnings_cache
+from db_connection import get_conn, dict_cursor, ph
 
 API_KEY = os.getenv("EODHD_API_KEY", "")
 
@@ -69,6 +70,40 @@ def monitor_open_positions():
         if bars:
             current_prices[ticker] = bars[-1]["close"]
     position_manager.check_exits(current_prices)
+
+
+def _has_loss_streak(max_consecutive_losses: int = 3) -> bool:
+    """Return True if today's closed trades end with a losing streak >= N."""
+    try:
+        today = _now_et().date()
+        conn = get_conn()
+        cursor = dict_cursor(conn)
+        p = ph()
+        cursor.execute(
+            f"""
+            SELECT pnl
+            FROM positions
+            WHERE status = {p}
+              AND DATE(exit_time) = {p}
+            ORDER BY exit_time ASC
+            """,
+            ("CLOSED", today),
+        )
+        rows = cursor.fetchall()
+        conn.close()
+        if not rows:
+            return False
+        streak = 0
+        for row in rows:
+            pnl = row["pnl"] or 0.0
+            if pnl <= 0:
+                streak += 1
+            else:
+                streak = 0
+        return streak >= max_consecutive_losses
+    except Exception as e:
+        print(f"[RISK] Loss-streak check error: {e}")
+        return False
 
 
 def start_scanner_loop():
@@ -138,6 +173,13 @@ def start_scanner_loop():
                 if not should_scan_now():
                     print(f"[SCANNER] {current_time_str} - Opening Range forming, waiting...")
                     time.sleep(15)
+                    continue
+
+                # Daily loss circuit breaker: halt new scans after 3 consecutive losses.
+                if _has_loss_streak(max_consecutive_losses=3):
+                    print("[RISK] Daily loss streak reached (3 consecutive losses) — halting new scans.")
+                    monitor_open_positions()
+                    time.sleep(60)
                     continue
 
                 cycle_count += 1

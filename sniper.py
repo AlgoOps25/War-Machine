@@ -68,6 +68,68 @@ def log_proposed_trade(ticker, signal_type, direction, price, confidence, grade)
         print(f"[TRACKER] Error: {e}")
 
 
+def _pearson_corr(xs, ys) -> float:
+    n = len(xs)
+    if n < 5:
+        return 0.0
+    mean_x = sum(xs) / n
+    mean_y = sum(ys) / n
+    num = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys))
+    den_x = sum((x - mean_x) ** 2 for x in xs)
+    den_y = sum((y - mean_y) ** 2 for y in ys)
+    if den_x <= 0 or den_y <= 0:
+        return 0.0
+    return num / (den_x ** 0.5 * den_y ** 0.5)
+
+
+def _is_highly_correlated(ticker: str, open_positions: list,
+                          window_bars: int = 60, threshold: float = 0.9) -> bool:
+    """Return True if 'ticker' is highly correlated with any open position."""
+    bars_main = data_manager.get_today_5m_bars(ticker)
+    if len(bars_main) < 10:
+        return False
+
+    for pos in open_positions:
+        other = pos["ticker"]
+        if other == ticker:
+            continue
+        bars_other = data_manager.get_today_5m_bars(other)
+        if len(bars_other) < 10:
+            continue
+
+        # Align by timestamp
+        by_time = {}
+        for b in bars_main:
+            by_time.setdefault(b["datetime"], {})["a"] = b
+        for b in bars_other:
+            by_time.setdefault(b["datetime"], {})["b"] = b
+
+        paired = [
+            (v["a"], v["b"])
+            for v in by_time.values()
+            if "a" in v and "b" in v
+        ]
+        if len(paired) < 10:
+            continue
+
+        xs = [pa[0]["close"] for pa in paired][-window_bars:]
+        ys = [pa[1]["close"] for pa in paired][-window_bars:]
+        if len(xs) != len(ys) or len(xs) < 5:
+            continue
+
+        xs_ret = [(xs[i] - xs[i-1]) / xs[i-1] for i in range(1, len(xs))]
+        ys_ret = [(ys[i] - ys[i-1]) / ys[i-1] for i in range(1, len(ys))]
+        m = min(len(xs_ret), len(ys_ret))
+        if m < 5:
+            continue
+        corr = _pearson_corr(xs_ret[-m:], ys_ret[-m:])
+        if corr >= threshold:
+            print(f"[CORR] {ticker} vs {other} corr={corr:.2f} — blocking new signal")
+            return True
+
+    return False
+
+
 # ─────────────────────────────────────────────────────────────
 # PHASE 1 — WATCH ALERT
 # ─────────────────────────────────────────────────────────────
@@ -280,6 +342,12 @@ def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high,
                options_rec=None, signal_type="CFW6_OR"):
     if abs(entry_price - stop_price) < entry_price * 0.002:
         print(f"[ARM] ⚠️ {ticker} stop too tight — skipping")
+        return
+
+    # Correlation guard: do not arm if highly correlated with existing positions.
+    open_positions = position_manager.get_open_positions()
+    if _is_highly_correlated(ticker, open_positions, window_bars=60, threshold=0.9):
+        print(f"[CORR] Skipping {ticker} — highly correlated with open book")
         return
 
     mode_label = " [INTRADAY]" if signal_type == "CFW6_INTRADAY" else " [OR]"
