@@ -5,11 +5,11 @@ Design principles:
   - Postgres (or SQLite locally) is the SINGLE source of truth for all bars.
   - NO in-memory live bar accumulator — every bar is persisted to DB immediately.
   - On startup, call startup_backfill_today(watchlist) to fetch today's full
-    session (04:00 ET → now) so OR bars are available even after a midday restart.
+    session (04:00 ET -> now) so OR bars are available even after a midday restart.
   - Each scan cycle, update_ticker() fetches only bars since last_bar_time
     (incremental) — no full 5-day refetch every cycle.
-  - 1m bars → intraday_bars table.
-  - Materialized 5m bars → intraday_bars_5m table (rebuilt from 1m after each store).
+  - 1m bars  -> intraday_bars table.
+  - Materialized 5m bars -> intraday_bars_5m table (rebuilt from 1m after each store).
   - get_today_session_bars() queries strictly by today's ET date. It NEVER falls
     back to a prior date. If today has no bars, it returns [] and the scanner skips.
   - Historical data accumulates over time for future backtesting.
@@ -17,7 +17,7 @@ Design principles:
 EODHD intraday endpoint rules:
   - URL:  /api/intraday/{TICKER}.US
   - from/to MUST be Unix timestamps (int) — date strings cause 422 errors.
-  - Returns ET-naive datetimes (extended hours 4 AM – 8 PM ET, ~960 bars/day).
+  - Returns ET-naive datetimes (extended hours 4 AM - 8 PM ET, ~960 bars/day).
 """
 import time
 import os
@@ -47,9 +47,9 @@ class DataManager:
         self.api_key = config.EODHD_API_KEY
         self.initialize_database()
 
-    # ═════════════════════════════════════════════════════════════
+    # =============================================================
     # DATABASE SETUP
-    # ═════════════════════════════════════════════════════════════
+    # =============================================================
 
     def initialize_database(self):
         """Create all necessary database tables."""
@@ -128,9 +128,9 @@ class DataManager:
         db_type = "PostgreSQL" if db_connection.USE_POSTGRES else self.db_path
         print(f"[DATA] Database initialized: {db_type}")
 
-    # ═════════════════════════════════════════════════════════════
+    # =============================================================
     # EODHD FETCH  (Unix timestamps only — never date strings)
-    # ═════════════════════════════════════════════════════════════
+    # =============================================================
 
     def _fetch_range(self, ticker: str, from_ts: int, to_ts: int,
                      interval: str = "1m") -> List[Dict]:
@@ -157,7 +157,7 @@ class DataManager:
             bars = []
             for bar in data:
                 try:
-                    # Convert UTC Unix timestamp → ET-naive datetime
+                    # Convert UTC Unix timestamp -> ET-naive datetime
                     dt_et = datetime.fromtimestamp(
                         bar["timestamp"], tz=ET
                     ).replace(tzinfo=None)
@@ -175,19 +175,19 @@ class DataManager:
             return bars
 
         except requests.exceptions.HTTPError as e:
-            print(f"[DATA] ❌ API Error for {ticker}: {e}")
+            print(f"[DATA] API Error for {ticker}: {e}")
             return []
         except Exception as e:
-            print(f"[DATA] ❌ Unexpected error for {ticker}: {e}")
+            print(f"[DATA] Unexpected error for {ticker}: {e}")
             return []
 
-    # ═════════════════════════════════════════════════════════════
+    # =============================================================
     # STARTUP BACKFILL  (call once before the scanner loop starts)
-    # ═════════════════════════════════════════════════════════════
+    # =============================================================
 
     def startup_backfill_today(self, tickers: List[str]):
         """
-        Fetch today's full session (04:00 ET → now) for every ticker.
+        Fetch today's full session (04:00 ET -> now) for every ticker.
 
         Must be called ONCE at startup before the scanner loop begins.
         This guarantees 9:30-9:40 OR bars are in DB regardless of what
@@ -200,8 +200,8 @@ class DataManager:
         from_ts     = int(today_start.timestamp())
         to_ts       = int(now_et.timestamp())
 
-        print(f"\n[DATA] 🔄 Startup backfill: {len(tickers)} tickers | "
-              f"04:00 ET → {now_et.strftime('%I:%M %p ET')}")
+        print(f"\n[DATA] Startup backfill: {len(tickers)} tickers | "
+              f"04:00 ET -> {now_et.strftime('%I:%M %p ET')}")
 
         for idx, ticker in enumerate(tickers, 1):
             try:
@@ -213,19 +213,19 @@ class DataManager:
                         1 for b in bars
                         if dtime(9, 30) <= b["datetime"].time() < dtime(9, 40)
                     )
-                    print(f"[DATA] ✅ [{idx}/{len(tickers)}] {ticker}: "
+                    print(f"[DATA] [{idx}/{len(tickers)}] {ticker}: "
                           f"{len(bars)} bars stored ({or_count} OR bars)")
                 else:
-                    print(f"[DATA] ⚠️  [{idx}/{len(tickers)}] {ticker}: "
+                    print(f"[DATA] [{idx}/{len(tickers)}] {ticker}: "
                           f"no bars returned for today")
             except Exception as e:
-                print(f"[DATA] ❌ [{idx}/{len(tickers)}] {ticker} backfill error: {e}")
+                print(f"[DATA] [{idx}/{len(tickers)}] {ticker} backfill error: {e}")
 
-        print("[DATA] ✅ Startup backfill complete\n")
+        print("[DATA] Startup backfill complete\n")
 
-    # ═════════════════════════════════════════════════════════════
+    # =============================================================
     # INCREMENTAL UPDATE  (called each scan cycle per ticker)
-    # ═════════════════════════════════════════════════════════════
+    # =============================================================
 
     def _get_last_bar_ts(self, ticker: str) -> Optional[datetime]:
         """Read the last stored bar timestamp from fetch_metadata."""
@@ -251,9 +251,9 @@ class DataManager:
         """
         Fetch only new bars since last_bar_time (incremental).
         Three cases:
-          1. last_bar is today  → fetch last 10 min overlap → now  (fast, ~1-5 bars)
-          2. last_bar is prior day → fetch today 04:00 ET → now    (today catch-up)
-          3. No data at all     → seed 30 days for backtest history (one-time)
+          1. last_bar is today  -> fetch last 10 min overlap -> now  (fast, ~1-5 bars)
+          2. last_bar is prior day -> fetch today 04:00 ET -> now    (today catch-up)
+          3. No data at all     -> seed 30 days for backtest history (one-time)
         """
         # TTL guard — don't hammer EODHD more than once per 2 minutes per ticker
         now_utc = datetime.utcnow()
@@ -285,18 +285,18 @@ class DataManager:
             label = "full seed (30 days)"
 
         to_ts = int(now_et.timestamp())
-        print(f"[DATA] {ticker} → {label}")
+        print(f"[DATA] {ticker} -> {label}")
 
         bars = self._fetch_range(ticker, from_ts, to_ts)
         if bars:
             self.store_bars(ticker, bars)
             self.materialize_5m_bars(ticker)
         else:
-            print(f"[DATA] ⚠️  {ticker}: no new bars returned")
+            print(f"[DATA] {ticker}: no new bars returned")
 
-    # ═════════════════════════════════════════════════════════════
+    # =============================================================
     # STORAGE
-    # ═════════════════════════════════════════════════════════════
+    # =============================================================
 
     def store_bars(self, ticker: str, bars: List[Dict]) -> int:
         """Upsert 1m bars into intraday_bars and update fetch_metadata."""
@@ -339,7 +339,7 @@ class DataManager:
                     except Exception:
                         pass
 
-        print(f"[DATA] ❌ All {max_retries} store attempts failed for {ticker}")
+        print(f"[DATA] All {max_retries} store attempts failed for {ticker}")
         return 0
 
     def materialize_5m_bars(self, ticker: str):
@@ -387,7 +387,7 @@ class DataManager:
             cursor.executemany(upsert_bar_5m_sql(), data)
             conn.commit()
         except Exception as e:
-            print(f"[DATA] ❌ 5m materialization error for {ticker}: {e}")
+            print(f"[DATA] 5m materialization error for {ticker}: {e}")
             if conn:
                 try:
                     conn.rollback()
@@ -400,12 +400,12 @@ class DataManager:
                 except Exception:
                     pass
 
-    # ═════════════════════════════════════════════════════════════
+    # =============================================================
     # SESSION QUERIES — today only, no fallback
-    # ═════════════════════════════════════════════════════════════
+    # =============================================================
 
     def _parse_bar_rows(self, rows) -> List[Dict]:
-        """Shared row → dict parser for all session queries."""
+        """Shared row -> dict parser for all session queries."""
         bars = []
         for row in rows:
             dt = row["datetime"]
@@ -425,7 +425,7 @@ class DataManager:
 
     def get_today_session_bars(self, ticker: str) -> List[Dict]:
         """
-        Return today's 1m bars from DB (04:00–20:00 ET today).
+        Return today's 1m bars from DB (04:00-20:00 ET today).
 
         NEVER falls back to a prior date. If today has no bars, returns [].
         The scanner and sniper both handle [] by logging and skipping cleanly.
@@ -476,9 +476,9 @@ class DataManager:
         conn.close()
         return self._parse_bar_rows(rows)
 
-    # ═════════════════════════════════════════════════════════════
+    # =============================================================
     # BACKTESTING QUERIES — multi-day, specific dates
-    # ═════════════════════════════════════════════════════════════
+    # =============================================================
 
     def get_bars_by_date(self, ticker: str, session_date: date_type) -> List[Dict]:
         """
@@ -536,9 +536,9 @@ class DataManager:
             dates.append(d)
         return dates
 
-    # ═════════════════════════════════════════════════════════════
+    # =============================================================
     # LIVE PRICE SNAPSHOTS  (position monitoring — not strategy input)
-    # ═════════════════════════════════════════════════════════════
+    # =============================================================
 
     def bulk_fetch_live_snapshots(self, tickers: List[str]) -> Dict[str, Dict]:
         """
@@ -577,26 +577,25 @@ class DataManager:
                         "volume":   int(d.get("volume", 0))
                     }
 
-            print(f"[LIVE] ✅ Bulk snapshot: {len(result)}/{len(tickers)} tickers")
+            print(f"[LIVE] Bulk snapshot: {len(result)}/{len(tickers)} tickers")
             return result
 
         except Exception as e:
-            print(f"[LIVE] ❌ Bulk snapshot error: {e}")
+            print(f"[LIVE] Bulk snapshot error: {e}")
             return {}
 
     def bulk_update_live_bars(self, tickers: List[str]) -> int:
         """
         Backward-compat stub kept for scanner.py.
         The in-memory accumulator is removed — bars are now persisted to DB.
-        This just fetches a live snapshot (for the position monitor / log banner)
-        without accumulating anything in memory.
+        This fetches a live snapshot for position monitor logging only.
         """
         snapshots = self.bulk_fetch_live_snapshots(tickers)
         return len(snapshots)
 
-    # ═════════════════════════════════════════════════════════════
+    # =============================================================
     # UTILITIES
-    # ═════════════════════════════════════════════════════════════
+    # =============================================================
 
     def cleanup_old_bars(self, days_to_keep: int = 60):
         """

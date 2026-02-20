@@ -138,11 +138,11 @@ def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high,
     min_stop_dist = entry_price * MIN_STOP_PCT
     actual_stop_dist = abs(entry_price - stop_price)
     if actual_stop_dist < min_stop_dist:
-        print(f"[ARM] ⚠️ {ticker} stop distance ${actual_stop_dist:.3f} "
+        print(f"[ARM] {ticker} stop distance ${actual_stop_dist:.3f} "
               f"below minimum ${min_stop_dist:.3f} — skipping")
         return
 
-    print(f"✅ {ticker} ARMED: {direction.upper()} | "
+    print(f"{ticker} ARMED: {direction.upper()} | "
           f"Entry: ${entry_price:.2f} | Stop: ${stop_price:.2f}")
     print(f"  Zone: ${zone_low:.2f}-${zone_high:.2f} | "
           f"OR: ${or_low:.2f}-${or_high:.2f}")
@@ -227,7 +227,7 @@ def process_ticker(ticker: str):
             return
 
         # STEP 2 — Incremental fetch: pull only new bars since last stored bar.
-        # Fast (1-5 bars per call during market hours). Handles today catch-up
+        # Fast (~1-5 bars per call during market hours). Handles today catch-up
         # automatically if last_bar_time is from a prior day.
         data_manager.update_ticker(ticker)
 
@@ -237,7 +237,7 @@ def process_ticker(ticker: str):
         bars_session = data_manager.get_today_session_bars(ticker)
 
         if not bars_session:
-            print(f"[{ticker}] ⚠️  No bars for today's session yet — skipping")
+            print(f"[{ticker}] No bars for today's session yet — skipping")
             return
 
         print(f"[{ticker}] Scanning TODAY {_now_et().date()} "
@@ -246,17 +246,17 @@ def process_ticker(ticker: str):
         # Debug: confirm bar window covers the opening range
         t_first = _bar_time(bars_session[0])
         t_last  = _bar_time(bars_session[-1])
-        print(f"[{ticker}] Bar window: {t_first} → {t_last}")
+        print(f"[{ticker}] Bar window: {t_first} -> {t_last}")
 
-        # STEP 4 — OPENING RANGE (9:30–9:40 ET)
+        # STEP 4 — OPENING RANGE (9:30-9:40 ET)
         or_high, or_low = compute_opening_range_from_bars(bars_session)
         if or_high is None:
             or_count = sum(
                 1 for b in bars_session
                 if _bar_time(b) and time(9, 30) <= _bar_time(b) < time(9, 40)
             )
-            print(f"[{ticker}] ❌ No OR: only {or_count} bars in 9:30–9:40 window "
-                  f"(need ≥2) — skipping, NOT falling back to yesterday")
+            print(f"[{ticker}] No OR: only {or_count} bars in 9:30-9:40 window "
+                  f"(need >=2) — skipping, NOT falling back to yesterday")
             return
         print(f"[{ticker}] OR: low=${or_low:.2f} high=${or_high:.2f} "
               f"range=${or_high - or_low:.3f}")
@@ -267,7 +267,7 @@ def process_ticker(ticker: str):
             bars_session, or_high, or_low
         )
         if not direction:
-            print(f"[{ticker}] — No ORB breakout "
+            print(f"[{ticker}] No ORB breakout "
                   f"(threshold {config.ORB_BREAK_THRESHOLD*100:.2f}%)")
             return
 
@@ -276,7 +276,7 @@ def process_ticker(ticker: str):
             bars_session, breakout_idx, direction
         )
         if not fvg_low:
-            print(f"[{ticker}] — No FVG after {direction.upper()} breakout "
+            print(f"[{ticker}] No FVG after {direction.upper()} breakout "
                   f"(min size {config.FVG_MIN_SIZE_PCT*100:.2f}%)")
             return
         zone_low  = min(fvg_low, fvg_high)
@@ -288,7 +288,7 @@ def process_ticker(ticker: str):
         )
         found, entry_price, base_grade, confirm_idx, confirm_type = result
         if not found or base_grade == "reject":
-            print(f"[{ticker}] — No confirmation candle "
+            print(f"[{ticker}] No confirmation candle "
                   f"(found={found}, grade={base_grade})")
             return
 
@@ -303,7 +303,7 @@ def process_ticker(ticker: str):
         )
         final_grade = confirmation_result["final_grade"]
         if final_grade == "reject":
-            print(f"[{ticker}] — Signal rejected after confirmation layers "
+            print(f"[{ticker}] Signal rejected after confirmation layers "
                   f"(base={base_grade})")
             return
 
@@ -333,7 +333,7 @@ def process_ticker(ticker: str):
         final_confidence = min(
             (base_confidence * ticker_multiplier) + mtf_boost, 1.0
         )
-        print(f"[CONFIDENCE] Base: {base_confidence:.2f} × Ticker: "
+        print(f"[CONFIDENCE] Base: {base_confidence:.2f} x Ticker: "
               f"{ticker_multiplier:.2f} + MTF: {mtf_boost:.2f} "
               f"= {final_confidence:.2f}")
 
@@ -357,4 +357,3 @@ def send_discord(message: str):
         requests.post(config.DISCORD_WEBHOOK_URL, json=payload, timeout=5)
     except Exception as e:
         print(f"[DISCORD] Error: {e}")
-
