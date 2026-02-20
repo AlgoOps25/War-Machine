@@ -60,7 +60,7 @@ def serial_pk() -> str:
 
 
 def upsert_bar_sql() -> str:
-    """Correct INSERT/UPSERT SQL for intraday_bars."""
+    """INSERT/UPSERT SQL for intraday_bars (1m)."""
     if USE_POSTGRES:
         return """
             INSERT INTO intraday_bars
@@ -80,8 +80,29 @@ def upsert_bar_sql() -> str:
     """
 
 
+def upsert_bar_5m_sql() -> str:
+    """INSERT/UPSERT SQL for intraday_bars_5m (materialized 5m)."""
+    if USE_POSTGRES:
+        return """
+            INSERT INTO intraday_bars_5m
+                (ticker, datetime, open, high, low, close, volume)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (ticker, datetime) DO UPDATE SET
+                open   = EXCLUDED.open,
+                high   = EXCLUDED.high,
+                low    = EXCLUDED.low,
+                close  = EXCLUDED.close,
+                volume = EXCLUDED.volume
+        """
+    return """
+        INSERT OR REPLACE INTO intraday_bars_5m
+            (ticker, datetime, open, high, low, close, volume)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """
+
+
 def upsert_metadata_sql() -> str:
-    """Correct INSERT/UPSERT SQL for fetch_metadata."""
+    """INSERT/UPSERT SQL for fetch_metadata."""
     p = ph()
     if USE_POSTGRES:
         return f"""

@@ -1,5 +1,5 @@
-#Sniper Module - CFW6 Strategy Implementation#
-#INTEGRATED: Position Manager, AI Learning, Confirmation Layers#
+# Sniper Module - CFW6 Strategy Implementation
+# INTEGRATED: Position Manager, AI Learning, Confirmation Layers
 import traceback
 from datetime import datetime, time
 from zoneinfo import ZoneInfo
@@ -50,7 +50,8 @@ def log_proposed_trade(ticker, signal_type, direction, price, confidence, grade)
             )
         """)
         cursor.execute(f"""
-            INSERT INTO proposed_trades (ticker, signal_type, direction, price, confidence, grade)
+            INSERT INTO proposed_trades
+                (ticker, signal_type, direction, price, confidence, grade)
             VALUES ({p}, {p}, {p}, {p}, {p}, {p})
         """, (ticker, signal_type, direction, price, confidence, grade))
         conn.commit()
@@ -65,53 +66,40 @@ def log_proposed_trade(ticker, signal_type, direction, price, confidence, grade)
 
 def compute_opening_range_from_bars(bars: list) -> tuple:
     """Compute Opening Range high/low from 9:30-9:40 AM ET."""
-    or_bars = []
-    for bar in bars:
-        bt = _bar_time(bar)
-        if bt and time(9, 30) <= bt < time(9, 40):
-            or_bars.append(bar)
-
+    or_bars = [
+        b for b in bars
+        if _bar_time(b) and time(9, 30) <= _bar_time(b) < time(9, 40)
+    ]
     if len(or_bars) < 2:
         return None, None
-
-    or_high = max(b["high"] for b in or_bars)
-    or_low  = min(b["low"]  for b in or_bars)
-    return or_high, or_low
+    return max(b["high"] for b in or_bars), min(b["low"] for b in or_bars)
 
 def compute_premarket_range(bars: list) -> tuple:
     """Compute pre-market high/low from 4:00-9:30 AM ET."""
-    pm_bars = []
-    for bar in bars:
-        bt = _bar_time(bar)
-        if bt and time(4, 0) <= bt < time(9, 30):
-            pm_bars.append(bar)
-
+    pm_bars = [
+        b for b in bars
+        if _bar_time(b) and time(4, 0) <= _bar_time(b) < time(9, 30)
+    ]
     if len(pm_bars) < 10:
         return None, None
-
-    pm_high = max(b["high"] for b in pm_bars)
-    pm_low  = min(b["low"]  for b in pm_bars)
-    return pm_high, pm_low
+    return max(b["high"] for b in pm_bars), min(b["low"] for b in pm_bars)
 
 # ─────────────────────────────────────────────────────────────
 # BREAKOUT & FVG DETECTION
 # ─────────────────────────────────────────────────────────────
 
 def detect_breakout_after_or(bars: list, or_high: float, or_low: float) -> tuple:
-    """Detect breakout of Opening Range (only after 9:40 ET)."""
+    """Detect breakout of Opening Range (only candles after 9:40 ET)."""
     for i, bar in enumerate(bars):
         bt = _bar_time(bar)
         if bt is None or bt < time(9, 40):
             continue
-
         if bar["close"] > or_high * (1 + config.ORB_BREAK_THRESHOLD):
             print(f"[BREAKOUT] BULL at idx {i}, price ${bar['close']:.2f}")
             return "bull", i
-
         if bar["close"] < or_low * (1 - config.ORB_BREAK_THRESHOLD):
             print(f"[BREAKOUT] BEAR at idx {i}, price ${bar['close']:.2f}")
             return "bear", i
-
     return None, None
 
 def detect_fvg_after_break(bars: list, breakout_idx: int, direction: str) -> tuple:
@@ -120,28 +108,21 @@ def detect_fvg_after_break(bars: list, breakout_idx: int, direction: str) -> tup
         if i < 2:
             continue
         c0 = bars[i-2]
-        c1 = bars[i-1]  # noqa: F841
         c2 = bars[i]
 
         if direction == "bull":
             gap_size = c2["low"] - c0["high"]
-            if gap_size > 0:
-                gap_pct = gap_size / c0["high"]
-                if gap_pct >= config.FVG_MIN_SIZE_PCT:
-                    fvg_low  = c0["high"]
-                    fvg_high = c2["low"]
-                    print(f"[FVG] BULL FVG: ${fvg_low:.2f} - ${fvg_high:.2f}")
-                    return fvg_low, fvg_high
+            if gap_size > 0 and (gap_size / c0["high"]) >= config.FVG_MIN_SIZE_PCT:
+                fvg_low, fvg_high = c0["high"], c2["low"]
+                print(f"[FVG] BULL FVG: ${fvg_low:.2f} - ${fvg_high:.2f}")
+                return fvg_low, fvg_high
 
         elif direction == "bear":
             gap_size = c0["low"] - c2["high"]
-            if gap_size > 0:
-                gap_pct = gap_size / c0["low"]
-                if gap_pct >= config.FVG_MIN_SIZE_PCT:
-                    fvg_low  = c2["high"]
-                    fvg_high = c0["low"]
-                    print(f"[FVG] BEAR FVG: ${fvg_low:.2f} - ${fvg_high:.2f}")
-                    return fvg_low, fvg_high
+            if gap_size > 0 and (gap_size / c0["low"]) >= config.FVG_MIN_SIZE_PCT:
+                fvg_low, fvg_high = c2["high"], c0["low"]
+                print(f"[FVG] BEAR FVG: ${fvg_low:.2f} - ${fvg_high:.2f}")
+                return fvg_low, fvg_high
 
     return None, None
 
@@ -153,17 +134,20 @@ def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high,
                entry_price, stop_price, t1, t2, confidence, grade, options_rec=None):
     """Arms a ticker after signal confirmation and sends Discord alert."""
 
-    # Minimum stop distance guard (prevents noise-level stops like $0.02)
-    MIN_STOP_PCT = 0.002
+    MIN_STOP_PCT  = 0.002
     min_stop_dist = entry_price * MIN_STOP_PCT
     actual_stop_dist = abs(entry_price - stop_price)
     if actual_stop_dist < min_stop_dist:
-        print(f"[ARM] ⚠️ {ticker} stop distance ${actual_stop_dist:.3f} below minimum ${min_stop_dist:.3f} — skipping")
+        print(f"[ARM] ⚠️ {ticker} stop distance ${actual_stop_dist:.3f} "
+              f"below minimum ${min_stop_dist:.3f} — skipping")
         return
 
-    print(f"\u2705 {ticker} ARMED: {direction.upper()} | Entry: ${entry_price:.2f} | Stop: ${stop_price:.2f}")
-    print(f"  Zone: ${zone_low:.2f}-${zone_high:.2f} | OR: ${or_low:.2f}-${or_high:.2f}")
-    print(f"  Targets: T1=${t1:.2f} T2=${t2:.2f} | Confidence: {confidence*100:.1f}% ({grade})")
+    print(f"✅ {ticker} ARMED: {direction.upper()} | "
+          f"Entry: ${entry_price:.2f} | Stop: ${stop_price:.2f}")
+    print(f"  Zone: ${zone_low:.2f}-${zone_high:.2f} | "
+          f"OR: ${or_low:.2f}-${or_high:.2f}")
+    print(f"  Targets: T1=${t1:.2f} T2=${t2:.2f} | "
+          f"Confidence: {confidence*100:.1f}% ({grade})")
 
     log_proposed_trade(ticker, "CFW6", direction, entry_price, confidence, grade)
 
@@ -180,7 +164,6 @@ def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high,
         options_data=options_rec
     )
 
-    # Pass all required params; open_position() calculates contracts internally
     position_id = position_manager.open_position(
         ticker=ticker,
         direction=direction,
@@ -198,21 +181,20 @@ def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high,
     )
 
     armed_signals[ticker] = {
-        "position_id": position_id,
-        "direction": direction,
-        "zone_low": zone_low,
-        "zone_high": zone_high,
-        "or_low": or_low,
-        "or_high": or_high,
-        "entry_price": entry_price,
-        "stop_price": stop_price,
-        "t1": t1,
-        "t2": t2,
-        "confidence": confidence,
-        "grade": grade,
-        "options_rec": options_rec
+        "position_id":   position_id,
+        "direction":     direction,
+        "zone_low":      zone_low,
+        "zone_high":     zone_high,
+        "or_low":        or_low,
+        "or_high":       or_high,
+        "entry_price":   entry_price,
+        "stop_price":    stop_price,
+        "t1":            t1,
+        "t2":            t2,
+        "confidence":    confidence,
+        "grade":         grade,
+        "options_rec":   options_rec
     }
-
     print(f"[ARMED] {ticker} position opened (ID: {position_id})")
 
 def clear_armed_signals():
@@ -228,67 +210,74 @@ def process_ticker(ticker: str):
     """
     Main CFW6 strategy processor.
 
-    Data source priority:
-      1. Today's LIVE bars (from /api/real-time/ accumulator, pre-polled in bulk
-         by scanner.py before this loop).  Available after ~9:45 AM ET (15-min delay).
-      2. Latest HISTORICAL session (from /api/intraday/).  Uses get_latest_session_bars()
-         which queries by DATE so the full day (including 9:30 AM) is always present.
-         EODHD returns extended-hours data; a row-count limit would miss the open.
+    Data source: Postgres intraday_bars — today's ET session only.
+    startup_backfill_today() (called once in scanner.py before the loop)
+    guarantees 9:30-9:40 OR bars are present even after a midday restart.
+
+    Rules:
+      - Only today's real bars are used. No fallback to yesterday.
+      - No synthetic OR. No made-up ranges.
+      - If today's OR bars are missing, the ticker is skipped with a clear log.
+      - Signals can be found at any point in the session (9:40 AM through close),
+        not just at the open.
     """
     try:
         # STEP 1 — Re-arm guard: one signal per ticker per session
         if ticker in armed_signals:
             return
 
-        # STEP 2 — Ensure historical bars are fresh (TTL-cached, ~1 fetch/hour)
+        # STEP 2 — Incremental fetch: pull only new bars since last stored bar.
+        # Fast (1-5 bars per call during market hours). Handles today catch-up
+        # automatically if last_bar_time is from a prior day.
         data_manager.update_ticker(ticker)
 
-        # STEP 3 — Choose data source: live today vs latest historical
-        bars_live = data_manager.get_live_bars_today(ticker)
+        # STEP 3 — Load today's session bars from DB.
+        # get_today_session_bars() queries strictly by today's ET date.
+        # Returns [] if no bars exist — never returns yesterday's data.
+        bars_session = data_manager.get_today_session_bars(ticker)
 
-        if len(bars_live) >= 20:
-            # ✅ Live data available — use today's real session
-            bars_session  = bars_live
-            session_label = f"LIVE {_now_et().date()}"
-        else:
-            # ⏳ Live not ready yet — fall back to latest completed session
-            # IMPORTANT: use get_latest_session_bars() (date query) NOT get_bars_from_memory(limit=390)
-            # EODHD extended-hours days are ~960 bars; a limit of 390 would cut off the 9:30 AM open.
-            bars_session, latest_date = data_manager.get_latest_session_bars(ticker)
-            if not bars_session or len(bars_session) < 50:
-                print(f"[{ticker}] \u26a0\ufe0f Insufficient session bars: {len(bars_session) if bars_session else 0}")
-                return
-            session_label = f"HIST {latest_date}"
+        if not bars_session:
+            print(f"[{ticker}] ⚠️  No bars for today's session yet — skipping")
+            return
 
-        print(f"[{ticker}] Scanning {session_label} ({len(bars_session)} bars)")
+        print(f"[{ticker}] Scanning TODAY {_now_et().date()} "
+              f"({len(bars_session)} bars)")
 
-        # — Debug: confirm bar window covers the opening range —
-        if bars_session:
-            t_first = _bar_time(bars_session[0])
-            t_last  = _bar_time(bars_session[-1])
-            print(f"[{ticker}] Bar window: {t_first} \u2192 {t_last}")
+        # Debug: confirm bar window covers the opening range
+        t_first = _bar_time(bars_session[0])
+        t_last  = _bar_time(bars_session[-1])
+        print(f"[{ticker}] Bar window: {t_first} → {t_last}")
 
-        # STEP 4 — OPENING RANGE (9:30-9:40 ET)
+        # STEP 4 — OPENING RANGE (9:30–9:40 ET)
         or_high, or_low = compute_opening_range_from_bars(bars_session)
         if or_high is None:
             or_count = sum(
                 1 for b in bars_session
                 if _bar_time(b) and time(9, 30) <= _bar_time(b) < time(9, 40)
             )
-            print(f"[{ticker}] \u274c No OR: only {or_count} bars in 9:30\u20139:40 window")
+            print(f"[{ticker}] ❌ No OR: only {or_count} bars in 9:30–9:40 window "
+                  f"(need ≥2) — skipping, NOT falling back to yesterday")
             return
-        print(f"[{ticker}] OR: low=${or_low:.2f} high=${or_high:.2f} range=${or_high - or_low:.3f}")
+        print(f"[{ticker}] OR: low=${or_low:.2f} high=${or_high:.2f} "
+              f"range=${or_high - or_low:.3f}")
 
-        # STEP 5 — BREAKOUT DETECTION
-        direction, breakout_idx = detect_breakout_after_or(bars_session, or_high, or_low)
+        # STEP 5 — BREAKOUT DETECTION (first candle after 9:40 that closes
+        # outside the OR — could happen at 9:41 or 1:30 PM, doesn't matter)
+        direction, breakout_idx = detect_breakout_after_or(
+            bars_session, or_high, or_low
+        )
         if not direction:
-            print(f"[{ticker}] \u2014 No ORB breakout (threshold {config.ORB_BREAK_THRESHOLD*100:.2f}%)")
+            print(f"[{ticker}] — No ORB breakout "
+                  f"(threshold {config.ORB_BREAK_THRESHOLD*100:.2f}%)")
             return
 
         # STEP 6 — FVG DETECTION
-        fvg_low, fvg_high = detect_fvg_after_break(bars_session, breakout_idx, direction)
+        fvg_low, fvg_high = detect_fvg_after_break(
+            bars_session, breakout_idx, direction
+        )
         if not fvg_low:
-            print(f"[{ticker}] \u2014 No FVG after {direction.upper()} breakout (min size {config.FVG_MIN_SIZE_PCT*100:.2f}%)")
+            print(f"[{ticker}] — No FVG after {direction.upper()} breakout "
+                  f"(min size {config.FVG_MIN_SIZE_PCT*100:.2f}%)")
             return
         zone_low  = min(fvg_low, fvg_high)
         zone_high = max(fvg_low, fvg_high)
@@ -299,7 +288,8 @@ def process_ticker(ticker: str):
         )
         found, entry_price, base_grade, confirm_idx, confirm_type = result
         if not found or base_grade == "reject":
-            print(f"[{ticker}] \u2014 No confirmation candle (found={found}, grade={base_grade})")
+            print(f"[{ticker}] — No confirmation candle "
+                  f"(found={found}, grade={base_grade})")
             return
 
         # STEP 8 — MULTI-FACTOR CONFIRMATION LAYERS
@@ -313,7 +303,8 @@ def process_ticker(ticker: str):
         )
         final_grade = confirmation_result["final_grade"]
         if final_grade == "reject":
-            print(f"[{ticker}] \u2014 Signal rejected after confirmation layers (base={base_grade})")
+            print(f"[{ticker}] — Signal rejected after confirmation layers "
+                  f"(base={base_grade})")
             return
 
         # STEP 9 — CALCULATE STOPS & TARGETS
@@ -339,12 +330,19 @@ def process_ticker(ticker: str):
         except ImportError:
             mtf_boost = 0.0
 
-        final_confidence = min((base_confidence * ticker_multiplier) + mtf_boost, 1.0)
-        print(f"[CONFIDENCE] Base: {base_confidence:.2f} x Ticker: {ticker_multiplier:.2f} + MTF: {mtf_boost:.2f} = {final_confidence:.2f}")
+        final_confidence = min(
+            (base_confidence * ticker_multiplier) + mtf_boost, 1.0
+        )
+        print(f"[CONFIDENCE] Base: {base_confidence:.2f} × Ticker: "
+              f"{ticker_multiplier:.2f} + MTF: {mtf_boost:.2f} "
+              f"= {final_confidence:.2f}")
 
         # STEP 12 — ARM TICKER & OPEN POSITION
-        arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high,
-                   entry_price, stop_price, t1, t2, final_confidence, final_grade, options_rec)
+        arm_ticker(
+            ticker, direction, zone_low, zone_high, or_low, or_high,
+            entry_price, stop_price, t1, t2, final_confidence, final_grade,
+            options_rec
+        )
 
     except Exception as e:
         print(f"process_ticker error for {ticker}:", e)
@@ -359,3 +357,4 @@ def send_discord(message: str):
         requests.post(config.DISCORD_WEBHOOK_URL, json=payload, timeout=5)
     except Exception as e:
         print(f"[DISCORD] Error: {e}")
+
