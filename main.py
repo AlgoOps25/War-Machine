@@ -1,7 +1,8 @@
 """
 War Machine - Main Entry Point
 CFW6 Strategy + Options Signal Engine
-INTEGRATED: AI Learning, Position Tracking, Win Rate Analysis, Daily P&L Digest
+INTEGRATED: AI Learning, Position Tracking, Win Rate Analysis,
+            Daily P&L Digest, Weekly Session Heatmap
 """
 import os
 import sys
@@ -56,7 +57,6 @@ def check_environment():
 
 
 def initialize_database():
-    """Initialize database via DataManager."""
     print("[INIT] Initializing database...")
     try:
         from data_manager import data_manager
@@ -71,11 +71,6 @@ def initialize_database():
 
 
 def start_websocket_feed():
-    """
-    Launch the EODHD WebSocket real-time bar builder.
-    Connects to wss://ws.eodhistoricaldata.com/ws/us and aggregates
-    trade ticks into 1m OHLCV bars stored to DB every 10 seconds.
-    """
     print("[INIT] Starting WebSocket feed...")
     try:
         try:
@@ -89,7 +84,6 @@ def start_websocket_feed():
                 "PFE",  "ABBV", "MRK",   "WMT",  "HD",   "COST", "NKE",
                 "MCD",  "SPY"
             ]
-
         from ws_feed import start_ws_feed
         start_ws_feed(ws_tickers)
         time.sleep(3)
@@ -103,7 +97,6 @@ def start_websocket_feed():
 
 
 def load_ai_learning():
-    """Load AI learning engine and display current state."""
     print("[INIT] Loading AI learning engine...")
     try:
         from ai_learning import learning_engine
@@ -121,7 +114,6 @@ def load_ai_learning():
 
 
 def load_position_tracker():
-    """Load position manager and display open positions."""
     print("[INIT] Loading position manager...")
     try:
         from position_manager import position_manager
@@ -140,7 +132,6 @@ def load_position_tracker():
 
 
 def load_win_rate_tracker():
-    """Load win rate stats from position manager."""
     print("[INIT] Loading win rate data...")
     try:
         from position_manager import position_manager
@@ -157,7 +148,6 @@ def load_win_rate_tracker():
 
 
 def send_startup_notification():
-    """Send startup notification to Discord."""
     try:
         from discord_helpers import send_simple_message
         from scanner import is_market_hours, is_premarket
@@ -179,51 +169,52 @@ def send_startup_notification():
 
 def run_eod_digest():
     """
-    Trigger the daily P&L digest.
+    EOD cleanup: P&L digest + session heatmap (Fridays) + state resets.
     Called at 4:00 PM ET (scheduled) and on KeyboardInterrupt.
-    Silent no-op if pnl_digest module is unavailable.
     """
+    print("[EOD] Running end-of-day sequence...")
     try:
+        # 1. Daily P&L digest (every day)
         from pnl_digest import send_pnl_digest
+        send_pnl_digest()
+    except Exception as e:
+        print(f"[EOD] P&L digest error: {e}")
+
+    try:
+        # 2. Session heatmap (Fridays only — the function checks internally)
+        from session_heatmap import send_heatmap
+        send_heatmap()
+    except Exception as e:
+        print(f"[EOD] Heatmap error: {e}")
+
+    try:
+        # 3. State resets
         from earnings_filter import clear_earnings_cache
         from sniper import clear_armed_signals, clear_watching_signals
-
-        send_pnl_digest()
         clear_earnings_cache()
         clear_armed_signals()
         clear_watching_signals()
-        print("[EOD] Daily cleanup complete")
+        print("[EOD] State resets complete")
     except Exception as e:
-        print(f"[EOD] Digest error (non-fatal): {e}")
+        print(f"[EOD] State reset error: {e}")
+
+    print("[EOD] Daily cleanup complete")
 
 
 def main():
     """Main entry point with full initialization."""
 
-    # Step 1: Check environment
     if not check_environment():
         print("\nStartup aborted due to missing configuration")
         sys.exit(1)
 
-    # Step 2: Initialize database
-    db = initialize_database()
-
-    # Step 2b: Start WebSocket feed
+    db          = initialize_database()
     start_websocket_feed()
-
-    # Step 3: Load AI learning engine
-    ai_engine = load_ai_learning()
-
-    # Step 4: Load position manager
+    ai_engine   = load_ai_learning()
     pos_tracker = load_position_tracker()
-
-    # Step 5: Load win rate data
-    wr_tracker = load_win_rate_tracker()
-
-    # Step 6: Send startup notification
+    wr_tracker  = load_win_rate_tracker()
     send_startup_notification()
 
-    # Step 7: Display strategy summary
     print("\n" + "="*60)
     print("STRATEGY CONFIGURATION")
     print("="*60)
@@ -234,33 +225,25 @@ def main():
     print("Risk:         2% per trade | 1 contract max")
     print("Options:      7-45 DTE | 0.35-0.55 delta | High liquidity")
     print("Intelligence: IVR + UOA + GEX | Earnings Guard | AI Win-Rate Learning")
+    print("Reporting:    Daily P&L Digest | Weekly Session Heatmap (Fri)")
     print("Data Feed:    EODHD WebSocket (real-time 1m bars) + REST snapshots")
     print("="*60 + "\n")
 
-    # ── EOD digest scheduler state
     _digest_sent_today = False
-    EOD_DIGEST_TIME    = dt_time(16, 0)   # 4:00 PM ET
+    EOD_DIGEST_TIME    = dt_time(16, 0)
 
-    # Step 8: Start scanner loop
     print("Starting CFW6 scanner...\n")
     try:
         from scanner import start_scanner_loop_iter
-        # If scanner exposes an iterable loop, use it so we can hook EOD.
-        # Falls back to blocking start_scanner_loop() if not available.
         try:
             for _ in start_scanner_loop_iter():
                 now_et = _now_et()
-                # ── 4:00 PM ET EOD digest (fires once per day)
-                if (not _digest_sent_today
-                        and now_et.time() >= EOD_DIGEST_TIME):
+                if not _digest_sent_today and now_et.time() >= EOD_DIGEST_TIME:
                     run_eod_digest()
                     _digest_sent_today = True
-                # Reset flag at midnight
                 if now_et.hour == 0 and now_et.minute == 0:
                     _digest_sent_today = False
-
         except (TypeError, AttributeError):
-            # Scanner doesn't expose iterable — run blocking loop
             from scanner import start_scanner_loop
             start_scanner_loop()
 
@@ -274,10 +257,7 @@ def main():
         print("\n\n" + "="*60)
         print("SHUTDOWN INITIATED")
         print("="*60)
-
-        # ── Send EOD digest on manual shutdown
         run_eod_digest()
-
         if pos_tracker:
             print("\nPosition Summary:")
             pos_tracker.print_summary()
