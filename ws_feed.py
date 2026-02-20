@@ -1,25 +1,31 @@
 """
 ws_feed.py — EODHD WebSocket Real-Time Bar Builder
 
-Connects to wss://ws.eodhistoricaldata.com/ws/us and aggregates live trade
-ticks into 1m OHLCV bars persisted to the DB via data_manager.store_bars().
+Connects to wss://ws.eodhistoricaldata.com/ws/us?api_token=KEY and aggregates
+live trade ticks into 1m OHLCV bars persisted to the DB via data_manager.store_bars().
+
+EODHD WebSocket protocol:
+  - API key goes in the connection URL as ?api_token=KEY  (no JSON auth message)
+  - Subscribe:  {"action": "subscribe", "symbols": "AAPL,MSFT,NVDA"}
+  - Tick:       {"s": "AAPL", "p": 227.31, "v": 100, "t": 1725198451165}
+                 s = plain ticker (no .US suffix)
+                 p = last trade price
+                 v = trade size (shares)
+                 t = epoch milliseconds
+  - Docs:       https://eodhd.com/financial-apis/new-real-time-data-api-websockets
+  - Plan req:   EOD+Intraday (All World Extended) or All-In-One
 
 Design:
   - Runs in a background daemon thread with its own asyncio event loop.
   - Completed bars (minute closed) are flushed to DB immediately.
-  - The current open bar is flushed every FLUSH_INTERVAL seconds so the
-    scanner always sees live price without waiting for the minute to close.
+  - Current open bar flushed every FLUSH_INTERVAL seconds so scanner
+    always sees live price without waiting for the minute to close.
   - Auto-reconnects after RECONNECT_DELAY seconds on any disconnect.
   - Gracefully skips startup if 'websockets' package is not installed.
 
 Usage (called once from main.py before the scanner loop):
     from ws_feed import start_ws_feed
     start_ws_feed(watchlist_tickers)
-
-EODHD WebSocket protocol:
-  Auth:      {"action":"auth","key":"<API_KEY>"}
-  Subscribe: {"action":"subscribe","symbols":"AAPL.US,MSFT.US,..."}
-  Tick:      {"s":"AAPL.US","p":"263.44","v":100,"t":1700000000000}
 """
 import asyncio
 import json
@@ -38,11 +44,11 @@ except ImportError:
 import config
 
 ET              = ZoneInfo("America/New_York")
-WS_URL          = "wss://ws.eodhistoricaldata.com/ws/us"
+WS_BASE_URL     = "wss://ws.eodhistoricaldata.com/ws/us"
 RECONNECT_DELAY = 5     # seconds between reconnect attempts
 FLUSH_INTERVAL  = 10    # seconds between open-bar DB flushes
 
-# ── Shared state ──────────────────────────────────────────────────────────────
+# ── Shared state ──────────────────────────────────────────────────────────
 _lock       = threading.Lock()
 _open_bars  = {}                    # ticker -> current open bar dict
 _pending    = defaultdict(list)     # ticker -> list of completed bars (not yet in DB)
@@ -50,7 +56,7 @@ _connected  = False
 
 
 def is_connected() -> bool:
-    """Return True if the WebSocket is currently authenticated and live."""
+    """Return True if the WebSocket is currently connected and subscribed."""
     return _connected
 
 
@@ -137,36 +143,39 @@ def _flush_loop():
 
 async def _ws_run(tickers: list):
     global _connected
-    symbols = ",".join(f"{t}.US" for t in tickers[:50])
+
+    # API key in URL — EODHD does NOT use a JSON auth handshake
+    url     = f"{WS_BASE_URL}?api_token={config.EODHD_API_KEY}"
+    # Plain tickers for US stocks (no .US suffix) per EODHD docs
+    symbols = ",".join(tickers[:50])
 
     while True:
         try:
-            print(f"[WS] Connecting -> {WS_URL}")
+            print(f"[WS] Connecting -> {WS_BASE_URL}")
             async with websockets.connect(
-                WS_URL, ping_interval=20, ping_timeout=10, close_timeout=5
+                url, ping_interval=20, ping_timeout=10, close_timeout=5
             ) as ws:
-                # Authenticate
-                await ws.send(json.dumps({"action": "auth", "key": config.EODHD_API_KEY}))
-                auth = json.loads(await ws.recv())
-                if auth.get("status_code") != 200:
-                    print(f"[WS] Auth failed: {auth} — retrying in {RECONNECT_DELAY}s")
-                    _connected = False
-                    await asyncio.sleep(RECONNECT_DELAY)
-                    continue
-                print("[WS] Authenticated OK")
-
-                # Subscribe
+                # Subscribe immediately — no auth message needed
                 await ws.send(json.dumps({"action": "subscribe", "symbols": symbols}))
-                print(f"[WS] Subscribed to {len(tickers[:50])} tickers OK")
+                print(f"[WS] Subscribed to {len(tickers[:50])} tickers | "
+                      f"waiting for first tick...")
                 _connected = True
 
                 async for raw in ws:
                     try:
-                        msg    = json.loads(raw)
-                        ticker = msg.get("s", "").replace(".US", "")
+                        msg = json.loads(raw)
+
+                        # Status / confirmation messages (not ticks) — log and skip
+                        if "status_code" in msg or "status" in msg:
+                            print(f"[WS] Server msg: {msg}")
+                            continue
+
+                        # Trade tick: {"s":"AAPL","p":227.31,"v":100,"t":1725198451165}
+                        ticker = msg.get("s", "")
                         price  = msg.get("p")
                         volume = int(msg.get("v", 0))
                         ts_ms  = msg.get("t")
+
                         if ticker and price and ts_ms:
                             _on_tick(ticker, float(price), volume, int(ts_ms))
                     except Exception as exc:
