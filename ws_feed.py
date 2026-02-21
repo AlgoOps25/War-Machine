@@ -58,7 +58,7 @@ FLUSH_INTERVAL  = 10    # seconds between open-bar DB flushes
 SUBSCRIBE_CHUNK = 50    # max tickers per subscribe message (EODHD limit)
 SPIKE_THRESHOLD = 0.10  # reject ticks that move > 10% from current bar close
 
-# ── Shared state ──────────────────────────────────────────────────────────────
+# ── Shared state ────────────────────────────────────────────────────────────────────
 _lock               = threading.Lock()
 _open_bars          = {}                 # ticker -> current open bar dict
 _pending            = defaultdict(list)  # ticker -> completed bars not yet in DB
@@ -72,7 +72,7 @@ _event_loop         = None               # background asyncio loop (set before c
 _ws_connection      = None               # active websockets connection object
 
 
-# ── Public read API ───────────────────────────────────────────────────────────
+# ── Public read API ─────────────────────────────────────────────────────
 
 def is_connected() -> bool:
     """Return True if the WebSocket is currently connected and subscribed."""
@@ -86,7 +86,7 @@ def get_current_bar(ticker: str):
         return dict(bar) if bar else None
 
 
-# ── Tick aggregation ──────────────────────────────────────────────────────────
+# ── Tick aggregation ────────────────────────────────────────────────────────
 
 def _minute_floor(epoch_ms: int) -> datetime:
     """Convert ms epoch -> ET-naive datetime floored to the minute."""
@@ -111,7 +111,7 @@ def _on_tick(ticker: str, price: float, volume: int, epoch_ms: int):
     """
     # Gate 1: basic bounds (fast path, no lock needed)
     if price <= 0 or volume < 0 or price > 100_000:
-        print(f"[WS] ⚠️ Bad tick rejected: {ticker} p={price} v={volume}")
+        print(f"[WS] \u26a0\ufe0f Bad tick rejected: {ticker} p={price} v={volume}")
         return
 
     bar_dt = _minute_floor(epoch_ms)
@@ -124,7 +124,7 @@ def _on_tick(ticker: str, price: float, volume: int, epoch_ms: int):
             deviation = abs(price - cur["close"]) / cur["close"]
             if deviation > SPIKE_THRESHOLD:
                 print(
-                    f"[WS] ⚠️ Spike rejected: {ticker} "
+                    f"[WS] \u26a0\ufe0f Spike rejected: {ticker} "
                     f"p={price:.2f} vs close={cur['close']:.2f} "
                     f"({deviation:.1%} > {SPIKE_THRESHOLD:.0%})"
                 )
@@ -151,7 +151,7 @@ def _on_tick(ticker: str, price: float, volume: int, epoch_ms: int):
             cur["volume"] += volume
 
 
-# ── DB flush helpers ──────────────────────────────────────────────────────────
+# ── DB flush helpers ───────────────────────────────────────────────────────
 
 def _flush_pending():
     """Persist all completed 1m bars to DB and clear the queue."""
@@ -187,7 +187,7 @@ def _flush_loop():
             print(f"[WS] Flush error: {exc}")
 
 
-# ── Dynamic subscription (async, runs inside WS event loop) ──────────────────
+# ── Dynamic subscription (async, runs inside WS event loop) ────────────────────
 
 async def _do_subscribe(ws, tickers: list):
     """
@@ -244,9 +244,10 @@ def subscribe_tickers(tickers: list):
         print(f"[WS] subscribe_tickers error: {e}")
 
 
-# ── WebSocket coroutine ───────────────────────────────────────────────────────
+# ── WebSocket coroutine ─────────────────────────────────────────────────────────
 
-async def _ws_run(tickers: list):
+async def _ws_run():
+    """Main WebSocket coroutine. Runs in a dedicated asyncio event loop thread."""
     global _connected, _ws_connection, _subscribed
 
     url = f"{WS_BASE_URL}?api_token={config.EODHD_API_KEY}"
@@ -293,14 +294,20 @@ async def _ws_run(tickers: list):
                     except Exception as exc:
                         print(f"[WS] Tick error: {exc}")
 
+                # Clean server-side close — reset state before next reconnect attempt.
+                # Without this, is_connected() returns True during the reconnect
+                # window and position monitor would read stale _open_bars prices.
+                _connected     = False
+                _ws_connection = None
+
         except Exception as exc:
-            _connected    = False
+            _connected     = False
             _ws_connection = None
             print(f"[WS] Disconnected ({exc}) — reconnecting in {RECONNECT_DELAY}s")
             await asyncio.sleep(RECONNECT_DELAY)
 
 
-# ── Public API ────────────────────────────────────────────────────────────────
+# ── Public API ─────────────────────────────────────────────────────────────────
 
 def start_ws_feed(tickers: list):
     """
@@ -329,9 +336,9 @@ def start_ws_feed(tickers: list):
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         _event_loop = loop   # expose before run_until_complete so subscribe_tickers works
-        loop.run_until_complete(_ws_run(tickers))
+        loop.run_until_complete(_ws_run())
 
-    threading.Thread(target=_event_loop_thread, name="ws-feed", daemon=True).start()
+    threading.Thread(target=_event_loop_thread, name="ws-feed",  daemon=True).start()
     threading.Thread(target=_flush_loop,         name="ws-flush", daemon=True).start()
     print(f"[WS] Feed initializing | {len(tickers)} seed tickers | "
           f"DB flush every {FLUSH_INTERVAL}s")
