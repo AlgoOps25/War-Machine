@@ -27,7 +27,7 @@ import config
 from bos_fvg_engine import scan_bos_fvg, is_force_close_time
 
 # ── Global State ─────────────────────────────────────────────────────────────────────────────────────────
-arrowed_signals    = {}
+armed_signals    = {}
 watching_signals   = {}
 _watches_loaded    = False   # True after first DB load attempt this session
 
@@ -56,13 +56,14 @@ def _strip_tz(dt):
 
 def log_proposed_trade(ticker, signal_type, direction, price, confidence, grade):
     try:
-        from db_connection import get_conn, ph
+        # FIX #2: added serial_pk import — was hardcoded SERIAL PRIMARY KEY (Postgres-only)
+        from db_connection import get_conn, ph, serial_pk
         conn = get_conn()
         cursor = conn.cursor()
         p = ph()
         cursor.execute(f"""
             CREATE TABLE IF NOT EXISTS proposed_trades (
-                id SERIAL PRIMARY KEY, ticker TEXT, signal_type TEXT,
+                id {serial_pk()}, ticker TEXT, signal_type TEXT,
                 direction TEXT, price REAL, confidence REAL, grade TEXT,
                 timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
@@ -172,19 +173,30 @@ def _load_watches_from_db() -> dict:
     Rows saved on a previous trading day are silently discarded.
     """
     try:
-        from db_connection import get_conn, dict_cursor as _dc, ph as _ph
+        from db_connection import get_conn, dict_cursor as _dc, ph as _ph, USE_POSTGRES as _USE_PG
         conn = get_conn()
         cursor = _dc(conn)
         p = _ph()
         today_et = _now_et().date()
-        cursor.execute(
-            f"""
-            SELECT ticker, direction, breakout_bar_dt, or_high, or_low, signal_type
-            FROM   watching_signals_persist
-            WHERE  DATE(saved_at AT TIME ZONE 'America/New_York') = {p}
-            """,
-            (today_et,),
-        )
+        # FIX #7: AT TIME ZONE is Postgres-only syntax — use DATE(saved_at) on SQLite
+        if _USE_PG:
+            cursor.execute(
+                f"""
+                SELECT ticker, direction, breakout_bar_dt, or_high, or_low, signal_type
+                FROM   watching_signals_persist
+                WHERE  DATE(saved_at AT TIME ZONE 'America/New_York') = {p}
+                """,
+                (today_et,),
+            )
+        else:
+            cursor.execute(
+                f"""
+                SELECT ticker, direction, breakout_bar_dt, or_high, or_low, signal_type
+                FROM   watching_signals_persist
+                WHERE  DATE(saved_at) = {p}
+                """,
+                (today_et,),
+            )
         rows = cursor.fetchall()
         conn.close()
         loaded = {}
@@ -393,8 +405,10 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
     final_grade = conf_result["final_grade"]
 
     # STEP 9 — STOPS & TARGETS
+    # FIX #4: pass grade=final_grade — was missing, defaulting to "A" for all signals
     stop_price, t1, t2 = compute_stop_and_targets(
-        bars_session, direction, or_high_ref, or_low_ref, entry_price
+        bars_session, direction, or_high_ref, or_low_ref, entry_price,
+        grade=final_grade
     )
 
     # STEP 10 — OPTIONS (stop_price now threaded through for accurate GEX context)
