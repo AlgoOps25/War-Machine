@@ -157,9 +157,6 @@ def _last_trading_day() -> str:
     """
     FIX #5: Return the most recent completed trading day as YYYY-MM-DD.
     Skips weekends so Mondays correctly resolve to Friday, not Sunday.
-    Without this fix, get_previous_day_ohlc() requests Sunday on Mondays,
-    EODHD returns empty data, and PDH/PDL silently zero out — causing every
-    Monday signal to fail the prev-day confirmation layer.
     """
     d = datetime.now().date() - timedelta(days=1)
     while d.weekday() >= 5:   # 5 = Saturday, 6 = Sunday
@@ -172,7 +169,6 @@ def get_previous_day_ohlc(ticker: str) -> Dict:
     if ticker in _prev_day_cache:
         return _prev_day_cache[ticker]
 
-    # FIX #5: use _last_trading_day() instead of a raw timedelta(days=1)
     prev_day_str = _last_trading_day()
     url = f"https://eodhd.com/api/eod/{ticker}.US"
     params = {
@@ -201,6 +197,20 @@ def get_previous_day_ohlc(ticker: str) -> Dict:
     empty = {"open": 0, "high": 0, "low": 0, "close": 0}
     _prev_day_cache[ticker] = empty
     return empty
+
+
+def clear_prev_day_cache() -> None:
+    """
+    FIX Bug #10: Clear the PDH/PDL cache at EOD so the next session
+    always fetches fresh previous-day levels.
+
+    Without this, a long-running Railway container that survives overnight
+    would serve stale PDH/PDL data on the following day's signals.
+    Called from scanner.py's EOD block alongside clear_earnings_cache()
+    and clear_armed_signals().
+    """
+    _prev_day_cache.clear()
+    print("[CFW6] PDH/PDL cache cleared for new trading day")
 
 
 def check_previous_day_levels(ticker: str, current_price: float, direction: str) -> Dict:
