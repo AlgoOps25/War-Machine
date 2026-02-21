@@ -60,7 +60,8 @@ class OptionsFilter:
         return round(price * iv * ((dte / 365) ** 0.5), 2)
 
     def find_best_strike(self, ticker: str, direction: str,
-                         entry_price: float, target_price: float) -> Optional[Dict]:
+                         entry_price: float, target_price: float,
+                         stop_price: float = 0.0) -> Optional[Dict]:
         """Find the optimal option strike and enrich with IVR + UOA + GEX."""
         chain = self.get_options_chain(ticker)
         if not chain:
@@ -99,12 +100,13 @@ class OptionsFilter:
                 total_score  = dte_score + oi_score + spread_score
 
                 if total_score > best_score:
-                    best_score  = total_score
-                    iv          = option.get("impliedVolatility", 0)
+                    best_score = total_score
+                    iv         = option.get("impliedVolatility", 0)
                     best_option = {
                         "strike":        strike,
                         "expiration":    expiration_date,
                         "delta":         option.get("delta", 0),
+                        "theta":         option.get("theta", 0),   # daily dollar theta
                         "oi":            option.get("openInterest", 0),
                         "volume":        option.get("volume", 0),
                         "bid":           bid,
@@ -140,14 +142,14 @@ class OptionsFilter:
         try:
             uoa = scan_chain_for_uoa(chain, direction, entry_price)
             best_option.update({
-                "uoa_multiplier":    uoa["multiplier"],
-                "uoa_label":         uoa["label"],
-                "uoa_detected":      uoa["uoa_detected"],
-                "uoa_aligned":       uoa["aligned"],
-                "uoa_opposing":      uoa["opposing"],
-                "uoa_max_score":     uoa["max_uoa_score"],
-                "uoa_top_aligned":   uoa.get("top_aligned",  []),
-                "uoa_top_opposing":  uoa.get("top_opposing", [])
+                "uoa_multiplier":   uoa["multiplier"],
+                "uoa_label":        uoa["label"],
+                "uoa_detected":     uoa["uoa_detected"],
+                "uoa_aligned":      uoa["aligned"],
+                "uoa_opposing":     uoa["opposing"],
+                "uoa_max_score":    uoa["max_uoa_score"],
+                "uoa_top_aligned":  uoa.get("top_aligned",  []),
+                "uoa_top_opposing": uoa.get("top_opposing", [])
             })
             if uoa["uoa_detected"]:
                 print(f"[UOA] {ticker}: {uoa['label']} | "
@@ -170,12 +172,15 @@ class OptionsFilter:
             })
 
         # ── GEX enrichment ───────────────────────────────────────────────
+        # stop_price is now threaded through from _run_signal_pipeline so
+        # gamma wall / pin logic uses the actual trade stop, not the strike.
+        gex_stop_ref = stop_price if stop_price > 0 else best_option.get("strike", entry_price)
         try:
             gex_data = compute_gex_levels(chain, entry_price)
             if gex_data["has_data"]:
                 gex_mult, gex_label, gex_ctx = get_gex_signal_context(
                     gex_data, direction, entry_price,
-                    best_option.get("strike", entry_price),   # stop proxy
+                    gex_stop_ref,
                     target_price
                 )
                 best_option.update({
@@ -213,8 +218,10 @@ class OptionsFilter:
         return best_option
 
     def validate_signal_for_options(self, ticker, direction, entry_price,
-                                    target_price) -> Tuple[bool, Optional[Dict], str]:
-        best_strike = self.find_best_strike(ticker, direction, entry_price, target_price)
+                                    target_price, stop_price=0.0) -> Tuple[bool, Optional[Dict], str]:
+        best_strike = self.find_best_strike(
+            ticker, direction, entry_price, target_price, stop_price=stop_price
+        )
         if not best_strike:
             return False, None, "No suitable options found"
 
@@ -224,21 +231,31 @@ class OptionsFilter:
         if best_strike.get("iv", 0) > 1.0:
             return False, best_strike, f"IV too high ({best_strike['iv']*100:.1f}%)"
 
-        dte = best_strike["dte"]
-        mid = (best_strike["bid"] + best_strike["ask"]) / 2 if (
+        # Theta decay gate: daily theta cost as % of option mid price.
+        # Uses actual theta from the chain if EODHD returns it (field: "theta").
+        # Previous formula (mid/dte)/mid simplified to 1/dte and incorrectly
+        # blocked all options with DTE < 10 regardless of option cost.
+        dte   = best_strike["dte"]
+        mid   = (best_strike["bid"] + best_strike["ask"]) / 2 if (
             best_strike.get("bid") and best_strike.get("ask")
         ) else 0
-        if mid > 0 and dte > 0 and (mid / dte) / mid > config.MAX_THETA_DECAY_PCT:
-            return False, best_strike, "Theta decay too high"
+        theta = abs(best_strike.get("theta", 0))
+        if mid > 0 and dte > 0 and theta > 0:
+            theta_pct = theta / mid
+            if theta_pct > config.MAX_THETA_DECAY_PCT:
+                return False, best_strike, (
+                    f"Theta decay too high ({theta_pct:.1%}/day vs "
+                    f"max {config.MAX_THETA_DECAY_PCT:.1%})"
+                )
 
         return True, best_strike, "Options signal validated"
 
 
 def get_options_recommendation(ticker, direction, entry_price,
-                               target_price) -> Optional[Dict]:
+                               target_price, stop_price=0.0) -> Optional[Dict]:
     f = OptionsFilter()
     is_valid, data, reason = f.validate_signal_for_options(
-        ticker, direction, entry_price, target_price
+        ticker, direction, entry_price, target_price, stop_price=stop_price
     )
     if is_valid and data:
         print(f"[OPTIONS] \u2705 {ticker}: {reason}")
