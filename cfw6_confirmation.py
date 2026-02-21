@@ -152,17 +152,33 @@ def check_vwap_alignment(bars: List[Dict], direction: str, current_price: float)
 # Cache for previous-day OHLC so we don't hit the API 33x per cycle
 _prev_day_cache: Dict[str, Dict] = {}
 
+
+def _last_trading_day() -> str:
+    """
+    FIX #5: Return the most recent completed trading day as YYYY-MM-DD.
+    Skips weekends so Mondays correctly resolve to Friday, not Sunday.
+    Without this fix, get_previous_day_ohlc() requests Sunday on Mondays,
+    EODHD returns empty data, and PDH/PDL silently zero out — causing every
+    Monday signal to fail the prev-day confirmation layer.
+    """
+    d = datetime.now().date() - timedelta(days=1)
+    while d.weekday() >= 5:   # 5 = Saturday, 6 = Sunday
+        d -= timedelta(days=1)
+    return d.strftime("%Y-%m-%d")
+
+
 def get_previous_day_ohlc(ticker: str) -> Dict:
-    """Fetch previous day's OHLC data (cached per session)."""
+    """Fetch previous trading day's OHLC data (cached per session)."""
     if ticker in _prev_day_cache:
         return _prev_day_cache[ticker]
 
-    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    # FIX #5: use _last_trading_day() instead of a raw timedelta(days=1)
+    prev_day_str = _last_trading_day()
     url = f"https://eodhd.com/api/eod/{ticker}.US"
     params = {
         "api_token": config.EODHD_API_KEY,
-        "from": yesterday,
-        "to":   yesterday,
+        "from": prev_day_str,
+        "to":   prev_day_str,
         "fmt":  "json"
     }
 
@@ -236,16 +252,16 @@ def grade_signal_with_confirmations(
     """
     print(f"[CONFIRM] Checking confirmation layers for {ticker}...")
 
-    vwap_ok  = check_vwap_alignment(bars, direction, current_price)
+    vwap_ok   = check_vwap_alignment(bars, direction, current_price)
     pd_result = check_previous_day_levels(ticker, current_price, direction)
-    inst_ok  = check_institutional_volume(bars, breakout_idx)
+    inst_ok   = check_institutional_volume(bars, breakout_idx)
 
     aligned_count = sum([vwap_ok, pd_result["aligned"], inst_ok])
 
     print(f"[CONFIRM] Aligned: {aligned_count}/3")
-    print(f"  VWAP:          {'\u2705' if vwap_ok          else '\u274c'}")
+    print(f"  VWAP:          {'\u2705' if vwap_ok              else '\u274c'}")
     print(f"  Prev Day:      {'\u2705' if pd_result['aligned'] else '\u274c'} ({pd_result.get('level','?')} @ ${pd_result.get('level_price',0):.2f})")
-    print(f"  Institutional: {'\u2705' if inst_ok          else '\u274c'}")
+    print(f"  Institutional: {'\u2705' if inst_ok              else '\u274c'}")
 
     final_grade = base_grade
 
