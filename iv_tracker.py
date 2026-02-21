@@ -45,13 +45,17 @@ def store_iv_observation(ticker: str, iv: float) -> None:
     if not iv or iv <= 0:
         return
     try:
-        from db_connection import get_conn, ph
+        # FIX Bug #11: import serial_pk so the CREATE TABLE works on both
+        # Postgres (SERIAL PRIMARY KEY) and SQLite (INTEGER PRIMARY KEY AUTOINCREMENT).
+        # Previously hardcoded 'SERIAL PRIMARY KEY' crashed every SQLite write,
+        # silently swallowing all IV observations and leaving IVR permanently empty.
+        from db_connection import get_conn, ph, serial_pk
         conn   = get_conn()
         cursor = conn.cursor()
         p      = ph()
-        cursor.execute("""
+        cursor.execute(f"""
             CREATE TABLE IF NOT EXISTS iv_history (
-                id          SERIAL PRIMARY KEY,
+                id          {serial_pk()},
                 ticker      TEXT        NOT NULL,
                 iv          REAL        NOT NULL,
                 recorded_at TIMESTAMP   DEFAULT CURRENT_TIMESTAMP
