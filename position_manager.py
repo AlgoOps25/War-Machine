@@ -7,7 +7,6 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 import db_connection
 from db_connection import get_conn, ph, dict_cursor, serial_pk
-from datetime import datetime
 
 
 class PositionManager:
@@ -25,7 +24,7 @@ class PositionManager:
         Uses db_connection (Postgres-safe — does NOT call sqlite3 directly).
         """
         try:
-            today = datetime.now().strftime("%Y-%m-%d")
+            today  = datetime.now().strftime("%Y-%m-%d")
             conn   = get_conn(self.db_path)
             cursor = dict_cursor(conn)
             p      = ph()
@@ -96,9 +95,9 @@ class PositionManager:
         Called on startup — ensures no overnight/weekend carryover for the 0DTE system.
         Closed at entry_price (no current price available) with reason STALE_EOD.
         """
-        today = datetime.now().strftime("%Y-%m-%d")
-        p     = ph()
-        conn  = get_conn(self.db_path)
+        today  = datetime.now().strftime("%Y-%m-%d")
+        p      = ph()
+        conn   = get_conn(self.db_path)
         cursor = dict_cursor(conn)
 
         cursor.execute(f"""
@@ -114,7 +113,7 @@ class PositionManager:
             print("[POSITION] No stale positions from prior sessions")
             return
 
-        print(f"[POSITION] ⚠️  Found {len(stale)} stale position(s) — force closing before session")
+        print(f"[POSITION] \u26a0\ufe0f  Found {len(stale)} stale position(s) — force closing before session")
         for pos in stale:
             pos = dict(pos)
             print(f"[POSITION] Force closing {pos['ticker']} {pos['direction'].upper()} "
@@ -139,12 +138,12 @@ class PositionManager:
             risk_pct = config.POSITION_RISK["conservative"]
 
         position_risk = account_size * risk_pct
-        contracts = max(1, int(position_risk / (risk_per_share * 100)))
+        contracts     = max(1, int(position_risk / (risk_per_share * 100)))
         if contracts > 1 and contracts % 2 != 0:
             contracts += 1
 
         max_contracts = getattr(config, "MAX_CONTRACTS", 10)
-        contracts = min(contracts, max_contracts)
+        contracts     = min(contracts, max_contracts)
 
         return {
             "contracts":       contracts,
@@ -309,9 +308,9 @@ class PositionManager:
                 cached["pnl"]                = cached.get("pnl", 0) + partial_pnl
                 break
 
-        print(f"[POSITION] ⚡ SCALE OUT {ticker} @ {exit_price:.2f}")
+        print(f"[POSITION] \u26a1 SCALE OUT {ticker} @ {exit_price:.2f}")
         print(f"  Closed {contracts_to_close} contracts | Remaining: {contracts_left}")
-        print(f"  Partial P&L: ${partial_pnl:.2f} | Stop → BE: {entry_price:.2f}")
+        print(f"  Partial P&L: ${partial_pnl:.2f} | Stop \u2192 BE: {entry_price:.2f}")
 
         try:
             from discord_helpers import send_scaling_alert
@@ -358,7 +357,7 @@ class PositionManager:
 
         self.positions = [pos for pos in self.positions if pos["id"] != position_id]
 
-        emoji = "✅" if final_pnl > 0 else "❌"
+        emoji = "\u2705" if final_pnl > 0 else "\u274c"
         print(f"[POSITION] {emoji} CLOSED {ticker} @ {exit_price:.2f} | {exit_reason}")
         print(f"  Total P&L: ${final_pnl:.2f}")
 
@@ -422,10 +421,10 @@ class PositionManager:
 
     def get_win_rate(self, lookback_days: int = 30) -> Dict:
         """Return per-grade win rate stats over the last N days."""
-        p     = ph()
-        conn  = get_conn(self.db_path)
+        p      = ph()
+        conn   = get_conn(self.db_path)
         cursor = dict_cursor(conn)
-        since = (datetime.now() - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+        since  = (datetime.now() - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
         cursor.execute(f"""
             SELECT grade,
                    COUNT(*)                                  AS total,
@@ -465,7 +464,7 @@ class PositionManager:
 
         lines = [
             "=" * 50,
-            "WAR MACHINE — END OF DAY REPORT",
+            "WAR MACHINE \u2014 END OF DAY REPORT",
             "=" * 50,
             f"Date:         {datetime.now().strftime('%A, %B %d, %Y')}",
             f"Total Trades: {trades}",
@@ -474,7 +473,7 @@ class PositionManager:
             f"Win Rate:     {win_rate:.1f}%",
             f"Net P&L:      ${total_pnl:+.2f}",
             "",
-            "— 30-Day Grade Breakdown —"
+            "\u2014 30-Day Grade Breakdown \u2014"
         ]
 
         if win_rate_data:
@@ -493,11 +492,11 @@ class PositionManager:
         return "\n".join(lines)
 
 
-# ── Global singleton ──────────────────────────────────────────
+# ── Global singleton ────────────────────────────────────────────────
 position_manager = PositionManager()
 
 
-# ── Legacy compatibility shims ────────────────────────────────
+# ── Legacy compatibility shims ───────────────────────────────────────────
 def update_ticker(ticker: str):
     """Legacy function — calls DataManager."""
     from data_manager import data_manager
