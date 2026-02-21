@@ -29,6 +29,8 @@ Design:
   - _on_tick() rejects bad prints (price <= 0, volume < 0, price > 100k) and
     intra-bar spikes > 10% from the current close before touching bar state.
   - Gracefully skips startup if 'websockets' package is not installed.
+  - _started guard prevents double thread creation if start_ws_feed() is
+    called more than once (e.g. from both main.py and scanner.py).
 
 Usage:
     from ws_feed import start_ws_feed, subscribe_tickers
@@ -58,7 +60,7 @@ FLUSH_INTERVAL  = 10    # seconds between open-bar DB flushes
 SUBSCRIBE_CHUNK = 50    # max tickers per subscribe message (EODHD limit)
 SPIKE_THRESHOLD = 0.10  # reject ticks that move > 10% from current bar close
 
-# ── Shared state ────────────────────────────────────────────────────────────────────
+# ── Shared state ────────────────────────────────────────────────────────────────────────────────────
 _lock               = threading.Lock()
 _open_bars          = {}                 # ticker -> current open bar dict
 _pending            = defaultdict(list)  # ticker -> completed bars not yet in DB
@@ -71,8 +73,11 @@ _subscribed: set    = set()              # tickers currently subscribed on activ
 _event_loop         = None               # background asyncio loop (set before connect)
 _ws_connection      = None               # active websockets connection object
 
+# FIX #3: guard against double-start when main.py and scanner.py both call start_ws_feed()
+_started            = False
 
-# ── Public read API ─────────────────────────────────────────────────────
+
+# ── Public read API ───────────────────────────────────────────────────────────────────
 
 def is_connected() -> bool:
     """Return True if the WebSocket is currently connected and subscribed."""
@@ -86,7 +91,7 @@ def get_current_bar(ticker: str):
         return dict(bar) if bar else None
 
 
-# ── Tick aggregation ────────────────────────────────────────────────────────
+# ── Tick aggregation ──────────────────────────────────────────────────────────────────
 
 def _minute_floor(epoch_ms: int) -> datetime:
     """Convert ms epoch -> ET-naive datetime floored to the minute."""
@@ -151,7 +156,7 @@ def _on_tick(ticker: str, price: float, volume: int, epoch_ms: int):
             cur["volume"] += volume
 
 
-# ── DB flush helpers ───────────────────────────────────────────────────────
+# ── DB flush helpers ───────────────────────────────────────────────────────────────────
 
 def _flush_pending():
     """Persist all completed 1m bars to DB and clear the queue."""
@@ -187,7 +192,7 @@ def _flush_loop():
             print(f"[WS] Flush error: {exc}")
 
 
-# ── Dynamic subscription (async, runs inside WS event loop) ────────────────────
+# ── Dynamic subscription (async, runs inside WS event loop) ──────────────────────
 
 async def _do_subscribe(ws, tickers: list):
     """
@@ -244,7 +249,7 @@ def subscribe_tickers(tickers: list):
         print(f"[WS] subscribe_tickers error: {e}")
 
 
-# ── WebSocket coroutine ─────────────────────────────────────────────────────────
+# ── WebSocket coroutine ────────────────────────────────────────────────────────────────────
 
 async def _ws_run():
     """Main WebSocket coroutine. Runs in a dedicated asyncio event loop thread."""
@@ -307,7 +312,7 @@ async def _ws_run():
             await asyncio.sleep(RECONNECT_DELAY)
 
 
-# ── Public API ─────────────────────────────────────────────────────────────────
+# ── Public API ────────────────────────────────────────────────────────────────────────────
 
 def start_ws_feed(tickers: list):
     """
@@ -317,13 +322,24 @@ def start_ws_feed(tickers: list):
 
     Args:
         tickers: list of plain ticker symbols (no .US suffix), e.g. ['AAPL','MSFT']
+
+    If called a second time (e.g. from both main.py and scanner.py), the guard
+    below merges any new tickers via subscribe_tickers() and returns immediately
+    — no duplicate threads are created.
     """
-    global _event_loop, _all_tickers
+    global _event_loop, _all_tickers, _started
 
     if not _HAS_WEBSOCKETS:
         print("[WS] WARNING: 'websockets' package missing — "
               "install with: pip install 'websockets>=12.0'")
         return
+
+    # FIX #3: guard — already running; just subscribe any new tickers and exit
+    if _started:
+        subscribe_tickers(tickers)
+        print(f"[WS] Already running — merged {len(tickers)} tickers into active session")
+        return
+    _started = True
 
     # Seed master list before thread starts so reconnects work immediately
     with _sub_lock:
