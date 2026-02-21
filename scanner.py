@@ -20,7 +20,7 @@ from earnings_filter import bulk_prefetch_earnings, clear_earnings_cache
 
 API_KEY = os.getenv("EODHD_API_KEY", "")
 
-# ── Module-level watchlist — single source of truth ─────────────────────────────
+# ── Module-level watchlist — single source of truth ───────────────────────────────────────────────
 FALLBACK_WATCHLIST = [
     "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA",
     "AMD",  "NFLX", "ADBE",  "CRM",  "ORCL", "INTC", "CSCO",
@@ -80,6 +80,7 @@ def start_scanner_loop():
     from sniper import process_ticker, clear_armed_signals, clear_watching_signals
     from discord_helpers import send_simple_message
     from ai_learning import learning_engine
+    from cfw6_confirmation import clear_prev_day_cache
 
     print(f"\n{'='*60}")
     print("WAR MACHINE - CFW6 SCANNER")
@@ -99,8 +100,8 @@ def start_scanner_loop():
     last_report_day     = None
     loss_streak_alerted = False  # one-time Discord alert flag for circuit breaker
 
-    # ── STARTUP SEQUENCE ───────────────────────────────────────────────────
-    # 0. Start WebSocket feed so today’s ticks start accumulating immediately.
+    # ── STARTUP SEQUENCE ──────────────────────────────────────────────────────────────────────
+    # 0. Start WebSocket feed so today's ticks start accumulating immediately.
     #    Premarket tickers added via subscribe_tickers() once scanner runs.
     startup_watchlist = fallback_list()
     try:
@@ -109,13 +110,13 @@ def start_scanner_loop():
     except Exception as e:
         print(f"[WS] ERROR starting WebSocket feed: {e}")
 
-    # 1. 30-day historical REST backfill (up to yesterday’s close)
+    # 1. 30-day historical REST backfill (up to yesterday's close)
     # 2. Best-effort today REST backfill (04:00 → now) for mid-session restarts
     # 3. Earnings calendar prefetch
     data_manager.startup_backfill_today(startup_watchlist)
     data_manager.startup_intraday_backfill_today(startup_watchlist)
     bulk_prefetch_earnings(startup_watchlist)
-    # ────────────────────────────────────────────────────
+    # ──────────────────────────────────────────────────
 
     while True:
         try:
@@ -135,7 +136,7 @@ def start_scanner_loop():
                         print(f"[WS] Subscribed premarket watchlist "
                               f"({len(premarket_watchlist)} tickers) to WS feed")
                         msg = (f"Pre-Market Watchlist: {len(premarket_watchlist)} tickers "
-                               f"— {', '.join(premarket_watchlist[:20])}")
+                               f"\u2014 {', '.join(premarket_watchlist[:20])}")
                         send_simple_message(msg)
                     except Exception as e:
                         print(f"[PRE-MARKET] Error: {e}")
@@ -158,7 +159,7 @@ def start_scanner_loop():
                 if position_manager.has_loss_streak(max_consecutive_losses=3):
                     if not loss_streak_alerted:
                         msg = (
-                            "\U0001f6d1 **CIRCUIT BREAKER** — 3 consecutive losses today. "
+                            "\U0001f6d1 **CIRCUIT BREAKER** \u2014 3 consecutive losses today. "
                             "New scans halted for the rest of the session. "
                             "Open positions still monitored."
                         )
@@ -167,7 +168,7 @@ def start_scanner_loop():
                         except Exception:
                             pass
                         loss_streak_alerted = True
-                        print("[RISK] Daily loss streak reached — halting new scans.")
+                        print("[RISK] Daily loss streak reached \u2014 halting new scans.")
                     monitor_open_positions()
                     time.sleep(60)
                     continue
@@ -253,14 +254,19 @@ def start_scanner_loop():
                     clear_armed_signals()
                     clear_watching_signals()
                     clear_earnings_cache()
+                    clear_prev_day_cache()  # FIX Bug #10: flush stale PDH/PDL cache
 
                 print(f"[AFTER-HOURS] {current_time_str} - Market closed")
                 time.sleep(600)
 
+        # FIX Bug #8: re-raise KeyboardInterrupt instead of break.
+        # Previously, catching + break caused start_scanner_loop() to return
+        # normally, so main.py's except KeyboardInterrupt block (which calls
+        # run_eod_digest / sends P&L digest / session heatmap) NEVER executed.
         except KeyboardInterrupt:
-            print("\nScanner stopped by user")
+            print("\n[SCANNER] Shutdown signal received")
             print(position_manager.generate_report())
-            break
+            raise   # propagates to main.py's except KeyboardInterrupt handler
 
         except Exception as e:
             print(f"[SCANNER] Critical error: {e}")
