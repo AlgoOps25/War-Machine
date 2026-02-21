@@ -7,6 +7,7 @@
 # UOA: Confidence multiplier based on unusual options activity alignment
 # GEX: Confidence multiplier based on gamma exposure environment + pin alignment
 # CONFIDENCE GATE: Hard minimum floors by signal type + grade after all multipliers
+# OR WIDTH FILTER: OR range < MIN_OR_RANGE_PCT skips OR path (too choppy), falls to intraday BOS
 import traceback
 import requests
 from datetime import datetime, time
@@ -23,8 +24,8 @@ from earnings_filter import has_earnings_soon
 import config
 from bos_fvg_engine import scan_bos_fvg, is_force_close_time
 
-# ── Global State ─────────────────────────────────────────────────────────────
-armed_signals    = {}
+# ── Global State ───────────────────────────────────────────────────────────────────────────
+arrowed_signals    = {}
 watching_signals = {}
 
 MAX_WATCH_BARS      = 30
@@ -437,25 +438,35 @@ def process_ticker(ticker: str):
 
         or_high, or_low = compute_opening_range_from_bars(bars_session)
         if or_high is not None:
-            print(f"[{ticker}] OR: ${or_low:.2f}–${or_high:.2f}")
-            direction, breakout_idx = detect_breakout_after_or(bars_session, or_high, or_low)
-            if direction:
-                zone_low, zone_high = detect_fvg_after_break(bars_session, breakout_idx, direction)
-                if zone_low is not None:
-                    scan_mode = "OR_ANCHORED"
-                    or_high_ref, or_low_ref = or_high, or_low
-                else:
-                    if ticker not in watching_signals:
-                        watching_signals[ticker] = {
-                            "direction": direction, "breakout_idx": breakout_idx,
-                            "or_high": or_high, "or_low": or_low, "signal_type": "CFW6_OR"
-                        }
-                        send_bos_watch_alert(ticker, direction,
-                            bars_session[breakout_idx]["close"],
-                            or_high, or_low, "CFW6_OR")
-                    return
+            or_range_pct = (or_high - or_low) / or_low
+            if or_range_pct < config.MIN_OR_RANGE_PCT:
+                # OR too narrow (choppy open) — skip OR path entirely and fall
+                # through to intraday BOS scan below. Do NOT return.
+                print(
+                    f"[{ticker}] OR too narrow "
+                    f"({or_range_pct:.2%} < {config.MIN_OR_RANGE_PCT:.2%}) "
+                    f"— skipping OR path, trying intraday BOS"
+                )
             else:
-                print(f"[{ticker}] No ORB")
+                print(f"[{ticker}] OR: ${or_low:.2f}–${or_high:.2f} ({or_range_pct:.2%})")
+                direction, breakout_idx = detect_breakout_after_or(bars_session, or_high, or_low)
+                if direction:
+                    zone_low, zone_high = detect_fvg_after_break(bars_session, breakout_idx, direction)
+                    if zone_low is not None:
+                        scan_mode = "OR_ANCHORED"
+                        or_high_ref, or_low_ref = or_high, or_low
+                    else:
+                        if ticker not in watching_signals:
+                            watching_signals[ticker] = {
+                                "direction": direction, "breakout_idx": breakout_idx,
+                                "or_high": or_high, "or_low": or_low, "signal_type": "CFW6_OR"
+                            }
+                            send_bos_watch_alert(ticker, direction,
+                                bars_session[breakout_idx]["close"],
+                                or_high, or_low, "CFW6_OR")
+                        return
+                else:
+                    print(f"[{ticker}] No ORB")
         else:
             print(f"[{ticker}] No OR bars")
 

@@ -59,6 +59,10 @@ OPTIONS_VOL_MULT = 2.0     # Options volume multiplier for boost
 
 # ORB (Opening Range Breakout) settings
 ORB_BREAK_THRESHOLD = 0.001             # 0.1% default breakout threshold
+MIN_OR_RANGE_PCT    = 0.003             # 0.3% minimum OR width; sub-0.3% = choppy open,
+                                        # breakouts are statistically low quality.
+                                        # When narrow, OR path is skipped and the ticker
+                                        # falls through to the intraday BOS scan instead.
 
 # Adaptive ORB thresholds by volume (overrides ORB_BREAK_THRESHOLD)
 ORB_THRESHOLDS = {
@@ -120,7 +124,7 @@ POSITION_RISK = {
     "conservative":       0.014         # 1.4% for marginal signals
 }
 
-ACCOUNT_SIZE   = 25_000     # Your trading account size in dollars
+ACCOUNT_SIZE   = float(os.getenv("ACCOUNT_SIZE", "25000"))
 MAX_CONTRACTS  = 10         # Hard cap on contracts per trade
 
 # ══════════════════════════════════════════════════════════════════════════════
