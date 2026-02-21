@@ -17,11 +17,10 @@ from scanner_optimizer import (
     calculate_optimal_watchlist_size
 )
 from earnings_filter import bulk_prefetch_earnings, clear_earnings_cache
-from db_connection import get_conn, dict_cursor, ph
 
 API_KEY = os.getenv("EODHD_API_KEY", "")
 
-# ── Module-level watchlist — single source of truth ──────────────────────────────
+# ── Module-level watchlist — single source of truth ─────────────────────────────
 FALLBACK_WATCHLIST = [
     "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA",
     "AMD",  "NFLX", "ADBE",  "CRM",  "ORCL", "INTC", "CSCO",
@@ -77,40 +76,6 @@ def monitor_open_positions():
     position_manager.check_exits(current_prices)
 
 
-def _has_loss_streak(max_consecutive_losses: int = 3) -> bool:
-    """Return True if today's closed trades end with a losing streak >= N."""
-    try:
-        today = _now_et().date()
-        conn = get_conn()
-        cursor = dict_cursor(conn)
-        p = ph()
-        cursor.execute(
-            f"""
-            SELECT pnl
-            FROM positions
-            WHERE status = {p}
-              AND DATE(exit_time) = {p}
-            ORDER BY exit_time ASC
-            """,
-            ("CLOSED", today),
-        )
-        rows = cursor.fetchall()
-        conn.close()
-        if not rows:
-            return False
-        streak = 0
-        for row in rows:
-            pnl = row["pnl"] or 0.0
-            if pnl <= 0:
-                streak += 1
-            else:
-                streak = 0
-        return streak >= max_consecutive_losses
-    except Exception as e:
-        print(f"[RISK] Loss-streak check error: {e}")
-        return False
-
-
 def start_scanner_loop():
     from sniper import process_ticker, clear_armed_signals, clear_watching_signals
     from discord_helpers import send_simple_message
@@ -129,15 +94,14 @@ def start_scanner_loop():
         print(f"[SCANNER] Discord unavailable: {e}")
 
     premarket_watchlist = []
-    premarket_built = False
-    cycle_count = 0
-    last_report_day = None
+    premarket_built     = False
+    cycle_count         = 0
+    last_report_day     = None
     loss_streak_alerted = False  # one-time Discord alert flag for circuit breaker
 
-    # ── STARTUP SEQUENCE ────────────────────────────────────────────────────
-    # 0. Start WebSocket feed (fallback list) so today's ticks begin accumulating.
-    #    Premarket tickers are added via subscribe_tickers() once the premarket
-    #    scanner runs, ensuring full WS coverage without a restart.
+    # ── STARTUP SEQUENCE ───────────────────────────────────────────────────
+    # 0. Start WebSocket feed so today’s ticks start accumulating immediately.
+    #    Premarket tickers added via subscribe_tickers() once scanner runs.
     startup_watchlist = fallback_list()
     try:
         start_ws_feed(startup_watchlist)
@@ -145,30 +109,28 @@ def start_scanner_loop():
     except Exception as e:
         print(f"[WS] ERROR starting WebSocket feed: {e}")
 
-    # 1. 30-day historical REST backfill (up to yesterday's close)
-    # 2. Best-effort today REST backfill (04:00 -> now) for mid-session restarts
+    # 1. 30-day historical REST backfill (up to yesterday’s close)
+    # 2. Best-effort today REST backfill (04:00 → now) for mid-session restarts
     # 3. Earnings calendar prefetch
     data_manager.startup_backfill_today(startup_watchlist)
     data_manager.startup_intraday_backfill_today(startup_watchlist)
     bulk_prefetch_earnings(startup_watchlist)
-
-    # ─────────────────────────────────────────────────────────────────────
+    # ────────────────────────────────────────────────────
 
     while True:
         try:
-            now_et = _now_et()
+            now_et           = _now_et()
             current_time_str = now_et.strftime('%I:%M:%S %p ET')
-            current_day = now_et.strftime('%Y-%m-%d')
+            current_day      = now_et.strftime('%Y-%m-%d')
 
             if is_premarket():
                 if not premarket_built:
                     print(f"[PRE-MARKET] {current_time_str} - Building Watchlist")
                     try:
                         premarket_watchlist = build_premarket_watchlist()
-                        premarket_built = True
-                        # ── Subscribe premarket tickers to WS immediately ──────────
-                        # Any tickers not in the fallback 33 will now receive live
-                        # ticks before the session opens.
+                        premarket_built     = True
+                        # Subscribe premarket tickers to WS immediately so live ticks
+                        # accumulate before 9:30 for any ticker not in the fallback 33.
                         subscribe_tickers(premarket_watchlist)
                         print(f"[WS] Subscribed premarket watchlist "
                               f"({len(premarket_watchlist)} tickers) to WS feed")
@@ -178,7 +140,7 @@ def start_scanner_loop():
                     except Exception as e:
                         print(f"[PRE-MARKET] Error: {e}")
                         premarket_watchlist = fallback_list()
-                        premarket_built = True
+                        premarket_built     = True
                 else:
                     print(f"[PRE-MARKET] {current_time_str} - Waiting for 9:30 AM ET...")
                 time.sleep(300)
@@ -191,7 +153,9 @@ def start_scanner_loop():
                     continue
 
                 # Daily loss circuit breaker: halt new scans after 3 consecutive losses.
-                if _has_loss_streak(max_consecutive_losses=3):
+                # Open positions are still monitored every 60 s.
+                # All closed trades — wins and losses — still flow to the learning engine.
+                if position_manager.has_loss_streak(max_consecutive_losses=3):
                     if not loss_streak_alerted:
                         msg = (
                             "\U0001f6d1 **CIRCUIT BREAKER** — 3 consecutive losses today. "
@@ -213,21 +177,20 @@ def start_scanner_loop():
                 print(f"[SCANNER] CYCLE #{cycle_count} - {current_time_str}")
                 print(f"{'='*60}")
 
-                watchlist = premarket_watchlist if premarket_watchlist else build_watchlist()
+                watchlist    = premarket_watchlist if premarket_watchlist else build_watchlist()
                 optimal_size = calculate_optimal_watchlist_size()
-                watchlist = watchlist[:optimal_size]
+                watchlist    = watchlist[:optimal_size]
                 print(f"[SCANNER] {len(watchlist)} tickers | {', '.join(watchlist[:10])}...\n")
 
                 monitor_open_positions()
 
                 daily_stats = position_manager.get_daily_stats()
-                print(f"[TODAY] Trades: {daily_stats['trades']} W/L: {daily_stats['wins']}/{daily_stats['losses']} WR: {daily_stats['win_rate']:.1f}% P&L: ${daily_stats['total_pnl']:+.2f}\n")
-
-                try:
-                    updated = data_manager.bulk_update_live_bars(watchlist)
-                    print(f"[LIVE] Snapshot: {updated} tickers")
-                except Exception as e:
-                    print(f"[LIVE] Bulk update error: {e}")
+                print(
+                    f"[TODAY] Trades: {daily_stats['trades']} "
+                    f"W/L: {daily_stats['wins']}/{daily_stats['losses']} "
+                    f"WR: {daily_stats['win_rate']:.1f}% "
+                    f"P&L: ${daily_stats['total_pnl']:+.2f}\n"
+                )
 
                 for idx, ticker in enumerate(watchlist, 1):
                     try:
@@ -253,14 +216,16 @@ def start_scanner_loop():
                         print(f"[EOD] {len(open_positions)} positions still open")
 
                     daily_stats = position_manager.get_daily_stats()
-                    eod_report = (f"EOD Report {current_day} | "
-                                  f"Trades: {daily_stats['trades']} | "
-                                  f"WR: {daily_stats['win_rate']:.1f}% | "
-                                  f"P&L: ${daily_stats['total_pnl']:+.2f}")
+                    eod_report  = (
+                        f"EOD Report {current_day} | "
+                        f"Trades: {daily_stats['trades']} | "
+                        f"WR: {daily_stats['win_rate']:.1f}% | "
+                        f"P&L: ${daily_stats['total_pnl']:+.2f}"
+                    )
 
                     try:
                         win_rate_report = position_manager.generate_report()
-                        eod_report += f"\n{win_rate_report}"
+                        eod_report     += f"\n{win_rate_report}"
                     except Exception as e:
                         print(f"[EOD] Report error: {e}")
 
@@ -278,11 +243,11 @@ def start_scanner_loop():
                     except Exception as e:
                         print(f"[CLEANUP] Error: {e}")
 
-                    last_report_day      = current_day
-                    premarket_watchlist  = []
-                    premarket_built      = False
-                    cycle_count          = 0
-                    loss_streak_alerted  = False  # reset circuit breaker alert for new day
+                    last_report_day     = current_day
+                    premarket_watchlist = []
+                    premarket_built     = False
+                    cycle_count         = 0
+                    loss_streak_alerted = False  # reset breaker alert for new day
 
                     # Reset all intraday signal state for the new day
                     clear_armed_signals()
@@ -294,7 +259,7 @@ def start_scanner_loop():
 
         except KeyboardInterrupt:
             print("\nScanner stopped by user")
-            position_manager.print_summary()
+            print(position_manager.generate_report())
             break
 
         except Exception as e:
@@ -311,21 +276,21 @@ def start_scanner_loop():
 def get_screener_tickers(min_market_cap: int = 1_000_000_000, limit: int = 50) -> list:
     import requests
     import json
-    url = "https://eodhd.com/api/screener"
+    url    = "https://eodhd.com/api/screener"
     params = {
         "api_token": config.EODHD_API_KEY,
         "filters": json.dumps([
             ["market_capitalization", ">=", min_market_cap],
-            ["volume", ">=", 1000000],
-            ["exchange", "=", "US"]
+            ["volume",               ">=", 1000000],
+            ["exchange",             "=",  "US"]
         ]),
         "limit": limit,
-        "sort": "volume.desc"
+        "sort":  "volume.desc"
     }
     try:
         response = requests.get(url, params=params, timeout=15)
         response.raise_for_status()
-        data = response.json()
+        data    = response.json()
         tickers = []
         if isinstance(data, dict) and "data" in data:
             for item in data["data"]:
