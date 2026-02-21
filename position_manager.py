@@ -113,12 +113,11 @@ class PositionManager:
             print("[POSITION] No stale positions from prior sessions")
             return
 
-        print(f"[POSITION] \u26a0\ufe0f  Found {len(stale)} stale position(s) — force closing before session")
+        print(f"[POSITION] \u26a0\ufe0f  Found {len(stale)} stale position(s) \u2014 force closing before session")
         for pos in stale:
             pos = dict(pos)
             print(f"[POSITION] Force closing {pos['ticker']} {pos['direction'].upper()} "
-                  f"(ID: {pos['id']}) entered @ ${pos['entry_price']:.2f} — STALE EOD")
-            # Close at entry price — P&L = 0 (no price available pre-market)
+                  f"(ID: {pos['id']}) entered @ ${pos['entry_price']:.2f} \u2014 STALE EOD")
             self.close_position(pos["id"], pos["entry_price"], "STALE_EOD")
 
 
@@ -334,6 +333,7 @@ class PositionManager:
         ticker    = pos["ticker"]
         direction = pos["direction"]
         entry     = pos["entry_price"]
+        grade     = pos["grade"] or "A"
         remaining = pos["remaining_contracts"]
         prior_pnl = pos["pnl"] or 0.0
 
@@ -355,11 +355,31 @@ class PositionManager:
         conn.commit()
         conn.close()
 
-        self.positions = [pos for pos in self.positions if pos["id"] != position_id]
+        self.positions = [p for p in self.positions if p["id"] != position_id]
 
         emoji = "\u2705" if final_pnl > 0 else "\u274c"
         print(f"[POSITION] {emoji} CLOSED {ticker} @ {exit_price:.2f} | {exit_reason}")
         print(f"  Total P&L: ${final_pnl:.2f}")
+
+        # FIX Bug #9: record every closed trade to the AI learning engine.
+        # Previously learning_engine.record_trade() was never called anywhere,
+        # so optimize_confirmation_weights() and optimize_fvg_threshold() ran
+        # on an empty trades list every EOD and produced no useful output.
+        # STALE_EOD closures are excluded — they carry no useful signal data.
+        if exit_reason != "STALE_EOD":
+            try:
+                from ai_learning import learning_engine
+                learning_engine.record_trade({
+                    "ticker":    ticker,
+                    "direction": direction,
+                    "grade":     grade,
+                    "entry":     entry,
+                    "exit":      exit_price,
+                    "pnl":       final_pnl,
+                    "timeframe": "5m"
+                })
+            except Exception as e:
+                print(f"[POSITION] AI record error: {e}")
 
         try:
             from discord_helpers import send_exit_alert
@@ -492,11 +512,11 @@ class PositionManager:
         return "\n".join(lines)
 
 
-# ── Global singleton ────────────────────────────────────────────────
+# ── Global singleton ──────────────────────────────────────────────────────────────────
 position_manager = PositionManager()
 
 
-# ── Legacy compatibility shims ───────────────────────────────────────────
+# ── Legacy compatibility shims ──────────────────────────────────────────────────────────────────
 def update_ticker(ticker: str):
     """Legacy function — calls DataManager."""
     from data_manager import data_manager
