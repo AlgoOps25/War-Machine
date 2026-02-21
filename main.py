@@ -250,7 +250,8 @@ def main():
         run_eod_digest()
         if pos_tracker:
             print("\nPosition Summary:")
-            pos_tracker.print_summary()
+            # FIX #1: was pos_tracker.print_summary() — method does not exist on PositionManager
+            print(pos_tracker.generate_report())
         if ai_engine:
             print("\nAI Learning Summary:")
             print(ai_engine.generate_performance_report())
