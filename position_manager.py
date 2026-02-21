@@ -8,7 +8,7 @@ from typing import Dict, List, Optional
 import db_connection
 from db_connection import get_conn, ph, dict_cursor, serial_pk
 from datetime import datetime
-import sqlite3
+
 
 class PositionManager:
 
@@ -18,25 +18,26 @@ class PositionManager:
         self._initialize_database()
         self._close_stale_positions()  # Force-close any positions from prior trading days
 
-        def has_loss_streak(self, max_consecutive_losses: int = 3) -> bool:
-            """
-            Return True if today's closed trades end with a losing streak
-            of length >= max_consecutive_losses.
-            """
-            conn = sqlite3.connect(self.db_path)
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-
+    def has_loss_streak(self, max_consecutive_losses: int = 3) -> bool:
+        """
+        Return True if today's closed trades end with a losing streak
+        of length >= max_consecutive_losses.
+        Uses db_connection (Postgres-safe — does NOT call sqlite3 directly).
+        """
+        try:
             today = datetime.now().strftime("%Y-%m-%d")
+            conn   = get_conn(self.db_path)
+            cursor = dict_cursor(conn)
+            p      = ph()
             cursor.execute(
-                """
+                f"""
                 SELECT pnl
                 FROM positions
-                WHERE status = 'CLOSED'
-                AND DATE(exit_time) = ?
+                WHERE status = {p}
+                  AND DATE(exit_time) = {p}
                 ORDER BY exit_time ASC
                 """,
-                (today,),
+                ("CLOSED", today),
             )
             rows = cursor.fetchall()
             conn.close()
@@ -53,6 +54,10 @@ class PositionManager:
                     streak = 0
 
             return streak >= max_consecutive_losses
+
+        except Exception as e:
+            print(f"[POSITION] Loss-streak check error: {e}")
+            return False
 
     def _initialize_database(self):
         """Create positions table if not exists."""
