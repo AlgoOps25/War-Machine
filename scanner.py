@@ -10,7 +10,7 @@ import config
 from premarket_scanner import build_premarket_watchlist
 from data_manager import data_manager, cleanup_old_bars
 from position_manager import position_manager
-from ws_feed import start_ws_feed
+from ws_feed import start_ws_feed, subscribe_tickers
 from scanner_optimizer import (
     get_adaptive_scan_interval,
     should_scan_now,
@@ -59,6 +59,7 @@ def fallback_list() -> list:
 
 def monitor_open_positions():
     from data_manager import data_manager
+    from ws_feed import get_current_bar, is_connected
     open_positions = position_manager.get_open_positions()
     if not open_positions:
         return
@@ -66,9 +67,13 @@ def monitor_open_positions():
     current_prices = {}
     for pos in open_positions:
         ticker = pos["ticker"]
-        bars = data_manager.get_bars_from_memory(ticker, limit=1)
-        if bars:
-            current_prices[ticker] = bars[-1]["close"]
+        # Prefer live WS bar (sub-10s latency) over DB-stored bar
+        bar = get_current_bar(ticker) if is_connected() else None
+        if bar is None:
+            bars = data_manager.get_bars_from_memory(ticker, limit=1)
+            bar  = bars[-1] if bars else None
+        if bar:
+            current_prices[ticker] = bar["close"]
     position_manager.check_exits(current_prices)
 
 
@@ -127,9 +132,12 @@ def start_scanner_loop():
     premarket_built = False
     cycle_count = 0
     last_report_day = None
+    loss_streak_alerted = False  # one-time Discord alert flag for circuit breaker
 
     # ── STARTUP SEQUENCE ────────────────────────────────────────────────────
-    # 0. Start WebSocket feed so today's ticks are accumulating in DB.
+    # 0. Start WebSocket feed (fallback list) so today's ticks begin accumulating.
+    #    Premarket tickers are added via subscribe_tickers() once the premarket
+    #    scanner runs, ensuring full WS coverage without a restart.
     startup_watchlist = fallback_list()
     try:
         start_ws_feed(startup_watchlist)
@@ -137,7 +145,7 @@ def start_scanner_loop():
     except Exception as e:
         print(f"[WS] ERROR starting WebSocket feed: {e}")
 
-    # 1. 30-day historical REST backfill (up to yesterday’s close)
+    # 1. 30-day historical REST backfill (up to yesterday's close)
     # 2. Best-effort today REST backfill (04:00 -> now) for mid-session restarts
     # 3. Earnings calendar prefetch
     data_manager.startup_backfill_today(startup_watchlist)
@@ -158,7 +166,14 @@ def start_scanner_loop():
                     try:
                         premarket_watchlist = build_premarket_watchlist()
                         premarket_built = True
-                        msg = f"Pre-Market Watchlist: {len(premarket_watchlist)} tickers - {', '.join(premarket_watchlist[:20])}"
+                        # ── Subscribe premarket tickers to WS immediately ──────────
+                        # Any tickers not in the fallback 33 will now receive live
+                        # ticks before the session opens.
+                        subscribe_tickers(premarket_watchlist)
+                        print(f"[WS] Subscribed premarket watchlist "
+                              f"({len(premarket_watchlist)} tickers) to WS feed")
+                        msg = (f"Pre-Market Watchlist: {len(premarket_watchlist)} tickers "
+                               f"— {', '.join(premarket_watchlist[:20])}")
                         send_simple_message(msg)
                     except Exception as e:
                         print(f"[PRE-MARKET] Error: {e}")
@@ -177,7 +192,18 @@ def start_scanner_loop():
 
                 # Daily loss circuit breaker: halt new scans after 3 consecutive losses.
                 if _has_loss_streak(max_consecutive_losses=3):
-                    print("[RISK] Daily loss streak reached (3 consecutive losses) — halting new scans.")
+                    if not loss_streak_alerted:
+                        msg = (
+                            "\U0001f6d1 **CIRCUIT BREAKER** — 3 consecutive losses today. "
+                            "New scans halted for the rest of the session. "
+                            "Open positions still monitored."
+                        )
+                        try:
+                            send_simple_message(msg)
+                        except Exception:
+                            pass
+                        loss_streak_alerted = True
+                        print("[RISK] Daily loss streak reached — halting new scans.")
                     monitor_open_positions()
                     time.sleep(60)
                     continue
@@ -227,7 +253,10 @@ def start_scanner_loop():
                         print(f"[EOD] {len(open_positions)} positions still open")
 
                     daily_stats = position_manager.get_daily_stats()
-                    eod_report = f"EOD Report {current_day} | Trades: {daily_stats['trades']} | WR: {daily_stats['win_rate']:.1f}% | P&L: ${daily_stats['total_pnl']:+.2f}"
+                    eod_report = (f"EOD Report {current_day} | "
+                                  f"Trades: {daily_stats['trades']} | "
+                                  f"WR: {daily_stats['win_rate']:.1f}% | "
+                                  f"P&L: ${daily_stats['total_pnl']:+.2f}")
 
                     try:
                         win_rate_report = position_manager.generate_report()
@@ -249,15 +278,16 @@ def start_scanner_loop():
                     except Exception as e:
                         print(f"[CLEANUP] Error: {e}")
 
-                    last_report_day = current_day
-                    premarket_watchlist = []
-                    premarket_built = False
-                    cycle_count = 0
+                    last_report_day      = current_day
+                    premarket_watchlist  = []
+                    premarket_built      = False
+                    cycle_count          = 0
+                    loss_streak_alerted  = False  # reset circuit breaker alert for new day
 
                     # Reset all intraday signal state for the new day
                     clear_armed_signals()
                     clear_watching_signals()
-                    clear_earnings_cache()   # ← NEW: fresh earnings data next session
+                    clear_earnings_cache()
 
                 print(f"[AFTER-HOURS] {current_time_str} - Market closed")
                 time.sleep(600)
