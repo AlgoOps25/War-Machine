@@ -26,6 +26,8 @@ Design:
   - subscribe_tickers() is thread-safe: callable from the main scanner
     thread at any time, including before the WS connection is established.
     New tickers are merged into the master list and sent live if connected.
+  - _on_tick() rejects bad prints (price <= 0, volume < 0, price > 100k) and
+    intra-bar spikes > 10% from the current close before touching bar state.
   - Gracefully skips startup if 'websockets' package is not installed.
 
 Usage:
@@ -54,6 +56,7 @@ WS_BASE_URL     = "wss://ws.eodhistoricaldata.com/ws/us"
 RECONNECT_DELAY = 5     # seconds between reconnect attempts
 FLUSH_INTERVAL  = 10    # seconds between open-bar DB flushes
 SUBSCRIBE_CHUNK = 50    # max tickers per subscribe message (EODHD limit)
+SPIKE_THRESHOLD = 0.10  # reject ticks that move > 10% from current bar close
 
 # ── Shared state ──────────────────────────────────────────────────────────────
 _lock               = threading.Lock()
@@ -94,10 +97,39 @@ def _minute_floor(epoch_ms: int) -> datetime:
 
 
 def _on_tick(ticker: str, price: float, volume: int, epoch_ms: int):
-    """Merge one trade tick into the current open bar; close bar on minute rollover."""
+    """
+    Merge one trade tick into the current open bar; close bar on minute rollover.
+
+    Sanity gates (applied before any bar state is touched):
+      1. Basic bounds  — price must be > 0 and <= 100,000; volume must be >= 0.
+         Catches zero-price fills, negative volumes, and obviously corrupt ticks.
+      2. Spike filter  — if a bar already exists for this ticker, reject any tick
+         that moves more than SPIKE_THRESHOLD (10%) from the current close.
+         Protects against bad prints that would generate false breakout signals.
+         Applied inside the lock so the reference close is the exact same value
+         the bar logic would use.
+    """
+    # Gate 1: basic bounds (fast path, no lock needed)
+    if price <= 0 or volume < 0 or price > 100_000:
+        print(f"[WS] ⚠️ Bad tick rejected: {ticker} p={price} v={volume}")
+        return
+
     bar_dt = _minute_floor(epoch_ms)
+
     with _lock:
         cur = _open_bars.get(ticker)
+
+        # Gate 2: spike filter (inside lock — cur['close'] is the authoritative reference)
+        if cur is not None:
+            deviation = abs(price - cur["close"]) / cur["close"]
+            if deviation > SPIKE_THRESHOLD:
+                print(
+                    f"[WS] ⚠️ Spike rejected: {ticker} "
+                    f"p={price:.2f} vs close={cur['close']:.2f} "
+                    f"({deviation:.1%} > {SPIKE_THRESHOLD:.0%})"
+                )
+                return
+
         if cur is None:
             _open_bars[ticker] = {
                 "datetime": bar_dt, "open": price, "high": price,
