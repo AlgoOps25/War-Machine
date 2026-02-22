@@ -119,3 +119,6 @@ policy.json
 # Backup files
 *-backup/
 War-Machine-backup/
+
+#Notes
+notes/
