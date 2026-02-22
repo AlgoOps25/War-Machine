@@ -72,8 +72,8 @@ def get_economic_events(date_str: str = None) -> List[Dict]:
     # Check for Trading Economics API key, fall back to guest key for testing
     api_key = config.TRADING_ECON_API_KEY
 
-    url = f"https://api.tradingeconomics.com/calendar/country/United%20States/{date_str}/{date_str}"
-    params = {"c": api_key}
+    url = f"https://api.tradingeconomics.com/calendar"
+    params = {"c": api_key, "d1": date_str, "d2": date_str}
 
     try:
         response = requests.get(url, params=params, timeout=10)
