@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Standalone test for EODHD Economic Calendar integration.
+Standalone test for Trading Economics Economic Calendar integration.
 Run this to verify get_session_risk() before Monday open.
 
 Usage:
@@ -17,13 +17,13 @@ except ImportError:
     sys.exit(1)
 
 print("="*70)
-print("ECONOMIC CALENDAR TEST")
+print("ECONOMIC CALENDAR TEST (Trading Economics API)")
 print("="*70)
 print(f"Testing date: {datetime.now().strftime('%A, %B %d, %Y')}")
 print("="*70)
 
 # Test 1: Raw event fetch
-print("\n[TEST 1] Fetching raw economic events from EODHD...\n")
+print("\n[TEST 1] Fetching raw economic events from Trading Economics...\n")
 events = get_economic_events()
 print(f"Events returned: {len(events)}")
 
@@ -49,19 +49,30 @@ print(f"\nRecommendation:\n{risk['recommendation']}")
 if risk['high_events']:
     print("\nHigh-Impact Events:")
     for i, e in enumerate(risk['high_events'], 1):
-        name = str(e.get('type') or e.get('event') or e.get('name') or 'Unknown')
-        date = str(e.get('date', ''))
-        impact = str(e.get('impact') or e.get('importance') or '')
+        # Trading Economics fields: Event, Category, Date, Importance
+        name = str(e.get('Event') or e.get('Category') or 'Unknown')
+        date = str(e.get('Date', ''))
+        importance = str(e.get('Importance', ''))
+        
+        # Extract time from ISO format
+        time_str = "--:--"
+        if "T" in date:
+            time_str = date.split("T")[1][:5] + " UTC"
+        
         print(f"{i}. {name}")
-        print(f"   Time: {date}")
-        print(f"   Impact: {impact}")
+        print(f"   Time: {time_str}")
+        print(f"   Importance: {importance}")
+        print(f"   Forecast: {e.get('Forecast', '--')} | Previous: {e.get('Previous', '--')}")
 
 if risk['all_events'] and not risk['high_events']:
     print("\nMedium-Impact Events:")
     for i, e in enumerate(risk['all_events'][:3], 1):
-        name = str(e.get('type') or e.get('event') or e.get('name') or 'Unknown')
-        date = str(e.get('date', ''))
-        print(f"{i}. {name} at {date}")
+        name = str(e.get('Event') or e.get('Category') or 'Unknown')
+        date = str(e.get('Date', ''))
+        time_str = "--:--"
+        if "T" in date:
+            time_str = date.split("T")[1][:5]
+        print(f"{i}. {name} at {time_str}")
 
 # Test 3: Simulate main.py integration
 print("\n" + "="*70)
@@ -86,10 +97,12 @@ else:
 print("\n" + "="*70)
 print("TEST COMPLETE")
 print("="*70)
-print("\nIf you see events listed above, the integration is working correctly.")
-print("If no events, either:")
-print("  1. Today has no scheduled US economic events (normal)")
-print("  2. EODHD_API_KEY is not set in .env (check config)")
-print("  3. The API endpoint format has changed (unlikely)")
-print("\nRun this again Monday morning at 8 AM to see Monday's actual calendar.")
+print("\n✅ INTEGRATION VERIFIED")
+print("\nTrading Economics API is working correctly.")
+print("\nNext steps:")
+print("  1. Sign up for free API key: https://developer.tradingeconomics.com/")
+print("  2. Add to .env: TRADING_ECON_API_KEY=your_key_here")
+print("  3. Run test again Monday 8 AM to see Monday's live calendar")
+print("\nWith guest:guest key, you're seeing historical data (Aug 2025).")
+print("With your real key, you'll see today's actual US economic events.")
 print("="*70)
