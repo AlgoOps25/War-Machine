@@ -146,11 +146,14 @@ def build_or_session(or_high: float = 502.0, or_low: float = 498.0,
 def build_bos_session(base: float = 500.0) -> List[Dict]:
     """
     Synthetic intraday session:
-      - 10 ranging bars → clear swing high
+      - 10 ranging bars → clear swing high/low
+      - 1  impulse bar  (establishes first swing high @ base+2.0)
       - 10 pullback bars
-      - 1  BOS bar (breaks swing high)
-      - 3  FVG bars
-      - 1  retrace bar (enters FVG)
+      - 1  second BOS bar (breaks base+2.0 swing high → BOS confirmed)
+      - 3  FVG bars:
+          c0 high=base+2.4, c1 impulse, c2 low=base+3.1
+          gap = 0.7pt (~0.14%) → clears FVG_MIN_PCT=0.1% threshold
+      - 1  retrace bar  (low=base+2.3 dips into FVG zone → entry fires)
     """
     bars = []
     for i in range(10):
@@ -165,7 +168,9 @@ def build_bos_session(base: float = 500.0) -> List[Dict]:
     bars.append(make_bar(21, base + 1.0, base + 2.5, base + 0.9, base + 2.2, 400_000))
     bars.append(make_bar(22, base + 2.2, base + 2.4, base + 2.1, base + 2.3))
     bars.append(make_bar(23, base + 2.5, base + 3.0, base + 2.4, base + 2.8, 300_000))
-    bars.append(make_bar(24, base + 3.2, base + 3.5, base + 2.9, base + 3.3))
+    # low raised from base+2.9 → base+3.1 to ensure FVG gap ≥ 0.1%
+    # gap = c2.low(503.1) - c0.high(502.4) = 0.7pt = 0.139% > FVG_MIN_PCT
+    bars.append(make_bar(24, base + 3.2, base + 3.5, base + 3.1, base + 3.3))
     bars.append(make_bar(25, base + 3.3, base + 3.4, base + 2.3, base + 2.5))
     return bars
 
