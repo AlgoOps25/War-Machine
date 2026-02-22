@@ -1,15 +1,21 @@
 """
 Pre-Market Scanner (4 AM - 9:30 AM EST)
 Builds intelligent watchlist before market opens and assesses daily
-market risk based on the EODHD economic events calendar.
+market risk based on the Trading Economics economic calendar (free tier).
 
 New exports:
   get_session_risk()  — call from main.py at session start to get
                         risk_level (HIGH/MEDIUM/LOW) and adjust
                         MAX_CONTRACTS / confidence thresholds.
-  get_economic_events() — raw EODHD economic calendar fetch for today.
+  get_economic_events() — raw Trading Economics calendar fetch for today.
+
+Trading Economics Free Tier:
+  - 500 API calls/month (plenty for daily checks)
+  - Sign up: https://developer.tradingeconomics.com/
+  - Set TRADING_ECON_API_KEY in .env (or use guest:guest for testing)
 """
 import requests
+import os
 from datetime import datetime
 from typing import List, Dict
 import config
@@ -29,11 +35,11 @@ SCAN_UNIVERSE = [
 ]
 
 # ------------------------------------------------------------------ #
-#  Economic calendar                                                   #
+#  Economic calendar (Trading Economics)                               #
 # ------------------------------------------------------------------ #
 
-# Keywords that flag a HIGH-IMPACT event regardless of the API impact field.
-# Matched case-insensitively against the event name/type string.
+# Keywords that flag a HIGH-IMPACT event regardless of the API importance field.
+# Matched case-insensitively against the event name/category string.
 HIGH_IMPACT_KEYWORDS = [
     "FOMC", "Federal Reserve", "Fed Rate", "Interest Rate Decision",
     "CPI",  "Consumer Price Index", "Inflation",
@@ -51,83 +57,79 @@ HIGH_IMPACT_KEYWORDS = [
 
 def get_economic_events(date_str: str = None) -> List[Dict]:
     """
-    Fetch US economic events from EODHD for a given date.
+    Fetch US economic events from Trading Economics for a given date.
 
-    Endpoint: GET /api/economic-events
-    Params:   from, to, country=US, api_token
+    Endpoint: GET /calendar/country/United%20States/{date}/{date}?c={api_key}
+    Free tier: 500 calls/month
+    Guest key: guest:guest (very limited, for testing only)
 
-    Returns a flat list of event dicts. Handles both array and
-    wrapped ({"response": [...]}) response shapes defensively.
+    Returns a flat list of event dicts. Trading Economics returns a clean
+    JSON array with no wrapper.
     """
     if not date_str:
         date_str = datetime.now().strftime("%Y-%m-%d")
-    url    = "https://eodhd.com/api/economic-events"
-    params = {
-        "api_token": config.EODHD_API_KEY,
-        "from":      date_str,
-        "to":        date_str,
-        "country":   "US",
-        "fmt":       "json",
-    }
+
+    # Check for Trading Economics API key, fall back to guest key for testing
+    api_key = os.getenv("TRADING_ECON_API_KEY", "guest:guest").strip()
+
+    url = f"https://api.tradingeconomics.com/calendar/country/United%20States/{date_str}/{date_str}"
+    params = {"c": api_key}
+
     try:
         response = requests.get(url, params=params, timeout=10)
         response.raise_for_status()
-        raw = response.json()
-        if isinstance(raw, list):
-            return raw
-        if isinstance(raw, dict):
-            # Try common wrapper keys
-            for key in ("response", "data", "events", "result"):
-                if key in raw and isinstance(raw[key], list):
-                    return raw[key]
-        return []
+        data = response.json()
+
+        # Trading Economics returns a clean array
+        if isinstance(data, list):
+            return data
+        else:
+            print(f"[ECON] Unexpected response format: {type(data)}")
+            return []
+
     except Exception as e:
         print(f"[ECON] Error fetching economic events: {e}")
         return []
 
 
 def _event_name(event: Dict) -> str:
-    """Extract event name from any of the known field aliases."""
+    """Extract event name from Trading Economics response."""
     return str(
-        event.get("type") or
-        event.get("event") or
-        event.get("name") or
-        event.get("indicator") or
+        event.get("Event") or
+        event.get("Category") or
         "Unknown Event"
     )
 
 
 def _event_time(event: Dict) -> str:
-    """Extract a clean HH:MM time string from the event date field."""
-    raw = str(event.get("date", ""))
-    if " " in raw:
-        return raw.split(" ")[1][:5]   # "2026-02-23 14:00:00" -> "14:00"
+    """Extract a clean HH:MM time string from the event Date field."""
+    raw = str(event.get("Date", ""))
+    # Trading Economics format: "2016-12-02T13:30:00" (UTC)
     if "T" in raw:
-        return raw.split("T")[1][:5]   # ISO format
+        time_part = raw.split("T")[1][:5]  # "13:30:00" -> "13:30"
+        # Convert from UTC to ET (approx -5 hours, ignoring DST for simplicity)
+        # For production, use proper timezone conversion
+        return time_part + " UTC"
     return "--:--"
 
 
 def _is_high_impact(event: Dict) -> bool:
     """
     Classify an event as high-impact via:
-      1. Explicit impact/importance field ("High", "high", "3", "HIGH")
+      1. Explicit Importance field ("3" = high, "2" = medium, "1" = low)
       2. Keyword match on event name against HIGH_IMPACT_KEYWORDS
     """
-    impact = str(
-        event.get("impact") or
-        event.get("importance") or
-        event.get("priority") or
-        ""
-    ).lower()
-    if impact in ("high", "3", "h"):
+    importance = str(event.get("Importance", ""))
+    if importance == "3":
         return True
+
     name_lower = _event_name(event).lower()
     return any(kw.lower() in name_lower for kw in HIGH_IMPACT_KEYWORDS)
 
 
 def get_session_risk() -> Dict:
     """
-    Assess today's market risk level from the EODHD economic calendar.
+    Assess today's market risk level from the Trading Economics calendar.
 
     Returns:
         {
@@ -180,7 +182,7 @@ def get_session_risk() -> Dict:
 def _print_risk_banner(risk: Dict) -> None:
     """Print formatted economic risk summary to console."""
     lvl = risk["risk_level"]
-    icon = {"HIGH": "\U0001f6a8", "MEDIUM": "\u26a0\ufe0f", "LOW": "\u2705"}.get(lvl, "\u2139\ufe0f")
+    icon = {"HIGH": "🚨", "MEDIUM": "⚠️", "LOW": "✅"}.get(lvl, "ℹ️")
 
     print(f"[ECON] {icon}  Market Risk: {lvl}  |  "
           f"{risk['event_count']} events today  |  "
@@ -190,14 +192,15 @@ def _print_risk_banner(risk: Dict) -> None:
         for e in risk["high_events"]:
             name    = _event_name(e)
             t       = _event_time(e)
-            est     = e.get("estimate", e.get("forecast", "--"))
-            prev    = e.get("previous", "--")
-            print(f"  \U0001f534 {t} ET | {name}  est={est}  prev={prev}")
+            actual  = e.get("Actual", "--")
+            forecast = e.get("Forecast", "--")
+            prev    = e.get("Previous", "--")
+            print(f"  🔴 {t} | {name}  forecast={forecast}  prev={prev}")
     elif risk["all_events"]:
         for e in risk["all_events"][:3]:
-            print(f"  \U0001f7e1 {_event_time(e)} ET | {_event_name(e)}")
+            print(f"  🟡 {_event_time(e)} | {_event_name(e)}")
 
-    print(f"  \u21b3 {risk['recommendation']}")
+    print(f"  ↳ {risk['recommendation']}")
 
 
 # ------------------------------------------------------------------ #
@@ -296,7 +299,7 @@ def build_premarket_watchlist() -> List[str]:
     print(f"PRE-MARKET WATCHLIST - {datetime.now().strftime('%I:%M:%S %p')}")
     print("=" * 60)
 
-    # 0 — Economic calendar risk assessment (NEW)
+    # 0 — Economic calendar risk assessment (Trading Economics)
     print("[ECON] Checking economic calendar...")
     risk = get_session_risk()
     _print_risk_banner(risk)
@@ -309,7 +312,7 @@ def build_premarket_watchlist() -> List[str]:
     gaps = get_gap_movers()
     for stock in gaps[:15]:
         watchlist.add(stock["ticker"])
-        direction = "\U0001f4c8" if stock["gap_pct"] > 0 else "\U0001f4c9"
+        direction = "📈" if stock["gap_pct"] > 0 else "📉"
         print(f"  {direction} {stock['ticker']}: {stock['gap_pct']:+.2f}%")
 
     # 2 — Core liquid tickers always included
@@ -322,13 +325,13 @@ def build_premarket_watchlist() -> List[str]:
     clean   = []
     for t in tickers:
         if has_earnings_today(t):
-            print(f"[EARNINGS] \u26a0\ufe0f  Removing {t} \u2014 earnings within guard window")
+            print(f"[EARNINGS] ⚠️  Removing {t} — earnings within guard window")
         else:
             clean.append(t)
 
     final_list = clean
 
-    print(f"\n\u2705 Watchlist: {len(final_list)} tickers")
+    print(f"\n✅ Watchlist: {len(final_list)} tickers")
     print(f"{', '.join(final_list)}")
     print("=" * 60 + "\n")
 
