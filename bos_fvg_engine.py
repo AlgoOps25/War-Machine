@@ -25,15 +25,20 @@ MIN_BARS_SESSION = 5      # Need at least 5 bars before scanning
 
 def find_swing_points(bars: List[Dict], lookback: int = LOOKBACK_SWING) -> Dict:
     """
-    Identify the most recent swing high and swing low
-    in the last `lookback` bars.
+    Identify the most recent swing high and swing low.
+    Uses a 3x lookback window so early-session BOS bars that fall
+    just outside a 2x window are still reachable.
+
     A swing high = bar[i].high > all bars within ±lookback/2
+    A swing low  = bar[i].low  < all bars within ±lookback/2
     """
     if len(bars) < lookback * 2:
         return {"swing_high": None, "swing_high_idx": None,
                 "swing_low":  None, "swing_low_idx":  None}
 
-    recent = bars[-(lookback * 2):]
+    # 3x lookback gives more scan positions than 2x, critical for
+    # short early-session bar counts (20-30 bars).
+    recent = bars[-(lookback * 3):]
 
     swing_high = swing_high_idx = None
     swing_low  = swing_low_idx  = None
