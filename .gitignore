@@ -115,10 +115,9 @@ policy.json
 *.json.bak
 *.log
 .DS_Store
+learning_data.json
+Notes.txt
 
 # Backup files
 *-backup/
 War-Machine-backup/
-
-#Notes
-War-Machine/Notes.txt
