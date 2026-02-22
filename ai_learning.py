@@ -62,7 +62,10 @@ class AILearningEngine:
                 conn.close()
                 if row:
                     d = row["data"]
-                    return d if isinstance(d, dict) else json.loads(d)
+                    if not isinstance(d, dict):
+                        d = json.loads(d)
+                    # Merge: default fills any keys missing from stored data
+                    return {**default_data, **d}
             except Exception as e:
                 print(f"[AI] Error loading from PostgreSQL: {e}")
             return default_data
@@ -71,7 +74,10 @@ class AILearningEngine:
         if os.path.exists(self.db_path):
             try:
                 with open(self.db_path, "r") as f:
-                    return json.load(f)
+                    loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    # Merge: default fills any keys missing from stored data
+                    return {**default_data, **loaded}
             except Exception as e:
                 print(f"[AI] Error loading JSON: {e}")
         return default_data
