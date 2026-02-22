@@ -70,7 +70,7 @@ def get_economic_events(date_str: str = None) -> List[Dict]:
         date_str = datetime.now().strftime("%Y-%m-%d")
 
     # Check for Trading Economics API key, fall back to guest key for testing
-    api_key = os.getenv("TRADING_ECON_API_KEY", "guest:guest").strip()
+    api_key = config.TRADING_ECON_API_KEY
 
     url = f"https://api.tradingeconomics.com/calendar/country/United%20States/{date_str}/{date_str}"
     params = {"c": api_key}
