@@ -3,10 +3,34 @@ Options Chain Filter Module
 Analyzes options chains to validate signal quality and suggest optimal strikes.
 INTEGRATED: IV Rank (IVR) + Unusual Options Activity (UOA) + GEX Levels.
 
-EODHD endpoint: /api/v2/options/ (marketplace US Stock Options Data API plan)
-Response is a flat list of contracts; _normalize_v2_chain() converts it to the
-legacy nested dict format (data -> expiry -> calls/puts -> strike) so that
-find_best_strike, uoa_scanner, and gex_engine need no changes.
+EODHD endpoint: https://eodhd.com/api/mp/unicornbay/options/contracts
+(US Stock Options Data API marketplace plan)
+
+Response format:
+  {
+    "meta": {"offset": 0, "limit": 1000, "total": N, "fields": [...]},
+    "data": [
+      {
+        "id": "SPY...",
+        "type": "options-contracts",
+        "attributes": {
+          "underlying_symbol": "SPY",
+          "exp_date": "2026-02-24",
+          "type": "call",          <- lowercase
+          "strike": 590,
+          "bid": 1.23, "ask": 1.25,
+          "open_interest": 5000, "volume": 1200,
+          "volatility": 0.18,     <- impliedVolatility
+          "delta": 0.45, "theta": -0.12, "gamma": 0.05,
+          "vega": 0.08, "rho": 0.002, "dte": 2
+        }
+      }, ...
+    ]
+  }
+
+_normalize_v2_chain() converts this to the legacy nested dict format
+(expiry -> calls/puts -> strike -> fields) so find_best_strike,
+uoa_scanner, and gex_engine need zero changes.
 """
 
 import requests
@@ -23,46 +47,51 @@ class OptionsFilter:
 
     def __init__(self):
         self.api_key  = config.EODHD_API_KEY
-        # v2 endpoint — required for the EODHD US Stock Options Data API plan
-        self.base_url = "https://eodhd.com/api/v2/options"
+        # EODHD Marketplace: US Stock Options Data API
+        self.base_url = "https://eodhd.com/api/mp/unicornbay/options/contracts"
 
     # ------------------------------------------------------------------ #
-    #  Internal: normalize v2 flat-list → legacy nested dict              #
+    #  Internal: normalize marketplace response → legacy nested dict     #
     # ------------------------------------------------------------------ #
 
     def _normalize_v2_chain(self, v2_data: List[Dict]) -> Dict:
         """
-        Convert v2 flat-list format into the legacy nested structure:
+        Convert marketplace flat-list (attributes-wrapped) format into the
+        legacy nested structure used by find_best_strike / uoa_scanner / gex_engine:
             {expiry_date: {"calls": {strike_str: {...}}, "puts": {...}}}
 
-        Field mapping (v2 → legacy):
-            open_interest  → openInterest
-            volatility     → impliedVolatility
-            All other field names (bid, ask, delta, theta, gamma, vega,
-            rho, volume, dte) are identical in both formats.
+        Field mapping (marketplace → legacy):
+            attributes.open_interest  → openInterest
+            attributes.volatility     → impliedVolatility
+            All other field names are identical (bid, ask, delta, theta,
+            gamma, vega, rho, volume, dte).
+
+        Note: attributes.type is lowercase ("call" / "put").
         """
         nested: Dict = {}
-        for contract in v2_data:
-            exp    = contract.get("exp_date", "")
-            ctype  = contract.get("type", "").upper()          # "CALL" or "PUT"
-            strike = str(contract.get("strike", ""))
-            if not exp or not ctype or not strike:
+        for item in v2_data:
+            # All data lives under "attributes" in the marketplace response
+            attrs  = item.get("attributes", item)  # fallback: bare dict if no wrapper
+            exp    = attrs.get("exp_date", "")
+            ctype  = attrs.get("type", "").lower()  # "call" or "put"
+            strike = str(attrs.get("strike", ""))
+            if not exp or ctype not in ("call", "put") or not strike:
                 continue
             if exp not in nested:
                 nested[exp] = {"calls": {}, "puts": {}}
-            bucket = "calls" if ctype == "CALL" else "puts"
+            bucket = "calls" if ctype == "call" else "puts"
             nested[exp][bucket][strike] = {
-                "openInterest":    contract.get("open_interest", 0),
-                "volume":          contract.get("volume", 0),
-                "bid":             contract.get("bid", 0),
-                "ask":             contract.get("ask", 0),
-                "delta":           contract.get("delta", 0),
-                "impliedVolatility": contract.get("volatility", 0),
-                "theta":           contract.get("theta", 0),
-                "gamma":           contract.get("gamma", 0),
-                "vega":            contract.get("vega", 0),
-                "rho":             contract.get("rho", 0),
-                "dte":             contract.get("dte", 0),
+                "openInterest":    attrs.get("open_interest", 0),
+                "volume":          attrs.get("volume", 0),
+                "bid":             attrs.get("bid", 0),
+                "ask":             attrs.get("ask", 0),
+                "delta":           attrs.get("delta", 0),
+                "impliedVolatility": attrs.get("volatility", 0),
+                "theta":           attrs.get("theta", 0),
+                "gamma":           attrs.get("gamma", 0),
+                "vega":            attrs.get("vega", 0),
+                "rho":             attrs.get("rho", 0),
+                "dte":             attrs.get("dte", 0),
             }
         return nested
 
@@ -72,32 +101,36 @@ class OptionsFilter:
 
     def get_options_chain(self, ticker: str) -> Optional[Dict]:
         """
-        Fetch options chain from EODHD v2 API and normalize to legacy format.
+        Fetch options chain from EODHD Marketplace US Stock Options API
+        and normalize to legacy nested format.
 
-        Filters server-side to active/forward expirations only (from=yesterday)
-        to keep payloads manageable for high-volume tickers like SPY.
+        Server-side filters:
+          - underlying_symbol = ticker
+          - exp_date_from     = yesterday  (captures 0DTE on weekends / delayed runs)
+          - exp_date_to       = today + 30 (covers 0DTE through monthly)
+          - limit             = 1000
+
         Returns: {"data": {expiry: {"calls": {...}, "puts": {...}}}} or None.
         """
-        url    = f"{self.base_url}/{ticker}.US"
+        today  = datetime.now()
         params = {
+            "filter[underlying_symbol]": ticker,
+            "filter[exp_date_from]": (today - timedelta(days=1)).strftime("%Y-%m-%d"),
+            "filter[exp_date_to]":   (today + timedelta(days=30)).strftime("%Y-%m-%d"),
+            "sort":      "exp_date",
+            "limit":     1000,
             "api_token": self.api_key,
-            # Use yesterday as floor so weekend runs still capture Friday data
-            "from":  (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d"),
-            "limit": 1000,
         }
         try:
-            response = requests.get(url, params=params, timeout=10)
+            response = requests.get(self.base_url, params=params, timeout=10)
             response.raise_for_status()
-            raw = response.json()
-
-            v2_list = raw.get("data", [])
-            if isinstance(v2_list, list):
-                # v2 flat-list response — normalize to legacy nested format
-                return {"data": self._normalize_v2_chain(v2_list)}
-
-            # Already nested (legacy format or future API change) — pass through
+            raw   = response.json()
+            items = raw.get("data", [])
+            if isinstance(items, list):
+                # Marketplace response — normalize to legacy nested format
+                return {"data": self._normalize_v2_chain(items)}
+            # Already nested (unexpected / future-proof fallback)
             return raw
-
         except Exception as e:
             print(f"[OPTIONS] Error fetching chain for {ticker}: {e}")
             return None
