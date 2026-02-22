@@ -2,11 +2,16 @@
 Options Chain Filter Module
 Analyzes options chains to validate signal quality and suggest optimal strikes.
 INTEGRATED: IV Rank (IVR) + Unusual Options Activity (UOA) + GEX Levels.
+
+EODHD endpoint: /api/v2/options/ (marketplace US Stock Options Data API plan)
+Response is a flat list of contracts; _normalize_v2_chain() converts it to the
+legacy nested dict format (data -> expiry -> calls/puts -> strike) so that
+find_best_strike, uoa_scanner, and gex_engine need no changes.
 """
 
 import requests
-from datetime import datetime
-from typing import Dict, Optional, Tuple
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Tuple
 import config
 from iv_tracker   import store_iv_observation, compute_ivr, ivr_to_confidence_multiplier
 from uoa_scanner  import scan_chain_for_uoa
@@ -18,16 +23,81 @@ class OptionsFilter:
 
     def __init__(self):
         self.api_key  = config.EODHD_API_KEY
-        self.base_url = "https://eodhd.com/api/options"
+        # v2 endpoint — required for the EODHD US Stock Options Data API plan
+        self.base_url = "https://eodhd.com/api/v2/options"
+
+    # ------------------------------------------------------------------ #
+    #  Internal: normalize v2 flat-list → legacy nested dict              #
+    # ------------------------------------------------------------------ #
+
+    def _normalize_v2_chain(self, v2_data: List[Dict]) -> Dict:
+        """
+        Convert v2 flat-list format into the legacy nested structure:
+            {expiry_date: {"calls": {strike_str: {...}}, "puts": {...}}}
+
+        Field mapping (v2 → legacy):
+            open_interest  → openInterest
+            volatility     → impliedVolatility
+            All other field names (bid, ask, delta, theta, gamma, vega,
+            rho, volume, dte) are identical in both formats.
+        """
+        nested: Dict = {}
+        for contract in v2_data:
+            exp    = contract.get("exp_date", "")
+            ctype  = contract.get("type", "").upper()          # "CALL" or "PUT"
+            strike = str(contract.get("strike", ""))
+            if not exp or not ctype or not strike:
+                continue
+            if exp not in nested:
+                nested[exp] = {"calls": {}, "puts": {}}
+            bucket = "calls" if ctype == "CALL" else "puts"
+            nested[exp][bucket][strike] = {
+                "openInterest":    contract.get("open_interest", 0),
+                "volume":          contract.get("volume", 0),
+                "bid":             contract.get("bid", 0),
+                "ask":             contract.get("ask", 0),
+                "delta":           contract.get("delta", 0),
+                "impliedVolatility": contract.get("volatility", 0),
+                "theta":           contract.get("theta", 0),
+                "gamma":           contract.get("gamma", 0),
+                "vega":            contract.get("vega", 0),
+                "rho":             contract.get("rho", 0),
+                "dte":             contract.get("dte", 0),
+            }
+        return nested
+
+    # ------------------------------------------------------------------ #
+    #  Public API                                                         #
+    # ------------------------------------------------------------------ #
 
     def get_options_chain(self, ticker: str) -> Optional[Dict]:
-        """Fetch full options chain from EODHD."""
+        """
+        Fetch options chain from EODHD v2 API and normalize to legacy format.
+
+        Filters server-side to active/forward expirations only (from=yesterday)
+        to keep payloads manageable for high-volume tickers like SPY.
+        Returns: {"data": {expiry: {"calls": {...}, "puts": {...}}}} or None.
+        """
         url    = f"{self.base_url}/{ticker}.US"
-        params = {"api_token": self.api_key}
+        params = {
+            "api_token": self.api_key,
+            # Use yesterday as floor so weekend runs still capture Friday data
+            "from":  (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d"),
+            "limit": 1000,
+        }
         try:
             response = requests.get(url, params=params, timeout=10)
             response.raise_for_status()
-            return response.json()
+            raw = response.json()
+
+            v2_list = raw.get("data", [])
+            if isinstance(v2_list, list):
+                # v2 flat-list response — normalize to legacy nested format
+                return {"data": self._normalize_v2_chain(v2_list)}
+
+            # Already nested (legacy format or future API change) — pass through
+            return raw
+
         except Exception as e:
             print(f"[OPTIONS] Error fetching chain for {ticker}: {e}")
             return None
@@ -106,7 +176,7 @@ class OptionsFilter:
                         "strike":        strike,
                         "expiration":    expiration_date,
                         "delta":         option.get("delta", 0),
-                        "theta":         option.get("theta", 0),   # daily dollar theta
+                        "theta":         option.get("theta", 0),
                         "oi":            option.get("openInterest", 0),
                         "volume":        option.get("volume", 0),
                         "bid":           bid,
@@ -172,7 +242,7 @@ class OptionsFilter:
             })
 
         # ── GEX enrichment ───────────────────────────────────────────────
-        # stop_price is now threaded through from _run_signal_pipeline so
+        # stop_price is threaded through from _run_signal_pipeline so
         # gamma wall / pin logic uses the actual trade stop, not the strike.
         gex_stop_ref = stop_price if stop_price > 0 else best_option.get("strike", entry_price)
         try:
@@ -232,9 +302,7 @@ class OptionsFilter:
             return False, best_strike, f"IV too high ({best_strike['iv']*100:.1f}%)"
 
         # Theta decay gate: daily theta cost as % of option mid price.
-        # Uses actual theta from the chain if EODHD returns it (field: "theta").
-        # Previous formula (mid/dte)/mid simplified to 1/dte and incorrectly
-        # blocked all options with DTE < 10 regardless of option cost.
+        # Uses actual theta from the chain (field: "theta").
         dte   = best_strike["dte"]
         mid   = (best_strike["bid"] + best_strike["ask"]) / 2 if (
             best_strike.get("bid") and best_strike.get("ask")
