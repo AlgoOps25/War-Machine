@@ -15,7 +15,6 @@ load_dotenv()
 # API & DISCORD CONFIGURATION
 # ══════════════════════════════════════════════════════════════════════════════
 EODHD_API_KEY       = os.getenv("EODHD_API_KEY", "").strip()
-FMP_API_KEY         = os.getenv("FMP_API_KEY", "").strip()
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
 DATABASE_URL        = os.getenv("DATABASE_URL", "").strip()
 
