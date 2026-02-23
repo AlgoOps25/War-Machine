@@ -7,6 +7,9 @@ import os
 from datetime import time
 from dotenv import load_dotenv
 
+# Load environment variables from .env file
+load_dotenv()
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # API & DISCORD CONFIGURATION
