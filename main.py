@@ -2,8 +2,7 @@
 War Machine - Main Entry Point
 CFW6 Strategy + Options Signal Engine
 INTEGRATED: AI Learning, Position Tracking, Win Rate Analysis,
-            Daily P&L Digest, Weekly Session Heatmap,
-            Economic Calendar Risk Assessment
+            Daily P&L Digest, Weekly Session Heatmap
 """
 import os
 import sys
@@ -148,107 +147,6 @@ def load_win_rate_tracker():
         return None
 
 
-def assess_session_risk():
-    """
-    Check EODHD economic calendar and adjust system parameters for high-impact days.
-    Returns dict with effective_max_contracts and effective_conf_floor.
-    Sends Discord alert summarizing today's economic events if any exist.
-    """
-    print("[INIT] Assessing session risk from economic calendar...")
-    try:
-        import config
-        from premarket_scanner import get_session_risk
-        from discord_helpers import send_simple_message
-
-        risk = get_session_risk()
-        level = risk["risk_level"]
-
-        # Default: use config values
-        effective_max_contracts = config.MAX_CONTRACTS
-        effective_conf_floor    = config.MIN_CONFIDENCE_OR
-
-        # HIGH risk: cut contracts 50%, raise confidence to 0.80
-        if level == "HIGH":
-            effective_max_contracts = max(1, config.MAX_CONTRACTS // 2)
-            effective_conf_floor    = 0.80
-            print(f"[RISK] 🚨 HIGH-IMPACT DAY DETECTED")
-            print(f"  Events: {risk['high_count']} high-impact, {risk['event_count']} total")
-            print(f"  Contracts: {config.MAX_CONTRACTS} → {effective_max_contracts}")
-            print(f"  Min Confidence: {config.MIN_CONFIDENCE_OR:.2f} → {effective_conf_floor:.2f}")
-
-            # Build concise Discord alert
-            event_lines = []
-            for e in risk["high_events"][:5]:  # Max 5 events
-                name = str(e.get("type") or e.get("event") or e.get("name") or "Event")
-                time_str = str(e.get("date", ""))
-                if " " in time_str:
-                    time_str = time_str.split(" ")[1][:5]  # "14:00:00" -> "14:00"
-                elif "T" in time_str:
-                    time_str = time_str.split("T")[1][:5]
-                else:
-                    time_str = "--:--"
-                event_lines.append(f"  🔴 {time_str} ET | {name}")
-
-            message = (
-                f"🚨 **HIGH-IMPACT ECONOMIC DAY** 🚨\n\n"
-                f"{risk['event_count']} events today | {risk['high_count']} high-impact\n\n"
-                + "\n".join(event_lines) + "\n\n"
-                f"**System Adjustments:**\n"
-                f"• MAX_CONTRACTS: {config.MAX_CONTRACTS} → {effective_max_contracts}\n"
-                f"• MIN_CONFIDENCE: {config.MIN_CONFIDENCE_OR:.0%} → {effective_conf_floor:.0%}\n\n"
-                f"⚠️ Avoid entries 30 min before/after major announcements."
-            )
-            send_simple_message(message)
-
-        # MEDIUM risk: normal sizing but send awareness alert
-        elif level == "MEDIUM" and risk["event_count"] > 0:
-            print(f"[RISK] ⚠️ MEDIUM-IMPACT DAY")
-            print(f"  Events: {risk['event_count']} scheduled")
-            print(f"  Operating with normal parameters, heightened awareness.")
-
-            event_lines = []
-            for e in risk["all_events"][:3]:  # Show top 3
-                name = str(e.get("type") or e.get("event") or e.get("name") or "Event")
-                time_str = str(e.get("date", ""))
-                if " " in time_str:
-                    time_str = time_str.split(" ")[1][:5]
-                elif "T" in time_str:
-                    time_str = time_str.split("T")[1][:5]
-                else:
-                    time_str = "--:--"
-                event_lines.append(f"  🟡 {time_str} ET | {name}")
-
-            message = (
-                f"⚠️ **Medium-Impact Economic Day**\n\n"
-                f"{risk['event_count']} events scheduled today:\n\n"
-                + "\n".join(event_lines) + "\n\n"
-                f"Normal sizing. Watch for volatility around announcements."
-            )
-            send_simple_message(message)
-
-        # LOW risk: silent (no events)
-        else:
-            print(f"[RISK] ✅ LOW-IMPACT DAY (no major scheduled events)")
-
-        return {
-            "effective_max_contracts": effective_max_contracts,
-            "effective_conf_floor":    effective_conf_floor,
-            "risk_level":              level,
-        }
-
-    except Exception as e:
-        print(f"[RISK] Error assessing session risk: {e}")
-        import traceback
-        traceback.print_exc()
-        # Fail safe: return config defaults
-        import config
-        return {
-            "effective_max_contracts": config.MAX_CONTRACTS,
-            "effective_conf_floor":    config.MIN_CONFIDENCE_OR,
-            "risk_level":              "UNKNOWN",
-        }
-
-
 def send_startup_notification():
     try:
         from discord_helpers import send_simple_message
@@ -317,18 +215,7 @@ def main():
     pos_tracker = load_position_tracker()
     wr_tracker  = load_win_rate_tracker()
 
-    # NEW: Assess session risk from economic calendar
-    # Returns effective_max_contracts and effective_conf_floor
-    # Sends Discord alert if HIGH or MEDIUM risk detected
-    session_risk = assess_session_risk()
-
     send_startup_notification()
-
-    # ── Apply risk adjustments to live config ──────────────────────────
-    import config
-    config.MAX_CONTRACTS     = session_risk["effective_max_contracts"]
-    config.MIN_CONFIDENCE_OR = session_risk["effective_conf_floor"]
-    # ───────────────────────────────────────────────────────────────────
 
     print("\n" + "="*60)
     print("STRATEGY CONFIGURATION")
@@ -340,13 +227,8 @@ def main():
     print("Risk:         2% per trade | 1 contract max")
     print("Options:      7-45 DTE | 0.35-0.55 delta | High liquidity")
     print("Intelligence: IVR + UOA + GEX | Earnings Guard | AI Win-Rate Learning")
-    print("Economic:     EODHD Calendar | Adaptive sizing on HIGH-impact days")
     print("Reporting:    Daily P&L Digest | Weekly Session Heatmap (Fri)")
     print("Data Feed:    EODHD WebSocket (real-time 1m bars) + REST snapshots")
-    print("\nSession Risk Adjustments:")
-    print(f"  Max Contracts: {session_risk['effective_max_contracts']}")
-    print(f"  Min Confidence Floor: {session_risk['effective_conf_floor']:.2f}")
-    print(f"  Risk Level: {session_risk['risk_level']}")
     print("="*60 + "\n")
 
     _digest_sent_today = False
@@ -370,7 +252,6 @@ def main():
         run_eod_digest()
         if pos_tracker:
             print("\nPosition Summary:")
-            # FIX #1: was pos_tracker.print_summary() — method does not exist on PositionManager
             print(pos_tracker.generate_report())
         if ai_engine:
             print("\nAI Learning Summary:")
