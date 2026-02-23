@@ -324,6 +324,12 @@ def main():
 
     send_startup_notification()
 
+    # ── Apply risk adjustments to live config ──────────────────────────
+    import config
+    config.MAX_CONTRACTS     = session_risk["effective_max_contracts"]
+    config.MIN_CONFIDENCE_OR = session_risk["effective_conf_floor"]
+    # ───────────────────────────────────────────────────────────────────
+
     print("\n" + "="*60)
     print("STRATEGY CONFIGURATION")
     print("="*60)
@@ -349,9 +355,6 @@ def main():
     print("Starting CFW6 scanner...\n")
     try:
         from scanner import start_scanner_loop
-        # TODO: Pass session_risk dict to start_scanner_loop() so it can enforce
-        # effective_max_contracts and effective_conf_floor throughout the session.
-        # For now, scanner uses config.MAX_CONTRACTS directly — next integration point.
         start_scanner_loop()
 
     except ImportError as e:
