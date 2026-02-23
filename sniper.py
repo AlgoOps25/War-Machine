@@ -728,12 +728,11 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         return False
     final_grade = conf_result["final_grade"]
 
-    # STEP 8.5 — MULTI-INDICATOR VALIDATION (NEW)
-    # Get latest bar for volume calculation
+    # STEP 8.5 — MULTI-INDICATOR VALIDATION
     latest_bar = bars_session[-1]
     current_volume = latest_bar.get("volume", 0)
     
-    # Convert direction to signal direction for validator
+    # Convert direction to signal_direction for validator
     signal_direction = "LONG" if direction == "bull" else "SHORT"
     
     # Store original confidence for comparison
@@ -745,12 +744,13 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
     if VALIDATOR_ENABLED:
         try:
             validator = get_validator()
+            # CRITICAL FIX: validator expects 'signal_direction', not 'direction'
             validation_result = validator.validate_signal(
                 ticker=ticker,
-                direction=signal_direction,
+                signal_direction=signal_direction,  # Fixed parameter name
                 price=entry_price,
                 volume=current_volume,
-                confidence=original_confidence * 100  # Convert to percentage
+                confidence=original_confidence * 100
             )
             
             # Update statistics
@@ -777,7 +777,6 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
                   f"Score: {validation_result['checks_passed']}/{validation_result['total_checks']}")
             
             if not validation_result['should_take']:
-                # Show what would've been filtered
                 failed = [k.upper() for k, v in validation_result['checks'].items() 
                          if isinstance(v, dict) and not v.get('passed', True)]
                 if failed:
@@ -785,7 +784,6 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
             
             # In TEST MODE, adjust confidence but don't filter
             if VALIDATOR_TEST_MODE:
-                # Apply confidence adjustment but still send signal
                 base_confidence = validation_result['adjusted_confidence'] / 100.0
             else:
                 # FULL MODE - actually filter signals
@@ -799,13 +797,12 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
             # On error, continue without validation
     
     # STEP 9 — STOPS & TARGETS
-    # FIX #4: pass grade=final_grade — was missing, defaulting to "A" for all signals
     stop_price, t1, t2 = compute_stop_and_targets(
         bars_session, direction, or_high_ref, or_low_ref, entry_price,
         grade=final_grade
     )
 
-    # STEP 10 — OPTIONS (stop_price now threaded through for accurate GEX context)
+    # STEP 10 — OPTIONS
     options_rec = get_options_recommendation(
         ticker=ticker, direction=direction,
         entry_price=entry_price, target_price=t1,
@@ -879,7 +876,10 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
 def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high,
                entry_price, stop_price, t1, t2, confidence, grade,
                options_rec=None, signal_type="CFW6_OR", validation_result=None):
-    if abs(entry_price - stop_price) < entry_price * 0.002:
+    # LOWERED: Minimum risk threshold from 0.2% to 0.1%
+    # Allows tighter stops on low volatility setups while
+    # wider ATR multipliers (2.0x-3.0x) ensure reasonable risk
+    if abs(entry_price - stop_price) < entry_price * 0.001:  # Was 0.002 (0.2%), now 0.001 (0.1%)
         print(f"[ARM] ⚠️ {ticker} stop too tight — skipping")
         return
 
