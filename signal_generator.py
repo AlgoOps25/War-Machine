@@ -7,6 +7,7 @@ Responsibilities:
   - Send Discord alerts with entry/stop/target
   - Track signal performance with signal_analytics
   - Manage signal state (pending, filled, stopped, hit target)
+  - [NEW] Multi-indicator validation (Test Mode - no filtering yet)
 """
 from typing import Dict, List, Optional
 from datetime import datetime, timedelta
@@ -23,7 +24,16 @@ try:
     ANALYTICS_ENABLED = True
 except ImportError:
     ANALYTICS_ENABLED = False
-    print("[SIGNALS] ⚠️ signal_analytics not available - performance tracking disabled")
+    print("[SIGNALS] ⚠️  signal_analytics not available - performance tracking disabled")
+
+# Import signal validator for multi-indicator confirmation
+try:
+    from signal_validator import get_validator
+    VALIDATOR_ENABLED = True
+    VALIDATOR_TEST_MODE = True  # Set to False to enable filtering
+except ImportError:
+    VALIDATOR_ENABLED = False
+    print("[SIGNALS] ⚠️  signal_validator not available - multi-indicator validation disabled")
 
 ET = ZoneInfo("America/New_York")
 
@@ -80,6 +90,26 @@ class SignalGenerator:
         # Now includes signal_id from analytics database
         self.active_signals: Dict[str, Dict] = {}  # ticker -> signal_data
         
+        # Initialize validator if available
+        self.validator = None
+        if VALIDATOR_ENABLED:
+            try:
+                self.validator = get_validator()
+                mode = "TEST MODE (no filtering)" if VALIDATOR_TEST_MODE else "FULL MODE (filtering enabled)"
+                print(f"[SIGNALS] ✅ Multi-indicator validator enabled - {mode}")
+            except Exception as e:
+                print(f"[SIGNALS] ⚠️  Validator initialization error: {e}")
+                self.validator = None
+        
+        # Validation statistics
+        self.validation_stats = {
+            'total_signals': 0,
+            'would_filter': 0,
+            'would_pass': 0,
+            'confidence_boosted': 0,
+            'confidence_penalized': 0
+        }
+        
         print(f"[SIGNALS] Generator initialized | "
               f"Lookback: {lookback_bars} | Volume: {volume_multiplier}x | "
               f"Cooldown: {cooldown_minutes}m | Min Confidence: {min_confidence}%")
@@ -117,6 +147,72 @@ class SignalGenerator:
         if signal and signal['confidence'] >= self.min_confidence:
             # Add ticker to signal
             signal['ticker'] = ticker
+            
+            # === MULTI-INDICATOR VALIDATION (TEST MODE) ===
+            if self.validator and bars:
+                try:
+                    latest_bar = bars[-1]
+                    
+                    # Run validation
+                    should_pass, adjusted_conf, metadata = self.validator.validate_signal(
+                        ticker=ticker,
+                        signal_direction=signal['signal'],
+                        current_price=signal['entry'],
+                        current_volume=latest_bar['volume'],
+                        base_confidence=signal['confidence'] / 100.0  # Convert to 0.0-1.0
+                    )
+                    
+                    # Update statistics
+                    self.validation_stats['total_signals'] += 1
+                    if should_pass:
+                        self.validation_stats['would_pass'] += 1
+                    else:
+                        self.validation_stats['would_filter'] += 1
+                    
+                    if adjusted_conf > (signal['confidence'] / 100.0):
+                        self.validation_stats['confidence_boosted'] += 1
+                    elif adjusted_conf < (signal['confidence'] / 100.0):
+                        self.validation_stats['confidence_penalized'] += 1
+                    
+                    # Store validation results in signal (for analysis)
+                    signal['validation_test'] = {
+                        'should_pass': should_pass,
+                        'original_confidence': signal['confidence'],
+                        'adjusted_confidence': round(adjusted_conf * 100, 1),
+                        'confidence_delta': round((adjusted_conf - signal['confidence'] / 100.0) * 100, 1),
+                        'checks_passed': metadata['summary']['passed_checks'],
+                        'checks_failed': metadata['summary']['failed_checks'],
+                        'check_score': metadata['summary']['check_score']
+                    }
+                    
+                    # Log validation result
+                    status_emoji = "✅" if should_pass else "❌"
+                    conf_change = signal['validation_test']['confidence_delta']
+                    conf_emoji = "📈" if conf_change > 0 else "📉" if conf_change < 0 else "➡️"
+                    
+                    print(f"[VALIDATOR TEST] {ticker} {status_emoji} | "
+                          f"Conf: {signal['confidence']:.0f}% → {adjusted_conf*100:.0f}% "
+                          f"{conf_emoji} ({conf_change:+.0f}%) | "
+                          f"Score: {metadata['summary']['check_score']}")
+                    
+                    if not should_pass:
+                        print(f"[VALIDATOR TEST]   Would filter: {', '.join(metadata['summary']['failed_checks'])}")
+                    
+                    # TEST MODE: Continue with original signal (don't filter)
+                    if VALIDATOR_TEST_MODE:
+                        pass  # Keep going with original signal
+                    else:
+                        # FULL MODE: Apply validation filter
+                        if not should_pass:
+                            print(f"[VALIDATOR] {ticker} FILTERED - weak confirmation")
+                            return None
+                        
+                        # Update signal with boosted confidence
+                        signal['confidence'] = round(adjusted_conf * 100, 1)
+                
+                except Exception as e:
+                    print(f"[VALIDATOR] Error validating {ticker}: {e}")
+                    # Continue without validation on error
             
             # Update cooldown
             self.recent_signals[ticker] = datetime.now(ET)
@@ -182,18 +278,37 @@ class SignalGenerator:
         ticker = signal['ticker']
         
         # Console output
-        print("\\n" + "="*70)
+        print("\n" + "="*70)
         print(f"🚨 BREAKOUT SIGNAL DETECTED: {ticker}")
         print("="*70)
         print(format_signal_message(ticker, signal))
+        
+        # Add validation summary if available
+        if 'validation_test' in signal:
+            val = signal['validation_test']
+            print(f"\nValidation Test:")
+            print(f"  Status: {'✅ Would Pass' if val['should_pass'] else '❌ Would Filter'}")
+            print(f"  Confidence: {val['original_confidence']}% → {val['adjusted_confidence']}% ({val['confidence_delta']:+.0f}%)")
+            print(f"  Checks: {val['check_score']}")
+            if val['checks_failed']:
+                print(f"  Failed: {', '.join(val['checks_failed'])}")
+        
         if 'signal_id' in signal:
             print(f"Signal ID: {signal['signal_id']} (tracked in analytics DB)")
-        print("="*70 + "\\n")
+        print("="*70 + "\n")
         
         # Discord alert
         if send_discord:
             try:
-                msg = f"🚨 **BREAKOUT ALERT**\\n{format_signal_message(ticker, signal)}"
+                msg = f"🚨 **BREAKOUT ALERT**\n{format_signal_message(ticker, signal)}"
+                
+                # Add validation test info to Discord
+                if 'validation_test' in signal:
+                    val = signal['validation_test']
+                    status_emoji = "✅" if val['should_pass'] else "⚠️"
+                    msg += f"\n\n{status_emoji} **Validation Test:** {val['check_score']} checks"
+                    msg += f"\nConfidence: {val['original_confidence']}% → {val['adjusted_confidence']}%"
+                
                 send_simple_message(msg)
                 print(f"[SIGNALS] Discord alert sent for {ticker}")
             except Exception as e:
@@ -357,13 +472,13 @@ class SignalGenerator:
         
         # Console output
         emoji = "✅" if status == 'HIT_TARGET' else "❌"
-        print(f"\\n{emoji} {ticker} {status}: ${exit_price:.2f} | P&L: ${pnl:.2f} ({pnl_pct:+.2f}%)\\n")
+        print(f"\n{emoji} {ticker} {status}: ${exit_price:.2f} | P&L: ${pnl:.2f} ({pnl_pct:+.2f}%)\n")
         
         # Discord alert
         try:
             msg = (
-                f"{emoji} **{ticker} {status}**\\n"
-                f"Entry: ${entry:.2f} → Exit: ${exit_price:.2f}\\n"
+                f"{emoji} **{ticker} {status}**\n"
+                f"Entry: ${entry:.2f} → Exit: ${exit_price:.2f}\n"
                 f"P&L: ${pnl:.2f} ({pnl_pct:+.2f}%)"
             )
             send_simple_message(msg)
@@ -383,11 +498,11 @@ class SignalGenerator:
         if not self.active_signals:
             return "No active signals"
         
-        summary = "\\n" + "="*70 + "\\n"
-        summary += "ACTIVE SIGNALS\\n"
-        summary += "="*70 + "\\n"
-        summary += f"{'Ticker':<8} {'Signal':<6} {'Entry':<8} {'Stop':<8} {'Target':<8} {'Conf':<5}\\n"
-        summary += "-"*70 + "\\n"
+        summary = "\n" + "="*70 + "\n"
+        summary += "ACTIVE SIGNALS\n"
+        summary += "="*70 + "\n"
+        summary += f"{'Ticker':<8} {'Signal':<6} {'Entry':<8} {'Stop':<8} {'Target':<8} {'Conf':<5}\n"
+        summary += "-"*70 + "\n"
         
         for ticker, signal in self.active_signals.items():
             summary += (
@@ -396,10 +511,47 @@ class SignalGenerator:
                 f"${signal['entry']:<7.2f} "
                 f"${signal['stop']:<7.2f} "
                 f"${signal['target']:<7.2f} "
-                f"{signal['confidence']:<5}%\\n"
+                f"{signal['confidence']:<5}%\n"
             )
         
-        summary += "="*70 + "\\n"
+        summary += "="*70 + "\n"
+        return summary
+    
+    def get_validation_stats_summary(self) -> str:
+        """
+        Get formatted summary of validation test statistics.
+        
+        Returns:
+            Formatted string with validation stats
+        """
+        if not VALIDATOR_ENABLED or self.validation_stats['total_signals'] == 0:
+            return "No validation data available"
+        
+        stats = self.validation_stats
+        total = stats['total_signals']
+        
+        pass_rate = (stats['would_pass'] / total * 100) if total > 0 else 0
+        filter_rate = (stats['would_filter'] / total * 100) if total > 0 else 0
+        boost_rate = (stats['confidence_boosted'] / total * 100) if total > 0 else 0
+        
+        summary = "\n" + "="*70 + "\n"
+        summary += "VALIDATOR TEST MODE STATISTICS\n"
+        summary += "="*70 + "\n"
+        summary += f"Total Signals Tested: {total}\n"
+        summary += f"Would Pass: {stats['would_pass']} ({pass_rate:.1f}%)\n"
+        summary += f"Would Filter: {stats['would_filter']} ({filter_rate:.1f}%)\n"
+        summary += f"Confidence Boosted: {stats['confidence_boosted']} ({boost_rate:.1f}%)\n"
+        summary += f"Confidence Penalized: {stats['confidence_penalized']}\n"
+        summary += "="*70 + "\n"
+        
+        if VALIDATOR_TEST_MODE:
+            summary += "⚠️  TEST MODE ACTIVE - Signals NOT being filtered\n"
+            summary += "Switch VALIDATOR_TEST_MODE to False to enable filtering\n"
+        else:
+            summary += "✅ FULL MODE ACTIVE - Weak signals being filtered\n"
+        
+        summary += "="*70 + "\n"
+        
         return summary
     
     def clear_expired_signals(self, max_age_hours: int = 4) -> None:
@@ -446,6 +598,20 @@ class SignalGenerator:
         """Reset signal generator for new trading day."""
         self.recent_signals.clear()
         self.active_signals.clear()
+        
+        # Print validation stats before reset
+        if VALIDATOR_ENABLED and self.validation_stats['total_signals'] > 0:
+            print(self.get_validation_stats_summary())
+        
+        # Reset validation stats
+        self.validation_stats = {
+            'total_signals': 0,
+            'would_filter': 0,
+            'would_pass': 0,
+            'confidence_boosted': 0,
+            'confidence_penalized': 0
+        }
+        
         print("[SIGNALS] Daily reset complete")
 
 
@@ -481,12 +647,17 @@ def monitor_signals() -> None:
     updates = signal_generator.monitor_active_signals()
     
     if updates:
-        print(f"\\n[SIGNALS] {len(updates)} signal updates\\n")
+        print(f"\n[SIGNALS] {len(updates)} signal updates\n")
 
 
 def print_active_signals() -> None:
     """Print summary of active signals."""
     print(signal_generator.get_active_signals_summary())
+
+
+def print_validation_stats() -> None:
+    """Print validation test statistics."""
+    print(signal_generator.get_validation_stats_summary())
 
 
 def print_performance_report(days: int = 30) -> None:
@@ -495,7 +666,7 @@ def print_performance_report(days: int = 30) -> None:
         from signal_analytics import print_performance_report as _print_report
         _print_report(days)
     else:
-        print("[SIGNALS] ⚠️ Analytics not enabled - cannot generate report")
+        print("[SIGNALS] ⚠️  Analytics not enabled - cannot generate report")
 
 
 # ========================================
@@ -505,17 +676,21 @@ if __name__ == "__main__":
     # Example: Scan watchlist for signals
     test_watchlist = ["SPY", "QQQ", "AAPL", "TSLA", "NVDA"]
     
-    print("Scanning watchlist for breakout signals...\\n")
+    print("Scanning watchlist for breakout signals...\n")
     signals = scan_for_signals(test_watchlist)
     
     if signals:
-        print(f"Found {len(signals)} signals:\\n")
+        print(f"Found {len(signals)} signals:\n")
         for signal in signals:
             print(format_signal_message(signal['ticker'], signal))
             print("-" * 70)
     else:
         print("No signals detected")
     
+    # Print validation stats (if enabled)
+    if VALIDATOR_ENABLED:
+        print_validation_stats()
+    
     # Print performance stats
-    print("\\n" + "="*70)
+    print("\n" + "="*70)
     print_performance_report(days=7)
