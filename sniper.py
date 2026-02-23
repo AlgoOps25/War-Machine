@@ -11,9 +11,10 @@
 # OR WIDTH FILTER: OR range < MIN_OR_RANGE_PCT skips OR path (choppy), falls to intraday BOS
 # WATCH PERSISTENCE: watching_signals table survives Railway redeploys via Postgres;
 #                    breakout_bar_dt stored so breakout_idx is resolved from live bars after restart.
+#                    Smart expiration auto-cleans stale watches on load.
 import traceback
 import requests
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 from discord_helpers import send_options_signal_alert, send_simple_message
 from options_filter import get_options_recommendation
@@ -122,6 +123,10 @@ def print_validation_stats():
 # breakout_idx is NOT stored directly (it's a positional array index and
 # would be invalid after a restart). Instead, breakout_bar_dt (the datetime
 # of the breakout candle) is stored and resolved back to an index at reload time.
+#
+# SMART EXPIRATION: On load, watches older than MAX_WATCH_BARS * 5min are
+# automatically removed from DB. This handles Railway restarts gracefully
+# without manual intervention.
 # ─────────────────────────────────────────────────────────────
 
 def _ensure_watch_db():
@@ -201,19 +206,58 @@ def _remove_watch_from_db(ticker: str):
         print(f"[WATCH-DB] Remove error for {ticker}: {e}")
 
 
+def _cleanup_stale_watches():
+    """
+    Remove watch entries from DB that are older than the valid watch window.
+    Watch window = MAX_WATCH_BARS * 5min bars.
+    This runs on startup to clean up watches that expired during downtime/restarts.
+    """
+    try:
+        from db_connection import get_conn, ph as _ph
+        
+        # Calculate expiration cutoff: current time - (MAX_WATCH_BARS * 5 minutes)
+        watch_window_minutes = MAX_WATCH_BARS * 5
+        cutoff_time = _now_et() - timedelta(minutes=watch_window_minutes)
+        
+        conn = get_conn()
+        cursor = conn.cursor()
+        p = _ph()
+        
+        # Delete watches where breakout_bar_dt is older than the cutoff
+        cursor.execute(
+            f"DELETE FROM watching_signals_persist WHERE breakout_bar_dt < {p}",
+            (cutoff_time,)
+        )
+        deleted_count = cursor.rowcount
+        conn.commit()
+        conn.close()
+        
+        if deleted_count > 0:
+            print(f"[WATCH-DB] 🧹 Auto-cleaned {deleted_count} stale watch(es) (older than {watch_window_minutes}min)")
+        
+    except Exception as e:
+        print(f"[WATCH-DB] Cleanup error: {e}")
+
+
 def _load_watches_from_db() -> dict:
     """
     Load today's watch entries from the DB.
     Returns a dict of ticker -> watch entry with breakout_idx=None.
     The index is resolved lazily in process_ticker() when bars_session is available.
     Rows saved on a previous trading day are silently discarded.
+    Stale watches (older than MAX_WATCH_BARS window) are auto-cleaned before loading.
     """
     try:
         from db_connection import get_conn, dict_cursor as _dc, ph as _ph, USE_POSTGRES as _USE_PG
+        
+        # First, clean up any stale watches
+        _cleanup_stale_watches()
+        
         conn = get_conn()
         cursor = _dc(conn)
         p = _ph()
         today_et = _now_et().date()
+        
         # FIX #7: AT TIME ZONE is Postgres-only syntax — use DATE(saved_at) on SQLite
         if _USE_PG:
             cursor.execute(
@@ -247,7 +291,7 @@ def _load_watches_from_db() -> dict:
             }
         if loaded:
             print(
-                f"[WATCH-DB] \U0001f504 Reloaded {len(loaded)} watch state(s) from DB after restart: "
+                f"[WATCH-DB] 🔄 Reloaded {len(loaded)} watch state(s) from DB after restart: "
                 f"{', '.join(loaded.keys())}"
             )
         return loaded
@@ -260,6 +304,7 @@ def _maybe_load_watches():
     """
     Called once per session on the first process_ticker() invocation.
     Initialises the DB table and merges any surviving watch state into memory.
+    Auto-cleans stale watches before loading.
     """
     global _watches_loaded, watching_signals
     if _watches_loaded:
@@ -330,7 +375,7 @@ def _is_highly_correlated(ticker: str, open_positions: list,
             continue
         corr = _pearson_corr(xs_ret[-m:], ys_ret[-m:])
         if corr >= threshold:
-            print(f"[CORR] {ticker} vs {other} corr={corr:.2f} \u2014 blocking new signal")
+            print(f"[CORR] {ticker} vs {other} corr={corr:.2f} — blocking new signal")
             return True
 
     return False
@@ -342,18 +387,18 @@ def _is_highly_correlated(ticker: str, open_positions: list,
 
 def send_bos_watch_alert(ticker, direction, bos_price, struct_high, struct_low,
                           signal_type="CFW6_INTRADAY"):
-    arrow    = "\U0001f7e2" if direction == "bull" else "\U0001f534"
+    arrow    = "🟢" if direction == "bull" else "🔴"
     level    = f"${struct_high:.2f}" if direction == "bull" else f"${struct_low:.2f}"
     mode_tag = "[OR]" if signal_type == "CFW6_OR" else "[INTRADAY]"
     msg = (
-        f"\U0001f4e1 **BOS ALERT {mode_tag}: {ticker}** \u2014 {arrow} {direction.upper()}\n"
+        f"📡 **BOS ALERT {mode_tag}: {ticker}** — {arrow} {direction.upper()}\n"
         f"Break: **${bos_price:.2f}** | Level: {level}\n"
-        f"\u23f3 Watching for FVG (up to {MAX_WATCH_BARS} min) | "
-        f"\U0001f550 {_now_et().strftime('%I:%M %p ET')}"
+        f"⏳ Watching for FVG (up to {MAX_WATCH_BARS} min) | "
+        f"🕐 {_now_et().strftime('%I:%M %p ET')}"
     )
     try:
         send_simple_message(msg)
-        print(f"[WATCH] \U0001f4e1 {ticker} {direction.upper()} BOS @ ${bos_price:.2f}")
+        print(f"[WATCH] 📡 {ticker} {direction.upper()} BOS @ ${bos_price:.2f}")
     except Exception as e:
         print(f"[WATCH] Alert error: {e}")
 
@@ -400,12 +445,12 @@ def detect_fvg_after_break(bars, breakout_idx, direction):
         if direction == "bull":
             gap = c2["low"] - c0["high"]
             if gap > 0 and (gap / c0["high"]) >= config.FVG_MIN_SIZE_PCT:
-                print(f"[FVG] BULL ${c0['high']:.2f}\u2013${c2['low']:.2f}")
+                print(f"[FVG] BULL ${c0['high']:.2f}–${c2['low']:.2f}")
                 return c0["high"], c2["low"]
         elif direction == "bear":
             gap = c0["low"] - c2["high"]
             if gap > 0 and (gap / c0["low"]) >= config.FVG_MIN_SIZE_PCT:
-                print(f"[FVG] BEAR ${c2['high']:.2f}\u2013${c0['low']:.2f}")
+                print(f"[FVG] BEAR ${c2['high']:.2f}–${c0['low']:.2f}")
                 return c2["high"], c0["low"]
     return None, None
 
@@ -423,11 +468,11 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
     )
     found, entry_price, base_grade, confirm_idx, confirm_type = result
     if not found or base_grade == "reject":
-        print(f"[{ticker}] \u2014 No confirmation (found={found}, grade={base_grade})")
+        print(f"[{ticker}] — No confirmation (found={found}, grade={base_grade})")
         return False
 
     if signal_type == "CFW6_INTRADAY" and base_grade not in INTRADAY_MIN_GRADES:
-        print(f"[{ticker}] \u2014 Intraday grade {base_grade} below A threshold")
+        print(f"[{ticker}] — Intraday grade {base_grade} below A threshold")
         return False
 
     # STEP 8 — CONFIRMATION LAYERS
@@ -436,7 +481,7 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         current_price=entry_price, breakout_idx=breakout_idx, base_grade=base_grade
     )
     if conf_result["final_grade"] == "reject":
-        print(f"[{ticker}] \u2014 Rejected by confirmation layers")
+        print(f"[{ticker}] — Rejected by confirmation layers")
         return False
     final_grade = conf_result["final_grade"]
 
@@ -547,10 +592,10 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         1.0
     )
     print(
-        f"[CONFIDENCE] Base:{base_confidence:.2f} \u00d7 Ticker:{ticker_multiplier:.2f} "
-        f"\u00d7 Mode:{mode_decay:.2f} \u00d7 IVR:{ivr_multiplier:.2f}[{ivr_label}] "
-        f"\u00d7 UOA:{uoa_multiplier:.2f}[{uoa_label}] "
-        f"\u00d7 GEX:{gex_multiplier:.2f}[{gex_label}] "
+        f"[CONFIDENCE] Base:{base_confidence:.2f} × Ticker:{ticker_multiplier:.2f} "
+        f"× Mode:{mode_decay:.2f} × IVR:{ivr_multiplier:.2f}[{ivr_label}] "
+        f"× UOA:{uoa_multiplier:.2f}[{uoa_label}] "
+        f"× GEX:{gex_multiplier:.2f}[{gex_label}] "
         f"+ MTF:{mtf_boost:.2f} = {final_confidence:.2f}"
     )
 
@@ -563,14 +608,14 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
 
     if final_confidence < eff_min:
         print(
-            f"[{ticker}] \U0001f6ab GATED: confidence {final_confidence:.2f} < "
+            f"[{ticker}] 🚫 GATED: confidence {final_confidence:.2f} < "
             f"min {eff_min:.2f} "
             f"[type={min_type:.2f} grade={min_grade:.2f} abs={config.CONFIDENCE_ABSOLUTE_FLOOR:.2f}] "
-            f"[{signal_type}/{final_grade}] \u2014 signal dropped"
+            f"[{signal_type}/{final_grade}] — signal dropped"
         )
         return False
 
-    print(f"[{ticker}] \u2705 GATE PASSED: {final_confidence:.2f} >= {eff_min:.2f}")
+    print(f"[{ticker}] ✅ GATE PASSED: {final_confidence:.2f} >= {eff_min:.2f}")
 
     # STEP 12 — ARM (with validation result attached)
     arm_ticker(
@@ -592,16 +637,16 @@ def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high,
                entry_price, stop_price, t1, t2, confidence, grade,
                options_rec=None, signal_type="CFW6_OR", validation_result=None):
     if abs(entry_price - stop_price) < entry_price * 0.002:
-        print(f"[ARM] \u26a0\ufe0f {ticker} stop too tight \u2014 skipping")
+        print(f"[ARM] ⚠️ {ticker} stop too tight — skipping")
         return
 
     open_positions = position_manager.get_open_positions()
     if _is_highly_correlated(ticker, open_positions, window_bars=60, threshold=0.9):
-        print(f"[CORR] Skipping {ticker} \u2014 highly correlated with open book")
+        print(f"[CORR] Skipping {ticker} — highly correlated with open book")
         return
 
     mode_label = " [INTRADAY]" if signal_type == "CFW6_INTRADAY" else " [OR]"
-    print(f"\u2705 {ticker} ARMED{mode_label}: {direction.upper()} | "
+    print(f"✅ {ticker} ARMED{mode_label}: {direction.upper()} | "
           f"Entry:${entry_price:.2f} Stop:${stop_price:.2f} "
           f"T1:${t1:.2f} T2:${t2:.2f} | {confidence*100:.1f}% ({grade})")
 
@@ -670,7 +715,7 @@ def process_ticker(ticker: str):
             return
 
         print(f"[{ticker}] {_now_et().date()} ({len(bars_session)} bars) "
-              f"{_bar_time(bars_session[0])} \u2192 {_bar_time(bars_session[-1])}")
+              f"{_bar_time(bars_session[0])} → {_bar_time(bars_session[-1])}")
 
         if is_force_close_time(bars_session[-1]):
             position_manager.close_all_eod({ticker: bars_session[-1]["close"]})
@@ -680,7 +725,7 @@ def process_ticker(ticker: str):
 
         has_earns, earns_date = has_earnings_soon(ticker)
         if has_earns:
-            print(f"[{ticker}] \u274c Earnings {earns_date} \u2014 skip")
+            print(f"[{ticker}] ❌ Earnings {earns_date} — skip")
             return
 
         # ── WATCHING STATE ─────────────────────────────────────────────────────────
@@ -700,26 +745,26 @@ def process_ticker(ticker: str):
                             break
                 if resolved_idx is None:
                     print(
-                        f"[{ticker}] \u26a0\ufe0f Watch DB entry: breakout bar "
-                        f"{bar_dt_target} not found in today's session \u2014 discarding"
+                        f"[{ticker}] ⚠️ Watch DB entry: breakout bar "
+                        f"{bar_dt_target} not found in today's session — discarding"
                     )
                     del watching_signals[ticker]
                     _remove_watch_from_db(ticker)
                     # fall through to fresh scan
                 else:
                     w["breakout_idx"] = resolved_idx
-                    print(f"[{ticker}] \U0001f504 Watch restored from DB: "
+                    print(f"[{ticker}] 🔄 Watch restored from DB: "
                           f"breakout_idx={resolved_idx} ({bar_dt_target})")
 
         if ticker in watching_signals:   # may have been removed in resolution block above
             w          = watching_signals[ticker]
             bars_since = len(bars_session) - w["breakout_idx"]
             if bars_since > MAX_WATCH_BARS:
-                print(f"[{ticker}] \u23f0 Watch expired \u2014 clearing")
+                print(f"[{ticker}] ⏰ Watch expired — clearing")
                 del watching_signals[ticker]
                 _remove_watch_from_db(ticker)
             else:
-                print(f"[{ticker}] \U0001f441\ufe0f WATCHING [{bars_since}/{MAX_WATCH_BARS}]")
+                print(f"[{ticker}] 👁️ WATCHING [{bars_since}/{MAX_WATCH_BARS}]")
                 zl, zh = detect_fvg_after_break(bars_session, w["breakout_idx"], w["direction"])
                 if zl is None:
                     return
@@ -743,10 +788,10 @@ def process_ticker(ticker: str):
                 print(
                     f"[{ticker}] OR too narrow "
                     f"({or_range_pct:.2%} < {config.MIN_OR_RANGE_PCT:.2%}) "
-                    f"\u2014 skipping OR path, trying intraday BOS"
+                    f"— skipping OR path, trying intraday BOS"
                 )
             else:
-                print(f"[{ticker}] OR: ${or_low:.2f}\u2013${or_high:.2f} ({or_range_pct:.2%})")
+                print(f"[{ticker}] OR: ${or_low:.2f}–${or_high:.2f} ({or_range_pct:.2%})")
                 direction, breakout_idx = detect_breakout_after_or(bars_session, or_high, or_low)
                 if direction:
                     zone_low, zone_high = detect_fvg_after_break(
@@ -790,7 +835,7 @@ def process_ticker(ticker: str):
             fvg_threshold, _ = get_adaptive_fvg_threshold(bars_session, ticker)
             bos_signal = scan_bos_fvg(ticker, bars_session, fvg_min_pct=fvg_threshold)
             if bos_signal is None:
-                print(f"[{ticker}] \u2014 No BOS+FVG signal")
+                print(f"[{ticker}] — No BOS+FVG signal")
                 return
 
             direction    = bos_signal["direction"]
@@ -811,7 +856,7 @@ def process_ticker(ticker: str):
             scan_mode = "INTRADAY_BOS"
 
         signal_type = "CFW6_OR" if scan_mode == "OR_ANCHORED" else "CFW6_INTRADAY"
-        print(f"[{ticker}] {scan_mode} | FVG ${zone_low:.2f}\u2013${zone_high:.2f}")
+        print(f"[{ticker}] {scan_mode} | FVG ${zone_low:.2f}–${zone_high:.2f}")
         _run_signal_pipeline(ticker, direction, zone_low, zone_high,
                              or_high_ref, or_low_ref, signal_type,
                              bars_session, breakout_idx)
