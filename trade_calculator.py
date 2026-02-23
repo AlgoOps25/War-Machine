@@ -160,12 +160,13 @@ def calculate_stop_loss_by_grade(
     atr: float
 ) -> float:
     """
-    CFW6 OPTIMIZATION: Grade-based stop loss
-    A+: 1.2x ATR | A: 1.5x ATR | A-: 1.8x ATR
+    CFW6 OPTIMIZATION: Grade-based stop loss with wider ATR multipliers
+    A+: 2.0x ATR | A: 2.5x ATR | A-: 3.0x ATR
+    Increased from previous (1.2x, 1.5x, 1.8x) to prevent "too tight" stops.
     Also respects Opening Range boundaries.
     """
-    atr_multipliers = {"A+": 1.2, "A": 1.5, "A-": 1.8}
-    atr_mult        = atr_multipliers.get(grade, 1.5)
+    atr_multipliers = {"A+": 2.0, "A": 2.5, "A-": 3.0}
+    atr_mult        = atr_multipliers.get(grade, 2.5)
     stop_distance   = atr * atr_mult
 
     if direction == "bull":
