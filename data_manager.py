@@ -32,7 +32,7 @@ import requests
 from collections import defaultdict
 from datetime import datetime, timedelta, time as dtime, date as date_type
 from zoneinfo import ZoneInfo
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional
 import config
 import db_connection
 from db_connection import (
@@ -317,8 +317,16 @@ class DataManager:
     # STORAGE
     # =============================================================
 
-    def store_bars(self, ticker: str, bars: List[Dict]) -> int:
-        """Upsert 1m bars into intraday_bars and update fetch_metadata."""
+    def store_bars(self, ticker: str, bars: List[Dict], quiet: bool = False) -> int:
+        """
+        Upsert 1m bars into intraday_bars and update fetch_metadata.
+
+        Args:
+            ticker: Stock symbol.
+            bars:   List of bar dicts (datetime, open, high, low, close, volume).
+            quiet:  When True, suppress the per-call log line. Used by ws_feed
+                    during the startup backfill window to avoid console spam.
+        """
         if not bars:
             return 0
 
@@ -338,8 +346,9 @@ class DataManager:
                 cursor.execute(upsert_metadata_sql(),
                                (ticker, latest_bar_dt, len(bars)))
                 conn.commit()
-                print(f"[DATA] Stored {len(bars)} bars for {ticker} "
-                      f"(latest: {latest_bar_dt.strftime('%m/%d %H:%M')} ET)")
+                if not quiet:
+                    print(f"[DATA] Stored {len(bars)} bars for {ticker} "
+                          f"(latest: {latest_bar_dt.strftime('%m/%d %H:%M')} ET)")
                 return len(bars)
             except Exception as e:
                 if conn:
@@ -363,16 +372,8 @@ class DataManager:
 
     def store_daily_bars(self, ticker: str, bars: List[Dict]) -> int:
         """
-        Store daily EOD bars in a separate daily_bars table.
+        Store daily EOD bars in the daily_bars table.
         Used by bulk_downloader for historical EOD data backfills.
-
-        Args:
-            ticker: Stock symbol
-            bars: List of bar dicts with 'datetime', 'open', 'high',
-                  'low', 'close', 'volume' keys
-
-        Returns:
-            Number of bars stored
         """
         if not bars:
             return 0
@@ -380,7 +381,6 @@ class DataManager:
         conn = get_conn(self.db_path)
         cursor = conn.cursor()
 
-        # Create table if it doesn't exist
         cursor.execute(f"""
             CREATE TABLE IF NOT EXISTS daily_bars (
                 id          {serial_pk()},
@@ -401,7 +401,6 @@ class DataManager:
         """)
         conn.commit()
 
-        # Build upsert SQL
         if db_connection.USE_POSTGRES:
             upsert_sql = """
                 INSERT INTO daily_bars (ticker, date, open, high, low, close, volume)
@@ -662,11 +661,6 @@ class DataManager:
         except Exception as e:
             print(f"[LIVE] Bulk snapshot error: {e}")
             return {}
-
-    def bulk_update_live_bars(self, tickers: List[str]) -> int:
-        """Backward-compat stub. Fetches live snapshot for position monitoring."""
-        snapshots = self.bulk_fetch_live_snapshots(tickers)
-        return len(snapshots)
 
     # =============================================================
     # UTILITIES

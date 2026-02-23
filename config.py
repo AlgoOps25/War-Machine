@@ -16,17 +16,14 @@ load_dotenv()
 # ══════════════════════════════════════════════════════════════════════════════
 EODHD_API_KEY       = os.getenv("EODHD_API_KEY", "").strip()
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
-DATABASE_URL        = os.getenv("DATABASE_URL", "").strip()
 
 # ══════════════════════════════════════════════════════════════════════════════
 # MARKET TIMING
 # ══════════════════════════════════════════════════════════════════════════════
-MARKET_OPEN             = time(9, 30)
-MARKET_CLOSE            = time(16, 0)
-OPENING_RANGE_START     = time(9, 30)
-OPENING_RANGE_END       = time(9, 40)   # CFW6: 10-minute OR window
-OPENING_RANGE_MINUTES   = 10
-PREMARKET_START         = time(4, 0)    # CFW6: Advanced pre-market levels
+MARKET_OPEN           = time(9, 30)
+MARKET_CLOSE          = time(16, 0)
+OPENING_RANGE_END     = time(9, 40)   # CFW6: 10-minute OR window
+PREMARKET_START       = time(4, 0)    # CFW6: Advanced pre-market levels
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SCANNER SETTINGS
@@ -54,7 +51,6 @@ WATCHLIST_SIZE = {
 
 # Volume & liquidity filters
 MIN_REL_VOL      = 1.5     # Minimum relative volume threshold
-OPTIONS_VOL_MULT = 2.0     # Options volume multiplier for boost
 
 # ══════════════════════════════════════════════════════════════════════════════
 # CFW6 SIGNAL DETECTION PARAMETERS
@@ -87,13 +83,6 @@ FVG_THRESHOLDS = {
 # CFW6 Confirmation settings
 MAX_WAIT_CANDLES            = 15        # Reduced from 20 (optimization)
 OPTIMAL_CONFIRMATION_WINDOW = 5        # Ideal: confirmed within 5 candles
-
-# Confirmation candle types (from CFW6 video)
-CONFIRMATION_TYPES = {
-    "perfect": "A+",    # Strong directional candle, minimal wicks
-    "flip":    "A",     # Opens opposite, flips to direction
-    "wick":    "A-"     # Strong wick rejection, doesn't flip
-}
 
 # Multi-timeframe confirmation
 CONFIRMATION_TIMEFRAMES = ["5m", "3m", "2m", "1m"]  # Priority: highest to lowest
@@ -214,10 +203,10 @@ DARKPOOL_BOOST_FACTOR    = 0.05         # +5% confidence for dark pool
 # ══════════════════════════════════════════════════════════════════════════════
 # DATABASE & LOGGING
 # ══════════════════════════════════════════════════════════════════════════════
-DB_PATH          = "market_memory.db"   # Main market data database
-TRADES_DB_PATH   = "war_machine_trades.db"  # Trade history database
-LOG_LEVEL        = "INFO"
-BARS_RETENTION_DAYS = 60                 # Auto-cleanup bars older than 60 days
+DB_PATH             = "market_memory.db"        # Main market data database (SQLite fallback)
+TRADES_DB_PATH      = "war_machine_trades.db"   # Trade history database
+LOG_LEVEL           = "INFO"
+BARS_RETENTION_DAYS = 60                         # Auto-cleanup bars older than 60 days
 
 # ══════════════════════════════════════════════════════════════════════════════
 # DEPLOYMENT SETTINGS (Railway)
