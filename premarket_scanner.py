@@ -6,6 +6,7 @@ Exports:
   build_premarket_watchlist() — Main entry point, returns list of tickers
   get_gap_movers() — Find stocks gapping significantly
   has_earnings_today() — Check if ticker has earnings today
+  has_dividend_or_split_today() — Check for ex-div dates or splits
 """
 import requests
 import os
@@ -41,6 +42,21 @@ def has_earnings_today(ticker: str) -> bool:
     except Exception as e:
         print(f"[PREMARKET] Earnings check error for {ticker}: {e}")
         return False
+
+
+def has_dividend_or_split_today(ticker: str) -> tuple:
+    """
+    Returns (has_event, details) if ticker has ex-dividend date or split within 2 days.
+    
+    Returns:
+        (bool, dict or None) - (True, {"date": "2026-02-24", "value": 0.25, "type": "dividend"})
+    """
+    try:
+        from dividends_filter import has_dividend_or_split_soon
+        return has_dividend_or_split_soon(ticker, days_ahead=2)
+    except Exception as e:
+        print(f"[PREMARKET] Dividend check error for {ticker}: {e}")
+        return False, None
 
 
 # ------------------------------------------------------------------ #
@@ -112,7 +128,7 @@ def get_gap_movers(min_gap_pct: float = 2.0) -> List[Dict]:
 # ------------------------------------------------------------------ #
 
 def build_premarket_watchlist() -> List[str]:
-    """Build master pre-market watchlist with scoring and earnings filter."""
+    """Build master pre-market watchlist with scoring, earnings, and dividend filters."""
     print("\n" + "=" * 60)
     print(f"PRE-MARKET WATCHLIST - {datetime.now().strftime('%I:%M:%S %p')}")
     print("=" * 60)
@@ -136,10 +152,26 @@ def build_premarket_watchlist() -> List[str]:
     tickers = sorted(list(watchlist))
     clean   = []
     for t in tickers:
+        # Earnings check
         if has_earnings_today(t):
             print(f"[EARNINGS] ⚠️  Removing {t} — earnings within guard window")
-        else:
-            clean.append(t)
+            continue
+        
+        # Dividend/split check
+        has_div, div_details = has_dividend_or_split_today(t)
+        if has_div:
+            event_type = div_details.get("type", "event")
+            event_date = div_details.get("date", "?")
+            if event_type == "dividend":
+                div_value = div_details.get("value", 0)
+                print(f"[DIVIDEND] ⚠️  Removing {t} — ex-div ${div_value:.2f} on {event_date}")
+            else:
+                split_ratio = div_details.get("split", "?")
+                print(f"[SPLIT] ⚠️  Removing {t} — split {split_ratio} on {event_date}")
+            continue
+        
+        # Passed all filters
+        clean.append(t)
 
     final_list = clean
 
