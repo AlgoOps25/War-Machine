@@ -117,7 +117,7 @@ POSITION_RISK = {
 }
 
 ACCOUNT_SIZE   = float(os.getenv("ACCOUNT_SIZE", "25000"))
-MAX_CONTRACTS  = 10         # Hard cap on contracts per trade
+MAX_CONTRACTS  = 1          # Hard cap on contracts per trade (set to 1 for single-contract trading)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # CONFIDENCE DECAY SETTINGS
