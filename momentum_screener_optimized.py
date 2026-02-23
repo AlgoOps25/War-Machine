@@ -332,6 +332,8 @@ def score_ticker_momentum_optimized(
 ) -> Dict:
     """
     Calculate momentum score for a single ticker (optimized version).
+    
+    Returns dict with standardized 'volume' key (not 'premarket_volume').
     """
     gap_score, bias = calculate_gap_score(current_price, prev_close, avg_daily_range_pct)
     volume_score = calculate_volume_score(volume, avg_volume)
@@ -347,7 +349,7 @@ def score_ticker_momentum_optimized(
         'bias': bias,
         'gap_pct': round(gap_pct, 2),
         'current_price': current_price,
-        'volume': volume
+        'volume': volume  # STANDARDIZED: Always 'volume', never 'premarket_volume'
     }
 
 
