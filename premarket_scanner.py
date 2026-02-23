@@ -1,18 +1,11 @@
 """
 Pre-Market Scanner (4 AM - 9:30 AM EST)
-Builds intelligent watchlist before market opens and assesses daily
-market risk based on the EODHD economic calendar.
+Builds intelligent watchlist before market opens.
 
-New exports:
-  get_session_risk()  — call from main.py at session start to get
-                        risk_level (HIGH/MEDIUM/LOW) and adjust
-                        MAX_CONTRACTS / confidence thresholds.
-  get_economic_events() — raw EODHD economic calendar fetch for today.
-
-EODHD Economic Calendar:
-  - Included in Fundamental Data Feed subscription (already have it)
-  - 30+ countries, 50+ event types
-  - Available from 2020+
+Exports:
+  build_premarket_watchlist() — Main entry point, returns list of tickers
+  get_gap_movers() — Find stocks gapping significantly
+  has_earnings_today() — Check if ticker has earnings today
 """
 import requests
 import os
@@ -30,174 +23,6 @@ SCAN_UNIVERSE = [
     "MS",   "WFC",  "UNH",  "JNJ",  "PFE",  "ABBV", "MRK",  "WMT",
     "HD",   "COST", "NKE",  "MCD",  "SPY",  "QQQ",  "IWM",  "DIA"
 ]
-
-# ------------------------------------------------------------------ #
-#  Economic calendar (EODHD)                                           #
-# ------------------------------------------------------------------ #
-
-# Keywords that flag a HIGH-IMPACT event.
-# Matched case-insensitively against the event name string.
-HIGH_IMPACT_KEYWORDS = [
-    "FOMC", "Federal Reserve", "Fed Rate", "Interest Rate Decision",
-    "CPI",  "Consumer Price Index", "Inflation",
-    "NFP",  "Non-Farm Payroll", "Nonfarm Payroll", "Nonfarm",
-    "GDP",  "Gross Domestic Product",
-    "PCE",  "Personal Consumption Expenditure",
-    "PPI",  "Producer Price Index",
-    "Unemployment Rate", "Initial Jobless Claims",
-    "ISM Manufacturing", "ISM Services", "ISM Non-Manufacturing",
-    "Retail Sales",
-    "JOLTS", "Job Openings",
-    "Jackson Hole",
-]
-
-
-def get_economic_events(date_str: str = None) -> List[Dict]:
-    """
-    Fetch US economic events from EODHD for a given date.
-
-    Endpoint: GET https://eodhd.com/api/economic-events?from=DATE&to=DATE&api_token=KEY
-    Included in: Fundamental Data Feed subscription
-
-    Returns a flat list of event dicts filtered to US events only.
-    """
-    if not date_str:
-        date_str = datetime.now().strftime("%Y-%m-%d")
-
-    api_key = config.EODHD_API_KEY
-    url = "https://eodhd.com/api/economic-events"
-    params = {
-        "from": date_str,
-        "to":   date_str,
-        "api_token": api_key,
-        "fmt": "json"
-    }
-
-    try:
-        response = requests.get(url, params=params, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-
-        # EODHD returns a clean array, filter to US events only
-        if isinstance(data, list):
-            us_events = [
-                e for e in data
-                if e.get("country", "").lower() in ["us", "usa", "united states"]
-            ]
-            return us_events
-        else:
-            print(f"[ECON] Unexpected response format: {type(data)}")
-            return []
-
-    except Exception as e:
-        print(f"[ECON] Error fetching economic events: {e}")
-        return []
-
-
-def _event_name(event: Dict) -> str:
-    """Extract event name from EODHD response."""
-    return str(event.get("event", "Unknown Event"))
-
-
-def _event_time(event: Dict) -> str:
-    """Extract a clean HH:MM time string from the event date field."""
-    raw = str(event.get("date", ""))
-    # EODHD format: "2026-02-23 08:30:00" (ET already)
-    if " " in raw:
-        time_part = raw.split(" ")[1][:5]  # "08:30:00" -> "08:30"
-        return time_part + " ET"
-    return "--:--"
-
-
-def _is_high_impact(event: Dict) -> bool:
-    """
-    Classify an event as high-impact via:
-      1. Explicit importance field ("High", "Medium", "Low")
-      2. Keyword match on event name against HIGH_IMPACT_KEYWORDS
-    """
-    importance = str(event.get("importance", "")).lower()
-    if importance == "high":
-        return True
-
-    name_lower = _event_name(event).lower()
-    return any(kw.lower() in name_lower for kw in HIGH_IMPACT_KEYWORDS)
-
-
-def get_session_risk() -> Dict:
-    """
-    Assess today's market risk level from the EODHD economic calendar.
-
-    Returns:
-        {
-          "risk_level":     "HIGH" | "MEDIUM" | "LOW",
-          "high_events":    [list of high-impact event dicts],
-          "all_events":     [all US events today],
-          "recommendation": str,
-          "event_count":    int,
-          "high_count":     int,
-        }
-
-    Usage in main.py:
-        risk = get_session_risk()
-        if risk["risk_level"] == "HIGH":
-            effective_max_contracts = config.MAX_CONTRACTS // 2
-            effective_conf_floor    = 0.80
-        else:
-            effective_max_contracts = config.MAX_CONTRACTS
-            effective_conf_floor    = config.MIN_CONFIDENCE_OR
-    """
-    today      = datetime.now().strftime("%Y-%m-%d")
-    all_events = get_economic_events(today)
-
-    high_events = [e for e in all_events if _is_high_impact(e)]
-    med_events  = [e for e in all_events if not _is_high_impact(e)]
-
-    if high_events:
-        risk_level     = "HIGH"
-        recommendation = (
-            "HIGH-IMPACT DAY: Avoid entries 30 min before/after announcements. "
-            "Reduce MAX_CONTRACTS by 50%. Raise confidence floor to 0.80."
-        )
-    elif med_events:
-        risk_level     = "MEDIUM"
-        recommendation = "Medium-impact events scheduled. Normal sizing, heightened awareness."
-    else:
-        risk_level     = "LOW"
-        recommendation = "No major scheduled events. Normal operation."
-
-    return {
-        "risk_level":     risk_level,
-        "high_events":    high_events,
-        "all_events":     all_events,
-        "recommendation": recommendation,
-        "event_count":    len(all_events),
-        "high_count":     len(high_events),
-    }
-
-
-def _print_risk_banner(risk: Dict) -> None:
-    """Print formatted economic risk summary to console."""
-    lvl = risk["risk_level"]
-    icon = {"HIGH": "🚨", "MEDIUM": "⚠️", "LOW": "✅"}.get(lvl, "ℹ️")
-
-    print(f"[ECON] {icon}  Market Risk: {lvl}  |  "
-          f"{risk['event_count']} events today  |  "
-          f"{risk['high_count']} high-impact")
-
-    if risk["high_events"]:
-        for e in risk["high_events"]:
-            name     = _event_name(e)
-            t        = _event_time(e)
-            actual   = e.get("actual", "--")
-            estimate = e.get("estimate", "--")
-            previous = e.get("previous", "--")
-            print(f"  🔴 {t} | {name}  est={estimate}  prev={previous}")
-    elif risk["all_events"]:
-        for e in risk["all_events"][:3]:
-            print(f"  🟡 {_event_time(e)} | {_event_name(e)}")
-
-    print(f"  ↳ {risk['recommendation']}")
-
 
 # ------------------------------------------------------------------ #
 #  Earnings filter                                                     #
@@ -291,12 +116,6 @@ def build_premarket_watchlist() -> List[str]:
     print("\n" + "=" * 60)
     print(f"PRE-MARKET WATCHLIST - {datetime.now().strftime('%I:%M:%S %p')}")
     print("=" * 60)
-
-    # 0 — Economic calendar risk assessment (EODHD)
-    print("[ECON] Checking economic calendar...")
-    risk = get_session_risk()
-    _print_risk_banner(risk)
-    print()
 
     watchlist = set()
 
