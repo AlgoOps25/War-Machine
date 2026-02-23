@@ -1,11 +1,12 @@
 # Sniper Module - CFW6 Strategy Implementation
-# INTEGRATED: Position Manager, AI Learning, Confirmation Layers
+# INTEGRATED: Position Manager, AI Learning, Confirmation Layers, Multi-Indicator Validator
 # TWO-PATH SCANNING: OR-Anchored + Intraday BOS+FVG fallback
 # TWO-PHASE ALERTS: Watch Alert (BOS detected) + Confirmed Signal (FVG+confirm)
 # EARNINGS GUARD: Skips tickers with earnings within 2 days
 # IV RANK: Confidence multiplier based on historical IV cheapness/expensiveness
 # UOA: Confidence multiplier based on unusual options activity alignment
 # GEX: Confidence multiplier based on gamma exposure environment + pin alignment
+# VALIDATOR: Multi-indicator confirmation (ADX, Volume, DMI, CCI, Bollinger, VPVR) - TEST MODE
 # CONFIDENCE GATE: Hard minimum floors by signal type + grade after all multipliers
 # OR WIDTH FILTER: OR range < MIN_OR_RANGE_PCT skips OR path (choppy), falls to intraday BOS
 # WATCH PERSISTENCE: watching_signals table survives Railway redeploys via Postgres;
@@ -25,6 +26,17 @@ from learning_policy import compute_confidence
 from earnings_filter import has_earnings_soon
 import config
 from bos_fvg_engine import scan_bos_fvg, is_force_close_time
+
+# Multi-indicator validator
+try:
+    from signal_validator import get_validator
+    VALIDATOR_ENABLED = True
+    VALIDATOR_TEST_MODE = True  # Set to False to enable filtering
+    _validator_stats = {'tested': 0, 'would_pass': 0, 'would_filter': 0, 'boosted': 0, 'penalized': 0}
+    print("[SIGNALS] ✅ Multi-indicator validator enabled - TEST MODE (no filtering)")
+except ImportError:
+    VALIDATOR_ENABLED = False
+    print("[SIGNALS] ⚠️  signal_validator not available - validation disabled")
 
 # ── Global State ─────────────────────────────────────────────────────────────────────────────────────────
 armed_signals    = {}
@@ -77,6 +89,30 @@ def log_proposed_trade(ticker, signal_type, direction, price, confidence, grade)
         conn.close()
     except Exception as e:
         print(f"[TRACKER] Error: {e}")
+
+def print_validation_stats():
+    """Print end-of-day validation statistics."""
+    if not VALIDATOR_ENABLED or _validator_stats['tested'] == 0:
+        return
+    
+    stats = _validator_stats
+    total = stats['tested']
+    pass_pct = (stats['would_pass'] / total * 100) if total > 0 else 0
+    filter_pct = (stats['would_filter'] / total * 100) if total > 0 else 0
+    boost_pct = (stats['boosted'] / total * 100) if total > 0 else 0
+    
+    print("\n" + "="*80)
+    print("VALIDATOR TEST MODE STATISTICS")
+    print("="*80)
+    print(f"Total Signals Tested: {total}")
+    print(f"Would Pass: {stats['would_pass']} ({pass_pct:.1f}%)")
+    print(f"Would Filter: {stats['would_filter']} ({filter_pct:.1f}%)")
+    print(f"Confidence Boosted: {stats['boosted']} ({boost_pct:.1f}%)")
+    print(f"Confidence Penalized: {stats['penalized']}")
+    print("="*80)
+    print("⚠️  TEST MODE ACTIVE - Signals NOT being filtered")
+    print("Switch VALIDATOR_TEST_MODE to False to enable filtering")
+    print("="*80 + "\n")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -404,6 +440,76 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         return False
     final_grade = conf_result["final_grade"]
 
+    # STEP 8.5 — MULTI-INDICATOR VALIDATION (NEW)
+    # Get latest bar for volume calculation
+    latest_bar = bars_session[-1]
+    current_volume = latest_bar.get("volume", 0)
+    
+    # Convert direction to signal direction for validator
+    signal_direction = "LONG" if direction == "bull" else "SHORT"
+    
+    # Store original confidence for comparison
+    base_confidence = compute_confidence(final_grade, "5m", ticker)
+    original_confidence = base_confidence
+    
+    # Run validation if enabled
+    validation_result = None
+    if VALIDATOR_ENABLED:
+        try:
+            validator = get_validator()
+            validation_result = validator.validate_signal(
+                ticker=ticker,
+                direction=signal_direction,
+                price=entry_price,
+                volume=current_volume,
+                confidence=original_confidence * 100  # Convert to percentage
+            )
+            
+            # Update statistics
+            _validator_stats['tested'] += 1
+            if validation_result['should_take']:
+                _validator_stats['would_pass'] += 1
+            else:
+                _validator_stats['would_filter'] += 1
+            
+            conf_change = validation_result['adjusted_confidence'] - validation_result['original_confidence']
+            if conf_change > 0:
+                _validator_stats['boosted'] += 1
+            elif conf_change < 0:
+                _validator_stats['penalized'] += 1
+            
+            # Format test log message
+            status_emoji = "✅" if validation_result['should_take'] else "❌"
+            trend_emoji = "📈" if conf_change > 0 else "📉" if conf_change < 0 else "➡️"
+            
+            print(f"[VALIDATOR TEST] {ticker} {status_emoji} | "
+                  f"Conf: {validation_result['original_confidence']:.0f}% → "
+                  f"{validation_result['adjusted_confidence']:.0f}% {trend_emoji} "
+                  f"({conf_change:+.0f}%) | "
+                  f"Score: {validation_result['checks_passed']}/{validation_result['total_checks']}")
+            
+            if not validation_result['should_take']:
+                # Show what would've been filtered
+                failed = [k.upper() for k, v in validation_result['checks'].items() 
+                         if isinstance(v, dict) and not v.get('passed', True)]
+                if failed:
+                    print(f"[VALIDATOR TEST]   Would filter: {', '.join(failed)}")
+            
+            # In TEST MODE, adjust confidence but don't filter
+            if VALIDATOR_TEST_MODE:
+                # Apply confidence adjustment but still send signal
+                base_confidence = validation_result['adjusted_confidence'] / 100.0
+            else:
+                # FULL MODE - actually filter signals
+                if not validation_result['should_take']:
+                    print(f"[VALIDATOR] {ticker} FILTERED - {', '.join(validation_result['failed_checks'])}")
+                    return False
+                base_confidence = validation_result['adjusted_confidence'] / 100.0
+                
+        except Exception as e:
+            print(f"[VALIDATOR] Error validating {ticker}: {e}")
+            # On error, continue without validation
+    
     # STEP 9 — STOPS & TARGETS
     # FIX #4: pass grade=final_grade — was missing, defaulting to "A" for all signals
     stop_price, t1, t2 = compute_stop_and_targets(
@@ -418,8 +524,7 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         stop_price=stop_price
     )
 
-    # STEP 11 — CONFIDENCE
-    base_confidence   = compute_confidence(final_grade, "5m", ticker)
+    # STEP 11 — CONFIDENCE (now uses validator-adjusted base_confidence)
     ticker_multiplier = learning_engine.get_ticker_confidence_multiplier(ticker)
     try:
         from timeframe_manager import calculate_mtf_convergence_boost
@@ -467,13 +572,14 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
 
     print(f"[{ticker}] \u2705 GATE PASSED: {final_confidence:.2f} >= {eff_min:.2f}")
 
-    # STEP 12 — ARM
+    # STEP 12 — ARM (with validation result attached)
     arm_ticker(
         ticker, direction, zone_low, zone_high,
         or_low_ref, or_high_ref,
         entry_price, stop_price, t1, t2,
         final_confidence, final_grade, options_rec,
-        signal_type=signal_type
+        signal_type=signal_type,
+        validation_result=validation_result
     )
     return True
 
@@ -484,7 +590,7 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
 
 def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high,
                entry_price, stop_price, t1, t2, confidence, grade,
-               options_rec=None, signal_type="CFW6_OR"):
+               options_rec=None, signal_type="CFW6_OR", validation_result=None):
     if abs(entry_price - stop_price) < entry_price * 0.002:
         print(f"[ARM] \u26a0\ufe0f {ticker} stop too tight \u2014 skipping")
         return
@@ -516,7 +622,8 @@ def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high,
         "position_id": position_id, "direction": direction,
         "entry_price": entry_price, "stop_price": stop_price,
         "t1": t1, "t2": t2, "confidence": confidence,
-        "grade": grade, "signal_type": signal_type
+        "grade": grade, "signal_type": signal_type,
+        "validation": validation_result
     }
     print(f"[ARMED] {ticker} ID:{position_id}")
 
@@ -567,6 +674,8 @@ def process_ticker(ticker: str):
 
         if is_force_close_time(bars_session[-1]):
             position_manager.close_all_eod({ticker: bars_session[-1]["close"]})
+            # Print validation stats before market close
+            print_validation_stats()
             return
 
         has_earns, earns_date = has_earnings_soon(ticker)
