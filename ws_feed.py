@@ -32,10 +32,18 @@ Design:
   - _started guard prevents double thread creation if start_ws_feed() is
     called more than once (e.g. from both main.py and scanner.py).
 
+Log behaviour:
+  - Single-bar WS flushes are suppressed at DEBUG level during the startup
+    backfill window (_backfill_active = True) to keep the console clean.
+  - Once backfill completes, all store_bars() calls log normally.
+  - Set _backfill_active = False via set_backfill_complete() after both
+    startup_backfill_today() and startup_intraday_backfill_today() finish.
+
 Usage:
-    from ws_feed import start_ws_feed, subscribe_tickers
+    from ws_feed import start_ws_feed, subscribe_tickers, set_backfill_complete
     start_ws_feed(fallback_watchlist)       # once, before scanner loop
     subscribe_tickers(premarket_watchlist)  # after premarket build
+    set_backfill_complete()                 # after both backfills finish
 """
 import asyncio
 import json
@@ -60,7 +68,7 @@ FLUSH_INTERVAL  = 10    # seconds between open-bar DB flushes
 SUBSCRIBE_CHUNK = 50    # max tickers per subscribe message (EODHD limit)
 SPIKE_THRESHOLD = 0.10  # reject ticks that move > 10% from current bar close
 
-# ── Shared state ────────────────────────────────────────────────────────────────────────────────────
+# ── Shared state ────────────────────────────────────────────────────────────────────────────────
 _lock               = threading.Lock()
 _open_bars          = {}                 # ticker -> current open bar dict
 _pending            = defaultdict(list)  # ticker -> completed bars not yet in DB
@@ -76,8 +84,19 @@ _ws_connection      = None               # active websockets connection object
 # FIX #3: guard against double-start when main.py and scanner.py both call start_ws_feed()
 _started            = False
 
+# Backfill log suppression: while True, single-bar WS stores are silent (DEBUG-level).
+# Set to False via set_backfill_complete() once both backfills finish.
+_backfill_active    = True
 
-# ── Public read API ───────────────────────────────────────────────────────────────────
+
+def set_backfill_complete():
+    """Call after startup_backfill_today() + startup_intraday_backfill_today() finish.
+    Restores normal INFO-level logging for WS bar stores."""
+    global _backfill_active
+    _backfill_active = False
+
+
+# ── Public read API ─────────────────────────────────────────────────────────────────────────
 
 def is_connected() -> bool:
     """Return True if the WebSocket is currently connected and subscribed."""
@@ -91,7 +110,7 @@ def get_current_bar(ticker: str):
         return dict(bar) if bar else None
 
 
-# ── Tick aggregation ──────────────────────────────────────────────────────────────────
+# ── Tick aggregation ───────────────────────────────────────────────────────────────────────
 
 def _minute_floor(epoch_ms: int) -> datetime:
     """Convert ms epoch -> ET-naive datetime floored to the minute."""
@@ -156,7 +175,7 @@ def _on_tick(ticker: str, price: float, volume: int, epoch_ms: int):
             cur["volume"] += volume
 
 
-# ── DB flush helpers ───────────────────────────────────────────────────────────────────
+# ── DB flush helpers ─────────────────────────────────────────────────────────────────────────
 
 def _flush_pending():
     """Persist all completed 1m bars to DB and clear the queue."""
@@ -178,7 +197,8 @@ def _flush_open():
         snapshot = {t: dict(b) for t, b in _open_bars.items()}
     for ticker, bar in snapshot.items():
         if bar["datetime"].date() == today_et:
-            data_manager.store_bars(ticker, [bar])
+            # Suppress log noise during backfill for single-bar open-bar flushes
+            data_manager.store_bars(ticker, [bar], quiet=_backfill_active)
 
 
 def _flush_loop():
@@ -192,7 +212,7 @@ def _flush_loop():
             print(f"[WS] Flush error: {exc}")
 
 
-# ── Dynamic subscription (async, runs inside WS event loop) ──────────────────────
+# ── Dynamic subscription (async, runs inside WS event loop) ──────────────────
 
 async def _do_subscribe(ws, tickers: list):
     """
@@ -249,7 +269,7 @@ def subscribe_tickers(tickers: list):
         print(f"[WS] subscribe_tickers error: {e}")
 
 
-# ── WebSocket coroutine ────────────────────────────────────────────────────────────────────
+# ── WebSocket coroutine ────────────────────────────────────────────────────────────────────────────────
 
 async def _ws_run():
     """Main WebSocket coroutine. Runs in a dedicated asyncio event loop thread."""
@@ -300,8 +320,6 @@ async def _ws_run():
                         print(f"[WS] Tick error: {exc}")
 
                 # Clean server-side close — reset state before next reconnect attempt.
-                # Without this, is_connected() returns True during the reconnect
-                # window and position monitor would read stale _open_bars prices.
                 _connected     = False
                 _ws_connection = None
 
@@ -312,7 +330,7 @@ async def _ws_run():
             await asyncio.sleep(RECONNECT_DELAY)
 
 
-# ── Public API ────────────────────────────────────────────────────────────────────────────
+# ── Public API ───────────────────────────────────────────────────────────────────────────────────
 
 def start_ws_feed(tickers: list):
     """

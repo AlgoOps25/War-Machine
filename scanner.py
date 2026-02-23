@@ -10,7 +10,7 @@ import config
 from premarket_scanner import build_premarket_watchlist
 from data_manager import data_manager, cleanup_old_bars
 from position_manager import position_manager
-from ws_feed import start_ws_feed, subscribe_tickers
+from ws_feed import start_ws_feed, subscribe_tickers, set_backfill_complete
 from scanner_optimizer import (
     get_adaptive_scan_interval,
     should_scan_now,
@@ -20,7 +20,7 @@ from earnings_filter import bulk_prefetch_earnings, clear_earnings_cache
 
 API_KEY = os.getenv("EODHD_API_KEY", "")
 
-# ── Module-level watchlist — single source of truth ───────────────────────────────────────────────
+# ── Module-level watchlist — single source of truth ────────────────────────────────────────
 FALLBACK_WATCHLIST = [
     "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA",
     "AMD",  "NFLX", "ADBE",  "CRM",  "ORCL", "INTC", "CSCO",
@@ -100,9 +100,8 @@ def start_scanner_loop():
     last_report_day     = None
     loss_streak_alerted = False  # one-time Discord alert flag for circuit breaker
 
-    # ── STARTUP SEQUENCE ──────────────────────────────────────────────────────────────────────
+    # ── STARTUP SEQUENCE ──────────────────────────────────────────────────────────────────────────
     # 0. Start WebSocket feed so today's ticks start accumulating immediately.
-    #    Premarket tickers added via subscribe_tickers() once scanner runs.
     startup_watchlist = fallback_list()
     try:
         start_ws_feed(startup_watchlist)
@@ -112,11 +111,14 @@ def start_scanner_loop():
 
     # 1. 30-day historical REST backfill (up to yesterday's close)
     # 2. Best-effort today REST backfill (04:00 → now) for mid-session restarts
-    # 3. Earnings calendar prefetch
+    # WS tick logging is suppressed during these two calls (quiet=True in store_bars)
     data_manager.startup_backfill_today(startup_watchlist)
     data_manager.startup_intraday_backfill_today(startup_watchlist)
+    # 3. Restore normal WS bar logging now that backfill is done
+    set_backfill_complete()
+    # 4. earnings_filter is disabled (plan limitation) — bulk_prefetch is a no-op
     bulk_prefetch_earnings(startup_watchlist)
-    # ──────────────────────────────────────────────────
+    # ────────────────────────────────────────────────
 
     while True:
         try:
@@ -130,8 +132,6 @@ def start_scanner_loop():
                     try:
                         premarket_watchlist = build_premarket_watchlist()
                         premarket_built     = True
-                        # Subscribe premarket tickers to WS immediately so live ticks
-                        # accumulate before 9:30 for any ticker not in the fallback 33.
                         subscribe_tickers(premarket_watchlist)
                         print(f"[WS] Subscribed premarket watchlist "
                               f"({len(premarket_watchlist)} tickers) to WS feed")
@@ -153,9 +153,6 @@ def start_scanner_loop():
                     time.sleep(15)
                     continue
 
-                # Daily loss circuit breaker: halt new scans after 3 consecutive losses.
-                # Open positions are still monitored every 60 s.
-                # All closed trades — wins and losses — still flow to the learning engine.
                 if position_manager.has_loss_streak(max_consecutive_losses=3):
                     if not loss_streak_alerted:
                         msg = (
@@ -248,25 +245,20 @@ def start_scanner_loop():
                     premarket_watchlist = []
                     premarket_built     = False
                     cycle_count         = 0
-                    loss_streak_alerted = False  # reset breaker alert for new day
+                    loss_streak_alerted = False
 
-                    # Reset all intraday signal state for the new day
                     clear_armed_signals()
                     clear_watching_signals()
                     clear_earnings_cache()
-                    clear_prev_day_cache()  # FIX Bug #10: flush stale PDH/PDL cache
+                    clear_prev_day_cache()
 
                 print(f"[AFTER-HOURS] {current_time_str} - Market closed")
                 time.sleep(600)
 
-        # FIX Bug #8: re-raise KeyboardInterrupt instead of break.
-        # Previously, catching + break caused start_scanner_loop() to return
-        # normally, so main.py's except KeyboardInterrupt block (which calls
-        # run_eod_digest / sends P&L digest / session heatmap) NEVER executed.
         except KeyboardInterrupt:
             print("\n[SCANNER] Shutdown signal received")
             print(position_manager.generate_report())
-            raise   # propagates to main.py's except KeyboardInterrupt handler
+            raise
 
         except Exception as e:
             print(f"[SCANNER] Critical error: {e}")
