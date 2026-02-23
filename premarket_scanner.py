@@ -1,27 +1,24 @@
 """
 Pre-Market Scanner (4 AM - 9:30 AM EST)
 Builds intelligent watchlist before market opens and assesses daily
-market risk based on the Trading Economics economic calendar (free tier).
+market risk based on the FMP (Financial Modeling Prep) economic calendar.
 
 New exports:
   get_session_risk()  — call from main.py at session start to get
                         risk_level (HIGH/MEDIUM/LOW) and adjust
                         MAX_CONTRACTS / confidence thresholds.
-  get_economic_events() — raw Trading Economics calendar fetch for today.
+  get_economic_events() — raw FMP economic calendar fetch for today.
 
-Trading Economics Free Tier:
-  - 500 API calls/month (plenty for daily checks)
-  - Sign up: https://developer.tradingeconomics.com/
-  - Set TRADING_ECON_API_KEY in .env (or use guest:guest for testing)
+FMP Free Tier:
+  - 250 API calls/day (plenty for daily checks)
+  - Sign up: https://site.financialmodelingprep.com/developer/docs/
+  - Set FMP_API_KEY in .env
 """
 import requests
 import os
 from datetime import datetime
 from typing import List, Dict
 import config
-# FIX #6: removed 'import yfinance as yf' — yf.Ticker().calendar silently fails
-#         and the bare except: pass always returned False, disabling earnings filtering.
-#         earnings_filter.has_earnings_soon() is the correct system-wide guard.
 
 # ------------------------------------------------------------------ #
 #  Watchlist universe                                                  #
@@ -35,11 +32,11 @@ SCAN_UNIVERSE = [
 ]
 
 # ------------------------------------------------------------------ #
-#  Economic calendar (Trading Economics)                               #
+#  Economic calendar (FMP)                                             #
 # ------------------------------------------------------------------ #
 
 # Keywords that flag a HIGH-IMPACT event regardless of the API importance field.
-# Matched case-insensitively against the event name/category string.
+# Matched case-insensitively against the event name string.
 HIGH_IMPACT_KEYWORDS = [
     "FOMC", "Federal Reserve", "Fed Rate", "Interest Rate Decision",
     "CPI",  "Consumer Price Index", "Inflation",
@@ -57,32 +54,36 @@ HIGH_IMPACT_KEYWORDS = [
 
 def get_economic_events(date_str: str = None) -> List[Dict]:
     """
-    Fetch US economic events from Trading Economics for a given date.
+    Fetch US economic events from FMP for a given date.
 
-    Endpoint: GET /calendar/country/United%20States/{date}/{date}?c={api_key}
-    Free tier: 500 calls/month
-    Guest key: guest:guest (very limited, for testing only)
+    Endpoint: GET /api/v3/economic_calendar?from=YYYY-MM-DD&to=YYYY-MM-DD&apikey=KEY
+    Free tier: 250 calls/day
 
-    Returns a flat list of event dicts. Trading Economics returns a clean
-    JSON array with no wrapper.
+    Returns a flat list of event dicts filtered to US events only.
     """
     if not date_str:
         date_str = datetime.now().strftime("%Y-%m-%d")
 
-    # Check for Trading Economics API key, fall back to guest key for testing
-    api_key = config.TRADING_ECON_API_KEY
-
-    url = f"https://api.tradingeconomics.com/calendar"
-    params = {"c": api_key, "d1": date_str, "d2": date_str}
+    api_key = config.FMP_API_KEY
+    url = "https://financialmodelingprep.com/api/v3/economic_calendar"
+    params = {
+        "from": date_str,
+        "to":   date_str,
+        "apikey": api_key
+    }
 
     try:
         response = requests.get(url, params=params, timeout=10)
         response.raise_for_status()
         data = response.json()
 
-        # Trading Economics returns a clean array
+        # FMP returns a clean array, filter to US events only
         if isinstance(data, list):
-            return [e for e in data if e.get("Country") == "United States"]
+            us_events = [
+                e for e in data
+                if e.get("country", "").lower() in ["us", "united states"]
+            ]
+            return us_events
         else:
             print(f"[ECON] Unexpected response format: {type(data)}")
             return []
@@ -93,34 +94,28 @@ def get_economic_events(date_str: str = None) -> List[Dict]:
 
 
 def _event_name(event: Dict) -> str:
-    """Extract event name from Trading Economics response."""
-    return str(
-        event.get("Event") or
-        event.get("Category") or
-        "Unknown Event"
-    )
+    """Extract event name from FMP response."""
+    return str(event.get("event", "Unknown Event"))
 
 
 def _event_time(event: Dict) -> str:
-    """Extract a clean HH:MM time string from the event Date field."""
-    raw = str(event.get("Date", ""))
-    # Trading Economics format: "2016-12-02T13:30:00" (UTC)
-    if "T" in raw:
-        time_part = raw.split("T")[1][:5]  # "13:30:00" -> "13:30"
-        # Convert from UTC to ET (approx -5 hours, ignoring DST for simplicity)
-        # For production, use proper timezone conversion
-        return time_part + " UTC"
+    """Extract a clean HH:MM time string from the event date field."""
+    raw = str(event.get("date", ""))
+    # FMP format: "2026-02-23 08:30:00" (ET already)
+    if " " in raw:
+        time_part = raw.split(" ")[1][:5]  # "08:30:00" -> "08:30"
+        return time_part + " ET"
     return "--:--"
 
 
 def _is_high_impact(event: Dict) -> bool:
     """
     Classify an event as high-impact via:
-      1. Explicit Importance field ("3" = high, "2" = medium, "1" = low)
+      1. Explicit impact field ("High" = high, "Medium" = medium, "Low" = low)
       2. Keyword match on event name against HIGH_IMPACT_KEYWORDS
     """
-    importance = str(event.get("Importance", ""))
-    if importance == "3":
+    impact = str(event.get("impact", "")).lower()
+    if impact == "high":
         return True
 
     name_lower = _event_name(event).lower()
@@ -129,7 +124,7 @@ def _is_high_impact(event: Dict) -> bool:
 
 def get_session_risk() -> Dict:
     """
-    Assess today's market risk level from the Trading Economics calendar.
+    Assess today's market risk level from the FMP economic calendar.
 
     Returns:
         {
@@ -190,12 +185,12 @@ def _print_risk_banner(risk: Dict) -> None:
 
     if risk["high_events"]:
         for e in risk["high_events"]:
-            name    = _event_name(e)
-            t       = _event_time(e)
-            actual  = e.get("Actual", "--")
-            forecast = e.get("Forecast", "--")
-            prev    = e.get("Previous", "--")
-            print(f"  🔴 {t} | {name}  forecast={forecast}  prev={prev}")
+            name     = _event_name(e)
+            t        = _event_time(e)
+            actual   = e.get("actual", "--")
+            estimate = e.get("estimate", "--")
+            previous = e.get("previous", "--")
+            print(f"  🔴 {t} | {name}  est={estimate}  prev={previous}")
     elif risk["all_events"]:
         for e in risk["all_events"][:3]:
             print(f"  🟡 {_event_time(e)} | {_event_name(e)}")
@@ -209,12 +204,9 @@ def _print_risk_banner(risk: Dict) -> None:
 
 def has_earnings_today(ticker: str) -> bool:
     """
-    FIX #6: Returns True if ticker has earnings within the guard window.
+    Returns True if ticker has earnings within the guard window.
     Delegates to earnings_filter.has_earnings_soon() which uses the EODHD
     earnings calendar — the same guard already active in sniper.process_ticker().
-    Previously used yfinance .calendar which silently errors on most tickers
-    and a bare except: pass that caused the function to always return False,
-    effectively disabling the pre-market earnings filter entirely.
     """
     try:
         from earnings_filter import has_earnings_soon
@@ -299,7 +291,7 @@ def build_premarket_watchlist() -> List[str]:
     print(f"PRE-MARKET WATCHLIST - {datetime.now().strftime('%I:%M:%S %p')}")
     print("=" * 60)
 
-    # 0 — Economic calendar risk assessment (Trading Economics)
+    # 0 — Economic calendar risk assessment (FMP)
     print("[ECON] Checking economic calendar...")
     risk = get_session_risk()
     _print_risk_banner(risk)
@@ -320,7 +312,7 @@ def build_premarket_watchlist() -> List[str]:
     for ticker in core:
         watchlist.add(ticker)
 
-    # 3 — Filter earnings (now actually works)
+    # 3 — Filter earnings
     tickers = sorted(list(watchlist))
     clean   = []
     for t in tickers:
