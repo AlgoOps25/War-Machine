@@ -5,7 +5,7 @@ Responsibilities:
   - Check watchlist tickers for breakout signals
   - Filter duplicate signals (cooldown period)
   - Send Discord alerts with entry/stop/target
-  - Track signal performance
+  - Track signal performance with signal_analytics
   - Manage signal state (pending, filled, stopped, hit target)
 """
 from typing import Dict, List, Optional
@@ -16,6 +16,14 @@ import json
 from breakout_detector import BreakoutDetector, format_signal_message
 from data_manager import data_manager
 from discord_helpers import send_simple_message
+
+# Import signal analytics for performance tracking
+try:
+    from signal_analytics import log_signal, update_signal_outcome
+    ANALYTICS_ENABLED = True
+except ImportError:
+    ANALYTICS_ENABLED = False
+    print("[SIGNALS] ⚠️ signal_analytics not available - performance tracking disabled")
 
 ET = ZoneInfo("America/New_York")
 
@@ -49,11 +57,15 @@ class SignalGenerator:
         self.recent_signals: Dict[str, datetime] = {}  # ticker -> last_signal_time
         
         # Track active signals for performance monitoring
+        # Now includes signal_id from analytics database
         self.active_signals: Dict[str, Dict] = {}  # ticker -> signal_data
         
         print(f"[SIGNALS] Generator initialized | "
               f"Lookback: {lookback_bars} | Volume: {volume_multiplier}x | "
               f"Cooldown: {cooldown_minutes}m | Min Confidence: {min_confidence}%")
+        
+        if ANALYTICS_ENABLED:
+            print("[SIGNALS] ✅ Performance tracking enabled")
     
     def check_ticker(self, ticker: str, use_5m: bool = True) -> Optional[Dict]:
         """
@@ -88,6 +100,25 @@ class SignalGenerator:
             
             # Update cooldown
             self.recent_signals[ticker] = datetime.now(ET)
+            
+            # Log signal to analytics database
+            if ANALYTICS_ENABLED:
+                try:
+                    signal_id = log_signal(
+                        ticker=ticker,
+                        direction=signal['signal'],
+                        entry=signal['entry'],
+                        stop=signal['stop'],
+                        target=signal['target'],
+                        confidence=signal['confidence'],
+                        volume_multiple=signal.get('volume_multiple'),
+                        atr=signal.get('atr'),
+                        signal_type=signal.get('type', 'BREAKOUT'),
+                        notes=signal.get('notes')
+                    )
+                    signal['signal_id'] = signal_id  # Store DB ID for outcome tracking
+                except Exception as e:
+                    print(f"[SIGNALS] Analytics logging error: {e}")
             
             # Store active signal
             self.active_signals[ticker] = signal
@@ -135,6 +166,8 @@ class SignalGenerator:
         print(f"🚨 BREAKOUT SIGNAL DETECTED: {ticker}")
         print("="*70)
         print(format_signal_message(ticker, signal))
+        if 'signal_id' in signal:
+            print(f"Signal ID: {signal['signal_id']} (tracked in analytics DB)")
         print("="*70 + "\n")
         
         # Discord alert
@@ -248,6 +281,18 @@ class SignalGenerator:
             pnl = entry - exit_price
             pnl_pct = (pnl / entry) * 100
         
+        # Update analytics database
+        if ANALYTICS_ENABLED and 'signal_id' in signal:
+            try:
+                outcome = 'WIN' if status == 'HIT_TARGET' else 'LOSS'
+                update_signal_outcome(
+                    signal_id=signal['signal_id'],
+                    outcome=outcome,
+                    exit_price=exit_price
+                )
+            except Exception as e:
+                print(f"[SIGNALS] Analytics update error: {e}")
+        
         # Console output
         emoji = "✅" if status == 'HIT_TARGET' else "❌"
         print(f"\n{emoji} {ticker} {status}: ${exit_price:.2f} | P&L: ${pnl:.2f} ({pnl_pct:+.2f}%)\n")
@@ -314,6 +359,21 @@ class SignalGenerator:
             
             if age > max_age_hours:
                 expired.append(ticker)
+                
+                # Mark as EXPIRED in analytics
+                if ANALYTICS_ENABLED and 'signal_id' in signal:
+                    try:
+                        # Get current price for exit
+                        bars = data_manager.get_today_session_bars(ticker)
+                        exit_price = bars[-1]['close'] if bars else signal['entry']
+                        
+                        update_signal_outcome(
+                            signal_id=signal['signal_id'],
+                            outcome='EXPIRED',
+                            exit_price=exit_price
+                        )
+                    except Exception as e:
+                        print(f"[SIGNALS] Analytics expiry error for {ticker}: {e}")
         
         for ticker in expired:
             print(f"[SIGNALS] Clearing stale signal for {ticker}")
@@ -366,6 +426,15 @@ def print_active_signals() -> None:
     print(signal_generator.get_active_signals_summary())
 
 
+def print_performance_report(days: int = 30) -> None:
+    """Print signal performance report."""
+    if ANALYTICS_ENABLED:
+        from signal_analytics import print_performance_report as _print_report
+        _print_report(days)
+    else:
+        print("[SIGNALS] ⚠️ Analytics not enabled - cannot generate report")
+
+
 # ========================================
 # USAGE EXAMPLE
 # ========================================
@@ -383,3 +452,7 @@ if __name__ == "__main__":
             print("-" * 70)
     else:
         print("No signals detected")
+    
+    # Print performance stats
+    print("\n" + "="*70)
+    print_performance_report(days=7)
