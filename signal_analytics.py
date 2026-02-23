@@ -73,6 +73,20 @@ class SignalAnalytics:
             )
         """)
 
+        # Migration: Add outcome columns if they don't exist (for existing tables)
+        if db_connection.USE_POSTGRES:
+            try:
+                cursor.execute("ALTER TABLE signals ADD COLUMN IF NOT EXISTS outcome TEXT")
+                cursor.execute("ALTER TABLE signals ADD COLUMN IF NOT EXISTS exit_price REAL")
+                cursor.execute("ALTER TABLE signals ADD COLUMN IF NOT EXISTS exit_time TIMESTAMP")
+                cursor.execute("ALTER TABLE signals ADD COLUMN IF NOT EXISTS pnl REAL")
+                cursor.execute("ALTER TABLE signals ADD COLUMN IF NOT EXISTS pnl_r REAL")
+                cursor.execute("ALTER TABLE signals ADD COLUMN IF NOT EXISTS hold_duration INTEGER")
+                conn.commit()
+            except Exception as e:
+                # Columns already exist or other error - continue
+                conn.rollback()
+
         cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_signals_ticker_time
             ON signals(ticker, signal_time DESC)
