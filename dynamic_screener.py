@@ -26,7 +26,6 @@ _screener_cache = {}  # {"date": datetime, "results": [...]}
 _CACHE_TTL_HOURS = 6  # Cache expires after 6 hours
 
 # Default screening criteria
-# NOTE: percent_change uses whole numbers (e.g. 2 = 2%), volume uses integers
 DEFAULT_FILTERS = [
     ["market_capitalization", ">", 1000000000],    # Market cap > $1B
     ["volume", ">", 500000],                       # Volume > 500K shares
@@ -42,46 +41,34 @@ HIGH_VOLUME_FILTERS = [
     ["close", ">", 5],
 ]
 
-# Core tickers always included (SPY, QQQ, major names)
+# Core tickers always included
 CORE_TICKERS = [
     "SPY", "QQQ", "IWM", "DIA",
     "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA",
     "TSLA", "META", "AMD",
 ]
 
-# Expanded fallback watchlist — used when EODHD screener returns no results
-# (weekend, API issue, plan limitation, etc.)
+# Expanded fallback — used when EODHD screener returns no results
 FALLBACK_WATCHLIST = [
-    # ETFs
     "SPY", "QQQ", "IWM", "DIA", "XLF", "XLK", "XLE", "XLV",
-    # Mega caps
     "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA",
-    # High beta / volatile tech
     "AMD", "NFLX", "ADBE", "CRM", "ORCL", "SNOW", "PLTR", "COIN",
-    # Financials
     "JPM", "BAC", "GS", "MS", "WFC",
-    # Healthcare
     "UNH", "JNJ", "PFE", "ABBV", "MRK",
-    # Consumer
     "WMT", "HD", "COST", "NKE", "MCD",
-    # Energy
     "XOM", "CVX", "OXY",
-    # Semis
     "QCOM", "MU", "INTC", "AMAT", "LRCX",
-    # Additional active names
     "UBER", "MSTR", "SMCI", "ARM", "MRVL",
 ]
 
 
 def _is_cache_valid() -> bool:
-    """Check if screener cache is still fresh."""
     if not _screener_cache:
         return False
     cached_time = _screener_cache.get("date")
     if not cached_time:
         return False
-    age = datetime.now() - cached_time
-    return age < timedelta(hours=_CACHE_TTL_HOURS)
+    return (datetime.now() - cached_time) < timedelta(hours=_CACHE_TTL_HOURS)
 
 
 def run_screener(
@@ -92,14 +79,15 @@ def run_screener(
     """
     Run EODHD stock screener with custom filters.
 
-    IMPORTANT: filters must be serialized with separators=(',',':')
-    so there are NO spaces in the JSON string. Spaces get URL-encoded
-    as '+' signs which EODHD rejects with a 422 error.
+    IMPORTANT: The filters JSON must be passed as RAW characters in the URL,
+    NOT URL-encoded. EODHD returns 422 if brackets/quotes are percent-encoded
+    (e.g. %5B, %22). Using requests params={} URL-encodes everything, so we
+    build the URL manually and pass it directly to requests.get().
 
     Args:
         filters: List of filter conditions [["field", "op", value], ...]
-        limit: Max results to return (default 50)
-        sort_by: Sort field with direction (default "volume.desc")
+        limit: Max results (default 50)
+        sort_by: Sort field + direction (default "volume.desc")
 
     Returns:
         List of ticker symbols, or [] on failure.
@@ -110,30 +98,33 @@ def run_screener(
     if filters is None:
         filters = DEFAULT_FILTERS
 
-    # CRITICAL FIX: separators=(',',':') produces compact JSON with NO spaces.
-    # json.dumps default adds spaces after ',' and ':' which URL-encode to '+'
-    # causing EODHD to return 422 Unprocessable Content.
-    # Bad:  [["market_capitalization", ">", 1000000000], ["volume", ">", 500000]]
-    # Good: [["market_capitalization",">",1000000000],["volume",">",500000]]
+    # Compact JSON — no spaces (spaces URL-encode to + which also causes 422)
     filter_json = json.dumps(filters, separators=(',', ':'))
 
-    url = "https://eodhd.com/api/screener"
-    params = {
-        "api_token": config.EODHD_API_KEY,
-        "filters": filter_json,
-        "limit": limit,
-        "sort": sort_by,
-        "fmt": "json"
-    }
+    # CRITICAL FIX: Build URL manually so filter brackets/quotes stay as
+    # literal characters. requests.get(params={}) URL-encodes [ ] " to
+    # %5B %5D %22 which EODHD rejects with 422 Unprocessable Content.
+    url = (
+        f"https://eodhd.com/api/screener"
+        f"?api_token={config.EODHD_API_KEY}"
+        f"&filters={filter_json}"
+        f"&limit={limit}"
+        f"&sort={sort_by}"
+        f"&fmt=json"
+    )
 
     try:
         print(f"[SCREENER] Calling API: filters={filter_json[:80]}... limit={limit} sort={sort_by}")
-        response = requests.get(url, params=params, timeout=15)
+        response = requests.get(url, timeout=15)
 
         print(f"[SCREENER] HTTP {response.status_code}")
 
         if response.status_code == 422:
-            print(f"[SCREENER] ❌ 422 Unprocessable — filter format rejected. Raw: {filter_json}")
+            print(f"[SCREENER] ❌ 422 — still rejected. Raw filter: {filter_json}")
+            try:
+                print(f"[SCREENER] API error body: {response.text[:300]}")
+            except Exception:
+                pass
             return []
         if response.status_code == 403:
             print("[SCREENER] ❌ 403 Forbidden — screener not in your EODHD plan")
@@ -146,9 +137,8 @@ def run_screener(
         data = response.json()
 
         if isinstance(data, dict):
-            print(f"[SCREENER] Response keys: {list(data.keys())}")
             total = data.get("total", "?")
-            print(f"[SCREENER] Total results from API: {total}")
+            print(f"[SCREENER] ✅ Total results from API: {total}")
         else:
             print(f"[SCREENER] Unexpected response type: {type(data)} | preview: {str(data)[:200]}")
             return []
@@ -187,15 +177,8 @@ def get_dynamic_watchlist(
 ) -> List[str]:
     """
     Generate dynamic watchlist using EODHD screener.
-    Falls back to FALLBACK_WATCHLIST if API returns no results.
-
-    Args:
-        include_core: Always include core tickers (SPY, QQQ, AAPL, etc.)
-        max_tickers: Maximum watchlist size
-        force_refresh: Bypass cache and re-run screener immediately
-
-    Returns:
-        List of ticker symbols for today's watchlist
+    Falls back to FALLBACK_WATCHLIST (50 tickers) if API returns no results.
+    Does NOT cache fallback results so the API is retried on next call.
     """
     if not force_refresh and _is_cache_valid():
         cached_results = _screener_cache.get("results", [])
@@ -219,7 +202,7 @@ def get_dynamic_watchlist(
             if ticker not in watchlist:
                 watchlist.append(ticker)
 
-    # Run 2: % movers (best during/after market open)
+    # Run 2: % movers (works best during/after market open)
     price_movers = run_screener(
         filters=[
             ["market_capitalization", ">", 1000000000],
@@ -236,21 +219,18 @@ def get_dynamic_watchlist(
             if ticker not in watchlist:
                 watchlist.append(ticker)
 
-    # Fallback: API returned nothing — use expanded static list, skip cache
+    # Fallback: don't cache, retry on next call
     if not screener_success:
         print("[SCREENER] ⚠️  Screener returned no live data — using FALLBACK_WATCHLIST")
         print("[SCREENER] ⚠️  Cache NOT saved (will retry on next call)")
-        fallback = list(dict.fromkeys(FALLBACK_WATCHLIST))  # deduplicate, preserve order
-        return fallback[:max_tickers]
+        return list(dict.fromkeys(FALLBACK_WATCHLIST))[:max_tickers]
 
     final_watchlist = watchlist[:max_tickers]
-
     _screener_cache["date"] = datetime.now()
     _screener_cache["results"] = final_watchlist
 
     print(f"[SCREENER] ✅ Watchlist generated: {len(final_watchlist)} tickers")
     print(f"[SCREENER] Top 10: {', '.join(final_watchlist[:10])}")
-
     return final_watchlist
 
 
@@ -283,7 +263,6 @@ def get_high_volume_day_watchlist(limit: int = 50) -> List[str]:
 
 
 def clear_screener_cache():
-    """Clear screener cache. Called at EOD in main.py."""
     global _screener_cache
     _screener_cache = {}
     print("[SCREENER] Cache cleared")
