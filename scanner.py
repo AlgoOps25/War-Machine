@@ -1,6 +1,6 @@
 """
 Scanner Module - Intelligent Watchlist Builder & Scanner Loop
-INTEGRATED: Pre-Market Scanner, Position Monitoring, Database Cleanup
+INTEGRATED: Adaptive Watchlist Funnel, Pre-Market Scanner, Position Monitoring, Database Cleanup
 """
 import os
 import time
@@ -18,17 +18,17 @@ from scanner_optimizer import (
 )
 from earnings_filter import bulk_prefetch_earnings, clear_earnings_cache
 
+# NEW: Adaptive watchlist funnel (replaces static fallback)
+from watchlist_funnel import (
+    get_current_watchlist,
+    get_watchlist_with_metadata,
+    get_funnel
+)
+
 API_KEY = os.getenv("EODHD_API_KEY", "")
 
-# ── Module-level watchlist — single source of truth ────────────────────────────────────
-FALLBACK_WATCHLIST = [
-    "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA",
-    "AMD",  "NFLX", "ADBE",  "CRM",  "ORCL", "INTC", "CSCO",
-    "JPM",  "BAC",  "GS",    "MS",   "WFC",
-    "UNH",  "JNJ",  "PFE",   "ABBV", "MRK",
-    "WMT",  "HD",   "COST",  "NKE",  "MCD",
-    "SPY",  "QQQ",  "IWM",   "DIA",
-]
+# Minimal fallback (only used if funnel completely fails)
+EMERGENCY_FALLBACK = ["SPY", "QQQ", "AAPL", "MSFT", "NVDA", "TSLA", "META", "AMD"]
 
 
 def _now_et():
@@ -47,13 +47,21 @@ def is_market_hours():
     return config.MARKET_OPEN <= now.time() <= config.MARKET_CLOSE
 
 
-def build_watchlist() -> list:
-    return fallback_list()
-
-
-def fallback_list() -> list:
-    print(f"[SCANNER] Using fallback watchlist: {len(FALLBACK_WATCHLIST)} tickers")
-    return list(FALLBACK_WATCHLIST)
+def build_watchlist(force_refresh: bool = False) -> list:
+    """
+    Build adaptive watchlist using funnel system.
+    Automatically adjusts size and quality based on time of day.
+    """
+    try:
+        watchlist = get_current_watchlist(force_refresh=force_refresh)
+        if watchlist:
+            return watchlist
+    except Exception as e:
+        print(f"[WATCHLIST] Funnel error: {e}")
+    
+    # Emergency fallback
+    print(f"[WATCHLIST] Using emergency fallback: {len(EMERGENCY_FALLBACK)} tickers")
+    return list(EMERGENCY_FALLBACK)
 
 
 def monitor_open_positions():
@@ -86,11 +94,11 @@ def start_scanner_loop():
     print("WAR MACHINE - CFW6 SCANNER")
     print(f"{'='*60}")
     print(f"Market Hours: {config.MARKET_OPEN} - {config.MARKET_CLOSE}")
-    print(f"Adaptive intervals active")
+    print(f"Adaptive intervals + watchlist funnel active")
     print(f"{'='*60}\n")
 
     try:
-        send_simple_message("WAR MACHINE ONLINE - CFW6 Scanner Started")
+        send_simple_message("🎯 WAR MACHINE ONLINE - CFW6 Scanner + Adaptive Funnel Started")
     except Exception as e:
         print(f"[SCANNER] Discord unavailable: {e}")
 
@@ -98,25 +106,21 @@ def start_scanner_loop():
     premarket_built     = False
     cycle_count         = 0
     last_report_day     = None
-    loss_streak_alerted = False  # one-time Discord alert flag for circuit breaker
+    loss_streak_alerted = False
 
     # ── STARTUP SEQUENCE ────────────────────────────────────────────────────────────────────────────
-    # 0. Start WebSocket feed so today's ticks start accumulating immediately.
-    startup_watchlist = fallback_list()
+    # Start with emergency fallback for initial WS subscription
+    startup_watchlist = list(EMERGENCY_FALLBACK)
     try:
         start_ws_feed(startup_watchlist)
         print(f"[WS] WebSocket feed started for {len(startup_watchlist)} tickers")
     except Exception as e:
         print(f"[WS] ERROR starting WebSocket feed: {e}")
 
-    # 1. 30-day historical REST backfill (up to yesterday's close)
-    # 2. Best-effort today REST backfill (04:00 → now) for mid-session restarts
-    # WS tick logging is suppressed during these two calls (quiet=True in store_bars)
+    # Historical backfill
     data_manager.startup_backfill_today(startup_watchlist)
     data_manager.startup_intraday_backfill_today(startup_watchlist)
-    # 3. Restore normal WS bar logging now that backfill is done
     set_backfill_complete()
-    # 4. earnings_filter is disabled (plan limitation) — bulk_prefetch is a no-op
     bulk_prefetch_earnings(startup_watchlist)
     # ────────────────────────────────────────────────
 
@@ -128,23 +132,67 @@ def start_scanner_loop():
 
             if is_premarket():
                 if not premarket_built:
-                    print(f"[PRE-MARKET] {current_time_str} - Building Watchlist")
+                    print(f"\n[PRE-MARKET] {current_time_str} - Building Watchlist\n")
                     try:
-                        premarket_watchlist = build_premarket_watchlist()
-                        premarket_built     = True
+                        # Use funnel system for pre-market watchlist
+                        watchlist_data = get_watchlist_with_metadata(force_refresh=True)
+                        premarket_watchlist = watchlist_data['watchlist']
+                        metadata = watchlist_data['metadata']
+                        volume_signals = watchlist_data['volume_signals']
+                        
+                        premarket_built = True
                         subscribe_tickers(premarket_watchlist)
+                        
                         print(f"[WS] Subscribed premarket watchlist "
                               f"({len(premarket_watchlist)} tickers) to WS feed")
-                        msg = (f"Pre-Market Watchlist: {len(premarket_watchlist)} tickers "
-                               f"\u2014 {', '.join(premarket_watchlist[:20])}")
+                        
+                        # Enhanced Discord message with funnel metadata
+                        stage_emoji = {
+                            'wide': '📡',
+                            'narrow': '🎯',
+                            'final': '🔥',
+                            'live': '⚡'
+                        }
+                        emoji = stage_emoji.get(metadata['stage'], '📊')
+                        
+                        msg = (
+                            f"{emoji} **{metadata['stage_description']}**\n"
+                            f"✅ Watchlist: {len(premarket_watchlist)} tickers\n"
+                            f"{', '.join(premarket_watchlist[:20])}{'...' if len(premarket_watchlist) > 20 else ''}"
+                        )
+                        
+                        if volume_signals:
+                            msg += f"\n\n⚠️ {len(volume_signals)} volume signals active"
+                        
                         send_simple_message(msg)
+                        
                     except Exception as e:
-                        print(f"[PRE-MARKET] Error: {e}")
-                        premarket_watchlist = fallback_list()
+                        print(f"[PRE-MARKET] Funnel error: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        premarket_watchlist = list(EMERGENCY_FALLBACK)
                         premarket_built     = True
                 else:
-                    print(f"[PRE-MARKET] {current_time_str} - Waiting for 9:30 AM ET...")
-                time.sleep(300)
+                    # Refresh watchlist periodically during pre-market
+                    funnel = get_funnel()
+                    if funnel.should_update():
+                        print(f"[PRE-MARKET] {current_time_str} - Refreshing Watchlist\n")
+                        try:
+                            watchlist_data = get_watchlist_with_metadata(force_refresh=True)
+                            premarket_watchlist = watchlist_data['watchlist']
+                            subscribe_tickers(premarket_watchlist)
+                            
+                            # Check for stage transition
+                            metadata = watchlist_data['metadata']
+                            print(f"[FUNNEL] Stage: {metadata['stage'].upper()} - {metadata['stage_description']}")
+                            print(f"[FUNNEL] Top 3: {', '.join(metadata['top_3_tickers'])}\n")
+                            
+                        except Exception as e:
+                            print(f"[PRE-MARKET] Refresh error: {e}")
+                    else:
+                        print(f"[PRE-MARKET] {current_time_str} - Waiting for 9:30 AM ET...")
+                    
+                    time.sleep(60)  # Check every minute during pre-market
                 continue
 
             elif is_market_hours():
@@ -156,7 +204,7 @@ def start_scanner_loop():
                 if position_manager.has_loss_streak(max_consecutive_losses=3):
                     if not loss_streak_alerted:
                         msg = (
-                            "\U0001f6d1 **CIRCUIT BREAKER** \u2014 3 consecutive losses today. "
+                            "🛑 **CIRCUIT BREAKER** — 3 consecutive losses today. "
                             "New scans halted for the rest of the session. "
                             "Open positions still monitored."
                         )
@@ -165,7 +213,7 @@ def start_scanner_loop():
                         except Exception:
                             pass
                         loss_streak_alerted = True
-                        print("[RISK] Daily loss streak reached \u2014 halting new scans.")
+                        print("[RISK] Daily loss streak reached — halting new scans.")
                     monitor_open_positions()
                     time.sleep(60)
                     continue
@@ -175,7 +223,15 @@ def start_scanner_loop():
                 print(f"[SCANNER] CYCLE #{cycle_count} - {current_time_str}")
                 print(f"{'='*60}")
 
-                watchlist    = premarket_watchlist if premarket_watchlist else build_watchlist()
+                # Use funnel watchlist during live session
+                try:
+                    watchlist = get_current_watchlist(force_refresh=False)
+                    if not watchlist:
+                        watchlist = premarket_watchlist if premarket_watchlist else list(EMERGENCY_FALLBACK)
+                except Exception as e:
+                    print(f"[WATCHLIST] Error: {e}")
+                    watchlist = premarket_watchlist if premarket_watchlist else list(EMERGENCY_FALLBACK)
+                
                 optimal_size = calculate_optimal_watchlist_size()
                 watchlist    = watchlist[:optimal_size]
                 print(f"[SCANNER] {len(watchlist)} tickers | {', '.join(watchlist[:10])}...\n")
@@ -215,7 +271,7 @@ def start_scanner_loop():
 
                     daily_stats = position_manager.get_daily_stats()
                     eod_report  = (
-                        f"EOD Report {current_day} | "
+                        f"📊 **EOD Report {current_day}**\n"
                         f"Trades: {daily_stats['trades']} | "
                         f"WR: {daily_stats['win_rate']:.1f}% | "
                         f"P&L: ${daily_stats['total_pnl']:+.2f}"
@@ -265,13 +321,14 @@ def start_scanner_loop():
             import traceback
             traceback.print_exc()
             try:
-                send_simple_message(f"Scanner Error: {str(e)}")
+                send_simple_message(f"⚠️ Scanner Error: {str(e)}")
             except Exception:
                 pass
             time.sleep(30)
 
 
 def get_screener_tickers(min_market_cap: int = 1_000_000_000, limit: int = 50) -> list:
+    """Legacy screener function - kept for backwards compatibility."""
     import requests
     import json
     url    = "https://eodhd.com/api/screener"
