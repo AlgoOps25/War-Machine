@@ -7,7 +7,6 @@ import time
 from datetime import datetime, time as dtime
 from zoneinfo import ZoneInfo
 import config
-from premarket_scanner import build_premarket_watchlist
 from data_manager import data_manager, cleanup_old_bars
 from position_manager import position_manager
 from ws_feed import start_ws_feed, subscribe_tickers, set_backfill_complete
@@ -18,7 +17,7 @@ from scanner_optimizer import (
 )
 from earnings_filter import bulk_prefetch_earnings, clear_earnings_cache
 
-# NEW: Breakout detector integration
+# Breakout detector integration
 from signal_generator import (
     check_and_alert, 
     monitor_signals, 
@@ -26,7 +25,7 @@ from signal_generator import (
     signal_generator
 )
 
-# NEW: Adaptive watchlist funnel (replaces static fallback)
+# Adaptive watchlist funnel (replaces premarket_scanner)
 from watchlist_funnel import (
     get_current_watchlist,
     get_watchlist_with_metadata,
@@ -174,7 +173,7 @@ def start_scanner_loop():
                         
                         send_simple_message(msg)
                         
-                        # NEW: Scan pre-market watchlist for breakouts
+                        # Scan pre-market watchlist for breakouts
                         print(f"\n[SIGNALS] Pre-market breakout scan on {len(premarket_watchlist)} tickers...")
                         check_and_alert(premarket_watchlist)
                         
