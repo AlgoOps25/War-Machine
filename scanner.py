@@ -18,7 +18,13 @@ from scanner_optimizer import (
 )
 from earnings_filter import bulk_prefetch_earnings, clear_earnings_cache
 
-from signal_generator import check_and_alert, monitor_signals, print_active_signals, signal_generator
+# NEW: Breakout detector integration
+from signal_generator import (
+    check_and_alert, 
+    monitor_signals, 
+    print_active_signals, 
+    signal_generator
+)
 
 # NEW: Adaptive watchlist funnel (replaces static fallback)
 from watchlist_funnel import (
@@ -85,6 +91,7 @@ def monitor_open_positions():
             current_prices[ticker] = bar["close"]
     position_manager.check_exits(current_prices)
 
+
 def start_scanner_loop():
     from sniper import process_ticker, clear_armed_signals, clear_watching_signals
     from discord_helpers import send_simple_message
@@ -92,14 +99,14 @@ def start_scanner_loop():
     from cfw6_confirmation import clear_prev_day_cache
 
     print(f"\n{'='*60}")
-    print("WAR MACHINE - CFW6 SCANNER")
+    print("WAR MACHINE - CFW6 SCANNER + BREAKOUT DETECTOR")
     print(f"{'='*60}")
     print(f"Market Hours: {config.MARKET_OPEN} - {config.MARKET_CLOSE}")
-    print(f"Adaptive intervals + watchlist funnel active")
+    print(f"Adaptive intervals + watchlist funnel + breakout signals active")
     print(f"{'='*60}\n")
 
     try:
-        send_simple_message("🎯 WAR MACHINE ONLINE - CFW6 Scanner + Adaptive Funnel Started")
+        send_simple_message("🎯 WAR MACHINE ONLINE - CFW6 Scanner + Breakout Detector Started")
     except Exception as e:
         print(f"[SCANNER] Discord unavailable: {e}")
 
@@ -167,6 +174,14 @@ def start_scanner_loop():
                         
                         send_simple_message(msg)
                         
+                        # NEW: Scan pre-market watchlist for breakouts
+                        print(f"\n[SIGNALS] Pre-market breakout scan on {len(premarket_watchlist)} tickers...")
+                        check_and_alert(premarket_watchlist)
+                        
+                        # Show any active signals from pre-market
+                        if signal_generator.active_signals:
+                            print_active_signals()
+                        
                     except Exception as e:
                         print(f"[PRE-MARKET] Funnel error: {e}")
                         import traceback
@@ -187,6 +202,16 @@ def start_scanner_loop():
                             metadata = watchlist_data['metadata']
                             print(f"[FUNNEL] Stage: {metadata['stage'].upper()} - {metadata['stage_description']}")
                             print(f"[FUNNEL] Top 3: {', '.join(metadata['top_3_tickers'])}\n")
+                            
+                            # Scan for new breakouts after refresh
+                            print(f"[SIGNALS] Pre-market breakout scan on {len(premarket_watchlist)} tickers...")
+                            check_and_alert(premarket_watchlist)
+                            
+                            # Monitor existing signals
+                            monitor_signals()
+                            
+                            if signal_generator.active_signals:
+                                print_active_signals()
                             
                         except Exception as e:
                             print(f"[PRE-MARKET] Refresh error: {e}")
@@ -242,7 +267,7 @@ def start_scanner_loop():
                 print(f"[SIGNALS] Scanning {len(watchlist)} tickers for breakouts...")
                 check_and_alert(watchlist)
 
-                # Monitor active signals
+                # Monitor active signals (check for stop/target hits)
                 monitor_signals()
 
                 # Show active signals summary
@@ -276,7 +301,76 @@ def start_scanner_loop():
                 scan_interval = get_adaptive_scan_interval()
                 print(f"[SCANNER] Sleeping {scan_interval}s...\n")
                 time.sleep(scan_interval)
-                
+
+            else:
+                if last_report_day != current_day:
+                    print(f"[EOD] Market Closed - Generating Reports")
+
+                    open_positions = position_manager.get_open_positions()
+                    if open_positions:
+                        print(f"[EOD] {len(open_positions)} positions still open")
+
+                    daily_stats = position_manager.get_daily_stats()
+                    eod_report  = (
+                        f"📊 **EOD Report {current_day}**\n"
+                        f"Trades: {daily_stats['trades']} | "
+                        f"WR: {daily_stats['win_rate']:.1f}% | "
+                        f"P&L: ${daily_stats['total_pnl']:+.2f}"
+                    )
+
+                    try:
+                        win_rate_report = position_manager.generate_report()
+                        eod_report     += f"\n{win_rate_report}"
+                    except Exception as e:
+                        print(f"[EOD] Report error: {e}")
+
+                    send_simple_message(eod_report)
+
+                    try:
+                        learning_engine.optimize_confirmation_weights()
+                        learning_engine.optimize_fvg_threshold()
+                        print(learning_engine.generate_performance_report())
+                    except Exception as e:
+                        print(f"[AI] Optimization error: {e}")
+
+                    try:
+                        cleanup_old_bars(days_to_keep=60)
+                    except Exception as e:
+                        print(f"[CLEANUP] Error: {e}")
+
+                    # Clear stale signals at end of day
+                    signal_generator.reset_daily()
+                    print("[SIGNALS] Daily reset complete")
+
+                    last_report_day     = current_day
+                    premarket_watchlist = []
+                    premarket_built     = False
+                    cycle_count         = 0
+                    loss_streak_alerted = False
+
+                    clear_armed_signals()
+                    clear_watching_signals()
+                    clear_earnings_cache()
+                    clear_prev_day_cache()
+
+                print(f"[AFTER-HOURS] {current_time_str} - Market closed, next check in 10 min")
+                time.sleep(600)
+
+        except KeyboardInterrupt:
+            print("\n[SCANNER] Shutdown signal received")
+            print(position_manager.generate_report())
+            raise
+
+        except Exception as e:
+            print(f"[SCANNER] Critical error: {e}")
+            import traceback
+            traceback.print_exc()
+            try:
+                send_simple_message(f"⚠️ Scanner Error: {str(e)}")
+            except Exception:
+                pass
+            time.sleep(30)
+
 
 def get_screener_tickers(min_market_cap: int = 1_000_000_000, limit: int = 50) -> list:
     """Legacy screener function - kept for backwards compatibility."""
