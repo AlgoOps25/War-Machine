@@ -11,9 +11,10 @@ Key Optimizations:
 
 API Call Reduction:
   Before: 50 tickers = 100+ API calls (2 per ticker)
-  After:  50 tickers = 0-10 API calls (cached + WS data)
+  After:  50 tickers = 0-50 API calls (only for prev_close fallback if needed)
 """
 import time
+import requests
 from datetime import datetime, timedelta
 from typing import List, Dict, Tuple, Optional
 import statistics
@@ -83,6 +84,9 @@ class MomentumCache:
 # Global cache instance
 _momentum_cache = MomentumCache(ttl_seconds=180)
 
+# Previous close cache (lasts entire session)
+_prev_close_cache: Dict[str, float] = {}
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # OPTIMIZED DATA FETCHING
@@ -135,31 +139,73 @@ def get_prev_close_from_db(ticker: str) -> Optional[float]:
         return None
     
     try:
-        # Get yesterday's last bar
-        yesterday = datetime.now() - timedelta(days=1)
+        # Get bars from last 2 days
+        yesterday = datetime.now() - timedelta(days=2)
         bars = data_manager.get_bars(ticker, timeframe='1m', start_date=yesterday)
         
-        if bars:
-            # Find last bar from previous day
-            for bar in reversed(bars):
-                bar_time = datetime.fromisoformat(bar['timestamp'])
-                if bar_time.date() < datetime.now().date():
-                    return bar['close']
-    except Exception:
+        if not bars:
+            return None
+        
+        # Find last bar from previous trading day
+        today = datetime.now().date()
+        prev_day_bars = [b for b in bars if datetime.fromisoformat(b['timestamp']).date() < today]
+        
+        if prev_day_bars:
+            return prev_day_bars[-1]['close']
+    except Exception as e:
         pass
     
     return None
 
 
+def get_prev_close_from_api(ticker: str) -> Optional[float]:
+    """Fallback: Get previous close from EODHD API (1 API call per ticker)."""
+    global _prev_close_cache
+    
+    # Check cache first
+    if ticker in _prev_close_cache:
+        return _prev_close_cache[ticker]
+    
+    try:
+        url = (
+            f"https://eodhd.com/api/eod/{ticker}.US"
+            f"?api_token={config.EODHD_API_KEY}"
+            f"&period=d"
+            f"&from={(datetime.now() - timedelta(days=5)).strftime('%Y-%m-%d')}"
+            f"&to={datetime.now().strftime('%Y-%m-%d')}"
+            f"&fmt=json"
+        )
+        
+        response = requests.get(url, timeout=10)
+        if response.status_code != 200:
+            return None
+        
+        data = response.json()
+        if not data or len(data) < 1:
+            return None
+        
+        # Get most recent previous day
+        prev_close = data[-1].get('adjusted_close', 0)
+        
+        # Cache for entire session
+        _prev_close_cache[ticker] = prev_close
+        
+        return prev_close
+    
+    except Exception as e:
+        return None
+
+
 def fetch_batch_premarket_data(tickers: List[str]) -> Dict[str, Dict]:
     """
     Fetch pre-market data for multiple tickers efficiently.
-    Prioritizes: WebSocket → Database → (skip ticker if unavailable)
+    Prioritizes: WebSocket → Database → EODHD API (fallback)
     
     Returns:
         {ticker: {current_price, prev_close, volume, gap_pct}}
     """
     results = {}
+    api_calls = 0
     
     for ticker in tickers:
         # Try WebSocket first (real-time, 0 API calls)
@@ -172,8 +218,13 @@ def fetch_batch_premarket_data(tickers: List[str]) -> Dict[str, Dict]:
         if not bar_data:
             continue
         
-        # Get previous close from database
+        # Get previous close: DB first, then API fallback
         prev_close = get_prev_close_from_db(ticker)
+        
+        if not prev_close or prev_close == 0:
+            prev_close = get_prev_close_from_api(ticker)
+            if prev_close:
+                api_calls += 1
         
         if not prev_close or prev_close == 0:
             continue
@@ -189,6 +240,9 @@ def fetch_batch_premarket_data(tickers: List[str]) -> Dict[str, Dict]:
             'gap_pct': gap_pct,
             'timestamp': bar_data['timestamp']
         }
+    
+    if api_calls > 0:
+        print(f"[MOMENTUM-OPT] ⚠️  {api_calls} API calls for prev_close fallback")
     
     return results
 
@@ -307,7 +361,7 @@ def run_momentum_screener_optimized(
     
     API Call Reduction:
         Before: N tickers × 2 API calls = 2N calls
-        After:  0 calls (uses WebSocket/DB) + cache hits
+        After:  0-N calls (WS/DB preferred, API only for missing prev_close)
     """
     print(f"[MOMENTUM-OPT] Scoring {len(candidate_tickers)} tickers (cached={use_cache})...")
     
@@ -357,7 +411,7 @@ def run_momentum_screener_optimized(
     scored_tickers.sort(key=lambda x: x['composite_score'], reverse=True)
     
     print(f"[MOMENTUM-OPT] ✅ {len(scored_tickers)} tickers passed min score {min_composite_score}")
-    print(f"[MOMENTUM-OPT] 📊 New scores: {new_scores} | Cache hits: {cache_hits} | API calls: 0")
+    print(f"[MOMENTUM-OPT] 📊 New scores: {new_scores} | Cache hits: {cache_hits}")
     
     return scored_tickers
 
@@ -369,8 +423,12 @@ def get_top_n_movers(scored_tickers: List[Dict], n: int = 10) -> List[str]:
 
 def print_momentum_summary(scored_tickers: List[Dict], top_n: int = 10):
     """Print formatted momentum screening results."""
+    if not scored_tickers:
+        print("\n⚠️  No tickers passed minimum score threshold\n")
+        return
+    
     print("\n" + "=" * 80)
-    print(f"TOP {top_n} MOMENTUM LEADERS - {datetime.now().strftime('%H:%M:%S')}")
+    print(f"TOP {min(top_n, len(scored_tickers))} MOMENTUM LEADERS - {datetime.now().strftime('%H:%M:%S')}")
     print("=" * 80)
     print(f"{'Rank':<6}{'Ticker':<8}{'Score':<8}{'Gap%':<8}{'Bias':<8}{'Volume':<12}")
     print("-" * 80)
@@ -390,8 +448,9 @@ def print_momentum_summary(scored_tickers: List[Dict], top_n: int = 10):
 
 def clear_momentum_cache():
     """Clear momentum cache. Called at EOD."""
-    global _momentum_cache
+    global _momentum_cache, _prev_close_cache
     _momentum_cache.clear()
+    _prev_close_cache = {}
     print("[MOMENTUM-OPT] Cache cleared")
 
 
