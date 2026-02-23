@@ -1,18 +1,18 @@
 """
 Pre-Market Scanner (4 AM - 9:30 AM EST)
 Builds intelligent watchlist before market opens and assesses daily
-market risk based on the FMP (Financial Modeling Prep) economic calendar.
+market risk based on the EODHD economic calendar.
 
 New exports:
   get_session_risk()  — call from main.py at session start to get
                         risk_level (HIGH/MEDIUM/LOW) and adjust
                         MAX_CONTRACTS / confidence thresholds.
-  get_economic_events() — raw FMP economic calendar fetch for today.
+  get_economic_events() — raw EODHD economic calendar fetch for today.
 
-FMP Free Tier:
-  - 250 API calls/day (plenty for daily checks)
-  - Sign up: https://site.financialmodelingprep.com/developer/docs/
-  - Set FMP_API_KEY in .env
+EODHD Economic Calendar:
+  - Included in Fundamental Data Feed subscription (already have it)
+  - 30+ countries, 50+ event types
+  - Available from 2020+
 """
 import requests
 import os
@@ -32,10 +32,10 @@ SCAN_UNIVERSE = [
 ]
 
 # ------------------------------------------------------------------ #
-#  Economic calendar (FMP)                                             #
+#  Economic calendar (EODHD)                                           #
 # ------------------------------------------------------------------ #
 
-# Keywords that flag a HIGH-IMPACT event regardless of the API importance field.
+# Keywords that flag a HIGH-IMPACT event.
 # Matched case-insensitively against the event name string.
 HIGH_IMPACT_KEYWORDS = [
     "FOMC", "Federal Reserve", "Fed Rate", "Interest Rate Decision",
@@ -54,22 +54,23 @@ HIGH_IMPACT_KEYWORDS = [
 
 def get_economic_events(date_str: str = None) -> List[Dict]:
     """
-    Fetch US economic events from FMP for a given date.
+    Fetch US economic events from EODHD for a given date.
 
-    Endpoint: GET /api/v3/economic_calendar?from=YYYY-MM-DD&to=YYYY-MM-DD&apikey=KEY
-    Free tier: 250 calls/day
+    Endpoint: GET https://eodhd.com/api/economic-events?from=DATE&to=DATE&api_token=KEY
+    Included in: Fundamental Data Feed subscription
 
     Returns a flat list of event dicts filtered to US events only.
     """
     if not date_str:
         date_str = datetime.now().strftime("%Y-%m-%d")
 
-    api_key = config.FMP_API_KEY
-    url = "https://financialmodelingprep.com/api/v3/economic_calendar"
+    api_key = config.EODHD_API_KEY
+    url = "https://eodhd.com/api/economic-events"
     params = {
         "from": date_str,
         "to":   date_str,
-        "apikey": api_key
+        "api_token": api_key,
+        "fmt": "json"
     }
 
     try:
@@ -77,11 +78,11 @@ def get_economic_events(date_str: str = None) -> List[Dict]:
         response.raise_for_status()
         data = response.json()
 
-        # FMP returns a clean array, filter to US events only
+        # EODHD returns a clean array, filter to US events only
         if isinstance(data, list):
             us_events = [
                 e for e in data
-                if e.get("country", "").lower() in ["us", "united states"]
+                if e.get("country", "").lower() in ["us", "usa", "united states"]
             ]
             return us_events
         else:
@@ -94,14 +95,14 @@ def get_economic_events(date_str: str = None) -> List[Dict]:
 
 
 def _event_name(event: Dict) -> str:
-    """Extract event name from FMP response."""
+    """Extract event name from EODHD response."""
     return str(event.get("event", "Unknown Event"))
 
 
 def _event_time(event: Dict) -> str:
     """Extract a clean HH:MM time string from the event date field."""
     raw = str(event.get("date", ""))
-    # FMP format: "2026-02-23 08:30:00" (ET already)
+    # EODHD format: "2026-02-23 08:30:00" (ET already)
     if " " in raw:
         time_part = raw.split(" ")[1][:5]  # "08:30:00" -> "08:30"
         return time_part + " ET"
@@ -111,11 +112,11 @@ def _event_time(event: Dict) -> str:
 def _is_high_impact(event: Dict) -> bool:
     """
     Classify an event as high-impact via:
-      1. Explicit impact field ("High" = high, "Medium" = medium, "Low" = low)
+      1. Explicit importance field ("High", "Medium", "Low")
       2. Keyword match on event name against HIGH_IMPACT_KEYWORDS
     """
-    impact = str(event.get("impact", "")).lower()
-    if impact == "high":
+    importance = str(event.get("importance", "")).lower()
+    if importance == "high":
         return True
 
     name_lower = _event_name(event).lower()
@@ -124,7 +125,7 @@ def _is_high_impact(event: Dict) -> bool:
 
 def get_session_risk() -> Dict:
     """
-    Assess today's market risk level from the FMP economic calendar.
+    Assess today's market risk level from the EODHD economic calendar.
 
     Returns:
         {
@@ -291,7 +292,7 @@ def build_premarket_watchlist() -> List[str]:
     print(f"PRE-MARKET WATCHLIST - {datetime.now().strftime('%I:%M:%S %p')}")
     print("=" * 60)
 
-    # 0 — Economic calendar risk assessment (FMP)
+    # 0 — Economic calendar risk assessment (EODHD)
     print("[ECON] Checking economic calendar...")
     risk = get_session_risk()
     _print_risk_banner(risk)
