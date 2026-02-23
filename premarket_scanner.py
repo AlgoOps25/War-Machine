@@ -1,6 +1,6 @@
 """
 Pre-Market Scanner (4 AM - 9:30 AM EST)
-Builds intelligent watchlist before market opens.
+Builds intelligent watchlist before market opens using dynamic screening.
 
 Exports:
   build_premarket_watchlist() — Main entry point, returns list of tickers
@@ -13,17 +13,6 @@ import os
 from datetime import datetime
 from typing import List, Dict
 import config
-
-# ------------------------------------------------------------------ #
-#  Watchlist universe                                                  #
-# ------------------------------------------------------------------ #
-
-SCAN_UNIVERSE = [
-    "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "AMD",
-    "NFLX", "ADBE", "CRM",  "INTC", "CSCO", "JPM",  "BAC",  "GS",
-    "MS",   "WFC",  "UNH",  "JNJ",  "PFE",  "ABBV", "MRK",  "WMT",
-    "HD",   "COST", "NKE",  "MCD",  "SPY",  "QQQ",  "IWM",  "DIA"
-]
 
 # ------------------------------------------------------------------ #
 #  Earnings filter                                                     #
@@ -63,13 +52,24 @@ def has_dividend_or_split_today(ticker: str) -> tuple:
 #  Gap scanner                                                         #
 # ------------------------------------------------------------------ #
 
-def get_gap_movers(min_gap_pct: float = 2.0) -> List[Dict]:
+def get_gap_movers(tickers: List[str], min_gap_pct: float = 2.0) -> List[Dict]:
     """
-    Find stocks gapping significantly in pre-market.
+    Find stocks gapping significantly in pre-market from a given ticker list.
     Uses EODHD bulk real-time quotes via s= parameter.
+    
+    Args:
+        tickers: List of tickers to scan for gaps
+        min_gap_pct: Minimum gap percentage (default 2%)
+    
+    Returns:
+        List of gap mover dicts sorted by gap size
     """
-    primary = f"{SCAN_UNIVERSE[0]}.US"
-    extra   = ",".join(f"{t}.US" for t in SCAN_UNIVERSE[1:])
+    if not tickers:
+        return []
+    
+    # EODHD bulk quote format: primary ticker + comma-separated extras
+    primary = f"{tickers[0]}.US"
+    extra   = ",".join(f"{t}.US" for t in tickers[1:]) if len(tickers) > 1 else ""
 
     url = f"https://eodhd.com/api/real-time/{primary}"
     params = {
@@ -128,27 +128,44 @@ def get_gap_movers(min_gap_pct: float = 2.0) -> List[Dict]:
 # ------------------------------------------------------------------ #
 
 def build_premarket_watchlist() -> List[str]:
-    """Build master pre-market watchlist with scoring, earnings, and dividend filters."""
+    """Build master pre-market watchlist with dynamic screening, gaps, earnings, and dividend filters."""
     print("\n" + "=" * 60)
     print(f"PRE-MARKET WATCHLIST - {datetime.now().strftime('%I:%M:%S %p')}")
     print("=" * 60)
 
+    # 1 — Dynamic screener (replaces static SCAN_UNIVERSE)
+    print("[PREMARKET] Running dynamic screener...")
+    try:
+        from dynamic_screener import get_dynamic_watchlist
+        universe = get_dynamic_watchlist(include_core=True, max_tickers=50)
+        print(f"[SCREENER] Generated {len(universe)} ticker universe")
+    except Exception as e:
+        print(f"[SCREENER] Error running screener: {e}")
+        # Fallback to core tickers if screener fails
+        universe = ["SPY", "QQQ", "AAPL", "TSLA", "NVDA", "AMD", "MSFT", "META",
+                   "GOOGL", "AMZN", "NFLX", "JPM", "BAC", "GS"]
+        print(f"[SCREENER] Using fallback universe: {len(universe)} tickers")
+
     watchlist = set()
 
-    # 1 — Gap movers
+    # 2 — Gap movers from dynamic universe
     print("[PREMARKET] Scanning gap movers...")
-    gaps = get_gap_movers()
+    gaps = get_gap_movers(universe, min_gap_pct=2.0)
     for stock in gaps[:15]:
         watchlist.add(stock["ticker"])
         direction = "📈" if stock["gap_pct"] > 0 else "📉"
         print(f"  {direction} {stock['ticker']}: {stock['gap_pct']:+.2f}%")
 
-    # 2 — Core liquid tickers always included
+    # 3 — Core liquid tickers always included
     core = ["SPY", "QQQ", "AAPL", "TSLA", "NVDA", "AMD", "MSFT"]
     for ticker in core:
         watchlist.add(ticker)
 
-    # 3 — Filter earnings
+    # 4 — Add high-volume tickers from screener (top 20)
+    for ticker in universe[:20]:
+        watchlist.add(ticker)
+
+    # 5 — Filter earnings
     tickers = sorted(list(watchlist))
     clean   = []
     for t in tickers:
@@ -176,7 +193,7 @@ def build_premarket_watchlist() -> List[str]:
     final_list = clean
 
     print(f"\n✅ Watchlist: {len(final_list)} tickers")
-    print(f"{', '.join(final_list)}")
+    print(f"{', '.join(final_list[:20])}" + ("..." if len(final_list) > 20 else ""))
     print("=" * 60 + "\n")
 
     return final_list
