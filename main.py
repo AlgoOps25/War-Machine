@@ -2,7 +2,8 @@
 War Machine - Main Entry Point
 CFW6 Strategy + Options Signal Engine
 INTEGRATED: AI Learning, Position Tracking, Win Rate Analysis,
-            Daily P&L Digest, Weekly Session Heatmap
+            Daily P&L Digest, Weekly Session Heatmap,
+            Dividends & Splits Filter
 """
 import os
 import sys
@@ -191,8 +192,10 @@ def run_eod_digest():
     try:
         # 3. State resets
         from earnings_filter import clear_earnings_cache
+        from dividends_filter import clear_dividend_cache
         from sniper import clear_armed_signals, clear_watching_signals
         clear_earnings_cache()
+        clear_dividend_cache()
         clear_armed_signals()
         clear_watching_signals()
         print("[EOD] State resets complete")
@@ -226,7 +229,7 @@ def main():
     print("MTF:          5m > 3m > 2m > 1m (highest timeframe priority)")
     print("Risk:         2% per trade | 1 contract max")
     print("Options:      7-45 DTE | 0.35-0.55 delta | High liquidity")
-    print("Intelligence: IVR + UOA + GEX | Earnings Guard | AI Win-Rate Learning")
+    print("Intelligence: IVR + UOA + GEX | Earnings + Dividends Guard | AI Learning")
     print("Reporting:    Daily P&L Digest | Weekly Session Heatmap (Fri)")
     print("Data Feed:    EODHD WebSocket (real-time 1m bars) + REST snapshots")
     print("="*60 + "\n")
