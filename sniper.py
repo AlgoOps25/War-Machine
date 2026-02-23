@@ -744,14 +744,25 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
     if VALIDATOR_ENABLED:
         try:
             validator = get_validator()
-            # CRITICAL FIX: validator expects 'signal_direction', not 'direction'
-            validation_result = validator.validate_signal(
+            # FIXED: Use correct parameter names from validator API
+            should_pass, adjusted_conf, metadata = validator.validate_signal(
                 ticker=ticker,
-                signal_direction=signal_direction,  # Fixed parameter name
-                price=entry_price,
-                volume=current_volume,
-                confidence=original_confidence * 100
+                signal_direction=signal_direction,
+                current_price=entry_price,  # Fixed: was 'price'
+                current_volume=current_volume,
+                base_confidence=original_confidence  # Fixed: was 'confidence'
             )
+            
+            # Package result in expected format for compatibility
+            validation_result = {
+                'should_take': should_pass,
+                'original_confidence': original_confidence * 100,
+                'adjusted_confidence': adjusted_conf * 100,
+                'checks_passed': len(metadata['summary']['passed_checks']),
+                'total_checks': len(metadata['summary']['passed_checks']) + len(metadata['summary']['failed_checks']),
+                'checks': metadata['checks'],
+                'failed_checks': metadata['summary']['failed_checks']
+            }
             
             # Update statistics
             _validator_stats['tested'] += 1
@@ -784,16 +795,18 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
             
             # In TEST MODE, adjust confidence but don't filter
             if VALIDATOR_TEST_MODE:
-                base_confidence = validation_result['adjusted_confidence'] / 100.0
+                base_confidence = adjusted_conf
             else:
                 # FULL MODE - actually filter signals
                 if not validation_result['should_take']:
                     print(f"[VALIDATOR] {ticker} FILTERED - {', '.join(validation_result['failed_checks'])}")
                     return False
-                base_confidence = validation_result['adjusted_confidence'] / 100.0
+                base_confidence = adjusted_conf
                 
         except Exception as e:
             print(f"[VALIDATOR] Error validating {ticker}: {e}")
+            import traceback
+            traceback.print_exc()
             # On error, continue without validation
     
     # STEP 9 — STOPS & TARGETS
