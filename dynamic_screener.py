@@ -92,15 +92,17 @@ def run_screener(
     """
     Run EODHD stock screener with custom filters.
 
+    IMPORTANT: filters must be serialized with separators=(',',':')
+    so there are NO spaces in the JSON string. Spaces get URL-encoded
+    as '+' signs which EODHD rejects with a 422 error.
+
     Args:
-        filters: List of filter conditions. Format:
-                 [["field", "operator", value], ...]
-                 Example: [["volume", ">", 1000000], ["close", ">", 10]]
+        filters: List of filter conditions [["field", "op", value], ...]
         limit: Max results to return (default 50)
         sort_by: Sort field with direction (default "volume.desc")
 
     Returns:
-        List of ticker symbols that passed the screen, or [] on failure.
+        List of ticker symbols, or [] on failure.
 
     EODHD Screener Docs:
         https://eodhd.com/financial-apis/stock-market-screener-api
@@ -108,7 +110,12 @@ def run_screener(
     if filters is None:
         filters = DEFAULT_FILTERS
 
-    filter_json = json.dumps(filters)
+    # CRITICAL FIX: separators=(',',':') produces compact JSON with NO spaces.
+    # json.dumps default adds spaces after ',' and ':' which URL-encode to '+'
+    # causing EODHD to return 422 Unprocessable Content.
+    # Bad:  [["market_capitalization", ">", 1000000000], ["volume", ">", 500000]]
+    # Good: [["market_capitalization",">",1000000000],["volume",">",500000]]
+    filter_json = json.dumps(filters, separators=(',', ':'))
 
     url = "https://eodhd.com/api/screener"
     params = {
@@ -123,11 +130,13 @@ def run_screener(
         print(f"[SCREENER] Calling API: filters={filter_json[:80]}... limit={limit} sort={sort_by}")
         response = requests.get(url, params=params, timeout=15)
 
-        # Log HTTP status for debugging
         print(f"[SCREENER] HTTP {response.status_code}")
 
+        if response.status_code == 422:
+            print(f"[SCREENER] ❌ 422 Unprocessable — filter format rejected. Raw: {filter_json}")
+            return []
         if response.status_code == 403:
-            print("[SCREENER] ❌ 403 Forbidden — screener endpoint not included in your EODHD plan")
+            print("[SCREENER] ❌ 403 Forbidden — screener not in your EODHD plan")
             return []
         if response.status_code == 401:
             print("[SCREENER] ❌ 401 Unauthorized — check EODHD_API_KEY")
@@ -136,18 +145,17 @@ def run_screener(
         response.raise_for_status()
         data = response.json()
 
-        # Debug: show raw response shape
         if isinstance(data, dict):
             print(f"[SCREENER] Response keys: {list(data.keys())}")
             total = data.get("total", "?")
-            print(f"[SCREENER] Total results reported by API: {total}")
+            print(f"[SCREENER] Total results from API: {total}")
         else:
             print(f"[SCREENER] Unexpected response type: {type(data)} | preview: {str(data)[:200]}")
             return []
 
         results = data.get("data", [])
         if not results:
-            print("[SCREENER] ⚠️  API returned 0 results — filters may be too strict or no data for today")
+            print("[SCREENER] ⚠️  API returned 0 results — filters may be too strict")
             return []
 
         tickers = []
@@ -155,7 +163,6 @@ def run_screener(
             code = item.get("code", "")
             if not code:
                 continue
-            # Strip exchange suffixes
             ticker = code.split(".")[0]
             if ticker and ticker not in tickers:
                 tickers.append(ticker)
@@ -167,7 +174,7 @@ def run_screener(
         print(f"[SCREENER] HTTP error: {e}")
         return []
     except Exception as e:
-        print(f"[SCREENER] Error running screener: {e}")
+        print(f"[SCREENER] Error: {e}")
         import traceback
         traceback.print_exc()
         return []
@@ -190,7 +197,6 @@ def get_dynamic_watchlist(
     Returns:
         List of ticker symbols for today's watchlist
     """
-    # Check cache first (skip if force_refresh)
     if not force_refresh and _is_cache_valid():
         cached_results = _screener_cache.get("results", [])
         print(f"[SCREENER] Using cached results ({len(cached_results)} tickers)")
@@ -198,63 +204,47 @@ def get_dynamic_watchlist(
 
     print("[SCREENER] Running dynamic screener...")
 
-    # Start with core tickers if requested
     watchlist = list(CORE_TICKERS) if include_core else []
     screener_success = False
 
-    # -------------------------------------------------------
-    # Run 1: Volume-based screener (most active stocks today)
-    # -------------------------------------------------------
+    # Run 1: Volume movers
     volume_movers = run_screener(
         filters=DEFAULT_FILTERS,
         limit=max_tickers,
         sort_by="volume.desc"
     )
-
     if volume_movers:
         screener_success = True
         for ticker in volume_movers:
             if ticker not in watchlist:
                 watchlist.append(ticker)
 
-    # -------------------------------------------------------
-    # Run 2: Top % movers (requires non-zero change — works
-    #         best during/after market hours)
-    # -------------------------------------------------------
+    # Run 2: % movers (best during/after market open)
     price_movers = run_screener(
         filters=[
             ["market_capitalization", ">", 1000000000],
             ["volume", ">", 500000],
-            ["percent_change", ">", 2],   # > 2% move
+            ["percent_change", ">", 2],
             ["close", ">", 5],
         ],
         limit=20,
         sort_by="percent_change.desc"
     )
-
     if price_movers:
         screener_success = True
         for ticker in price_movers:
             if ticker not in watchlist:
                 watchlist.append(ticker)
 
-    # -------------------------------------------------------
-    # Fallback: if API returned nothing, use expanded static
-    # list. DO NOT cache fallback results — retry next call.
-    # -------------------------------------------------------
+    # Fallback: API returned nothing — use expanded static list, skip cache
     if not screener_success:
         print("[SCREENER] ⚠️  Screener returned no live data — using FALLBACK_WATCHLIST")
         print("[SCREENER] ⚠️  Cache NOT saved (will retry on next call)")
-        fallback = []
-        for ticker in FALLBACK_WATCHLIST:
-            if ticker not in fallback:
-                fallback.append(ticker)
+        fallback = list(dict.fromkeys(FALLBACK_WATCHLIST))  # deduplicate, preserve order
         return fallback[:max_tickers]
 
-    # Limit to max size
     final_watchlist = watchlist[:max_tickers]
 
-    # Only cache if we got real screener results (not just CORE_TICKERS)
     _screener_cache["date"] = datetime.now()
     _screener_cache["results"] = final_watchlist
 
@@ -265,9 +255,6 @@ def get_dynamic_watchlist(
 
 
 def get_sector_screener(sector: str, limit: int = 20) -> List[str]:
-    """
-    Screen for stocks in a specific sector.
-    """
     filters = [
         ["market_capitalization", ">", 1000000000],
         ["volume", ">", 500000],
@@ -278,9 +265,6 @@ def get_sector_screener(sector: str, limit: int = 20) -> List[str]:
 
 
 def get_gap_candidates(min_gap_pct: float = 3.0, limit: int = 30) -> List[str]:
-    """
-    Find stocks with significant gaps (pre-market or at open).
-    """
     filters = [
         ["market_capitalization", ">", 500000000],
         ["volume", ">", 300000],
@@ -291,9 +275,6 @@ def get_gap_candidates(min_gap_pct: float = 3.0, limit: int = 30) -> List[str]:
 
 
 def get_high_volume_day_watchlist(limit: int = 50) -> List[str]:
-    """
-    Generate watchlist for high-volume trading days.
-    """
     return run_screener(
         filters=HIGH_VOLUME_FILTERS,
         limit=limit,
@@ -309,7 +290,6 @@ def clear_screener_cache():
 
 
 def get_cache_stats() -> Dict:
-    """Return cache statistics for monitoring."""
     if not _screener_cache:
         return {"cached": False}
     cached_time = _screener_cache.get("date")
