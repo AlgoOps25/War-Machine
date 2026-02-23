@@ -20,7 +20,7 @@ from earnings_filter import bulk_prefetch_earnings, clear_earnings_cache
 
 API_KEY = os.getenv("EODHD_API_KEY", "")
 
-# ── Module-level watchlist — single source of truth ────────────────────────────────────────
+# ── Module-level watchlist — single source of truth ────────────────────────────────────
 FALLBACK_WATCHLIST = [
     "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA",
     "AMD",  "NFLX", "ADBE",  "CRM",  "ORCL", "INTC", "CSCO",
@@ -100,7 +100,7 @@ def start_scanner_loop():
     last_report_day     = None
     loss_streak_alerted = False  # one-time Discord alert flag for circuit breaker
 
-    # ── STARTUP SEQUENCE ──────────────────────────────────────────────────────────────────────────
+    # ── STARTUP SEQUENCE ────────────────────────────────────────────────────────────────────────────
     # 0. Start WebSocket feed so today's ticks start accumulating immediately.
     startup_watchlist = fallback_list()
     try:
@@ -252,7 +252,7 @@ def start_scanner_loop():
                     clear_earnings_cache()
                     clear_prev_day_cache()
 
-                print(f"[AFTER-HOURS] {current_time_str} - Market closed")
+                print(f"[AFTER-HOURS] {current_time_str} - Market closed, next check in 10 min")
                 time.sleep(600)
 
         except KeyboardInterrupt:
@@ -300,3 +300,8 @@ def get_screener_tickers(min_market_cap: int = 1_000_000_000, limit: int = 50) -
     except Exception as e:
         print(f"[SCREENER] Error: {e}")
         return []
+
+
+# ── Entry point ────────────────────────────────────────────────────────────────────────────
+if __name__ == "__main__":
+    start_scanner_loop()
