@@ -9,11 +9,11 @@
 # VALIDATOR: Multi-indicator confirmation (ADX, Volume, DMI, CCI, Bollinger, VPVR) - TEST MODE
 # CONFIDENCE GATE: Hard minimum floors by signal type + grade after all multipliers
 # OR WIDTH FILTER: OR range < MIN_OR_RANGE_PCT skips OR path (choppy), falls to intraday BOS
-# WATCH PERSISTENCE: watching_signals table survives Railway redeploys via Postgres;
-#                    breakout_bar_dt stored so breakout_idx is resolved from live bars after restart.
-#                    Smart expiration auto-cleans stale watches on load.
+# WATCH PERSISTENCE: watching_signals + armed_signals tables survive Railway redeploys;
+#                    Smart expiration auto-cleans stale entries on load.
 import traceback
 import requests
+import json
 from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 from discord_helpers import send_options_signal_alert, send_simple_message
@@ -43,6 +43,7 @@ except ImportError:
 armed_signals    = {}
 watching_signals   = {}
 _watches_loaded    = False   # True after first DB load attempt this session
+_armed_loaded      = False   # True after first armed signals load
 
 MAX_WATCH_BARS      = 30
 INTRADAY_MIN_GRADES = {"A+", "A"}
@@ -69,7 +70,6 @@ def _strip_tz(dt):
 
 def log_proposed_trade(ticker, signal_type, direction, price, confidence, grade):
     try:
-        # FIX #2: added serial_pk import — was hardcoded SERIAL PRIMARY KEY (Postgres-only)
         from db_connection import get_conn, ph, serial_pk
         conn = get_conn()
         cursor = conn.cursor()
@@ -114,6 +114,249 @@ def print_validation_stats():
     print("⚠️  TEST MODE ACTIVE - Signals NOT being filtered")
     print("Switch VALIDATOR_TEST_MODE to False to enable filtering")
     print("="*80 + "\n")
+
+
+# ─────────────────────────────────────────────────────────────
+# ARMED SIGNALS DB PERSISTENCE
+# Survives Railway redeploys: armed signals survive restarts and prevent
+# duplicate Discord alerts for the same signal.
+# ─────────────────────────────────────────────────────────────
+
+def _ensure_armed_db():
+    """Create armed_signals_persist table if it doesn't exist."""
+    try:
+        from db_connection import get_conn
+        conn = get_conn()
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS armed_signals_persist (
+                ticker          TEXT PRIMARY KEY,
+                position_id     INTEGER     NOT NULL,
+                direction       TEXT        NOT NULL,
+                entry_price     REAL        NOT NULL,
+                stop_price      REAL        NOT NULL,
+                t1              REAL        NOT NULL,
+                t2              REAL        NOT NULL,
+                confidence      REAL        NOT NULL,
+                grade           TEXT        NOT NULL,
+                signal_type     TEXT        NOT NULL,
+                validation_data TEXT,
+                saved_at        TIMESTAMP   DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"[ARMED-DB] Init error: {e}")
+
+
+def _persist_armed_signal(ticker: str, data: dict):
+    """
+    Upsert an armed signal entry to the DB.
+    Serializes validation_result as JSON if present.
+    """
+    try:
+        from db_connection import get_conn, ph as _ph
+        conn = get_conn()
+        cursor = conn.cursor()
+        p = _ph()
+        
+        # Serialize validation data if present
+        validation_json = None
+        if data.get("validation"):
+            try:
+                validation_json = json.dumps(data["validation"])
+            except:
+                validation_json = None
+        
+        cursor.execute(
+            f"""
+            INSERT INTO armed_signals_persist
+                (ticker, position_id, direction, entry_price, stop_price, t1, t2,
+                 confidence, grade, signal_type, validation_data, saved_at)
+            VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, CURRENT_TIMESTAMP)
+            ON CONFLICT (ticker) DO UPDATE SET
+                position_id     = EXCLUDED.position_id,
+                direction       = EXCLUDED.direction,
+                entry_price     = EXCLUDED.entry_price,
+                stop_price      = EXCLUDED.stop_price,
+                t1              = EXCLUDED.t1,
+                t2              = EXCLUDED.t2,
+                confidence      = EXCLUDED.confidence,
+                grade           = EXCLUDED.grade,
+                signal_type     = EXCLUDED.signal_type,
+                validation_data = EXCLUDED.validation_data,
+                saved_at        = CURRENT_TIMESTAMP
+            """,
+            (
+                ticker,
+                data["position_id"],
+                data["direction"],
+                data["entry_price"],
+                data["stop_price"],
+                data["t1"],
+                data["t2"],
+                data["confidence"],
+                data["grade"],
+                data["signal_type"],
+                validation_json
+            )
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"[ARMED-DB] Persist error for {ticker}: {e}")
+
+
+def _remove_armed_from_db(ticker: str):
+    """Delete an armed signal entry from the DB."""
+    try:
+        from db_connection import get_conn, ph as _ph
+        conn = get_conn()
+        cursor = conn.cursor()
+        p = _ph()
+        cursor.execute(
+            f"DELETE FROM armed_signals_persist WHERE ticker = {p}", (ticker,)
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"[ARMED-DB] Remove error for {ticker}: {e}")
+
+
+def _cleanup_stale_armed_signals():
+    """
+    Remove armed signal entries from DB that don't have corresponding open positions.
+    This syncs the armed_signals table with position_manager state.
+    """
+    try:
+        from db_connection import get_conn
+        
+        # Get list of open position IDs from position_manager
+        open_positions = position_manager.get_open_positions()
+        open_position_ids = {pos["id"] for pos in open_positions}
+        
+        conn = get_conn()
+        cursor = conn.cursor()
+        
+        # Get all armed signals from DB
+        cursor.execute("SELECT ticker, position_id FROM armed_signals_persist")
+        rows = cursor.fetchall()
+        
+        stale_tickers = []
+        for row in rows:
+            ticker = row[0] if isinstance(row, tuple) else row["ticker"]
+            pos_id = row[1] if isinstance(row, tuple) else row["position_id"]
+            
+            # If position no longer exists, mark as stale
+            if pos_id not in open_position_ids:
+                stale_tickers.append(ticker)
+        
+        # Delete stale armed signals
+        if stale_tickers:
+            placeholders = ",".join(["?" if not hasattr(conn, "_use_postgres") else "%s"] * len(stale_tickers))
+            cursor.execute(
+                f"DELETE FROM armed_signals_persist WHERE ticker IN ({placeholders})",
+                stale_tickers
+            )
+            conn.commit()
+            print(f"[ARMED-DB] 🧹 Auto-cleaned {len(stale_tickers)} closed position(s): {', '.join(stale_tickers)}")
+        
+        conn.close()
+        
+    except Exception as e:
+        print(f"[ARMED-DB] Cleanup error: {e}")
+
+
+def _load_armed_signals_from_db() -> dict:
+    """
+    Load today's armed signal entries from the DB.
+    Only loads signals that have corresponding open positions in position_manager.
+    Stale signals (closed positions) are auto-cleaned before loading.
+    """
+    try:
+        from db_connection import get_conn, dict_cursor as _dc, ph as _ph, USE_POSTGRES as _USE_PG
+        
+        # First, clean up stale armed signals
+        _cleanup_stale_armed_signals()
+        
+        conn = get_conn()
+        cursor = _dc(conn)
+        p = _ph()
+        today_et = _now_et().date()
+        
+        # Load only today's armed signals
+        if _USE_PG:
+            cursor.execute(
+                f"""
+                SELECT ticker, position_id, direction, entry_price, stop_price, t1, t2,
+                       confidence, grade, signal_type, validation_data
+                FROM   armed_signals_persist
+                WHERE  DATE(saved_at AT TIME ZONE 'America/New_York') = {p}
+                """,
+                (today_et,),
+            )
+        else:
+            cursor.execute(
+                f"""
+                SELECT ticker, position_id, direction, entry_price, stop_price, t1, t2,
+                       confidence, grade, signal_type, validation_data
+                FROM   armed_signals_persist
+                WHERE  DATE(saved_at) = {p}
+                """,
+                (today_et,),
+            )
+        rows = cursor.fetchall()
+        conn.close()
+        
+        loaded = {}
+        for row in rows:
+            # Deserialize validation data if present
+            validation = None
+            if row.get("validation_data"):
+                try:
+                    validation = json.loads(row["validation_data"])
+                except:
+                    validation = None
+            
+            loaded[row["ticker"]] = {
+                "position_id":  row["position_id"],
+                "direction":    row["direction"],
+                "entry_price":  row["entry_price"],
+                "stop_price":   row["stop_price"],
+                "t1":           row["t1"],
+                "t2":           row["t2"],
+                "confidence":   row["confidence"],
+                "grade":        row["grade"],
+                "signal_type":  row["signal_type"],
+                "validation":   validation
+            }
+        
+        if loaded:
+            print(
+                f"[ARMED-DB] 🔄 Reloaded {len(loaded)} armed signal(s) from DB after restart: "
+                f"{', '.join(loaded.keys())}"
+            )
+        return loaded
+    except Exception as e:
+        print(f"[ARMED-DB] Load error: {e}")
+        return {}
+
+
+def _maybe_load_armed_signals():
+    """
+    Called once per session on the first process_ticker() invocation.
+    Initialises the DB table and merges any surviving armed signals into memory.
+    Auto-cleans stale armed signals (closed positions) before loading.
+    """
+    global _armed_loaded, armed_signals
+    if _armed_loaded:
+        return
+    _armed_loaded = True
+    _ensure_armed_db()
+    loaded = _load_armed_signals_from_db()
+    if loaded:
+        armed_signals.update(loaded)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -663,18 +906,35 @@ def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high,
         entry_price=entry_price, stop_price=stop_price,
         t1=t1, t2=t2, confidence=confidence, grade=grade, options_rec=options_rec
     )
-    armed_signals[ticker] = {
+    
+    # Store armed signal in memory AND DB
+    armed_signal_data = {
         "position_id": position_id, "direction": direction,
         "entry_price": entry_price, "stop_price": stop_price,
         "t1": t1, "t2": t2, "confidence": confidence,
         "grade": grade, "signal_type": signal_type,
         "validation": validation_result
     }
+    armed_signals[ticker] = armed_signal_data
+    _persist_armed_signal(ticker, armed_signal_data)
+    
     print(f"[ARMED] {ticker} ID:{position_id}")
 
 
 def clear_armed_signals():
+    """Clear in-memory armed signals AND the DB persistence table."""
+    global _armed_loaded
     armed_signals.clear()
+    _armed_loaded = False
+    try:
+        from db_connection import get_conn
+        conn = get_conn()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM armed_signals_persist")
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"[ARMED-DB] Clear error: {e}")
     print("[ARMED] Cleared")
 
 
@@ -702,8 +962,9 @@ def clear_watching_signals():
 def process_ticker(ticker: str):
     try:
         # On the very first call after startup/restart, load any surviving
-        # watch state from the DB before checking in-memory dicts.
+        # watch and armed signal state from the DB.
         _maybe_load_watches()
+        _maybe_load_armed_signals()
 
         if ticker in armed_signals:
             return
