@@ -6,16 +6,15 @@ Single source of truth for all system parameters
 import os
 from datetime import time
 from dotenv import load_dotenv
-load_dotenv()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # API & DISCORD CONFIGURATION
 # ══════════════════════════════════════════════════════════════════════════════
 EODHD_API_KEY       = os.getenv("EODHD_API_KEY", "").strip()
+FMP_API_KEY         = os.getenv("FMP_API_KEY", "").strip()
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
 DATABASE_URL        = os.getenv("DATABASE_URL", "").strip()
-TRADING_ECON_API_KEY  = os.getenv("TRADING_ECON_API_KEY", "guest:guest").strip()
 
 # ══════════════════════════════════════════════════════════════════════════════
 # MARKET TIMING
