@@ -4,9 +4,7 @@ Replaces static watchlist with EODHD screener API to find best tickers daily.
 
 EODHD Screener API:
   GET https://eodhd.com/api/screener?api_token=KEY&filters=...
-  
-  Included in: EOD+Intraday — All World Extended (your current plan)
-  
+
 Features:
   - Find top volume movers automatically each morning
   - Filter by market cap, price change, sector
@@ -28,26 +26,50 @@ _screener_cache = {}  # {"date": datetime, "results": [...]}
 _CACHE_TTL_HOURS = 6  # Cache expires after 6 hours
 
 # Default screening criteria
+# NOTE: percent_change uses whole numbers (e.g. 2 = 2%), volume uses integers
 DEFAULT_FILTERS = [
     ["market_capitalization", ">", 1000000000],    # Market cap > $1B
     ["volume", ">", 500000],                       # Volume > 500K shares
     ["close", ">", 5],                             # Price > $5
-    ["close", "<", 1000],                          # Price < $1000 (exclude extreme)
+    ["close", "<", 1000],                          # Price < $1000
 ]
 
-# High-volume day filters (when market is very active)
+# High-volume day filters
 HIGH_VOLUME_FILTERS = [
     ["market_capitalization", ">", 1000000000],
-    ["volume", ">", 1000000],                      # Higher volume threshold
-    ["percent_change", ">", 1],                    # Moving > 1% today
+    ["volume", ">", 1000000],
+    ["percent_change", ">", 1],
     ["close", ">", 5],
 ]
 
 # Core tickers always included (SPY, QQQ, major names)
 CORE_TICKERS = [
-    "SPY", "QQQ", "IWM", "DIA",                    # Major ETFs
-    "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA",      # Mega caps
-    "TSLA", "META", "AMD",                         # High volatility tech
+    "SPY", "QQQ", "IWM", "DIA",
+    "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA",
+    "TSLA", "META", "AMD",
+]
+
+# Expanded fallback watchlist — used when EODHD screener returns no results
+# (weekend, API issue, plan limitation, etc.)
+FALLBACK_WATCHLIST = [
+    # ETFs
+    "SPY", "QQQ", "IWM", "DIA", "XLF", "XLK", "XLE", "XLV",
+    # Mega caps
+    "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA",
+    # High beta / volatile tech
+    "AMD", "NFLX", "ADBE", "CRM", "ORCL", "SNOW", "PLTR", "COIN",
+    # Financials
+    "JPM", "BAC", "GS", "MS", "WFC",
+    # Healthcare
+    "UNH", "JNJ", "PFE", "ABBV", "MRK",
+    # Consumer
+    "WMT", "HD", "COST", "NKE", "MCD",
+    # Energy
+    "XOM", "CVX", "OXY",
+    # Semis
+    "QCOM", "MU", "INTC", "AMAT", "LRCX",
+    # Additional active names
+    "UBER", "MSTR", "SMCI", "ARM", "MRVL",
 ]
 
 
@@ -55,11 +77,9 @@ def _is_cache_valid() -> bool:
     """Check if screener cache is still fresh."""
     if not _screener_cache:
         return False
-    
     cached_time = _screener_cache.get("date")
     if not cached_time:
         return False
-    
     age = datetime.now() - cached_time
     return age < timedelta(hours=_CACHE_TTL_HOURS)
 
@@ -71,29 +91,25 @@ def run_screener(
 ) -> List[str]:
     """
     Run EODHD stock screener with custom filters.
-    
+
     Args:
         filters: List of filter conditions. Format:
                  [["field", "operator", value], ...]
                  Example: [["volume", ">", 1000000], ["close", ">", 10]]
         limit: Max results to return (default 50)
         sort_by: Sort field with direction (default "volume.desc")
-                 Options: "volume.desc", "market_cap.desc", 
-                         "percent_change.desc", "close.desc"
-    
+
     Returns:
-        List of ticker symbols that passed the screen
-    
+        List of ticker symbols that passed the screen, or [] on failure.
+
     EODHD Screener Docs:
         https://eodhd.com/financial-apis/stock-market-screener-api
     """
-    # Use default filters if none provided
     if filters is None:
         filters = DEFAULT_FILTERS
-    
-    # Build filter JSON for API
+
     filter_json = json.dumps(filters)
-    
+
     url = "https://eodhd.com/api/screener"
     params = {
         "api_token": config.EODHD_API_KEY,
@@ -102,121 +118,155 @@ def run_screener(
         "sort": sort_by,
         "fmt": "json"
     }
-    
+
     try:
+        print(f"[SCREENER] Calling API: filters={filter_json[:80]}... limit={limit} sort={sort_by}")
         response = requests.get(url, params=params, timeout=15)
+
+        # Log HTTP status for debugging
+        print(f"[SCREENER] HTTP {response.status_code}")
+
+        if response.status_code == 403:
+            print("[SCREENER] ❌ 403 Forbidden — screener endpoint not included in your EODHD plan")
+            return []
+        if response.status_code == 401:
+            print("[SCREENER] ❌ 401 Unauthorized — check EODHD_API_KEY")
+            return []
+
         response.raise_for_status()
         data = response.json()
-        
-        if not isinstance(data, dict) or "data" not in data:
-            print(f"[SCREENER] Unexpected response format: {type(data)}")
+
+        # Debug: show raw response shape
+        if isinstance(data, dict):
+            print(f"[SCREENER] Response keys: {list(data.keys())}")
+            total = data.get("total", "?")
+            print(f"[SCREENER] Total results reported by API: {total}")
+        else:
+            print(f"[SCREENER] Unexpected response type: {type(data)} | preview: {str(data)[:200]}")
             return []
-        
+
         results = data.get("data", [])
+        if not results:
+            print("[SCREENER] ⚠️  API returned 0 results — filters may be too strict or no data for today")
+            return []
+
         tickers = []
-        
         for item in results:
-            # Extract ticker from code (format: "AAPL.US")
             code = item.get("code", "")
             if not code:
                 continue
-            
-            # Remove .US suffix
-            ticker = code.replace(".US", "").replace(".NYSE", "").replace(".NASDAQ", "")
+            # Strip exchange suffixes
+            ticker = code.split(".")[0]
             if ticker and ticker not in tickers:
                 tickers.append(ticker)
-        
+
+        print(f"[SCREENER] ✅ {len(tickers)} tickers returned")
         return tickers[:limit]
-    
+
+    except requests.exceptions.HTTPError as e:
+        print(f"[SCREENER] HTTP error: {e}")
+        return []
     except Exception as e:
         print(f"[SCREENER] Error running screener: {e}")
+        import traceback
+        traceback.print_exc()
         return []
 
 
 def get_dynamic_watchlist(
     include_core: bool = True,
-    max_tickers: int = 50
+    max_tickers: int = 50,
+    force_refresh: bool = False
 ) -> List[str]:
     """
     Generate dynamic watchlist using EODHD screener.
-    This is the main function called by premarket_scanner.py.
-    
+    Falls back to FALLBACK_WATCHLIST if API returns no results.
+
     Args:
         include_core: Always include core tickers (SPY, QQQ, AAPL, etc.)
         max_tickers: Maximum watchlist size
-    
+        force_refresh: Bypass cache and re-run screener immediately
+
     Returns:
         List of ticker symbols for today's watchlist
-    
-    Strategy:
-        1. Check cache - if valid, return cached results
-        2. Run volume screener to find most active stocks
-        3. Add core tickers (SPY, QQQ, etc.) if include_core=True
-        4. Deduplicate and limit to max_tickers
-        5. Cache results for 6 hours
     """
-    # Check cache first
-    if _is_cache_valid():
+    # Check cache first (skip if force_refresh)
+    if not force_refresh and _is_cache_valid():
         cached_results = _screener_cache.get("results", [])
         print(f"[SCREENER] Using cached results ({len(cached_results)} tickers)")
         return cached_results
-    
-    print(f"[SCREENER] Running dynamic screener...")
-    
+
+    print("[SCREENER] Running dynamic screener...")
+
     # Start with core tickers if requested
     watchlist = list(CORE_TICKERS) if include_core else []
-    
-    # Run volume-based screener
+    screener_success = False
+
+    # -------------------------------------------------------
+    # Run 1: Volume-based screener (most active stocks today)
+    # -------------------------------------------------------
     volume_movers = run_screener(
         filters=DEFAULT_FILTERS,
         limit=max_tickers,
         sort_by="volume.desc"
     )
-    
-    # Run price change screener (top % movers)
+
+    if volume_movers:
+        screener_success = True
+        for ticker in volume_movers:
+            if ticker not in watchlist:
+                watchlist.append(ticker)
+
+    # -------------------------------------------------------
+    # Run 2: Top % movers (requires non-zero change — works
+    #         best during/after market hours)
+    # -------------------------------------------------------
     price_movers = run_screener(
         filters=[
             ["market_capitalization", ">", 1000000000],
             ["volume", ">", 500000],
-            ["percent_change", ">", 2],  # Moving > 2% today
+            ["percent_change", ">", 2],   # > 2% move
             ["close", ">", 5],
         ],
         limit=20,
         sort_by="percent_change.desc"
     )
-    
-    # Merge results
-    for ticker in volume_movers:
-        if ticker not in watchlist:
-            watchlist.append(ticker)
-    
-    for ticker in price_movers:
-        if ticker not in watchlist:
-            watchlist.append(ticker)
-    
+
+    if price_movers:
+        screener_success = True
+        for ticker in price_movers:
+            if ticker not in watchlist:
+                watchlist.append(ticker)
+
+    # -------------------------------------------------------
+    # Fallback: if API returned nothing, use expanded static
+    # list. DO NOT cache fallback results — retry next call.
+    # -------------------------------------------------------
+    if not screener_success:
+        print("[SCREENER] ⚠️  Screener returned no live data — using FALLBACK_WATCHLIST")
+        print("[SCREENER] ⚠️  Cache NOT saved (will retry on next call)")
+        fallback = []
+        for ticker in FALLBACK_WATCHLIST:
+            if ticker not in fallback:
+                fallback.append(ticker)
+        return fallback[:max_tickers]
+
     # Limit to max size
     final_watchlist = watchlist[:max_tickers]
-    
-    # Cache results
+
+    # Only cache if we got real screener results (not just CORE_TICKERS)
     _screener_cache["date"] = datetime.now()
     _screener_cache["results"] = final_watchlist
-    
-    print(f"[SCREENER] Generated watchlist: {len(final_watchlist)} tickers")
+
+    print(f"[SCREENER] ✅ Watchlist generated: {len(final_watchlist)} tickers")
     print(f"[SCREENER] Top 10: {', '.join(final_watchlist[:10])}")
-    
+
     return final_watchlist
 
 
 def get_sector_screener(sector: str, limit: int = 20) -> List[str]:
     """
     Screen for stocks in a specific sector.
-    
-    Args:
-        sector: Sector name (e.g., "Technology", "Healthcare", "Financial")
-        limit: Max results
-    
-    Returns:
-        List of tickers in that sector
     """
     filters = [
         ["market_capitalization", ">", 1000000000],
@@ -224,49 +274,25 @@ def get_sector_screener(sector: str, limit: int = 20) -> List[str]:
         ["sector", "=", sector],
         ["close", ">", 5],
     ]
-    
-    return run_screener(
-        filters=filters,
-        limit=limit,
-        sort_by="volume.desc"
-    )
+    return run_screener(filters=filters, limit=limit, sort_by="volume.desc")
 
 
 def get_gap_candidates(min_gap_pct: float = 3.0, limit: int = 30) -> List[str]:
     """
     Find stocks with significant gaps (pre-market or at open).
-    
-    Args:
-        min_gap_pct: Minimum gap percentage (default 3%)
-        limit: Max results
-    
-    Returns:
-        List of gapping tickers
     """
     filters = [
-        ["market_capitalization", ">", 500000000],  # $500M+ market cap
+        ["market_capitalization", ">", 500000000],
         ["volume", ">", 300000],
-        ["percent_change", ">", min_gap_pct],       # Gap > threshold
+        ["percent_change", ">", min_gap_pct],
         ["close", ">", 3],
     ]
-    
-    return run_screener(
-        filters=filters,
-        limit=limit,
-        sort_by="percent_change.desc"
-    )
+    return run_screener(filters=filters, limit=limit, sort_by="percent_change.desc")
 
 
 def get_high_volume_day_watchlist(limit: int = 50) -> List[str]:
     """
-    Generate watchlist for high-volume trading days (FOMC, earnings season, etc.).
-    Uses stricter volume criteria to find only the most liquid names.
-    
-    Args:
-        limit: Max watchlist size
-    
-    Returns:
-        List of highly liquid tickers
+    Generate watchlist for high-volume trading days.
     """
     return run_screener(
         filters=HIGH_VOLUME_FILTERS,
@@ -286,10 +312,8 @@ def get_cache_stats() -> Dict:
     """Return cache statistics for monitoring."""
     if not _screener_cache:
         return {"cached": False}
-    
     cached_time = _screener_cache.get("date")
     results_count = len(_screener_cache.get("results", []))
-    
     return {
         "cached": True,
         "timestamp": cached_time.isoformat() if cached_time else None,
