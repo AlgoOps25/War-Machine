@@ -82,7 +82,7 @@ def get_economic_events(date_str: str = None) -> List[Dict]:
 
         # Trading Economics returns a clean array
         if isinstance(data, list):
-            return data
+            return [e for e in data if e.get("Country") == "United States"]
         else:
             print(f"[ECON] Unexpected response format: {type(data)}")
             return []

@@ -6,6 +6,7 @@ Single source of truth for all system parameters
 import os
 from datetime import time
 from dotenv import load_dotenv
+load_dotenv()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
