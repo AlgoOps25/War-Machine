@@ -253,8 +253,8 @@ class WatchlistFunnel:
         # Apply final volume filter (must have pre-market activity)
         filtered_tickers = []
         for scored_ticker in self.scored_tickers:
-            # Check for 'volume' key (optimized version) or 'premarket_volume' (original)
-            ticker_volume = scored_ticker.get('volume', scored_ticker.get('premarket_volume', 0))
+            # Use standardized 'volume' key from momentum_screener_optimized
+            ticker_volume = scored_ticker.get('volume', 0)
             if ticker_volume > 50000:  # Minimum 50K pre-market volume
                 filtered_tickers.append(scored_ticker)
         
