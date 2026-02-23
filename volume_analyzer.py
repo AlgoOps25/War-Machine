@@ -257,12 +257,12 @@ class VolumeAnalyzer:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             
+            # Fixed: Use intraday_bars table instead of bars
             query = """
-                SELECT close, volume, timestamp
-                FROM bars
+                SELECT close, volume, datetime
+                FROM intraday_bars
                 WHERE ticker = ?
-                  AND timeframe = '1m'
-                ORDER BY timestamp DESC
+                ORDER BY datetime DESC
                 LIMIT ?
             """
             
@@ -278,8 +278,12 @@ class VolumeAnalyzer:
                 self.track_ticker(ticker)
             
             # Add bars in chronological order
-            for close_price, volume, ts_str in reversed(rows):
-                timestamp = datetime.fromisoformat(ts_str)
+            for close_price, volume, ts in reversed(rows):
+                # Handle both string and datetime timestamp types
+                if isinstance(ts, str):
+                    timestamp = datetime.fromisoformat(ts)
+                else:
+                    timestamp = ts
                 self.update_bar(ticker, close_price, volume, timestamp)
             
             print(f"[VOL] Loaded {len(rows)} historical bars for {ticker}")
