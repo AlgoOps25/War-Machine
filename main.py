@@ -4,7 +4,8 @@ CFW6 Strategy + Options Signal Engine
 INTEGRATED: AI Learning, Position Tracking, Win Rate Analysis,
             Daily P&L Digest, Weekly Session Heatmap,
             Dividends & Splits Filter, Dynamic Screener,
-            Technical Indicators (Server-Side)
+            Technical Indicators (Server-Side), Bulk Download API,
+            Exchange Hours & Holiday Detection
 """
 import os
 import sys
@@ -56,6 +57,49 @@ def check_environment():
     if not webhook:
         print("WARNING: DISCORD_WEBHOOK_URL not set. No alerts will be sent.")
     return True
+
+
+def check_market_holiday():
+    """Check if today is a market holiday before starting scanner."""
+    try:
+        from exchange_hours import should_scanner_run
+        should_run, reason = should_scanner_run()
+        
+        if not should_run:
+            print("\n" + "="*60)
+            print("⚠️  MARKET CLOSED")
+            print("="*60)
+            print(f"Reason: {reason}")
+            print("Scanner will not start.")
+            print("="*60 + "\n")
+            
+            try:
+                from discord_helpers import send_simple_message
+                send_simple_message(
+                    f"⚠️ **Market Closed Today**\n\n"
+                    f"Reason: {reason}\n"
+                    f"Scanner will not run."
+                )
+            except Exception:
+                pass
+            
+            return False
+        
+        # Market is open (or early close)
+        print(f"[MARKET] ✅ {reason}")
+        if "Early Close" in reason:
+            try:
+                from discord_helpers import send_simple_message
+                send_simple_message(f"🕔 **{reason}**")
+            except Exception:
+                pass
+        
+        return True
+    
+    except Exception as e:
+        print(f"[MARKET] Holiday check error (non-fatal): {e}")
+        # Assume market is open if check fails
+        return True
 
 
 def initialize_database():
@@ -196,11 +240,13 @@ def run_eod_digest():
         from dividends_filter import clear_dividend_cache
         from dynamic_screener import clear_screener_cache
         from technical_indicators import clear_indicator_cache
+        from exchange_hours import clear_exchange_cache
         from sniper import clear_armed_signals, clear_watching_signals
         clear_earnings_cache()
         clear_dividend_cache()
         clear_screener_cache()
         clear_indicator_cache()
+        clear_exchange_cache()
         clear_armed_signals()
         clear_watching_signals()
         print("[EOD] State resets complete")
@@ -216,6 +262,10 @@ def main():
     if not check_environment():
         print("\nStartup aborted due to missing configuration")
         sys.exit(1)
+
+    # Check for market holidays before starting
+    if not check_market_holiday():
+        sys.exit(0)
 
     db          = initialize_database()
     start_websocket_feed()
@@ -239,6 +289,7 @@ def main():
     print("Watchlist:    Dynamic Screener (volume + price change)")
     print("Reporting:    Daily P&L Digest | Weekly Session Heatmap (Fri)")
     print("Data Feed:    EODHD WebSocket (real-time 1m bars) + REST snapshots")
+    print("Calendar:     Exchange Hours API (holiday detection)")
     print("="*60 + "\n")
 
     _digest_sent_today = False
