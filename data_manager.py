@@ -664,7 +664,38 @@ class DataManager:
             "size":           db_size
         }
 
+        def get_vix_level(self):
+            """
+            Get current VIX level for volatility-based threshold adjustments.
 
+            Returns:
+                dict with 'close' key containing VIX level, or None if unavailable
+            """
+            try:
+                # Try to get VIX from today's cached data first
+                if "^VIX" in self._today_5m_bars:
+                    bars = self._today_5m_bars["^VIX"]
+                    if bars:
+                        return {"close": bars[-1]["close"]}
+
+                # Fall back to fetching latest VIX data
+                import requests
+                url = f"https://eodhd.com/api/real-time/VIX.INDX"
+                params = {
+                    "api_token": config.EODHD_API_KEY,
+                    "fmt": "json"
+                }
+
+                response = requests.get(url, params=params, timeout=5)
+                if response.status_code == 200:
+                    data = response.json()
+                    return {"close": float(data.get("close", 0))}
+
+                return None
+
+            except Exception as e:
+                print(f"[DATA-MGR] VIX fetch error: {e}")
+                return None
 # ─────────────────────────────────────────────────────────────
 # Global singleton
 # ─────────────────────────────────────────────────────────────

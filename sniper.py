@@ -946,26 +946,32 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         f"= {final_confidence:.2f}"
     )
 
-    # STEP 11b — CONFIDENCE THRESHOLD GATE
-    min_type  = (
-        config.MIN_CONFIDENCE_INTRADAY
-        if signal_type == "CFW6_INTRADAY"
-        else config.MIN_CONFIDENCE_OR
-    )
-    min_grade = config.MIN_CONFIDENCE_BY_GRADE.get(final_grade, min_type)
-    eff_min   = max(min_type, min_grade, config.CONFIDENCE_ABSOLUTE_FLOOR)
+# STEP 11b — CONFIDENCE THRESHOLD GATE (DYNAMIC - OPT #3)
+    # Use dynamic threshold calculation that adapts to:
+    # - Time of day, VIX level, recent win rate, signal quality
+    try:
+        from dynamic_thresholds import get_dynamic_threshold
+        eff_min = get_dynamic_threshold(signal_type, final_grade)
+    except ImportError:
+        # Fallback to static thresholds if dynamic_thresholds unavailable
+        min_type  = (
+            config.MIN_CONFIDENCE_INTRADAY
+            if signal_type == "CFW6_INTRADAY"
+            else config.MIN_CONFIDENCE_OR
+        )
+        min_grade = config.MIN_CONFIDENCE_BY_GRADE.get(final_grade, min_type)
+        eff_min   = max(min_type, min_grade, config.CONFIDENCE_ABSOLUTE_FLOOR)
 
     if final_confidence < eff_min:
         print(
-            f"[{ticker}] \U0001f6ab GATED: confidence {final_confidence:.2f} < "
-            f"min {eff_min:.2f} "
-            f"[type={min_type:.2f} grade={min_grade:.2f} abs={config.CONFIDENCE_ABSOLUTE_FLOOR:.2f}] "
-            f"[{signal_type}/{final_grade}] \u2014 signal dropped"
+            f"[{ticker}] 🚫 GATED: confidence {final_confidence:.2f} < "
+            f"dynamic threshold {eff_min:.2f} "
+            f"[{signal_type}/{final_grade}] — signal dropped"
         )
         return False
 
-    print(f"[{ticker}] \u2705 GATE PASSED: {final_confidence:.2f} >= {eff_min:.2f}")
-
+    print(f"[{ticker}] ✅ GATE PASSED: {final_confidence:.2f} >= {eff_min:.2f} (dynamic)")
+    
     # STEP 12 — ARM (with validation result attached)
     arm_ticker(
         ticker, direction, zone_low, zone_high,
