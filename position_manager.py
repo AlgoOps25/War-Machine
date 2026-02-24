@@ -8,12 +8,27 @@ Phase 1.9 Enhancements:
   - Dynamic position sizing (performance-based adjustment)
   - Risk/reward validation (minimum R:R requirements)
   - Circuit breaker (daily loss limits)
+  
+Phase 4 Integration:
+  - Signal tracking when trades execute (links signals to positions)
 """
 import config
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 import db_connection
 from db_connection import get_conn, ph, dict_cursor, serial_pk
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PHASE 4 INTEGRATION - Signal Analytics Tracking
+# ══════════════════════════════════════════════════════════════════════════════
+try:
+    from signal_analytics import signal_tracker
+    PHASE_4_ENABLED = True
+    print("[POSITION] ✅ Phase 4 trade tracking enabled (signal_analytics)")
+except ImportError:
+    signal_tracker = None
+    PHASE_4_ENABLED = False
+    print("[POSITION] ⚠️  Phase 4 trade tracking disabled (signal_analytics not available)")
 
 
 # Phase 1.9: Sector/ticker correlation mapping
@@ -447,6 +462,7 @@ class PositionManager:
         Open a new position and return position ID.
         
         Phase 1.9: Now validates risk limits before opening.
+        Phase 4: Tracks trade execution via signal_analytics.
         """
         # Cast numpy types to native Python BEFORE SQL
         entry_price = float(entry_price)
@@ -542,6 +558,20 @@ class PositionManager:
             "t1_hit":               False,
             "pnl":                  0.0
         })
+
+        # ══════════════════════════════════════════════════════════════════════════════
+        # PHASE 4 INTEGRATION POINT #7 - Track Trade Execution
+        # Record when position opens (TRADED stage)
+        # ══════════════════════════════════════════════════════════════════════════════
+        if PHASE_4_ENABLED and signal_tracker:
+            try:
+                signal_tracker.record_trade_executed(
+                    ticker=ticker,
+                    position_id=position_id
+                )
+                print(f"[PHASE 4] 💰 {ticker} trade EXECUTED - Position ID {position_id}")
+            except Exception as e:
+                print(f"[PHASE 4] Trade tracking error: {e}")
 
         # Phase 1.9: Enhanced logging with risk context
         sector = self._get_ticker_sector(ticker) or "UNKNOWN"
