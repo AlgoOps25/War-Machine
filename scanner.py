@@ -34,10 +34,10 @@ from watchlist_funnel import (
     get_funnel
 )
 
-# ────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────
 # OPTIONS INTELLIGENCE LAYER
 # Non-fatal import: scanner works normally if options_data_manager is missing
-# ────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────
 try:
     from options_data_manager import options_dm
     OPTIONS_LAYER_ENABLED = True
@@ -69,9 +69,9 @@ def is_market_hours():
     return config.MARKET_OPEN <= now.time() <= config.MARKET_CLOSE
 
 
-# ────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────
 # OPTIONS INTELLIGENCE HELPERS
-# ────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────
 
 def enhance_watchlist_with_options(watchlist: list) -> list:
     """
@@ -225,9 +225,9 @@ def _log_options_context(watchlist: list) -> None:
         pass  # Never block the scan cycle
 
 
-# ────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────
 # EXISTING SCANNER FUNCTIONS (unchanged)
-# ────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────
 
 def build_watchlist(force_refresh: bool = False) -> list:
     """
@@ -270,7 +270,6 @@ def start_scanner_loop():
     from sniper import process_ticker, clear_armed_signals, clear_watching_signals
     from discord_helpers import send_simple_message
     from ai_learning import learning_engine
-    from cfw6_confirmation import clear_prev_day_cache
 
     print(f"\n{'='*60}")
     print("WAR MACHINE - CFW6 SCANNER + BREAKOUT DETECTOR")
@@ -292,7 +291,7 @@ def start_scanner_loop():
     last_report_day     = None
     loss_streak_alerted = False
 
-    # ── STARTUP SEQUENCE ────────────────────────────────────────────────────────────────────────
+    # ── STARTUP SEQUENCE ──────────────────────────────────────────────────────────
     # Start with emergency fallback for initial WS subscription
     startup_watchlist = list(EMERGENCY_FALLBACK)
     try:
@@ -467,7 +466,7 @@ def start_scanner_loop():
                 optimal_size = calculate_optimal_watchlist_size()
                 watchlist    = watchlist[:optimal_size]
 
-                # ── OPTIONS LAYER ─────────────────────────────────────────────────
+                # ── OPTIONS LAYER ───────────────────────────────────────────────────────────
                 # Step 1: Fire background prefetch for this cycle's watchlist.
                 #         Results populate options_dm cache for NEXT cycle sort.
                 prefetch_options_scores(watchlist, top_n=20)
@@ -478,7 +477,7 @@ def start_scanner_loop():
 
                 # Step 3: Log per-cycle options environment summary.
                 _log_options_context(watchlist)
-                # ───────────────────────────────────────────────────────────
+                # ───────────────────────────────────────────────────────────────────────
 
                 print(
                     f"[SCANNER] {len(watchlist)} tickers | "
@@ -581,7 +580,12 @@ def start_scanner_loop():
                     clear_armed_signals()
                     clear_watching_signals()
                     clear_earnings_cache()
-                    clear_prev_day_cache()
+                    
+                    # Phase 1.7: Clear PDH/PDL cache from data_manager
+                    try:
+                        data_manager.clear_prev_day_cache()
+                    except Exception as e:
+                        print(f"[DATA] PDH/PDL cache clear error: {e}")
 
                 print(f"[AFTER-HOURS] {current_time_str} - Market closed, next check in 10 min")
                 time.sleep(600)
@@ -634,6 +638,6 @@ def get_screener_tickers(min_market_cap: int = 1_000_000_000, limit: int = 50) -
         return []
 
 
-# ── Entry point ───────────────────────────────────────────────────────────────────────
+# ── Entry point ──────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     start_scanner_loop()
