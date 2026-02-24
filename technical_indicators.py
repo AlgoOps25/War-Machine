@@ -117,12 +117,13 @@ def fetch_technical_indicator(
         **params: Additional indicator parameters (period, etc.)
     
     Returns:
-        List of indicator dicts with timestamps, or None on error
+        List of indicator dicts with timestamps, or None on error.
+        Data is returned in DESCENDING order (newest first) due to order=d param.
     
     Example:
         adx_data = fetch_technical_indicator('AAPL', 'adx', period=14)
         if adx_data:
-            latest_adx = adx_data[-1]['adx']
+            latest_adx = adx_data[0]['adx']  # First element is newest
     """
     # Build cache key
     param_str = '_'.join(f"{k}={v}" for k, v in sorted(params.items()))
@@ -352,16 +353,21 @@ def get_latest_value(indicator_data: Optional[List[Dict]], key: str) -> Optional
     Extract latest value from indicator data.
     
     Args:
-        indicator_data: List of indicator dicts from fetch functions
+        indicator_data: List of indicator dicts from fetch functions (descending order)
         key: Key to extract (e.g., 'adx', 'cci', 'uband')
     
     Returns:
         Latest value as float, or None if data unavailable
+        
+    Note:
+        EODHD returns data in descending order (newest first) due to order=d param,
+        so we use index [0] to get the most recent value.
     """
     if not indicator_data or not isinstance(indicator_data, list):
         return None
     
-    latest = indicator_data[-1]  # EODHD returns newest first, but we want latest
+    # Fix: EODHD returns descending order (newest first), so use [0] not [-1]
+    latest = indicator_data[0]
     return float(latest.get(key, 0)) if latest.get(key) is not None else None
 
 
@@ -380,7 +386,7 @@ def check_bollinger_squeeze(ticker: str, threshold: float = 0.04) -> tuple[bool,
     if not bbands_data:
         return False, None
     
-    latest = bbands_data[-1]
+    latest = bbands_data[0]
     upper = latest.get('uband')
     lower = latest.get('lband')
     middle = latest.get('mband')
@@ -454,7 +460,7 @@ def get_trend_direction(ticker: str) -> Optional[str]:
     if not dmi_data:
         return None
     
-    latest = dmi_data[-1]
+    latest = dmi_data[0]
     plus_di = latest.get('plus_di')
     minus_di = latest.get('minus_di')
     
