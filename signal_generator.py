@@ -8,6 +8,7 @@ Responsibilities:
   - Track signal performance with signal_analytics
   - Manage signal state (pending, filled, stopped, hit target)
   - [NEW] Multi-indicator validation (Test Mode - no filtering yet)
+  - [Phase 1.8] PDH/PDL-aware breakout detection via ticker parameter
 """
 from typing import Dict, List, Optional
 from datetime import datetime, timedelta
@@ -121,6 +122,8 @@ class SignalGenerator:
         """
         Check if ticker has a breakout signal.
         
+        Phase 1.8: Now passes ticker to detector for PDH/PDL-aware analysis.
+        
         Args:
             ticker: Stock ticker to check
             use_5m: Use 5-minute bars (True) or 1-minute bars (False)
@@ -141,8 +144,8 @@ class SignalGenerator:
         if not bars or len(bars) < self.detector.lookback_bars:
             return None
         
-        # Detect breakout
-        signal = self.detector.detect_breakout(bars)
+        # Phase 1.8: Pass ticker to detector for PDH/PDL integration
+        signal = self.detector.detect_breakout(bars, ticker=ticker)
         
         if signal and signal['confidence'] >= self.min_confidence:
             # Add ticker to signal
@@ -595,9 +598,20 @@ class SignalGenerator:
             del self.active_signals[ticker]
     
     def reset_daily(self) -> None:
-        """Reset signal generator for new trading day."""
+        """
+        Reset signal generator for new trading day.
+        
+        Phase 1.8: Now clears PDH/PDL cache in breakout detector.
+        """
         self.recent_signals.clear()
         self.active_signals.clear()
+        
+        # Phase 1.8: Clear PDH/PDL cache for new trading day
+        try:
+            self.detector.clear_pdh_pdl_cache()
+            print("[SIGNALS] PDH/PDL cache cleared for new session")
+        except Exception as e:
+            print(f"[SIGNALS] PDH/PDL cache clear error: {e}")
         
         # Print validation stats before reset
         if VALIDATOR_ENABLED and self.validation_stats['total_signals'] > 0:
