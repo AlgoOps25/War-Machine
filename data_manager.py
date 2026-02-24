@@ -21,6 +21,7 @@ Design principles:
 EODHD endpoint rules:
   - /api/intraday/ : primary bar source — prior-day data is always available;
     same-day data availability depends on plan (All-In-One may serve it sooner).
+  - /api/eod/ : end-of-day OHLCV historical data — used by get_daily_ohlc().
   - /api/real-time/ : live price snapshot — used by bulk_fetch_live_snapshots().
   - WebSocket (ws_feed.py): real-time tick stream — the primary source for today's bars.
   - from/to MUST be Unix timestamps (int) — date strings cause 422 errors.
@@ -248,7 +249,7 @@ class DataManager:
             print(f"[DATA] Today REST backfill: no same-day data from EODHD — WS-only session\n")
 
     # =============================================================
-    # INCREMENTAL UPDATE
+    # INCREMENTAL UPDATE (module-level legacy shim calls this)
     # =============================================================
 
     def _get_last_bar_ts(self, ticker: str) -> Optional[datetime]:
@@ -270,7 +271,8 @@ class DataManager:
             ts = ts.replace(tzinfo=None)
         return ts
 
-    def update_ticker(self, ticker: str):
+    def _update_ticker_internal(self, ticker: str):
+        """Internal ticker update (called by module-level legacy shim)."""
         now_utc  = datetime.utcnow()
         now_et   = datetime.now(ET)
         today_et = now_et.date()
@@ -369,81 +371,6 @@ class DataManager:
 
         print(f"[DATA] All {max_retries} store attempts failed for {ticker}")
         return 0
-
-    def store_daily_bars(self, ticker: str, bars: List[Dict]) -> int:
-        """
-        Store daily EOD bars in the daily_bars table.
-        Used by bulk_downloader for historical EOD data backfills.
-        """
-        if not bars:
-            return 0
-
-        conn = get_conn(self.db_path)
-        cursor = conn.cursor()
-
-        cursor.execute(f"""
-            CREATE TABLE IF NOT EXISTS daily_bars (
-                id          {serial_pk()},
-                ticker      TEXT      NOT NULL,
-                date        DATE      NOT NULL,
-                open        REAL      NOT NULL,
-                high        REAL      NOT NULL,
-                low         REAL      NOT NULL,
-                close       REAL      NOT NULL,
-                volume      INTEGER   NOT NULL,
-                created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(ticker, date)
-            )
-        """)
-        cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_daily_ticker_date
-            ON daily_bars(ticker, date DESC)
-        """)
-        conn.commit()
-
-        if db_connection.USE_POSTGRES:
-            upsert_sql = """
-                INSERT INTO daily_bars (ticker, date, open, high, low, close, volume)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (ticker, date)
-                DO UPDATE SET
-                    open = EXCLUDED.open, high = EXCLUDED.high,
-                    low = EXCLUDED.low, close = EXCLUDED.close,
-                    volume = EXCLUDED.volume
-            """
-        else:
-            upsert_sql = """
-                INSERT INTO daily_bars (ticker, date, open, high, low, close, volume)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT (ticker, date)
-                DO UPDATE SET
-                    open = excluded.open, high = excluded.high,
-                    low = excluded.low, close = excluded.close,
-                    volume = excluded.volume
-            """
-
-        data = []
-        for b in bars:
-            dt = b["datetime"]
-            if isinstance(dt, str):
-                dt = datetime.fromisoformat(dt)
-            bar_date = dt.date() if isinstance(dt, datetime) else dt
-            data.append((
-                ticker, bar_date,
-                b["open"], b["high"], b["low"], b["close"], b["volume"]
-            ))
-
-        try:
-            cursor = conn.cursor()
-            cursor.executemany(upsert_sql, data)
-            conn.commit()
-            return len(data)
-        except Exception as e:
-            print(f"[DATA] Error storing daily bars for {ticker}: {e}")
-            conn.rollback()
-            return 0
-        finally:
-            conn.close()
 
     def materialize_5m_bars(self, ticker: str):
         """
@@ -568,54 +495,57 @@ class DataManager:
         return self._parse_bar_rows(rows)
 
     # =============================================================
-    # BACKTESTING QUERIES
+    # DAILY OHLC (EODHD /eod/ endpoint)
     # =============================================================
 
-    def get_bars_by_date(self, ticker: str, session_date: date_type) -> List[Dict]:
-        """Return all 1m bars for a specific date. FOR BACKTESTING ONLY."""
-        day_start = datetime.combine(session_date, dtime(4, 0, 0))
-        day_end   = datetime.combine(session_date, dtime(20, 0, 0))
+    def get_daily_ohlc(self, ticker: str, target_date: date_type) -> Optional[Dict]:
+        """
+        Fetch full OHLCV for a specific date via EODHD /eod/ endpoint.
+        Returns dict: {"open", "high", "low", "close", "volume"} or None.
+        """
+        url = f"https://eodhd.com/api/eod/{ticker}.US"
+        params = {
+            "api_token": self.api_key,
+            "from": target_date.isoformat(),
+            "to": target_date.isoformat(),
+            "fmt": "json"
+        }
+        try:
+            response = requests.get(url, params=params, timeout=15)
+            response.raise_for_status()
+            data = response.json()
+            
+            if not data or len(data) == 0:
+                return None
+            
+            bar = data[0]
+            return {
+                "open":   float(bar["open"]),
+                "high":   float(bar["high"]),
+                "low":    float(bar["low"]),
+                "close":  float(bar["close"]),
+                "volume": int(bar["volume"])
+            }
+        except Exception as e:
+            print(f"[DATA] Error fetching daily OHLC for {ticker} on {target_date}: {e}")
+            return None
 
-        p = ph()
-        conn = get_conn(self.db_path)
-        cursor = dict_cursor(conn)
-        cursor.execute(f"""
-            SELECT datetime, open, high, low, close, volume
-            FROM intraday_bars
-            WHERE ticker   = {p}
-              AND datetime >= {p}
-              AND datetime <= {p}
-            ORDER BY datetime ASC
-        """, (ticker, day_start, day_end))
-        rows = cursor.fetchall()
-        conn.close()
-        return self._parse_bar_rows(rows)
-
-    def get_available_dates(self, ticker: str) -> List[date_type]:
-        """Return sorted list of all dates with stored bars for a ticker."""
-        p = ph()
-        conn = get_conn(self.db_path)
-        cursor = dict_cursor(conn)
-        if db_connection.USE_POSTGRES:
-            cursor.execute(f"""
-                SELECT DISTINCT DATE(datetime) AS d
-                FROM intraday_bars WHERE ticker = {p} ORDER BY d ASC
-            """, (ticker,))
-        else:
-            cursor.execute(f"""
-                SELECT DISTINCT date(datetime) AS d
-                FROM intraday_bars WHERE ticker = {p} ORDER BY d ASC
-            """, (ticker,))
-        rows = cursor.fetchall()
-        conn.close()
-        dates = []
-        for row in rows:
-            d = row["d"]
-            if isinstance(d, str):
-                from datetime import date as _date
-                d = _date.fromisoformat(d)
-            dates.append(d)
-        return dates
+    def get_previous_day_ohlc(self, ticker: str) -> Optional[Dict]:
+        """
+        Fetch previous trading day's OHLC via get_daily_ohlc().
+        Returns dict: {"open", "high", "low", "close", "volume"} or None.
+        """
+        now_et = datetime.now(ET)
+        yesterday = now_et.date() - timedelta(days=1)
+        
+        # Walk back up to 5 days to skip weekends/holidays
+        for days_back in range(1, 6):
+            target_date = now_et.date() - timedelta(days=days_back)
+            ohlc = self.get_daily_ohlc(ticker, target_date)
+            if ohlc:
+                return ohlc
+        
+        return None
 
     # =============================================================
     # LIVE PRICE SNAPSHOTS
@@ -666,7 +596,7 @@ class DataManager:
     # UTILITIES
     # =============================================================
 
-    def cleanup_old_bars(self, days_to_keep: int = 60):
+    def _cleanup_old_bars_internal(self, days_to_keep: int = 60):
         """Remove bars older than days_to_keep from 1m and 5m tables."""
         cutoff = datetime.now() - timedelta(days=days_to_keep)
         p = ph()
@@ -741,9 +671,11 @@ class DataManager:
 data_manager = DataManager()
 
 
-# Legacy compatibility shims
+# Legacy compatibility shims (keep for existing callers)
 def update_ticker(ticker: str):
-    data_manager.update_ticker(ticker)
+    """Module-level shim — calls DataManager internal method."""
+    data_manager._update_ticker_internal(ticker)
 
 def cleanup_old_bars(days_to_keep: int = 60):
-    data_manager.cleanup_old_bars(days_to_keep)
+    """Module-level shim — calls DataManager internal method."""
+    data_manager._cleanup_old_bars_internal(days_to_keep)
