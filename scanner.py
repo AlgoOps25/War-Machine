@@ -2,6 +2,7 @@
 Scanner Module - Intelligent Watchlist Builder & Scanner Loop
 INTEGRATED: Adaptive Watchlist Funnel, Pre-Market Scanner, Position Monitoring, Database Cleanup
 OPTIONS LAYER: Cache-based watchlist scoring, background prefetch, per-cycle context logging
+PHASE 2A: Signal Analytics & PnL Digest EOD integration
 """
 import os
 import time
@@ -33,6 +34,29 @@ from watchlist_funnel import (
     get_watchlist_with_metadata,
     get_funnel
 )
+
+# ────────────────────────────────────────────────────────────────────
+# PHASE 2A: ANALYTICS & EOD REPORTING
+# Non-fatal imports: scanner works normally if these modules are missing
+# ────────────────────────────────────────────────────────────────────
+try:
+    from signal_analytics import (
+        print_performance_report,
+        get_optimization_recommendations
+    )
+    ANALYTICS_ENABLED = True
+    print("[SCANNER] ✅ Signal analytics enabled")
+except ImportError:
+    ANALYTICS_ENABLED = False
+    print("[SCANNER] ⚠️  signal_analytics not available — analytics disabled")
+
+try:
+    from pnl_digest import generate_eod_digest
+    PNL_DIGEST_ENABLED = True
+    print("[SCANNER] ✅ PnL digest enabled")
+except ImportError:
+    PNL_DIGEST_ENABLED = False
+    print("[SCANNER] ⚠️  pnl_digest not available — using basic EOD report")
 
 # ────────────────────────────────────────────────────────────────────
 # OPTIONS INTELLIGENCE LAYER
@@ -278,10 +302,14 @@ def start_scanner_loop():
     print(f"Adaptive intervals + watchlist funnel + breakout signals active")
     if OPTIONS_LAYER_ENABLED:
         print(f"Options layer: ✅ ENABLED (cache-sort + background prefetch)")
+    if ANALYTICS_ENABLED:
+        print(f"Analytics: ✅ ENABLED (quality scoring, Sharpe, expectancy)")
+    if PNL_DIGEST_ENABLED:
+        print(f"PnL Digest: ✅ ENABLED (rich EOD Discord embeds)")
     print(f"{'='*60}\n")
 
     try:
-        send_simple_message("\U0001f3af WAR MACHINE ONLINE - CFW6 Scanner + Breakout Detector Started")
+        send_simple_message("🎯 WAR MACHINE ONLINE - CFW6 Scanner + Breakout Detector Started")
     except Exception as e:
         print(f"[SCANNER] Discord unavailable: {e}")
 
@@ -339,22 +367,22 @@ def start_scanner_loop():
 
                         # Enhanced Discord message with funnel metadata
                         stage_emoji = {
-                            'wide': '\U0001f4e1',
-                            'narrow': '\U0001f3af',
-                            'final': '\U0001f525',
-                            'live': '\u26a1'
+                            'wide': '📡',
+                            'narrow': '🎯',
+                            'final': '🔥',
+                            'live': '⚡'
                         }
-                        emoji = stage_emoji.get(metadata['stage'], '\U0001f4ca')
+                        emoji = stage_emoji.get(metadata['stage'], '📊')
 
                         msg = (
                             f"{emoji} **{metadata['stage_description']}**\n"
-                            f"\u2705 Watchlist: {len(premarket_watchlist)} tickers\n"
+                            f"✅ Watchlist: {len(premarket_watchlist)} tickers\n"
                             f"{', '.join(premarket_watchlist[:20])}"
                             f"{'...' if len(premarket_watchlist) > 20 else ''}"
                         )
 
                         if volume_signals:
-                            msg += f"\n\n\u26a0\ufe0f {len(volume_signals)} volume signals active"
+                            msg += f"\n\n⚠️ {len(volume_signals)} volume signals active"
 
                         send_simple_message(msg)
 
@@ -429,7 +457,7 @@ def start_scanner_loop():
                 if position_manager.has_loss_streak(max_consecutive_losses=3):
                     if not loss_streak_alerted:
                         msg = (
-                            "\U0001f6d1 **CIRCUIT BREAKER** \u2014 3 consecutive losses today. "
+                            "🛑 **CIRCUIT BREAKER** — 3 consecutive losses today. "
                             "New scans halted for the rest of the session. "
                             "Open positions still monitored."
                         )
@@ -438,7 +466,7 @@ def start_scanner_loop():
                         except Exception:
                             pass
                         loss_streak_alerted = True
-                        print("[RISK] Daily loss streak reached \u2014 halting new scans.")
+                        print("[RISK] Daily loss streak reached — halting new scans.")
                     monitor_open_positions()
                     time.sleep(60)
                     continue
@@ -525,28 +553,85 @@ def start_scanner_loop():
 
             else:
                 if last_report_day != current_day:
-                    print(f"[EOD] Market Closed - Generating Reports")
+                    print(f"\n{'='*80}")
+                    print(f"[EOD] Market Closed - Generating Reports for {current_day}")
+                    print(f"{'='*80}\n")
 
                     open_positions = position_manager.get_open_positions()
                     if open_positions:
                         print(f"[EOD] {len(open_positions)} positions still open")
 
-                    daily_stats = position_manager.get_daily_stats()
-                    eod_report  = (
-                        f"\U0001f4ca **EOD Report {current_day}**\n"
-                        f"Trades: {daily_stats['trades']} | "
-                        f"WR: {daily_stats['win_rate']:.1f}% | "
-                        f"P&L: ${daily_stats['total_pnl']:+.2f}"
-                    )
+                    # ──────────────────────────────────────────────────────────────
+                    # PHASE 2A: ENHANCED EOD REPORTING
+                    # ──────────────────────────────────────────────────────────────
+                    
+                    # 1. SIGNAL ANALYTICS (console output)
+                    if ANALYTICS_ENABLED:
+                        try:
+                            print("\n[ANALYTICS] Generating signal performance report...\n")
+                            print_performance_report(days=30)
+                            
+                            # Get optimization recommendations
+                            recommendations = get_optimization_recommendations(days=30)
+                            if recommendations:
+                                print("\n" + "="*80)
+                                print("OPTIMIZATION RECOMMENDATIONS")
+                                print("="*80)
+                                for rec in recommendations:
+                                    print(f"⚠️  {rec}")
+                                print("="*80 + "\n")
+                        except Exception as e:
+                            print(f"[ANALYTICS] Error generating report: {e}")
+                            import traceback
+                            traceback.print_exc()
+                    
+                    # 2. PNL DIGEST (Discord embed)
+                    if PNL_DIGEST_ENABLED:
+                        try:
+                            print("[EOD] Generating PnL digest for Discord...")
+                            digest_success = generate_eod_digest()
+                            if digest_success:
+                                print("[EOD] ✅ PnL digest sent to Discord")
+                            else:
+                                print("[EOD] ⚠️  PnL digest generation returned False (check logs)")
+                        except Exception as e:
+                            print(f"[EOD] PnL digest error: {e}")
+                            import traceback
+                            traceback.print_exc()
+                            # Fallback to basic report
+                            try:
+                                daily_stats = position_manager.get_daily_stats()
+                                eod_report = (
+                                    f"📊 **EOD Report {current_day}**\n"
+                                    f"Trades: {daily_stats['trades']} | "
+                                    f"WR: {daily_stats['win_rate']:.1f}% | "
+                                    f"P&L: ${daily_stats['total_pnl']:+.2f}"
+                                )
+                                send_simple_message(eod_report)
+                            except Exception as e2:
+                                print(f"[EOD] Basic report fallback also failed: {e2}")
+                    else:
+                        # Use legacy basic EOD report if pnl_digest unavailable
+                        try:
+                            daily_stats = position_manager.get_daily_stats()
+                            eod_report = (
+                                f"📊 **EOD Report {current_day}**\n"
+                                f"Trades: {daily_stats['trades']} | "
+                                f"WR: {daily_stats['win_rate']:.1f}% | "
+                                f"P&L: ${daily_stats['total_pnl']:+.2f}"
+                            )
 
-                    try:
-                        win_rate_report  = position_manager.generate_report()
-                        eod_report      += f"\n{win_rate_report}"
-                    except Exception as e:
-                        print(f"[EOD] Report error: {e}")
+                            try:
+                                win_rate_report  = position_manager.generate_report()
+                                eod_report      += f"\n{win_rate_report}"
+                            except Exception as e:
+                                print(f"[EOD] Win rate report error: {e}")
 
-                    send_simple_message(eod_report)
+                            send_simple_message(eod_report)
+                        except Exception as e:
+                            print(f"[EOD] Basic EOD report error: {e}")
 
+                    # 3. AI LEARNING ENGINE OPTIMIZATION
                     try:
                         learning_engine.optimize_confirmation_weights()
                         learning_engine.optimize_fvg_threshold()
@@ -554,16 +639,17 @@ def start_scanner_loop():
                     except Exception as e:
                         print(f"[AI] Optimization error: {e}")
 
+                    # 4. DATABASE CLEANUP
                     try:
                         cleanup_old_bars(days_to_keep=60)
                     except Exception as e:
                         print(f"[CLEANUP] Error: {e}")
 
-                    # Clear all caches at end of day
+                    # 5. DAILY RESET
                     signal_generator.reset_daily()
                     print("[SIGNALS] Daily reset complete")
 
-                    # ── OPTIONS: clear options cache at EOD ──
+                    # 6. OPTIONS CACHE CLEAR
                     if OPTIONS_LAYER_ENABLED and options_dm is not None:
                         try:
                             options_dm.clear_cache()
@@ -571,6 +657,7 @@ def start_scanner_loop():
                         except Exception as e:
                             print(f"[OPTIONS] Cache clear error: {e}")
 
+                    # 7. STATE RESET
                     last_report_day     = current_day
                     premarket_watchlist = []
                     premarket_built     = False
@@ -581,11 +668,15 @@ def start_scanner_loop():
                     clear_watching_signals()
                     clear_earnings_cache()
                     
-                    # Phase 1.7: Clear PDH/PDL cache from data_manager
+                    # 8. PDH/PDL CACHE CLEAR
                     try:
                         data_manager.clear_prev_day_cache()
                     except Exception as e:
                         print(f"[DATA] PDH/PDL cache clear error: {e}")
+
+                    print(f"\n{'='*80}")
+                    print(f"[EOD] All EOD tasks complete")
+                    print(f"{'='*80}\n")
 
                 print(f"[AFTER-HOURS] {current_time_str} - Market closed, next check in 10 min")
                 time.sleep(600)
@@ -600,7 +691,7 @@ def start_scanner_loop():
             import traceback
             traceback.print_exc()
             try:
-                send_simple_message(f"\u26a0\ufe0f Scanner Error: {str(e)}")
+                send_simple_message(f"⚠️ Scanner Error: {str(e)}")
             except Exception:
                 pass
             time.sleep(30)
