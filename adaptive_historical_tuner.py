@@ -92,10 +92,11 @@ class AdaptiveHistoricalTuner:
             if col in self.available_columns:
                 select_cols.append(col)
         
+        # Use case-insensitive status matching and exclude NULL pnl
         query = f"""
             SELECT {', '.join(select_cols)}
             FROM positions
-            WHERE status = 'closed'
+            WHERE UPPER(status) = 'CLOSED'
               AND grade IS NOT NULL
               AND entry_price IS NOT NULL
               AND exit_price IS NOT NULL
@@ -129,7 +130,7 @@ class AdaptiveHistoricalTuner:
             trades = [dict(row) for row in cursor.fetchall()]
             conn.close()
             
-            print(f"[INFO] Found {len(trades)} closed trades\n")
+            print(f"[INFO] Found {len(trades)} closed trades with complete data\n")
             return trades
             
         except Exception as e:
@@ -141,7 +142,8 @@ class AdaptiveHistoricalTuner:
         """Analyze win rate by grade."""
         by_grade = defaultdict(list)
         for trade in trades:
-            by_grade[trade['grade']].append(trade)
+            if trade.get('pnl') is not None:  # Extra safety check
+                by_grade[trade['grade']].append(trade)
         
         results = {}
         expected_wr = {'A+': 75, 'A': 65, 'A-': 55}
@@ -181,7 +183,7 @@ class AdaptiveHistoricalTuner:
         
         by_grade = defaultdict(list)
         for trade in trades:
-            if trade.get('stop_price'):
+            if trade.get('stop_price') and trade.get('pnl') is not None:
                 by_grade[trade['grade']].append(trade)
         
         results = {}
@@ -197,12 +199,18 @@ class AdaptiveHistoricalTuner:
             # Calculate average stop width
             widths = []
             for t in grade_trades:
-                entry = float(t['entry_price'])
-                stop = float(t['stop_price'])
-                width = abs(stop - entry) / entry * 100
-                widths.append(width)
+                try:
+                    entry = float(t['entry_price'])
+                    stop = float(t['stop_price'])
+                    width = abs(stop - entry) / entry * 100
+                    widths.append(width)
+                except (ValueError, TypeError, ZeroDivisionError):
+                    continue
             
-            avg_width = statistics.mean(widths) if widths else 0
+            if not widths:
+                continue
+            
+            avg_width = statistics.mean(widths)
             
             # Recommendation
             if stop_hit_rate > 35:
@@ -225,11 +233,12 @@ class AdaptiveHistoricalTuner:
         """Analyze performance by ticker."""
         by_ticker = defaultdict(list)
         for trade in trades:
-            by_ticker[trade['ticker']].append(float(trade['pnl']))
+            if trade.get('pnl') is not None:
+                by_ticker[trade['ticker']].append(float(trade['pnl']))
         
         results = {}
         for ticker, pnls in by_ticker.items():
-            if len(pnls) >= 2:
+            if len(pnls) >= 1:  # Show all tickers with at least 1 trade
                 wins = sum(1 for pnl in pnls if pnl > 0)
                 win_rate = (wins / len(pnls) * 100)
                 results[ticker] = {
@@ -257,8 +266,8 @@ class AdaptiveHistoricalTuner:
         
         # Get trades
         trades = self._get_trades()
-        if len(trades) < 5:
-            return f"\n[ERROR] Only {len(trades)} trades found. Need at least 5 for analysis.\n"
+        if len(trades) < 1:
+            return f"\n⚠️  No closed trades with complete data found.\n\nPossible reasons:\n  - No trades have been closed yet\n  - Some trades have NULL pnl values\n  - Status column uses different value than 'closed'\n\nRun db_diagnostic.py to see what's in your database.\n"
         
         lines = []
         lines.append("\n" + "="*100)
@@ -266,6 +275,9 @@ class AdaptiveHistoricalTuner:
         lines.append("="*100)
         lines.append(f"Total Trades: {len(trades)}")
         lines.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        
+        if len(trades) < 10:
+            lines.append("⚠️  WARNING: Very limited data. Collect more trades for better analysis.\n")
         
         # Overall stats
         total_pnl = sum(float(t['pnl']) for t in trades)
@@ -285,15 +297,18 @@ class AdaptiveHistoricalTuner:
         lines.append("="*100)
         
         grade_analysis = self.analyze_grade_performance(trades)
-        for grade in ['A+', 'A', 'A-']:
-            if grade in grade_analysis:
-                data = grade_analysis[grade]
-                lines.append(f"\n{grade}:")
-                lines.append(f"  Trades: {data['count']}")
-                lines.append(f"  Win Rate: {data['win_rate']:.1f}% (target: {data['expected']}%)")
-                lines.append(f"  Avg P&L: ${data['avg_pnl']:.2f}")
-                lines.append(f"  Total P&L: ${data['total_pnl']:.2f}")
-                lines.append(f"  {data['assessment']}")
+        if not grade_analysis:
+            lines.append("\nNo grade data available.\n")
+        else:
+            for grade in ['A+', 'A', 'A-']:
+                if grade in grade_analysis:
+                    data = grade_analysis[grade]
+                    lines.append(f"\n{grade}:")
+                    lines.append(f"  Trades: {data['count']}")
+                    lines.append(f"  Win Rate: {data['win_rate']:.1f}% (target: {data['expected']}%)")
+                    lines.append(f"  Avg P&L: ${data['avg_pnl']:.2f}")
+                    lines.append(f"  Total P&L: ${data['total_pnl']:.2f}")
+                    lines.append(f"  {data['assessment']}")
         lines.append("")
         
         # Stop loss analysis (if available)
@@ -315,11 +330,11 @@ class AdaptiveHistoricalTuner:
         
         # Ticker performance
         lines.append("="*100)
-        lines.append("TICKER PERFORMANCE (Top 10 by Total P&L)")
+        lines.append("TICKER PERFORMANCE")
         lines.append("="*100 + "\n")
         
         ticker_analysis = self.analyze_ticker_performance(trades)
-        for i, (ticker, data) in enumerate(list(ticker_analysis.items())[:10], 1):
+        for i, (ticker, data) in enumerate(ticker_analysis.items(), 1):
             lines.append(
                 f"{i:2d}. {ticker:<8} | "
                 f"WR: {data['win_rate']:>5.1f}%  | "
@@ -334,12 +349,17 @@ class AdaptiveHistoricalTuner:
         lines.append("RECOMMENDATIONS")
         lines.append("="*100)
         
+        if len(trades) < 10:
+            lines.append("\n📊 PRIMARY RECOMMENDATION: Collect more trade data (minimum 20-50 trades)")
+            lines.append("   Current sample size is too small for statistical significance.\n")
+        
         # Grade-based recommendations
-        for grade, data in grade_analysis.items():
-            if data['win_rate'] < data['expected'] - 10:
-                lines.append(f"🚨 {grade} grade underperforming significantly - review grading criteria")
-            elif data['count'] < 5:
-                lines.append(f"⚠️ {grade} grade has limited data ({data['count']} trades) - collect more")
+        if grade_analysis:
+            for grade, data in grade_analysis.items():
+                if data['win_rate'] < data['expected'] - 10:
+                    lines.append(f"🚨 {grade} grade underperforming significantly - review grading criteria")
+                elif data['count'] < 5:
+                    lines.append(f"⚠️ {grade} grade has limited data ({data['count']} trades) - collect more")
         
         # Ticker recommendations
         best_tickers = [t for t, d in ticker_analysis.items() if d['win_rate'] >= 70 and d['count'] >= 5]
@@ -350,7 +370,7 @@ class AdaptiveHistoricalTuner:
         if worst_tickers:
             lines.append(f"⚠️ Low-performing tickers (<40% WR, 5+ trades): {', '.join(worst_tickers)}")
         
-        if not best_tickers and not worst_tickers:
+        if not best_tickers and not worst_tickers and len(trades) >= 10:
             lines.append("\nℹ️  No clear ticker patterns yet (need 5+ trades per ticker with 70%+ or <40% WR)")
         
         lines.append("\n" + "="*100 + "\n")
