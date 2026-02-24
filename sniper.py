@@ -59,7 +59,7 @@ watching_signals   = {}
 _watches_loaded    = False   # True after first DB load attempt this session
 _armed_loaded      = False   # True after first armed signals load
 
-MAX_WATCH_BARS      = 30
+MAX_WATCH_BARS      = 12  # 60 min optimal momentum window
 INTRADAY_MIN_GRADES = {"A+", "A"}
 
 # Options pre-gate mode:
