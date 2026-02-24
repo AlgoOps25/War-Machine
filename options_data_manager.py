@@ -12,9 +12,17 @@ Key Features:
 
 Integration Points:
   - Scanner: get_options_score() for watchlist ranking
-  - Sniper: validate_for_trading() for early signal gate
+  - Sniper: validate_for_trading() for early signal gate (Step 6.5)
   - Sniper: get_live_gex() for real-time gamma exposure
   - Position Manager: monitor_position_gex() for exit timing
+
+validate_for_trading() return schema:
+  tradeable:          bool  - Should signal proceed?
+  reason:             str   - Concise pass/fail (e.g. GEX-NEG|IVR-32|OI-1200|VOL-450)
+  gex_context:        str   - One-line GEX summary (e.g. GEX-NEG|PIN-$225|FLIP-$218)
+  tradeable_warnings: list  - Soft flags present even when tradeable=True
+  gex_data:           dict  - Full GEX levels dict (None only if chain unavailable)
+  ivr_data:           dict  - IV rank dict (None if unavailable)
 
 Performance:
   - Cache hit: ~0.1ms (in-memory lookup)
@@ -216,67 +224,170 @@ class OptionsDataManager:
         return result
     
     # ═══════════════════════════════════════════════════════════════════════
-    # SIGNAL VALIDATION: Pre-Filter Gate
+    # SIGNAL VALIDATION: Pre-Filter Gate (Step 6.5)
     # ═══════════════════════════════════════════════════════════════════════
     
-    def validate_for_trading(self, ticker: str, direction: str, 
-                            entry_price: float) -> Dict:
+    def validate_for_trading(self, ticker: str, direction: str,
+                             entry_price: float) -> Dict:
         """
-        Fast pre-validation for signal generation (before confirmation).
-        
-        Returns dict with:
-            tradeable: bool - Should signal proceed?
-            reason: str - Pass/fail reason
-            gex_data: dict - GEX levels if available
-            ivr_data: dict - IV rank if available
+        Fast pre-validation for signal generation (Step 6.5, before confirmation).
+
+        Checks (in order of severity):
+          1. Chain availability   → hard fail if no chain
+          2. Liquidity            → hard fail if OI/vol/spread below thresholds
+          3a. GEX flip zone       → soft warn when price is in positive GEX
+                                    (mean-reverting) and pushing against the flip
+          3b. Gamma pin drag      → hard fail when pin is >2% on the wrong side
+                                    of entry (gravitational drag opposes direction)
+          3c. Pin-near-cap        → soft warn when pin is within 3% and likely
+                                    to cap the move before target
+
+        Return schema:
+          tradeable:          bool  - Should signal proceed?
+          reason:             str   - Enriched context string, e.g.:
+                                        PASS:  "GEX-NEG|PIN-$225|IVR-32|OI-1200|VOL-450"
+                                        FAIL:  "GEX pin drag below bull entry @ $218 (2.3% below)"
+          gex_context:        str   - One-line GEX summary for Step 6.5 SOFT log
+          tradeable_warnings: list  - Soft flags (informational, never fatal in SOFT mode)
+          gex_data:           dict  - Full GEX levels (populated even on liquidity fail
+                                      so the zone is visible in logs)
+          ivr_data:           dict  - IV rank data (None if chain has no IV data)
         """
+        warnings = []
+
+        # ── 1. Chain availability ───────────────────────────────────────────────────────
         chain = self.get_chain(ticker)
-        
+
         if not chain or not chain.get('data'):
             return {
                 'tradeable': False,
                 'reason': 'No options chain available',
+                'gex_context': 'NO-CHAIN',
+                'tradeable_warnings': [],
                 'gex_data': None,
                 'ivr_data': None
             }
-        
-        # Check basic liquidity (fast path)
+
+        # ── 2. Liquidity check ─────────────────────────────────────────────────────────
         liquidity = self._compute_liquidity_score(chain, entry_price)
+
+        # Fetch GEX now regardless of liquidity result so the zone is always
+        # visible in SOFT-mode logs even when the chain is thinly traded.
+        gex_data = compute_gex_levels(chain, entry_price)
+
         if not liquidity['tradeable']:
             return {
                 'tradeable': False,
                 'reason': f"Insufficient liquidity: {liquidity['reason']}",
-                'gex_data': None,
+                'gex_context': 'LIQ-FAIL',
+                'tradeable_warnings': [],
+                'gex_data': gex_data,   # populated for visibility
                 'ivr_data': None
             }
-        
-        # Check GEX headwinds
-        gex_data = compute_gex_levels(chain, entry_price)
-        if gex_data['has_data']:
-            # Check for gamma pin opposing direction
-            pin = gex_data['gamma_pin']
+
+        # ── 3. GEX headwind checks ─────────────────────────────────────────────────────
+        gex_context_parts = []
+
+        if gex_data.get('has_data'):
+            pin      = gex_data.get('gamma_pin')
+            flip     = gex_data.get('gamma_flip')
+            neg_zone = gex_data.get('neg_gex_zone', False)
+
+            # Build the GEX context string (always logged in SOFT mode)
+            gex_context_parts.append('GEX-NEG' if neg_zone else 'GEX-POS')
             if pin:
-                if direction == 'bull' and pin < entry_price * 0.98:
-                    return {
-                        'tradeable': False,
-                        'reason': f"GEX pin headwind below entry @ ${pin:.2f}",
-                        'gex_data': gex_data,
-                        'ivr_data': None
-                    }
-                elif direction == 'bear' and pin > entry_price * 1.02:
-                    return {
-                        'tradeable': False,
-                        'reason': f"GEX pin headwind above entry @ ${pin:.2f}",
-                        'gex_data': gex_data,
-                        'ivr_data': None
-                    }
-        
-        # Get IV rank
+                gex_context_parts.append(f'PIN-${pin:.2f}')
+            if flip:
+                gex_context_parts.append(f'FLIP-${flip:.2f}')
+
+            # ── 3a. Gamma flip zone ────────────────────────────────────────────────
+            # Negative GEX zone = vol expands, trends run → GOOD for directional
+            # Positive GEX zone = vol compresses, mean-reverts → soft warning
+            if flip and not neg_zone:
+                if direction == 'bull' and flip > entry_price:
+                    # Trying to push up through gamma flip ceiling
+                    flip_dist_pct = ((flip - entry_price) / entry_price) * 100
+                    if flip_dist_pct < 1.0:
+                        warnings.append(f'NEAR-GEX-FLIP@${flip:.2f}({flip_dist_pct:.1f}%-away)')
+                    else:
+                        warnings.append(f'POS-GEX-ZONE|FLIP-CEIL@${flip:.2f}')
+                elif direction == 'bear' and flip < entry_price:
+                    # Trying to push down through gamma flip floor
+                    flip_dist_pct = ((entry_price - flip) / entry_price) * 100
+                    if flip_dist_pct < 1.0:
+                        warnings.append(f'NEAR-GEX-FLIP@${flip:.2f}({flip_dist_pct:.1f}%-away)')
+                    else:
+                        warnings.append(f'POS-GEX-ZONE|FLIP-FLOOR@${flip:.2f}')
+
+            # ── 3b. Gamma pin drag (hard gate) ──────────────────────────────────────
+            # If the gamma pin is >2% on the WRONG side of entry, market maker
+            # hedging exerts gravitational pull back toward the pin — the trade
+            # is working against MM delta hedging flow.
+            if pin:
+                if direction == 'bull':
+                    # pin_pct: negative means pin is below entry
+                    pin_pct = (pin - entry_price) / entry_price
+                    if pin_pct < -0.02:    # pin >2% below bull entry
+                        return {
+                            'tradeable': False,
+                            'reason': (
+                                f'GEX pin drag below bull entry @ ${pin:.2f} '
+                                f'({abs(pin_pct) * 100:.1f}% below)'
+                            ),
+                            'gex_context': '|'.join(gex_context_parts),
+                            'tradeable_warnings': warnings,
+                            'gex_data': gex_data,
+                            'ivr_data': None
+                        }
+                    elif 0.0 < pin_pct < 0.03:    # pin just above entry (cap)
+                        warnings.append(f'PIN-CAP-NEAR@${pin:.2f}({pin_pct * 100:.1f}%-above)')
+
+                elif direction == 'bear':
+                    # pin_pct: negative means pin is above entry
+                    pin_pct = (entry_price - pin) / entry_price
+                    if pin_pct < -0.02:    # pin >2% above bear entry
+                        return {
+                            'tradeable': False,
+                            'reason': (
+                                f'GEX pin drag above bear entry @ ${pin:.2f} '
+                                f'({abs(pin_pct) * 100:.1f}% above)'
+                            ),
+                            'gex_context': '|'.join(gex_context_parts),
+                            'tradeable_warnings': warnings,
+                            'gex_data': gex_data,
+                            'ivr_data': None
+                        }
+                    elif 0.0 < pin_pct < 0.03:    # pin just below entry (support floor)
+                        warnings.append(f'PIN-FLOOR-NEAR@${pin:.2f}({pin_pct * 100:.1f}%-below)')
+
+        # ── 4. IVR context ───────────────────────────────────────────────────────────
         ivr_data = self._get_ivr_data(ticker, chain)
-        
+
+        # Build IVR label for the reason string
+        if ivr_data and ivr_data.get('ivr_reliable'):
+            ivr_label = f"IVR-{ivr_data['ivr']:.0f}"
+        elif ivr_data:
+            ivr_label = 'IVR-BUILDING'
+        else:
+            ivr_label = 'IVR-N/A'
+
+        # Build liquidity label
+        liq_label = (
+            f"OI-{liquidity.get('max_oi', 0):.0f}"
+            f"|VOL-{liquidity.get('max_vol', 0):.0f}"
+        )
+
+        # Final enriched reason string
+        gex_ctx = '|'.join(gex_context_parts) if gex_context_parts else 'GEX-N/A'
+        reason  = f"{gex_ctx}|{ivr_label}|{liq_label}"
+        if warnings:
+            reason += '|WARN:' + '+'.join(warnings)
+
         return {
             'tradeable': True,
-            'reason': 'Passed pre-validation',
+            'reason': reason,
+            'gex_context': gex_ctx,
+            'tradeable_warnings': warnings,
             'gex_data': gex_data,
             'ivr_data': ivr_data
         }
@@ -438,9 +549,12 @@ class OptionsDataManager:
             }
         
         # Score components (0-30 points)
-        oi_score = min(max_oi / 5000, 1.0) * 15  # 0-15 pts
-        vol_score = min(max_vol / 1000, 1.0) * 10  # 0-10 pts
-        spread_score = max(0, (config.MAX_BID_ASK_SPREAD_PCT - min_spread) / config.MAX_BID_ASK_SPREAD_PCT) * 5  # 0-5 pts
+        oi_score     = min(max_oi  / 5000, 1.0) * 15  # 0-15 pts
+        vol_score    = min(max_vol / 1000, 1.0) * 10  # 0-10 pts
+        spread_score = max(
+            0,
+            (config.MAX_BID_ASK_SPREAD_PCT - min_spread) / config.MAX_BID_ASK_SPREAD_PCT
+        ) * 5  # 0-5 pts
         
         total = oi_score + vol_score + spread_score
         
@@ -631,7 +745,7 @@ def get_options_score(ticker: str) -> Dict:
 
 
 def validate_for_trading(ticker: str, direction: str, entry_price: float) -> Dict:
-    """Validate ticker for options trading (signal pre-filter)."""
+    """Validate ticker for options trading (signal pre-filter, Step 6.5)."""
     return options_dm.validate_for_trading(ticker, direction, entry_price)
 
 
@@ -679,7 +793,7 @@ if __name__ == "__main__":
     
     # Test 2: Validate for trading
     print(f"\n{'='*70}")
-    print("Test 2: Validate for Trading")
+    print("Test 2: Validate for Trading (Step 6.5 gate)")
     print("-" * 70)
     
     # Get current price
@@ -693,7 +807,12 @@ if __name__ == "__main__":
             
             for direction in ['bull', 'bear']:
                 validation = validate_for_trading(ticker, direction, current_price)
-                print(f"{direction.upper()}: {validation['tradeable']} - {validation['reason']}")
+                print(f"{direction.upper()}: tradeable={validation['tradeable']}")
+                print(f"  reason:   {validation['reason']}")
+                print(f"  gex_ctx:  {validation['gex_context']}")
+                if validation['tradeable_warnings']:
+                    print(f"  warnings: {', '.join(validation['tradeable_warnings'])}")
+                print()
     except Exception as e:
         print(f"Error getting price: {e}")
     
