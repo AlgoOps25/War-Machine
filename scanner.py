@@ -18,7 +18,6 @@ from scanner_optimizer import (
     should_scan_now,
     calculate_optimal_watchlist_size
 )
-from earnings_filter import bulk_prefetch_earnings, clear_earnings_cache
 
 # Breakout detector integration
 from signal_generator import (
@@ -332,7 +331,7 @@ def start_scanner_loop():
     data_manager.startup_backfill_today(startup_watchlist)
     data_manager.startup_intraday_backfill_today(startup_watchlist)
     set_backfill_complete()
-    bulk_prefetch_earnings(startup_watchlist)
+    # Earnings filter removed - no longer needed
 
     # Kick off options prefetch for startup tickers in background
     prefetch_options_scores(startup_watchlist, top_n=len(startup_watchlist))
@@ -666,7 +665,7 @@ def start_scanner_loop():
 
                     clear_armed_signals()
                     clear_watching_signals()
-                    clear_earnings_cache()
+                    # Earnings cache removed
                     
                     # 8. PDH/PDL CACHE CLEAR
                     try:

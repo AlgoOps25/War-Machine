@@ -26,7 +26,6 @@ from trade_calculator import compute_stop_and_targets, get_adaptive_fvg_threshol
 from data_manager import data_manager
 from position_manager import position_manager
 from learning_policy import compute_confidence
-from earnings_filter import has_earnings_soon
 import config
 from bos_fvg_engine import scan_bos_fvg, is_force_close_time
 
@@ -67,7 +66,7 @@ INTRADAY_MIN_GRADES = {"A+", "A"}
 #   "SOFT" — log result but never filter (data collection phase, safe default)
 #   "HARD" — filter signals with no tradeable options or GEX headwinds
 # Switch to "HARD" after confirming gate logic is sound against real signals.
-OPTIONS_PRE_GATE_MODE = "SOFT"
+OPTIONS_PRE_GATE_MODE = "HARD"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -1075,10 +1074,7 @@ def process_ticker(ticker: str):
             print_validation_stats()
             return
 
-        has_earns, earns_date = has_earnings_soon(ticker)
-        if has_earns:
-            print(f"[{ticker}] \u274c Earnings {earns_date} \u2014 skip")
-            return
+        
 
         # ── WATCHING STATE ────────────────────────────────────────────────────────────────────────
         if ticker in watching_signals:
@@ -1218,3 +1214,4 @@ def send_discord(message: str):
         requests.post(config.DISCORD_WEBHOOK_URL, json={"content": message}, timeout=5)
     except Exception as e:
         print(f"[DISCORD] Error: {e}")
+
