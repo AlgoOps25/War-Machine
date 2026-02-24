@@ -285,43 +285,52 @@ class DataManager:
         return ts
 
     def _update_ticker_internal(self, ticker: str):
-        """Internal ticker update (called by module-level legacy shim)."""
-        now_utc  = datetime.utcnow()
-        now_et   = datetime.now(ET)
+        """
+        Smart incremental updates:
+        - During market hours: SKIP (WebSocket owns today)
+        - After hours: Fetch ONLY missing ranges
+        - Daily close: Fetch ONLY yesterday's bars
+        """
+        now_et = datetime.now(ET)
         today_et = now_et.date()
+        
+        # CRITICAL OPTIMIZATION: Skip during market hours if WebSocket is connected
+        if config.MARKET_OPEN <= now_et.time() <= config.MARKET_CLOSE:
+            try:
+                from ws_feed import is_connected as _ws_connected
+                if _ws_connected():
+                    return  # WebSocket owns today - no API calls needed
+            except ImportError:
+                pass
+        
         last_bar = self._get_last_bar_ts(ticker)
-
-        has_today = last_bar is not None and last_bar.date() >= today_et
-        if has_today:
-            last_called = _last_update.get(ticker)
-            if last_called and (now_utc - last_called) < UPDATE_TTL:
-                return
-        _last_update[ticker] = now_utc
-
-        if last_bar:
-            last_bar_date = last_bar.date()
-            if last_bar_date < today_et:
-                try:
-                    from ws_feed import is_connected as _ws_connected
-                    if _ws_connected():
-                        return
-                except ImportError:
-                    pass
-                print(f"[DATA] {ticker}: waiting for WS feed to connect...")
-                return
-            else:
-                fetch_from = last_bar - timedelta(minutes=10)
-                from_ts = int(fetch_from.replace(tzinfo=ET).timestamp())
-                label = f"incremental from {fetch_from.strftime('%H:%M ET')}"
+        
+        # If no data at all, fetch 30 days
+        if not last_bar:
+            from_ts = int((now_et - timedelta(days=30)).timestamp())
+            to_ts = int(now_et.timestamp())
+            label = "initial 30-day seed"
         else:
-            from_dt = datetime.utcnow() - timedelta(days=30)
-            from_ts = int(from_dt.timestamp())
-            label = "full seed (30 days)"
-
-        to_ts = int(now_et.timestamp())
+            # Gap detection: fetch from last bar to now
+            last_bar_date = last_bar.date()
+            
+            # If last bar is from prior day, fetch yesterday only (not full range)
+            if last_bar_date < today_et:
+                # Fetch yesterday's bars only
+                yesterday = today_et - timedelta(days=1)
+                from_ts = int(datetime.combine(yesterday, dtime(4, 0)).replace(tzinfo=ET).timestamp())
+                to_ts = int(datetime.combine(yesterday, dtime(20, 0)).replace(tzinfo=ET).timestamp())
+                label = f"yesterday's bars ({yesterday})"
+            else:
+                # Same-day gap fill (after hours)
+                fetch_from = last_bar + timedelta(minutes=1)
+                from_ts = int(fetch_from.replace(tzinfo=ET).timestamp())
+                to_ts = int(now_et.timestamp())
+                label = f"gap fill from {fetch_from.strftime('%H:%M ET')}"
+        
         print(f"[DATA] {ticker} -> {label}")
-
         bars = self._fetch_range(ticker, from_ts, to_ts)
+        
         if bars:
             self.store_bars(ticker, bars)
             self.materialize_5m_bars(ticker)
@@ -604,6 +613,22 @@ class DataManager:
         except Exception as e:
             print(f"[LIVE] Bulk snapshot error: {e}")
             return {}
+
+    # =============================================================
+    # CACHE MANAGEMENT
+    # =============================================================
+
+    def clear_prev_day_cache(self) -> None:
+        """
+        Clear previous day OHLC cache and PDH/PDL cache in breakout detector.
+        Called at EOD to prepare for new trading day.
+        """
+        try:
+            from signal_generator import signal_generator
+            signal_generator.detector.clear_pdh_pdl_cache()
+            print("[DATA] PDH/PDL cache cleared for new session")
+        except Exception as e:
+            print(f"[DATA] PDH/PDL cache clear error: {e}")
 
     # =============================================================
     # UTILITIES
