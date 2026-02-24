@@ -3,10 +3,9 @@ CFW6 Confirmation System - Consolidated Confirmation Logic
 Replaces: confirmation_layers.py, cfw6_confirmation_enhanced.py, candle_confirmation.py
 Implements exact CFW6 video rules for candle confirmation + multi-factor validation
 """
-import requests
-import time
 from typing import Dict, List, Tuple
-from datetime import datetime, timedelta
+from datetime import datetime
+import time
 import config
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -195,73 +194,16 @@ def check_vwap_alignment(bars: List[Dict], direction: str, current_price: float)
         return current_price < vwap
 
 
-# Cache for previous-day OHLC so we don't hit the API 33x per cycle
-_prev_day_cache: Dict[str, Dict] = {}
-
-
-def _last_trading_day() -> str:
-    """
-    FIX #5: Return the most recent completed trading day as YYYY-MM-DD.
-    Skips weekends so Mondays correctly resolve to Friday, not Sunday.
-    """
-    d = datetime.now().date() - timedelta(days=1)
-    while d.weekday() >= 5:   # 5 = Saturday, 6 = Sunday
-        d -= timedelta(days=1)
-    return d.strftime("%Y-%m-%d")
-
-
-def get_previous_day_ohlc(ticker: str) -> Dict:
-    """Fetch previous trading day's OHLC data (cached per session)."""
-    if ticker in _prev_day_cache:
-        return _prev_day_cache[ticker]
-
-    prev_day_str = _last_trading_day()
-    url = f"https://eodhd.com/api/eod/{ticker}.US"
-    params = {
-        "api_token": config.EODHD_API_KEY,
-        "from": prev_day_str,
-        "to":   prev_day_str,
-        "fmt":  "json"
-    }
-
-    try:
-        response = requests.get(url, params=params, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-        if data:
-            result = {
-                "open":  data[0]["open"],
-                "high":  data[0]["high"],
-                "low":   data[0]["low"],
-                "close": data[0]["close"]
-            }
-            _prev_day_cache[ticker] = result
-            return result
-    except Exception as e:
-        print(f"[CONFIRM] Error fetching prev day data for {ticker}: {e}")
-
-    empty = {"open": 0, "high": 0, "low": 0, "close": 0}
-    _prev_day_cache[ticker] = empty
-    return empty
-
-
-def clear_prev_day_cache() -> None:
-    """
-    FIX Bug #10: Clear the PDH/PDL cache at EOD so the next session
-    always fetches fresh previous-day levels.
-
-    Without this, a long-running Railway container that survives overnight
-    would serve stale PDH/PDL data on the following day's signals.
-    Called from scanner.py's EOD block alongside clear_earnings_cache()
-    and clear_armed_signals().
-    """
-    _prev_day_cache.clear()
-    print("[CFW6] PDH/PDL cache cleared for new trading day")
-
-
 def check_previous_day_levels(ticker: str, current_price: float, direction: str) -> Dict:
-    """Check proximity to PDH/PDL."""
-    prev_day = get_previous_day_ohlc(ticker)
+    """
+    Check proximity to PDH/PDL using centralized data_manager.
+    
+    Phase 1.7 refactor: delegates to data_manager.get_previous_day_ohlc()
+    for DRY single-source-of-truth PDH/PDL data.
+    """
+    from data_manager import data_manager
+    
+    prev_day = data_manager.get_previous_day_ohlc(ticker)
     pdh = prev_day["high"]
     pdl = prev_day["low"]
 
