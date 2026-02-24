@@ -1,503 +1,410 @@
-# MTF Infrastructure Testing Guide
+# Multi-Timeframe Infrastructure - Testing Guide
 
-**Status**: Infrastructure Complete (Steps 1-3)  
-**Next**: Test infrastructure, then integrate with sniper.py
-
----
-
-## What Was Built
-
-### Module 1: `mtf_data_manager.py` [cite:21]
-Fetches and caches market data across 5m, 3m, 2m, 1m timeframes.
-
-**Key Features**:
-- Smart caching with 5-minute TTL
-- Batch updates for multiple tickers
-- Timestamp alignment across timeframes
-- Memory-efficient storage
-
-### Module 2: `mtf_fvg_engine.py` [cite:22]
-Detects FVG patterns simultaneously across all timeframes.
-
-**Key Features**:
-- BOS (Break of Structure) detection per timeframe
-- FVG zone identification
-- Strict convergence (3+ timeframes, 50% overlap)
-- Consensus zone calculation
-
-### Module 3: `mtf_convergence.py` [cite:23]
-Scores signal quality and calculates confidence boost.
-
-**Key Features**:
-- Weighted timeframe scoring
-- Zone overlap and consistency analysis
-- Confidence boost calculation (5-15%)
-- Quality thresholds (0.60 min, 0.80 high)
+**Status**: Phase 1 & 2 Complete - Ready for Testing  
+**Date**: February 24, 2026
 
 ---
 
-## Testing Workflow
+## What Was Built (Phases 1-2)
 
-### Step 1: Test Data Manager
+### Phase 1: MTF Data Manager
+**File**: `mtf_data_manager.py`
 
-**Objective**: Verify data fetching and caching works correctly
+**Features**:
+- Fetches and caches 5m, 3m, 2m, 1m bars
+- Smart caching to minimize API calls
+- Session-based cache management
+- Compatible with existing `data_manager.py`
+
+### Phase 2: MTF FVG Engine
+**File**: `mtf_fvg_engine.py`
+
+**Features**:
+- Runs CFW6 BOS+FVG detection on all timeframes
+- Calculates zone overlap and convergence scores
+- Timeframe weighting: 5m (40%) > 3m (30%) > 2m (20%) > 1m (10%)
+- Returns signals only when convergence ≥ 60%
+
+---
+
+## Testing Phase 1: Data Manager
+
+### Test 1: Single Timeframe Fetch
 
 ```bash
-cd /path/to/War-Machine
-python mtf_data_manager.py AAPL
+python mtf_data_manager.py SPY 5m
 ```
 
 **Expected Output**:
 ```
-🔍 MTF Data Manager Test
+[MTF] Multi-Timeframe Data Manager initialized
+[MTF] Supported timeframes: 5m, 3m, 2m, 1m
 
-Testing with ticker: AAPL
+Fetching SPY 5m bars...
 
-[TEST] Fetching all timeframes...
-[MTF-DATA] ✅ Updated AAPL: 5m=78, 3m=130, 2m=195, 1m=390
+[MTF] SPY 5m: 78 bars (from data_manager)
 
-────────────────────────────────────────
-DATA SUMMARY
-────────────────────────────────────────
- 5m:   78 bars | Range: 04:00 - 15:55 | Latest: $225.50
- 3m:  130 bars | Range: 04:00 - 15:57 | Latest: $225.52
- 2m:  195 bars | Range: 04:00 - 15:58 | Latest: $225.51
- 1m:  390 bars | Range: 04:00 - 15:59 | Latest: $225.50
-
-════════════════════════════════════════
-MTF DATA MANAGER STATUS
-════════════════════════════════════════
-Timeframes:      5m, 3m, 2m, 1m
-Cache TTL:       300s
-Cached Tickers:  1
-API Calls:       4
-Cache Hits:      1
-Cache Misses:    0
-Hit Rate:        100.0%
-════════════════════════════════════════
-
-[TEST] Testing cache hit (should be instant)...
-✅ Cache working: Same data returned = True
-
-[TEST] Testing bar alignment at 15:55...
-
-Aligned Bars:
-  5m: 15:55:00 | Close: $225.50
-  3m: 15:54:00 | Close: $225.48
-  2m: 15:54:00 | Close: $225.48
-  1m: 15:55:00 | Close: $225.50
-
-✅ MTF Data Manager test complete!
+Received 78 bars:
+First bar: 2026-02-24 09:30:00-05:00 | Close: $540.25
+Last bar:  2026-02-24 15:55:00-05:00 | Close: $542.10
 ```
 
-**Validation Checklist**:
-- [ ] All 4 timeframes return data
-- [ ] Bar counts increase as timeframe decreases (1m > 2m > 3m > 5m)
-- [ ] Cache hit works on second call
-- [ ] Bar alignment finds bars within 10 minutes
-- [ ] Latest prices are close across all timeframes
+**Validation**:
+- ✅ Should retrieve ~78 bars (9:30 AM - 4:00 PM)
+- ✅ Timestamps in Eastern Time
+- ✅ All prices reasonable (no zeros or nulls)
 
-**Troubleshooting**:
+### Test 2: All Timeframes Fetch
 
-| Issue | Cause | Fix |
-|-------|-------|-----|
-| "No data available" | EODHD API key issue | Check `config.EODHD_API_KEY` is valid |
-| Empty bar arrays | Market closed | Test during trading hours or with historical data |
-| API timeout errors | Network/API throttling | Retry or increase timeout in code |
-| Misaligned bars | Timestamp parsing | Check timezone handling (ET) |
+```bash
+python mtf_data_manager.py SPY
+```
+
+**Expected Output**:
+```
+[MTF] Multi-Timeframe Data Manager initialized
+[MTF] Supported timeframes: 5m, 3m, 2m, 1m
+
+Fetching SPY across all timeframes...
+
+[MTF] SPY 5m: 78 bars (from data_manager)
+[MTF] SPY 3m: 130 bars (from API)
+[MTF] SPY 2m: 195 bars (from API)
+[MTF] SPY 1m: 390 bars (from API)
+[MTF] SPY timeframes available: 5m, 3m, 2m, 1m
+
+============================================================
+RESULTS
+============================================================
+ 5m:  78 bars | Latest: $ 542.10 @ 03:55 PM
+ 3m: 130 bars | Latest: $ 542.10 @ 03:57 PM
+ 2m: 195 bars | Latest: $ 542.10 @ 03:58 PM
+ 1m: 390 bars | Latest: $ 542.10 @ 03:59 PM
+============================================================
+
+============================================================
+MTF DATA MANAGER - CACHE STATISTICS
+============================================================
+Session Date:    2026-02-24
+Cached Tickers:  1
+Total Entries:   4
+
+By Timeframe:
+   1m:  1 tickers
+   2m:  1 tickers
+   3m:  1 tickers
+   5m:  1 tickers
+============================================================
+```
+
+**Validation**:
+- ✅ All 4 timeframes should have data
+- ✅ Bar counts: 1m (~390) > 2m (~195) > 3m (~130) > 5m (~78)
+- ✅ Latest prices should be similar across timeframes
+- ✅ Cache statistics showing 1 ticker, 4 entries
+
+### Test 3: Cache Efficiency
+
+```bash
+# Run twice in quick succession
+python mtf_data_manager.py AAPL
+python mtf_data_manager.py AAPL
+```
+
+**Expected Behavior**:
+- First run: Fetches from API
+- Second run: Returns from cache (faster, no API calls)
+- Check logs for "from data_manager" vs "from API"
+
+### Test 4: Multiple Tickers
+
+```bash
+python mtf_data_manager.py SPY
+python mtf_data_manager.py QQQ
+python mtf_data_manager.py AAPL
+```
+
+**Expected**:
+- Each ticker cached separately
+- Cache stats should show 3 tickers, 12 total entries (3 × 4 timeframes)
 
 ---
 
-### Step 2: Test FVG Engine
+## Testing Phase 2: FVG Engine
 
-**Objective**: Verify MTF pattern detection logic
+### Test 5: MTF Signal Detection
 
 ```bash
-python mtf_fvg_engine.py NVDA
+python mtf_fvg_engine.py SPY
 ```
 
-**Expected Output (if signal found)**:
+**Expected Output (if signal present)**:
 ```
-🔍 MTF FVG Engine Test
+[MTF] Multi-Timeframe Data Manager initialized
+[MTF] Supported timeframes: 5m, 3m, 2m, 1m
+[MTF-FVG] Engine initialized
+[MTF-FVG] Min convergence: 60.0%
+[MTF-FVG] Min timeframes: 2
+[MTF-FVG] Min overlap: 30.0%
 
-Testing with ticker: NVDA
+================================================================================
+MTF FVG DETECTION TEST: SPY
+================================================================================
 
-[TEST] Detecting MTF signal...
-[MTF-DATA] ✅ Updated NVDA: 5m=78, 3m=130, 2m=195, 1m=390
+Fetching SPY data across all timeframes...
 
-════════════════════════════════════════
-MTF SIGNAL DETECTED: NVDA 🟢 BULL
-════════════════════════════════════════
-Consensus Zone:      $142.25 - $143.10
-Zone Size:           $0.85 (0.60%)
-Timeframes Aligned:  3 / 4
-Convergence Score:   0.750
+[MTF] SPY 5m: 78 bars (from data_manager)
+[MTF] SPY 3m: 130 bars (from API)
+[MTF] SPY 2m: 195 bars (from API)
+[MTF] SPY 1m: 390 bars (from API)
+[MTF] SPY timeframes available: 5m, 3m, 2m, 1m
 
-Timeframe Breakdown:
-  5m: $142.20 - $143.15 (size: 0.67%)
-  3m: $142.25 - $143.05 (size: 0.56%)
-  2m: $142.30 - $143.10 (size: 0.56%)
-  1m: No pattern detected
-════════════════════════════════════════
+Running MTF FVG detection...
 
-✅ MTF signal detected!
+[MTF-FVG] ✅ SPY MTF BULL signal
+[MTF-FVG]    Convergence: 80.5% | TFs: 5m, 3m, 2m
+[MTF-FVG]    Zone: $541.25 - $541.85
 
-Engine Statistics:
-  Signals Detected:      1
-  Convergence Passed:    1
-  Convergence Failed:    0
-  Pass Rate:             100.0%
+================================================================================
+MTF SIGNAL DETECTED
+================================================================================
+Direction:        BULL
+Convergence:      80.5%
+Timeframes:       5m, 3m, 2m
+Zone:             $541.25 - $541.85
+BOS Price:        $540.50
+Primary TF:       5m
 
-✅ MTF FVG Engine test complete!
+--------------------------------------------------------------------------------
+PER-TIMEFRAME DETAILS
+--------------------------------------------------------------------------------
+ 5m: bull | Zone: $541.20 - $541.90
+ 3m: bull | Zone: $541.25 - $541.85
+ 2m: bull | Zone: $541.30 - $541.80
+
+MTF Confidence Boost: +5.13%
+================================================================================
 ```
 
 **Expected Output (if no signal)**:
 ```
-❌ No MTF signal found (strict convergence not met)
+[... same initialization ...]
 
-Engine Statistics:
-  Signals Detected:      0
-  Convergence Passed:    0
-  Convergence Failed:    2
-  Pass Rate:             0.0%
+[MTF-FVG] SPY - Convergence 0.45 below threshold 0.60
+
+================================================================================
+NO MTF SIGNAL
+================================================================================
+Reasons: Insufficient convergence, timeframes, or zone overlap
+================================================================================
 ```
 
-**Validation Checklist**:
-- [ ] Engine tries both bull and bear directions
-- [ ] Requires 3+ timeframes (strict mode)
-- [ ] Consensus zone is within all individual zones
-- [ ] Zone size makes sense (typically 0.2-1.5%)
-- [ ] Convergence score between 0.6-1.0
+**Validation**:
+- ✅ Convergence score between 0.0 - 1.0
+- ✅ At least 2 timeframes aligned
+- ✅ Zone overlap makes sense (high > low)
+- ✅ Direction consistent across aligned timeframes
+- ✅ MTF boost reasonable (0.00 - 0.15)
 
-**Troubleshooting**:
-
-| Issue | Cause | Fix |
-|-------|-------|-----|
-| Never finds signals | Market conditions | Test with volatile tickers (SPY, NVDA, TSLA) during session |
-| Convergence always fails | Too strict requirements | Expected during choppy markets |
-| Zone sizes too small/large | FVG_MIN_SIZE_PCT config | Adjust in config.py (default 0.002 = 0.2%) |
-| Same direction on all TFs | Strong trend | Normal behavior, indicates high-conviction setup |
-
----
-
-### Step 3: Test Convergence Scorer
-
-**Objective**: Verify scoring logic and confidence boost calculation
+### Test 6: Multiple Tickers
 
 ```bash
-python mtf_convergence.py AAPL
+# Test various tickers to find signals
+python mtf_fvg_engine.py SPY
+python mtf_fvg_engine.py QQQ
+python mtf_fvg_engine.py AAPL
+python mtf_fvg_engine.py NVDA
+python mtf_fvg_engine.py TSLA
 ```
 
-**Expected Output (with signal)**:
-```
-🔍 MTF Convergence Scorer Test
-
-Testing with ticker: AAPL
-
-[TEST] Detecting MTF signal...
-[MTF-DATA] ✅ Updated AAPL: 5m=78, 3m=130, 2m=195, 1m=390
-
-════════════════════════════════════════
-MTF SIGNAL DETECTED: AAPL 🟢 BULL
-════════════════════════════════════════
-Consensus Zone:      $224.50 - $225.30
-Zone Size:           $0.80 (0.36%)
-Timeframes Aligned:  4 / 4
-Convergence Score:   0.850
-...
-
-[TEST] Scoring convergence...
-
-════════════════════════════════════════
-MTF CONVERGENCE SCORE BREAKDOWN: AAPL
-════════════════════════════════════════
-Component Scores:
-  Timeframe Presence:  1.000 (50% weight)
-  Zone Overlap:        0.895 (30% weight)
-  Zone Consistency:    0.780 (20% weight)
-
-Composite Score:       0.925
-Confidence Boost:      +13.5%
-
-Quality Assessment:
-  ✅ HIGH QUALITY SIGNAL
-════════════════════════════════════════
-
-✅ Confidence boost for sniper.py: +13.5%
-
-Scorer Statistics:
-  Signals Scored:        1
-  High Quality Signals:  1
-  High Quality Rate:     100.0%
-  Average Score:         0.925
-
-✅ MTF Convergence Scorer test complete!
-```
-
-**Validation Checklist**:
-- [ ] Component scores add up to composite (weighted)
-- [ ] 4 timeframes aligned = higher boost than 3 timeframes
-- [ ] High overlap (>90%) = higher confidence boost
-- [ ] Boost range appropriate: 5-8% (3 TFs) or 10-15% (4 TFs)
-- [ ] Quality assessment matches score thresholds
-
-**Score Interpretation**:
-
-| Composite Score | Quality | Confidence Boost | Meaning |
-|----------------|---------|------------------|----------|
-| 0.90 - 1.00 | ⭐⭐⭐ Exceptional | +12-15% | Perfect alignment, all TFs agree |
-| 0.80 - 0.89 | ✅ High Quality | +10-13% | Strong convergence, high confidence |
-| 0.70 - 0.79 | ✅ Good | +8-10% | Solid setup, meets standards |
-| 0.60 - 0.69 | ⚠️ Acceptable | +5-8% | Minimum threshold, use cautiously |
-| < 0.60 | ❌ Below Threshold | +0% | Rejected, insufficient convergence |
+**Expected**:
+- Some tickers will have MTF signals, others won't
+- Higher convergence = stronger signal
+- More timeframes aligned = better quality
 
 ---
 
-### Step 4: Integrated Test (All Modules)
+## Programmatic Testing
 
-**Create test script**: `test_mtf_full.py`
+### Python Interactive Test
 
 ```python
-#!/usr/bin/env python3
-"""
-Full MTF Infrastructure Test
-Tests all three modules together with multiple tickers.
-"""
-
 from mtf_data_manager import mtf_data_manager
 from mtf_fvg_engine import mtf_fvg_engine
-from mtf_convergence import mtf_convergence_scorer
 
-print("\n" + "="*80)
-print("FULL MTF INFRASTRUCTURE TEST")
-print("="*80 + "\n")
+# Test data fetching
+ticker = 'SPY'
+bars_dict = mtf_data_manager.get_all_timeframes(ticker)
 
-# Test tickers
-tickers = ['SPY', 'QQQ', 'AAPL', 'MSFT', 'NVDA', 'TSLA']
+print(f"Timeframes available: {list(bars_dict.keys())}")
+for tf, bars in bars_dict.items():
+    print(f"{tf}: {len(bars)} bars")
 
-print(f"Scanning {len(tickers)} tickers for MTF signals...\n")
+# Test MTF detection
+result = mtf_fvg_engine.detect_mtf_signal(ticker, bars_dict)
 
-# Batch update data
-print("[1/3] Fetching multi-timeframe data...")
-mtf_data_manager.batch_update(tickers)
-
-# Detect signals
-print("\n[2/3] Scanning for FVG convergence...")
-signals = mtf_fvg_engine.scan_multiple_tickers(tickers)
-
-print(f"\nFound {len(signals)} MTF signals\n")
-
-# Score signals
-print("[3/3] Scoring signal quality...\n")
-
-for signal in signals:
-    score = mtf_convergence_scorer.calculate_convergence_score(signal)
-    boost = mtf_convergence_scorer.get_confidence_boost(signal)
-    quality = "⭐" if score >= 0.80 else "✅" if score >= 0.60 else "❌"
+if result:
+    print(f"\nMTF Signal: {result['direction'].upper()}")
+    print(f"Convergence: {result['convergence_score']:.1%}")
+    print(f"Zone: ${result['zone_low']:.2f} - ${result['zone_high']:.2f}")
+    print(f"Timeframes: {result['timeframes_aligned']}")
     
-    print(f"{quality} {signal['ticker']:>6} | "
-          f"{signal['direction']:>4} | "
-          f"{signal['timeframes_aligned']}/4 TFs | "
-          f"Score: {score:.3f} | "
-          f"Boost: +{boost*100:>5.1f}% | "
-          f"Zone: ${signal['zone_low']:.2f}-${signal['zone_high']:.2f}")
+    # Calculate confidence boost
+    boost = mtf_fvg_engine.get_mtf_boost_value(result['convergence_score'])
+    print(f"MTF Boost: +{boost:.2%}")
+else:
+    print("\nNo MTF signal detected")
 
-# Summary
-print("\n" + "="*80)
-print("SUMMARY")
-print("="*80)
-
-data_stats = mtf_data_manager.get_stats()
-fvg_stats = mtf_fvg_engine.get_stats()
-conv_stats = mtf_convergence_scorer.get_stats()
-
-print(f"\nData Manager:")
-print(f"  API Calls:       {data_stats['api_calls']}")
-print(f"  Cache Hit Rate:  {data_stats['hit_rate']}%")
-
-print(f"\nFVG Engine:")
-print(f"  Signals Detected:    {fvg_stats['signals_detected']}")
-print(f"  Convergence Pass:    {fvg_stats['convergence_pass_rate']}%")
-
-print(f"\nConvergence Scorer:")
-print(f"  High Quality Rate:   {conv_stats['high_quality_rate']}%")
-print(f"  Average Score:       {conv_stats['avg_score']:.3f}")
-
-print("\n" + "="*80)
-print("✅ Full MTF infrastructure test complete!")
-print("="*80 + "\n")
-```
-
-**Run test**:
-```bash
-python test_mtf_full.py
-```
-
-**Expected Output**:
-```
-════════════════════════════════════════
-FULL MTF INFRASTRUCTURE TEST
-════════════════════════════════════════
-
-Scanning 6 tickers for MTF signals...
-
-[1/3] Fetching multi-timeframe data...
-[MTF-DATA] Batch updating 6 tickers...
-[MTF-DATA] Batch complete: 6/6 successful
-
-[2/3] Scanning for FVG convergence...
-
-Found 2 MTF signals
-
-[3/3] Scoring signal quality...
-
-⭐   NVDA | bull | 4/4 TFs | Score: 0.875 | Boost: +12.8% | Zone: $142.25-$143.10
-✅    SPY | bear | 3/4 TFs | Score: 0.720 | Boost:  +6.4% | Zone: $505.20-$505.85
-
-════════════════════════════════════════
-SUMMARY
-════════════════════════════════════════
-
-Data Manager:
-  API Calls:       24
-  Cache Hit Rate:  0.0%
-
-FVG Engine:
-  Signals Detected:    2
-  Convergence Pass:    33.3%
-
-Convergence Scorer:
-  High Quality Rate:   50.0%
-  Average Score:       0.798
-
-════════════════════════════════════════
-✅ Full MTF infrastructure test complete!
-════════════════════════════════════════
+# Check cache stats
+mtf_data_manager.print_cache_stats()
 ```
 
 ---
 
-## Performance Expectations
+## Expected Behaviors
 
-### Signal Detection Rate
+### Data Manager
 
-**Strict Mode (Current Settings)**:
-- **Expected**: 5-15% of tickers show MTF signals
-- **Reason**: Requires 3+ timeframes with 50% zone overlap
-- **Typical**: 1-3 signals per 20-ticker scan during active market
+**✅ Good Signs**:
+- All 4 timeframes fetch successfully
+- Bar counts logical (1m > 2m > 3m > 5m)
+- Caching works (second call faster)
+- No API errors or timeouts
+- Prices aligned across timeframes
 
-**If seeing 0 signals**:
-- Market may be choppy (no clear trends)
-- Test during volatile periods (9:30-10:30 AM, 3:00-4:00 PM ET)
-- Try high-beta tickers (NVDA, TSLA, COIN, MSTR)
+**❌ Red Flags**:
+- Missing timeframes (check API key)
+- Zero bars returned
+- Prices wildly different across timeframes
+- Timestamps outside trading hours
+- API rate limit errors
 
-**If seeing too many signals (>50%)**:
-- Check if convergence requirements are being enforced
-- Verify MIN_TIMEFRAMES_REQUIRED = 3
-- Verify MIN_ZONE_OVERLAP_PCT = 0.50
+### FVG Engine
 
-### API Call Efficiency
+**✅ Good Signs**:
+- Convergence scores in reasonable range (60-100%)
+- Zone overlap positive (high > low)
+- Direction consistent across timeframes
+- At least 2-3 timeframes aligned
+- Confidence boost proportional to convergence
 
-**First scan** (cold cache):
-- 4 API calls per ticker (one per timeframe)
-- 6 tickers = 24 API calls
-- ~5-10 seconds total
-
-**Subsequent scans** (warm cache):
-- 0 API calls if within 5-minute TTL
-- Instant retrieval from cache
-- Cache hit rate should be >80% during continuous scanning
-
-### Quality Distribution
-
-**Expected score distribution**:
-- 40-50% of signals: 0.80+ (high quality)
-- 30-40% of signals: 0.70-0.79 (good)
-- 10-20% of signals: 0.60-0.69 (acceptable)
-- <5% of signals: <0.60 (should be rejected)
+**❌ Red Flags**:
+- Convergence always 0% or 100%
+- Zone overlap negative or zero
+- Conflicting directions in same signal
+- Single timeframe dominating all signals
+- Confidence boost outside 0.00-0.15 range
 
 ---
 
-## Common Issues & Solutions
+## Troubleshooting
 
-### Issue: EODHD API Errors
+### Issue: No data returned for 3m/2m/1m
 
-**Error**: `RequestException: 401 Unauthorized`
+**Possible Causes**:
+1. EODHD API key not configured
+2. API doesn't support these intervals
+3. Rate limiting
+4. Outside trading hours
 
-**Cause**: Invalid API key
+**Fixes**:
+1. Check `config.py` has `EODHD_API_TOKEN`
+2. Verify EODHD plan includes intraday data
+3. Add delays between requests
+4. Test during market hours (9:30 AM - 4:00 PM ET)
+
+### Issue: MTF engine never finds signals
+
+**Possible Causes**:
+1. Market conditions (low volatility, no BOS patterns)
+2. Thresholds too strict
+3. FVG detection not working on smaller timeframes
+
+**Fixes**:
+1. Test during volatile market periods
+2. Lower convergence threshold:
+   ```python
+   mtf_fvg_engine.update_config(min_convergence_score=0.50)
+   ```
+3. Test on known volatile tickers (TSLA, NVDA)
+
+### Issue: Cache not clearing
 
 **Fix**:
 ```python
-# In config.py, verify:
-EODHD_API_KEY = "your_actual_key_here"
+from mtf_data_manager import mtf_data_manager
+mtf_data_manager.clear_cache()  # Clear all
+# OR
+mtf_data_manager.clear_cache(ticker='SPY')  # Clear specific ticker
 ```
 
-### Issue: No Signals Ever Found
+### Issue: Zone overlap always 0%
 
-**Symptoms**: Every scan returns 0 signals, convergence_failed > 0
+**Cause**: Timeframes showing FVGs in very different price ranges
 
-**Debugging**:
-```python
-# Add debug prints to mtf_fvg_engine.py in detect_mtf_signal()
-print(f"Patterns detected: {len(patterns)} (need {MIN_TIMEFRAMES_REQUIRED})")
-for tf, pattern in patterns.items():
-    print(f"  {tf}: ${pattern['fvg_low']:.2f} - ${pattern['fvg_high']:.2f}")
-```
-
-**Common Causes**:
-1. Market conditions: Try during high volatility
-2. BOS detection too strict: Lower threshold from 1.002 to 1.001
-3. FVG min size too large: Check config.FVG_MIN_SIZE_PCT
-
-### Issue: Slow Performance
-
-**Symptoms**: Each ticker takes >5 seconds to scan
-
-**Debugging**:
-```python
-import time
-start = time.time()
-mtf_data_manager.get_all_timeframes('AAPL')
-print(f"Data fetch: {time.time() - start:.2f}s")
-
-start = time.time()
-mtf_fvg_engine.detect_mtf_signal('AAPL')
-print(f"Detection: {time.time() - start:.2f}s")
-```
-
-**Optimization**:
-- Use batch_update() before scanning multiple tickers
-- Increase cache TTL if acceptable: `CACHE_TTL_SECONDS = 600` (10 min)
-- Consider reducing timeframes to just 5m + 3m initially
+**Analysis**: This is actually correct behavior - it means there's no true MTF convergence. The engine should reject these signals.
 
 ---
 
-## Next Steps
+## Integration Readiness Checklist
 
-### After Testing Complete
+Before proceeding to Phase 3 (sniper.py integration), verify:
 
-✅ **Step 1-3**: Infrastructure built and tested  
-⏳ **Step 4**: Integrate with `sniper.py`  
-⏳ **Step 5**: Update `signal_analytics.py` for MTF tracking  
-⏳ **Step 6**: Add MTF metrics to dashboard  
-
-When you're ready to proceed with integration, we'll:
-
-1. **Modify `sniper.py`**: Replace single-TF FVG detection with MTF engine
-2. **Add MTF tracking**: Extend signal_events table with MTF fields
-3. **Update dashboard**: Add MTF convergence metrics to monitoring_dashboard.py
-4. **Backtest**: Compare before/after win rates
-
-**Testing Checklist Before Integration**:
 - [ ] Data manager fetches all 4 timeframes successfully
-- [ ] Cache hit rate improves on subsequent calls
-- [ ] FVG engine detects signals (even if rare)
-- [ ] Convergence scorer produces reasonable boosts (5-15%)
-- [ ] Full integration test finds 1-3 signals per 20 tickers
-- [ ] No crashes or API rate limit errors
+- [ ] Cache works correctly (faster on second call)
+- [ ] FVG engine detects signals with reasonable convergence scores
+- [ ] At least 2-3 timeframes align in test signals
+- [ ] Zone overlap is positive and logical
+- [ ] Confidence boost values in 0.00-0.15 range
+- [ ] No API errors or rate limiting issues
+- [ ] Performance acceptable (test completes in <5 seconds)
+- [ ] Cache clears properly at session rollover
+- [ ] Multiple tickers can be tested sequentially
+
+**If all checkboxes pass** → Ready for Phase 3 Integration ✅
+
+**If any fail** → Review and fix before proceeding ⚠️
 
 ---
 
-**Infrastructure Status**: ✅ READY FOR INTEGRATION  
-**Estimated Integration Time**: 2-3 hours  
-**Expected Impact**: +10-15% win rate improvement
+## Performance Benchmarks
+
+**Target Performance**:
+- Single ticker, all timeframes: <3 seconds
+- MTF signal detection: <2 seconds
+- Cache hit: <0.1 seconds
+
+**Test**:
+```bash
+time python mtf_fvg_engine.py SPY
+```
+
+Should complete in <5 seconds total.
+
+---
+## Next Steps (Phase 3)
+
+Once testing is complete:
+
+1. **Update `sniper.py`**:
+   - Replace single-TF BOS detection with MTF engine
+   - Apply MTF boost to confidence calculation
+   - Track MTF metrics in signal_events
+
+2. **Update `signal_analytics.py`**:
+   - Add MTF convergence tracking fields
+   - Record timeframes_aligned per signal
+
+3. **Update `monitoring_dashboard.py`**:
+   - Add MTF effectiveness metrics
+   - Compare single-TF vs MTF win rates
+
+4. **Backtest**:
+   - Run on historical data
+   - Measure win rate improvement
+   - Validate convergence thresholds
+
+---
+
+**Status**: Awaiting Test Results  
+**Ready for Integration**: After checklist passes ✅
