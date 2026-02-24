@@ -3,14 +3,22 @@ Breakout Entry Detector - High-Probability Entry Signals
 
 Strategy:
   - 5-minute breakout above resistance (highest high of last N bars)
-  - Volume confirmation: current volume > 2x average volume
+  - Volume confirmation: current volume > 2x EMA volume (more responsive than SMA)
   - ATR-based dynamic stops and targets
-  - Filters out low-quality breakouts (low volume, choppy price action)
+  - Filters out low-quality breakouts (low volume, choppy price action, weak candles)
+  - PDH/PDL awareness: Uses previous day levels as dynamic support/resistance
 
 Entry Types:
-  1. BULL BREAKOUT: Price breaks above resistance + volume spike
-  2. BEAR BREAKDOWN: Price breaks below support + volume spike
+  1. BULL BREAKOUT: Price breaks above resistance + volume spike + strong candle
+  2. BEAR BREAKDOWN: Price breaks below support + volume spike + strong candle
   3. RETEST ENTRY: Price retests breakout level with volume confirmation
+
+Phase 1.8 Optimizations:
+  - PDH/PDL integration for confluence-based entries
+  - EMA volume (more responsive to recent activity)
+  - Price action strength filter (body%, wick rejection)
+  - Breakout confirmation counter (reduces false breaks)
+  - Cached ATR calculation
 
 Risk Management:
   - Stop: ATR-based dynamic stop (typically 1.5-2x ATR)
@@ -30,7 +38,9 @@ class BreakoutDetector:
                  volume_multiplier: float = 2.0,
                  atr_period: int = 14,
                  atr_stop_multiplier: float = 1.5,
-                 risk_reward_ratio: float = 2.0):
+                 risk_reward_ratio: float = 2.0,
+                 min_candle_body_pct: float = 0.4,
+                 min_bars_since_breakout: int = 1):
         """
         Args:
             lookback_bars: Number of bars to determine support/resistance
@@ -38,17 +48,46 @@ class BreakoutDetector:
             atr_period: Period for ATR calculation
             atr_stop_multiplier: Stop distance = ATR * multiplier
             risk_reward_ratio: Target distance = Stop distance * ratio
+            min_candle_body_pct: Minimum candle body% for strong price action (0.4 = 40%)
+            min_bars_since_breakout: Bars to wait after initial break (false break filter)
         """
         self.lookback_bars = lookback_bars
         self.volume_multiplier = volume_multiplier
         self.atr_period = atr_period
         self.atr_stop_multiplier = atr_stop_multiplier
         self.risk_reward_ratio = risk_reward_ratio
+        self.min_candle_body_pct = min_candle_body_pct
+        self.min_bars_since_breakout = min_bars_since_breakout
+        
+        # Performance optimization: Cache ATR calculations
+        self._atr_cache: Dict[str, Tuple[float, int]] = {}  # ticker -> (atr, bars_count)
+        
+        # PDH/PDL cache (refreshed daily)
+        self._pdh_pdl_cache: Dict[str, Tuple[float, float]] = {}  # ticker -> (pdh, pdl)
     
-    def calculate_atr(self, bars: List[Dict]) -> float:
-        """Calculate Average True Range for dynamic stops."""
+    def calculate_atr(self, bars: List[Dict], ticker: str = "unknown") -> float:
+        """
+        Calculate Average True Range for dynamic stops.
+        
+        Phase 1.8: Added caching to avoid redundant calculations.
+        Cache is invalidated when bar count changes.
+        
+        Args:
+            bars: List of OHLCV bars
+            ticker: Ticker symbol for cache key
+        
+        Returns:
+            ATR value
+        """
         if len(bars) < 2:
             return 0.0
+        
+        # Check cache
+        bars_count = len(bars)
+        if ticker in self._atr_cache:
+            cached_atr, cached_count = self._atr_cache[ticker]
+            if cached_count == bars_count:
+                return cached_atr
         
         true_ranges = []
         for i in range(1, len(bars)):
@@ -66,84 +105,261 @@ class BreakoutDetector:
         
         # Return average of last N true ranges
         atr_bars = true_ranges[-self.atr_period:] if len(true_ranges) >= self.atr_period else true_ranges
-        return statistics.mean(atr_bars) if atr_bars else 0.0
+        atr = statistics.mean(atr_bars) if atr_bars else 0.0
+        
+        # Update cache
+        self._atr_cache[ticker] = (atr, bars_count)
+        
+        return atr
     
-    def calculate_support_resistance(self, bars: List[Dict]) -> Tuple[float, float]:
-        """Calculate support and resistance levels from recent bars."""
+    def get_pdh_pdl(self, ticker: str) -> Tuple[Optional[float], Optional[float]]:
+        """
+        Get previous day high/low from data_manager.
+        
+        Phase 1.8: Centralized PDH/PDL retrieval for confluence analysis.
+        Results are cached per ticker to avoid repeated API calls.
+        
+        Args:
+            ticker: Stock ticker
+        
+        Returns:
+            (pdh, pdl) tuple or (None, None) if unavailable
+        """
+        # Check cache first
+        if ticker in self._pdh_pdl_cache:
+            return self._pdh_pdl_cache[ticker]
+        
+        # Fetch from data_manager
+        try:
+            from data_manager import data_manager
+            prev_day = data_manager.get_previous_day_ohlc(ticker)
+            
+            if prev_day and 'high' in prev_day and 'low' in prev_day:
+                pdh = prev_day['high']
+                pdl = prev_day['low']
+                self._pdh_pdl_cache[ticker] = (pdh, pdl)
+                return pdh, pdl
+        except Exception as e:
+            print(f"[BREAKOUT] PDH/PDL fetch error for {ticker}: {e}")
+        
+        return None, None
+    
+    def clear_pdh_pdl_cache(self) -> None:
+        """
+        Clear PDH/PDL cache (called at end of day).
+        """
+        self._pdh_pdl_cache.clear()
+    
+    def calculate_support_resistance(self, bars: List[Dict], ticker: str = "unknown") -> Tuple[float, float]:
+        """
+        Calculate support and resistance levels from recent bars.
+        
+        Phase 1.8: Now considers PDH/PDL as additional levels for confluence.
+        
+        Args:
+            bars: List of OHLCV bars
+            ticker: Stock ticker (for PDH/PDL lookup)
+        
+        Returns:
+            (support, resistance) tuple
+        """
         if not bars:
             return 0.0, 0.0
         
         lookback = bars[-self.lookback_bars:] if len(bars) >= self.lookback_bars else bars
         
-        resistance = max(bar['high'] for bar in lookback)
-        support = min(bar['low'] for bar in lookback)
+        # Intraday levels
+        intraday_resistance = max(bar['high'] for bar in lookback)
+        intraday_support = min(bar['low'] for bar in lookback)
+        
+        # PDH/PDL levels (for confluence)
+        pdh, pdl = self.get_pdh_pdl(ticker)
+        
+        # Use the more significant level (PDH/PDL takes precedence if nearby)
+        resistance = intraday_resistance
+        support = intraday_support
+        
+        if pdh is not None:
+            # If PDH is within 2% of intraday resistance, use PDH (stronger level)
+            if abs(pdh - intraday_resistance) / intraday_resistance < 0.02:
+                resistance = pdh
+        
+        if pdl is not None:
+            # If PDL is within 2% of intraday support, use PDL (stronger level)
+            if abs(pdl - intraday_support) / intraday_support < 0.02:
+                support = pdl
         
         return support, resistance
     
-    def calculate_average_volume(self, bars: List[Dict]) -> float:
-        """Calculate average volume over lookback period."""
+    def calculate_ema_volume(self, bars: List[Dict], period: int = None) -> float:
+        """
+        Calculate Exponential Moving Average of volume.
+        
+        Phase 1.8: EMA is more responsive to recent volume spikes than SMA.
+        This helps catch momentum shifts earlier.
+        
+        Args:
+            bars: List of OHLCV bars
+            period: EMA period (defaults to lookback_bars)
+        
+        Returns:
+            EMA volume
+        """
         if not bars:
             return 0.0
         
-        lookback = bars[-self.lookback_bars:] if len(bars) >= self.lookback_bars else bars
-        volumes = [bar['volume'] for bar in lookback]
+        period = period or self.lookback_bars
+        lookback = bars[-period:] if len(bars) >= period else bars
         
-        return statistics.mean(volumes) if volumes else 0.0
+        if not lookback:
+            return 0.0
+        
+        # Calculate EMA
+        multiplier = 2.0 / (period + 1)
+        ema = lookback[0]['volume']
+        
+        for bar in lookback[1:]:
+            ema = (bar['volume'] * multiplier) + (ema * (1 - multiplier))
+        
+        return ema
     
-    def detect_breakout(self, bars: List[Dict]) -> Optional[Dict]:
+    def calculate_average_volume(self, bars: List[Dict]) -> float:
+        """
+        Calculate average volume over lookback period.
+        
+        Phase 1.8: Deprecated in favor of calculate_ema_volume().
+        Kept for backwards compatibility.
+        """
+        return self.calculate_ema_volume(bars)
+    
+    def analyze_candle_strength(self, bar: Dict) -> Dict:
+        """
+        Analyze price action strength of a candle.
+        
+        Phase 1.8: Filter weak breakouts with poor candle structure.
+        
+        Args:
+            bar: OHLCV bar dict
+        
+        Returns:
+            {
+                'body_pct': float,       # Body size as % of total range
+                'is_strong': bool,       # Body% >= min threshold
+                'has_rejection': bool,   # Long wick opposite to direction
+                'direction': str         # 'bull' or 'bear'
+            }
+        """
+        open_price = bar['open']
+        close_price = bar['close']
+        high = bar['high']
+        low = bar['low']
+        
+        total_range = high - low
+        if total_range == 0:
+            return {
+                'body_pct': 0.0,
+                'is_strong': False,
+                'has_rejection': False,
+                'direction': 'neutral'
+            }
+        
+        body_size = abs(close_price - open_price)
+        body_pct = body_size / total_range
+        
+        # Determine direction
+        direction = 'bull' if close_price > open_price else 'bear'
+        
+        # Check for rejection wicks (long wick opposite to close direction)
+        if direction == 'bull':
+            # Bull candle: check for bearish rejection (long lower wick)
+            lower_wick = open_price - low
+            has_rejection = (lower_wick / total_range) > 0.4
+        else:
+            # Bear candle: check for bullish rejection (long upper wick)
+            upper_wick = high - open_price
+            has_rejection = (upper_wick / total_range) > 0.4
+        
+        is_strong = body_pct >= self.min_candle_body_pct
+        
+        return {
+            'body_pct': round(body_pct, 2),
+            'is_strong': is_strong,
+            'has_rejection': has_rejection,
+            'direction': direction
+        }
+    
+    def detect_breakout(self, bars: List[Dict], ticker: str = "unknown") -> Optional[Dict]:
         """
         Detect breakout entry signal.
         
+        Phase 1.8 Enhancements:
+          - PDH/PDL confluence bonus
+          - EMA volume instead of SMA
+          - Price action strength filter
+          - Breakout confirmation (wait N bars)
+        
         Args:
             bars: List of OHLCV bars (must have at least lookback_bars)
+            ticker: Stock ticker (for PDH/PDL and caching)
         
         Returns:
             Signal dict if breakout detected, None otherwise
-            {
-                'signal': 'BUY' or 'SELL',
-                'entry': float,
-                'stop': float,
-                'target': float,
-                'risk': float,
-                'reward': float,
-                'risk_reward': float,
-                'atr': float,
-                'volume_ratio': float,
-                'confidence': int (0-100),
-                'reason': str,
-                'timestamp': datetime
-            }
         """
         if len(bars) < self.lookback_bars:
             return None
         
         latest = bars[-1]
-        support, resistance = self.calculate_support_resistance(bars[:-1])  # Exclude current bar
-        avg_volume = self.calculate_average_volume(bars[:-1])
-        atr = self.calculate_atr(bars)
+        support, resistance = self.calculate_support_resistance(bars[:-1], ticker)
+        ema_volume = self.calculate_ema_volume(bars[:-1])
+        atr = self.calculate_atr(bars, ticker)
         
-        if avg_volume == 0 or atr == 0:
+        if ema_volume == 0 or atr == 0:
             return None
         
         current_volume = latest['volume']
-        volume_ratio = current_volume / avg_volume
+        volume_ratio = current_volume / ema_volume
+        
+        # Phase 1.8: Price action strength filter
+        candle_strength = self.analyze_candle_strength(latest)
+        
+        # Get PDH/PDL for confluence check
+        pdh, pdl = self.get_pdh_pdl(ticker)
         
         # ========================================
         # BULL BREAKOUT: Close above resistance
         # ========================================
         if latest['close'] > resistance and volume_ratio >= self.volume_multiplier:
+            # Phase 1.8: Filter weak bull candles
+            if candle_strength['direction'] != 'bull' or not candle_strength['is_strong']:
+                return None
+            
+            # Phase 1.8: Breakout confirmation (wait N bars)
+            if self.min_bars_since_breakout > 0:
+                # Check if resistance was broken in previous bars
+                recent_bars = bars[-(self.min_bars_since_breakout + 1):-1]
+                if recent_bars and all(bar['close'] <= resistance for bar in recent_bars):
+                    # This is the initial break — wait for confirmation
+                    return None
+            
             entry = latest['close']
             stop = entry - (atr * self.atr_stop_multiplier)
             risk = entry - stop
             reward = risk * self.risk_reward_ratio
             target = entry + reward
             
+            # Phase 1.8: PDH confluence check
+            pdh_confluence = False
+            if pdh is not None and abs(resistance - pdh) / pdh < 0.01:
+                pdh_confluence = True
+            
             # Quality filters
             confidence = self._calculate_confidence(
                 volume_ratio=volume_ratio,
                 breakout_strength=(entry - resistance) / resistance,
                 atr_pct=atr / entry,
-                signal_type='BULL'
+                signal_type='BULL',
+                candle_strength=candle_strength,
+                pdh_pdl_confluence=pdh_confluence
             )
             
             if confidence < 50:
@@ -159,8 +375,14 @@ class BreakoutDetector:
                 'risk_reward': round(reward / risk, 2),
                 'atr': round(atr, 2),
                 'volume_ratio': round(volume_ratio, 2),
+                'volume_multiple': round(volume_ratio, 1),  # For analytics
                 'confidence': confidence,
-                'reason': f'Breakout above ${resistance:.2f} with {volume_ratio:.1f}x volume',
+                'reason': (
+                    f'Breakout above ${resistance:.2f} with {volume_ratio:.1f}x volume'
+                    f'{" (PDH confluence)" if pdh_confluence else ""}'
+                ),
+                'type': 'BREAKOUT',
+                'candle_body_pct': candle_strength['body_pct'],
                 'timestamp': latest.get('datetime', datetime.now())
             }
         
@@ -168,17 +390,34 @@ class BreakoutDetector:
         # BEAR BREAKDOWN: Close below support
         # =========================================
         elif latest['close'] < support and volume_ratio >= self.volume_multiplier:
+            # Phase 1.8: Filter weak bear candles
+            if candle_strength['direction'] != 'bear' or not candle_strength['is_strong']:
+                return None
+            
+            # Phase 1.8: Breakout confirmation
+            if self.min_bars_since_breakout > 0:
+                recent_bars = bars[-(self.min_bars_since_breakout + 1):-1]
+                if recent_bars and all(bar['close'] >= support for bar in recent_bars):
+                    return None
+            
             entry = latest['close']
             stop = entry + (atr * self.atr_stop_multiplier)
             risk = stop - entry
             reward = risk * self.risk_reward_ratio
             target = entry - reward
             
+            # Phase 1.8: PDL confluence check
+            pdl_confluence = False
+            if pdl is not None and abs(support - pdl) / pdl < 0.01:
+                pdl_confluence = True
+            
             confidence = self._calculate_confidence(
                 volume_ratio=volume_ratio,
                 breakout_strength=(support - entry) / support,
                 atr_pct=atr / entry,
-                signal_type='BEAR'
+                signal_type='BEAR',
+                candle_strength=candle_strength,
+                pdh_pdl_confluence=pdl_confluence
             )
             
             if confidence < 50:
@@ -194,21 +433,31 @@ class BreakoutDetector:
                 'risk_reward': round(reward / risk, 2),
                 'atr': round(atr, 2),
                 'volume_ratio': round(volume_ratio, 2),
+                'volume_multiple': round(volume_ratio, 1),
                 'confidence': confidence,
-                'reason': f'Breakdown below ${support:.2f} with {volume_ratio:.1f}x volume',
+                'reason': (
+                    f'Breakdown below ${support:.2f} with {volume_ratio:.1f}x volume'
+                    f'{" (PDL confluence)" if pdl_confluence else ""}'
+                ),
+                'type': 'BREAKDOWN',
+                'candle_body_pct': candle_strength['body_pct'],
                 'timestamp': latest.get('datetime', datetime.now())
             }
         
         return None
     
-    def detect_retest_entry(self, bars: List[Dict], breakout_level: float, breakout_type: str) -> Optional[Dict]:
+    def detect_retest_entry(self, bars: List[Dict], breakout_level: float, 
+                           breakout_type: str, ticker: str = "unknown") -> Optional[Dict]:
         """
         Detect retest of a previous breakout level (higher probability entry).
+        
+        Phase 1.8: Added price action strength filter for retest entries.
         
         Args:
             bars: List of OHLCV bars
             breakout_level: Previous breakout/breakdown level
             breakout_type: 'BULL' or 'BEAR'
+            ticker: Stock ticker
         
         Returns:
             Signal dict if retest entry detected, None otherwise
@@ -217,96 +466,123 @@ class BreakoutDetector:
             return None
         
         latest = bars[-1]
-        atr = self.calculate_atr(bars)
-        avg_volume = self.calculate_average_volume(bars[:-1])
+        atr = self.calculate_atr(bars, ticker)
+        ema_volume = self.calculate_ema_volume(bars[:-1])
         
-        if atr == 0 or avg_volume == 0:
+        if atr == 0 or ema_volume == 0:
             return None
         
-        volume_ratio = latest['volume'] / avg_volume
+        volume_ratio = latest['volume'] / ema_volume
+        candle_strength = self.analyze_candle_strength(latest)
         
-        # Define retest zone (within 1 ATR of breakout level)
+        # Define retest zone (within 0.5 ATR of breakout level)
         retest_tolerance = atr * 0.5
         
         # BULL RETEST: Price comes back to test breakout level from above
         if breakout_type == 'BULL':
             in_retest_zone = abs(latest['low'] - breakout_level) <= retest_tolerance
-            bouncing_up = latest['close'] > latest['open']  # Bullish candle
             
-            if in_retest_zone and bouncing_up and volume_ratio >= 1.5:
-                entry = latest['close']
-                stop = breakout_level - (atr * self.atr_stop_multiplier)
-                risk = entry - stop
-                reward = risk * self.risk_reward_ratio
-                target = entry + reward
-                
-                confidence = self._calculate_confidence(
-                    volume_ratio=volume_ratio,
-                    breakout_strength=0.02,  # Retest has lower breakout strength
-                    atr_pct=atr / entry,
-                    signal_type='BULL'
-                ) + 10  # Bonus for retest (higher probability)
-                
-                return {
-                    'signal': 'BUY',
-                    'entry': round(entry, 2),
-                    'stop': round(stop, 2),
-                    'target': round(target, 2),
-                    'risk': round(risk, 2),
-                    'reward': round(reward, 2),
-                    'risk_reward': round(reward / risk, 2),
-                    'atr': round(atr, 2),
-                    'volume_ratio': round(volume_ratio, 2),
-                    'confidence': min(confidence, 95),
-                    'reason': f'Retest of ${breakout_level:.2f} breakout with {volume_ratio:.1f}x volume',
-                    'timestamp': latest.get('datetime', datetime.now())
-                }
+            # Phase 1.8: Require strong bull candle for retest
+            if not (in_retest_zone and 
+                    candle_strength['direction'] == 'bull' and 
+                    candle_strength['is_strong'] and 
+                    volume_ratio >= 1.5):
+                return None
+            
+            entry = latest['close']
+            stop = breakout_level - (atr * self.atr_stop_multiplier)
+            risk = entry - stop
+            reward = risk * self.risk_reward_ratio
+            target = entry + reward
+            
+            confidence = self._calculate_confidence(
+                volume_ratio=volume_ratio,
+                breakout_strength=0.02,
+                atr_pct=atr / entry,
+                signal_type='BULL',
+                candle_strength=candle_strength,
+                pdh_pdl_confluence=False
+            ) + 10  # Retest bonus
+            
+            return {
+                'signal': 'BUY',
+                'entry': round(entry, 2),
+                'stop': round(stop, 2),
+                'target': round(target, 2),
+                'risk': round(risk, 2),
+                'reward': round(reward, 2),
+                'risk_reward': round(reward / risk, 2),
+                'atr': round(atr, 2),
+                'volume_ratio': round(volume_ratio, 2),
+                'volume_multiple': round(volume_ratio, 1),
+                'confidence': min(confidence, 95),
+                'reason': f'Retest of ${breakout_level:.2f} breakout with {volume_ratio:.1f}x volume',
+                'type': 'RETEST',
+                'candle_body_pct': candle_strength['body_pct'],
+                'timestamp': latest.get('datetime', datetime.now())
+            }
         
         # BEAR RETEST: Price comes back to test breakdown level from below
         elif breakout_type == 'BEAR':
             in_retest_zone = abs(latest['high'] - breakout_level) <= retest_tolerance
-            rejecting_down = latest['close'] < latest['open']  # Bearish candle
             
-            if in_retest_zone and rejecting_down and volume_ratio >= 1.5:
-                entry = latest['close']
-                stop = breakout_level + (atr * self.atr_stop_multiplier)
-                risk = stop - entry
-                reward = risk * self.risk_reward_ratio
-                target = entry - reward
-                
-                confidence = self._calculate_confidence(
-                    volume_ratio=volume_ratio,
-                    breakout_strength=0.02,
-                    atr_pct=atr / entry,
-                    signal_type='BEAR'
-                ) + 10
-                
-                return {
-                    'signal': 'SELL',
-                    'entry': round(entry, 2),
-                    'stop': round(stop, 2),
-                    'target': round(target, 2),
-                    'risk': round(risk, 2),
-                    'reward': round(reward, 2),
-                    'risk_reward': round(reward / risk, 2),
-                    'atr': round(atr, 2),
-                    'volume_ratio': round(volume_ratio, 2),
-                    'confidence': min(confidence, 95),
-                    'reason': f'Retest of ${breakout_level:.2f} breakdown with {volume_ratio:.1f}x volume',
-                    'timestamp': latest.get('datetime', datetime.now())
-                }
+            # Phase 1.8: Require strong bear candle for retest
+            if not (in_retest_zone and 
+                    candle_strength['direction'] == 'bear' and 
+                    candle_strength['is_strong'] and 
+                    volume_ratio >= 1.5):
+                return None
+            
+            entry = latest['close']
+            stop = breakout_level + (atr * self.atr_stop_multiplier)
+            risk = stop - entry
+            reward = risk * self.risk_reward_ratio
+            target = entry - reward
+            
+            confidence = self._calculate_confidence(
+                volume_ratio=volume_ratio,
+                breakout_strength=0.02,
+                atr_pct=atr / entry,
+                signal_type='BEAR',
+                candle_strength=candle_strength,
+                pdh_pdl_confluence=False
+            ) + 10
+            
+            return {
+                'signal': 'SELL',
+                'entry': round(entry, 2),
+                'stop': round(stop, 2),
+                'target': round(target, 2),
+                'risk': round(risk, 2),
+                'reward': round(reward, 2),
+                'risk_reward': round(reward / risk, 2),
+                'atr': round(atr, 2),
+                'volume_ratio': round(volume_ratio, 2),
+                'volume_multiple': round(volume_ratio, 1),
+                'confidence': min(confidence, 95),
+                'reason': f'Retest of ${breakout_level:.2f} breakdown with {volume_ratio:.1f}x volume',
+                'type': 'RETEST',
+                'candle_body_pct': candle_strength['body_pct'],
+                'timestamp': latest.get('datetime', datetime.now())
+            }
         
         return None
     
     def _calculate_confidence(self, volume_ratio: float, breakout_strength: float, 
-                            atr_pct: float, signal_type: str) -> int:
+                            atr_pct: float, signal_type: str,
+                            candle_strength: Dict = None,
+                            pdh_pdl_confluence: bool = False) -> int:
         """
         Calculate confidence score (0-100) for breakout signal.
         
+        Phase 1.8: Enhanced with candle strength and PDH/PDL confluence factors.
+        
         Factors:
-          - Volume ratio: Higher volume = higher confidence
-          - Breakout strength: Stronger break = higher confidence
-          - ATR percentage: Lower volatility = higher confidence (cleaner move)
+          - Volume ratio: Higher volume = higher confidence (0-30 pts)
+          - Breakout strength: Stronger break = higher confidence (0-20 pts)
+          - ATR percentage: Lower volatility = higher confidence (0-10 pts)
+          - Candle body%: Stronger candle = higher confidence (0-10 pts)
+          - PDH/PDL confluence: At key level = bonus confidence (+10 pts)
         """
         confidence = 50  # Base confidence
         
@@ -326,11 +602,27 @@ class BreakoutDetector:
         elif breakout_strength >= 0.01:  # 1%+ breakout
             confidence += 10
         
-        # ATR percentage - lower is better for clean moves (0-10 points)
+        # ATR percentage - lower is better (0-10 points)
         if atr_pct < 0.02:  # Less than 2% ATR
             confidence += 10
         elif atr_pct < 0.03:
             confidence += 5
+        
+        # Phase 1.8: Candle strength factor (0-10 points)
+        if candle_strength:
+            body_pct = candle_strength['body_pct']
+            if body_pct >= 0.7:  # 70%+ body (very strong)
+                confidence += 10
+            elif body_pct >= 0.6:  # 60%+ body
+                confidence += 7
+            elif body_pct >= 0.5:  # 50%+ body
+                confidence += 5
+            elif body_pct >= 0.4:  # 40%+ body (minimum)
+                confidence += 3
+        
+        # Phase 1.8: PDH/PDL confluence bonus (+10 points)
+        if pdh_pdl_confluence:
+            confidence += 10
         
         return min(confidence, 100)
     
@@ -379,6 +671,10 @@ def format_signal_message(ticker: str, signal: Dict) -> str:
         f"Confidence: {signal['confidence']}% - {signal['reason']}"
     )
     
+    # Phase 1.8: Add candle strength info if available
+    if 'candle_body_pct' in signal:
+        msg += f"\nCandle Body: {signal['candle_body_pct']*100:.0f}%"
+    
     return msg
 
 
@@ -391,7 +687,9 @@ if __name__ == "__main__":
         lookback_bars=12,
         volume_multiplier=2.0,
         atr_stop_multiplier=1.5,
-        risk_reward_ratio=2.0
+        risk_reward_ratio=2.0,
+        min_candle_body_pct=0.4,
+        min_bars_since_breakout=1
     )
     
     # Sample bars (OHLCV)
@@ -408,11 +706,11 @@ if __name__ == "__main__":
         {'datetime': datetime.now(), 'open': 105.5, 'high': 107, 'low': 105, 'close': 106, 'volume': 1200000},
         {'datetime': datetime.now(), 'open': 106, 'high': 107.5, 'low': 105.5, 'close': 106.5, 'volume': 1100000},
         {'datetime': datetime.now(), 'open': 106.5, 'high': 108, 'low': 106, 'close': 107, 'volume': 1000000},
-        # BREAKOUT BAR: Price breaks above 108 with 2.5x volume
-        {'datetime': datetime.now(), 'open': 107, 'high': 110, 'low': 106.5, 'close': 109, 'volume': 2500000},
+        # BREAKOUT BAR: Price breaks above 108 with 2.5x volume + strong bull candle
+        {'datetime': datetime.now(), 'open': 107, 'high': 110, 'low': 106.5, 'close': 109.5, 'volume': 2500000},
     ]
     
-    signal = detector.detect_breakout(sample_bars)
+    signal = detector.detect_breakout(sample_bars, ticker="TEST")
     
     if signal:
         print("\n" + "="*60)
