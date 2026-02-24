@@ -1,20 +1,117 @@
-add return 0.95 for the 0.45–0.55 bracket and a final return 1.0 catch-all
-add columns to the positions table and wire it in
-change PositionManager's default to "market_memory.db" and remove TRADES_DB_PATH from config.py
-set MAX_CONTRACTS = 10
-wire options_flow in from options_data_manager
-Delete both update_ticker() and cleanup_old_bars()
-delete store_daily_bars(), get_bars_by_date(), and get_available_dates()
-refactor wait_for_confirmation() to explicitly re-check the latest bar per cycle rather than one-shot scanning
-for get_previous_day_ohlc() call a new get_daily_ohlc(ticker, date) call a new get_daily_ohlc(ticker, date) and shouldn't it get volume and other parameters too? 
-Add an EOD job in scanner.py that pipes signal_analytics.get_recent_signals() into ai_learning.record_trade().
-scanner.py EOD block — Should call clear_prev_day_cache() (already confirmed) and also call ai_learning.optimize_confirmation_weights() + optimize_fvg_threshold()
-PositionManager DB path — Consolidate everything to market_memory.db so local dev has one unified SQLite file matching what gets migrated to Postgres on Railway
-change data[-1] to data[0] in get_latest_value(). Same bug exists in check_bollinger_squeeze() and get_trend_direction() where they also read from [-1] directly.
-delete the if __name__ == "__main__" block entirely from technical_indicators.py
-remove the assignment or replace with _ (bos_fvg_engine.py — c1 dead variable in find_fvg_after_bos()c1 = search_bars[i - 1] # middle candle (not used directly))
-wrap the backfill calls in scanner.py with a finally: set_backfill_complete()
-technical_indicators.py — Verify if it's actually used
-bos_fvg_engine.py — 0DTE constants not in config.py HARD_CLOSE_TIME = time(15, 45) and FORCE_CLOSE_TIME = time(15, 55)
-FLUSH_INTERVAL = 10 and RECONNECT_DELAY = 5 are module-level constants not in config.py
-two separate stop-calculation systems running in parallel. (compute_0dte_stops_and_targets() and signal_generator.py / sniper.py)
+Thread 1: Phase 4 - Monitoring Dashboard (Start Here)
+Time: 2-3 hours
+Priority: HIGH - Visualize what you already have
+
+Deliverables:
+
+Real-time signal quality metrics
+
+Win rate by ticker/pattern/timeframe
+
+P&L tracking dashboard
+
+Learning engine status display
+
+Discord webhook integration for alerts
+
+Why First: You need visibility into current performance before adding complexity.
+
+Thread 2: Multi-Timeframe Sync (After Dashboard)
+Time: 1 week
+Priority: HIGH - Biggest accuracy improvement
+
+Deliverables:
+
+Simultaneous FVG detection across 5m/3m/2m/1m
+
+MTF convergence scoring
+
+Timeframe priority weighting
+
+Conflicting signal resolution
+
+Why Second: This is your highest-impact feature. MTF confluence dramatically improves win rate.
+
+Thread 3: Market Regime Detection
+Time: 3-4 days
+Priority: MEDIUM - Prevents bad trades in wrong conditions
+
+Deliverables:
+
+Trending vs ranging detection (ADX)
+
+Volatility regime classification (ATR percentile)
+
+Signal filtering based on regime
+
+Auto-disable in chop markets
+
+Thread 4: Volume Profile + POC Analysis
+Time: 4-5 days
+Priority: MEDIUM - Better entry/exit precision
+
+Deliverables:
+
+Volume-weighted price levels
+
+POC (Point of Control) identification
+
+High Volume Nodes (HVN) / Low Volume Nodes (LVN)
+
+Entry refinement using volume clusters
+
+Thread 5: Relative Strength + Mean Reversion
+Time: 3-4 days
+Priority: MEDIUM - Filter weak setups
+
+Deliverables:
+
+RS vs SPY/QQQ calculation
+
+RSI/Bollinger Band filters
+
+Overbought/oversold thresholds
+
+Divergence detection
+
+Thread 6: Time-of-Day + Gap Mechanics
+Time: 2-3 days
+Priority: LOW - Statistical refinement
+
+Deliverables:
+
+Win rate by hour analysis
+
+Gap-up/gap-down classification
+
+Gap fill probability
+
+Optimal trading windows
+
+Thread 7: Full ML Integration (Phase 5)
+Time: 4-6 weeks
+Priority: ADVANCED - After proven with base system
+
+Deliverables:
+
+scikit-learn signal scoring
+
+Neural network pattern recognition
+
+Adaptive parameter tuning
+
+Ensemble model confidence
+
+Thread 8: Debugging + Optimization
+Time: Ongoing
+Priority: CONTINUOUS
+
+Deliverables:
+
+Trade post-mortem analysis
+
+Loss pattern identification
+
+Parameter sensitivity testing
+
+Backtesting framework integration
