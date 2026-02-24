@@ -232,7 +232,16 @@ class AILearningEngine:
             self.save_data()
 
     def get_ticker_confidence_multiplier(self, ticker: str) -> float:
-        """Get confidence multiplier based on ticker's historical performance."""
+        """
+        Get confidence multiplier based on ticker's historical performance.
+        
+        Returns:
+            1.10 if WR >= 75% (strong performer)
+            1.05 if WR >= 65% (above baseline)
+            1.00 if WR 55-65% (neutral)
+            0.95 if WR 45-55% (slightly below baseline)
+            0.90 if WR <= 45% (poor performer)
+        """
         if ticker not in self.data["ticker_performance"]:
             return 1.0
 
@@ -241,15 +250,48 @@ class AILearningEngine:
             return 1.0  # Not enough data
 
         win_rate = perf["wins"] / perf["count"]
+        
         if win_rate >= 0.75:
             return 1.10
         elif win_rate >= 0.65:
             return 1.05
-        elif win_rate <= 0.45:
-            return 0.90
-        elif win_rate <= 0.55:
+        elif win_rate >= 0.55:
+            return 1.0
+        elif win_rate >= 0.45:
             return 0.95
-        return 1.0
+        else:  # win_rate < 0.45
+            return 0.90
+
+    def get_options_flow_weight(self, ticker: str) -> float:
+        """
+        Get options flow confidence weight from options_data_manager.
+        Returns a multiplier in range [0.7, 1.3] based on options score.
+        
+        Returns:
+            1.0 if options_data_manager unavailable (neutral, no penalty)
+            0.7-1.3 based on options score (0-100 scale)
+        """
+        try:
+            from options_data_manager import options_dm
+            score_data = options_dm.get_options_score(ticker)
+            
+            if not score_data.get('tradeable'):
+                return 1.0  # Neutral if not tradeable
+            
+            # Convert 0-100 score to 0.7-1.3 multiplier
+            # Score 50 → 1.0 (neutral)
+            # Score 0  → 0.7 (weak)
+            # Score 100 → 1.3 (strong)
+            score = score_data.get('score', 50)
+            multiplier = 0.7 + (score / 100) * 0.6
+            return round(multiplier, 2)
+            
+        except ImportError:
+            # options_data_manager not available
+            return 1.0
+        except Exception as e:
+            print(f"[AI] Error getting options flow weight for {ticker}: {e}")
+            return 1.0
 
     def get_optimal_parameters(self) -> Dict:
         """Get current optimal strategy parameters."""
