@@ -4,6 +4,7 @@ Replaces: confirmation_layers.py, cfw6_confirmation_enhanced.py, candle_confirma
 Implements exact CFW6 video rules for candle confirmation + multi-factor validation
 """
 import requests
+import time
 from typing import Dict, List, Tuple
 from datetime import datetime, timedelta
 import config
@@ -89,44 +90,89 @@ def analyze_confirmation_candle(
 
 
 def wait_for_confirmation(
-    bars: List[Dict],
+    ticker: str,
     direction: str,
     fvg_zone: Tuple[float, float],
-    start_idx: int,
-    max_wait: int = 15
+    start_time: datetime,
+    max_wait_candles: int = 15
 ) -> Tuple[bool, float, str, int, str]:
     """
-    CFW6 Enhanced confirmation wait with timeout.
-    Returns: (found, entry_price, grade, confirm_idx, confirmation_type)
+    CFW6 Real-time confirmation wait loop.
+    
+    Refactored to re-fetch bars each cycle instead of scanning a static array.
+    This ensures we catch confirmations that arrive AFTER the initial signal.
+    
+    Args:
+        ticker: Stock symbol
+        direction: "bull" or "bear"
+        fvg_zone: (zone_low, zone_high)
+        start_time: Datetime when signal was first detected
+        max_wait_candles: Maximum 5m candles to wait (default 15 = 75 minutes)
+    
+    Returns:
+        (found, entry_price, grade, confirm_idx, confirmation_type)
     """
     zone_low, zone_high = fvg_zone
-
     print(f"[CFW6] Waiting for {direction.upper()} confirmation in zone ${zone_low:.2f}-${zone_high:.2f}")
-
-    for i in range(start_idx, min(start_idx + max_wait, len(bars))):
-        candle = bars[i]
-        candles_waited = i - start_idx
-
-        if candles_waited >= max_wait:
-            print(f"[CFW6] ❌ TIMEOUT: No confirmation after {max_wait} candles")
-            return False, 0, "reject", i, "timeout"
-
+    
+    candles_waited = 0
+    
+    while candles_waited < max_wait_candles:
+        # Re-fetch bars each cycle for real-time data
+        try:
+            from data_manager import data_manager
+            bars = data_manager.get_today_5m_bars(ticker)
+        except Exception as e:
+            print(f"[CFW6] Error fetching bars: {e}")
+            time.sleep(60)  # Wait 1 minute before retry
+            candles_waited += 1
+            continue
+        
+        if not bars:
+            print(f"[CFW6] No bars available, waiting...")
+            time.sleep(60)
+            candles_waited += 1
+            continue
+        
+        # Find the latest bar after start_time
+        latest_bar = None
+        latest_idx = -1
+        
+        for i, bar in enumerate(bars):
+            if bar["datetime"] > start_time:
+                latest_bar = bar
+                latest_idx = i
+        
+        if not latest_bar:
+            print(f"[CFW6] No new bars yet, waiting... (cycle {candles_waited+1}/{max_wait_candles})")
+            time.sleep(60)
+            candles_waited += 1
+            continue
+        
+        # Check if latest bar touches the zone
         if direction == "bull":
-            touches_zone = candle["low"] <= zone_high and candle["low"] >= zone_low
+            touches_zone = latest_bar["low"] <= zone_high and latest_bar["low"] >= zone_low
         else:
-            touches_zone = candle["high"] >= zone_low and candle["high"] <= zone_high
-
+            touches_zone = latest_bar["high"] >= zone_low and latest_bar["high"] <= zone_high
+        
         if touches_zone:
-            confirmation_type, grade = analyze_confirmation_candle(candle, direction, zone_low, zone_high)
-
+            confirmation_type, grade = analyze_confirmation_candle(
+                latest_bar, direction, zone_low, zone_high
+            )
+            
             if grade != "reject":
-                entry_price = candle["close"]
-                candle_time = candle.get("datetime", "N/A")
-                print(f"[CFW6] ✅ CONFIRMED: {grade} setup at ${entry_price:.2f} (candle {candles_waited}, {candle_time})")
-                return True, entry_price, grade, i, confirmation_type
-
-    print(f"[CFW6] ❌ NO CONFIRMATION: Scanned {min(max_wait, len(bars)-start_idx)} candles")
-    return False, 0, "reject", start_idx, "none"
+                entry_price = latest_bar["close"]
+                candle_time = latest_bar.get("datetime", "N/A")
+                print(f"[CFW6] ✅ CONFIRMED: {grade} setup at ${entry_price:.2f} "
+                      f"(candle {candles_waited}, {candle_time})")
+                return True, entry_price, grade, latest_idx, confirmation_type
+        
+        # Wait 1 minute (one 5m bar cycle = 5 minutes, but check more frequently)
+        time.sleep(60)
+        candles_waited += 1
+    
+    print(f"[CFW6] ❌ TIMEOUT: No confirmation after {max_wait_candles} cycles")
+    return False, 0, "reject", -1, "timeout"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
