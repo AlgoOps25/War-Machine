@@ -903,24 +903,47 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
 
     mode_decay = 0.95 if signal_type == "CFW6_INTRADAY" else 1.0
 
+    # Options data multipliers
     ivr_multiplier = options_rec.get("ivr_multiplier", 1.0) if options_rec else 1.0
     ivr_label      = options_rec.get("ivr_label",      "IVR-N/A") if options_rec else "IVR-N/A"
     uoa_multiplier = options_rec.get("uoa_multiplier", 1.0) if options_rec else 1.0
     uoa_label      = options_rec.get("uoa_label",      "UOA-N/A") if options_rec else "UOA-N/A"
     gex_multiplier = options_rec.get("gex_multiplier", 1.0) if options_rec else 1.0
     gex_label      = options_rec.get("gex_label",      "GEX-N/A") if options_rec else "GEX-N/A"
-
-    final_confidence = min(
-        (base_confidence * ticker_multiplier * mode_decay
-         * ivr_multiplier * uoa_multiplier * gex_multiplier) + mtf_boost,
-        1.0
-    )
+    
+    # Convert multipliers to bounded adjustments
+    def mult_to_adjustment(multiplier, base_conf):
+        """Convert multiplier to bounded additive adjustment."""
+        if multiplier >= 1.0:
+            # Boost: capped at +15% of base confidence
+            return min((multiplier - 1.0) * base_conf * 0.75, base_conf * 0.15)
+        else:
+            # Penalty: capped at -20% of base confidence
+            return max((multiplier - 1.0) * base_conf * 1.00, base_conf * -0.20)
+    
+    # Calculate individual adjustments
+    ticker_adj = mult_to_adjustment(ticker_multiplier, base_confidence)
+    mode_adj   = mult_to_adjustment(mode_decay, base_confidence)
+    ivr_adj    = mult_to_adjustment(ivr_multiplier, base_confidence)
+    uoa_adj    = mult_to_adjustment(uoa_multiplier, base_confidence)
+    gex_adj    = mult_to_adjustment(gex_multiplier, base_confidence)
+    
+    # Apply adjustments additively
+    final_confidence = base_confidence + ticker_adj + mode_adj + ivr_adj + uoa_adj + gex_adj + mtf_boost
+    
+    # Hard floor: never drop below 40% after adjustments
+    # Hard ceiling: cap at 95% (100% = overconfidence)
+    final_confidence = max(0.40, min(final_confidence, 0.95))
+    
     print(
-        f"[CONFIDENCE] Base:{base_confidence:.2f} \u00d7 Ticker:{ticker_multiplier:.2f} "
-        f"\u00d7 Mode:{mode_decay:.2f} \u00d7 IVR:{ivr_multiplier:.2f}[{ivr_label}] "
-        f"\u00d7 UOA:{uoa_multiplier:.2f}[{uoa_label}] "
-        f"\u00d7 GEX:{gex_multiplier:.2f}[{gex_label}] "
-        f"+ MTF:{mtf_boost:.2f} = {final_confidence:.2f}"
+        f"[CONFIDENCE-v2] Base:{base_confidence:.2f} "
+        f"+ Ticker:{ticker_adj:+.3f}({ticker_multiplier:.2f}) "
+        f"+ Mode:{mode_adj:+.3f}({mode_decay:.2f}) "
+        f"+ IVR:{ivr_adj:+.3f}[{ivr_label}] "
+        f"+ UOA:{uoa_adj:+.3f}[{uoa_label}] "
+        f"+ GEX:{gex_adj:+.3f}[{gex_label}] "
+        f"+ MTF:{mtf_boost:+.3f} "
+        f"= {final_confidence:.2f}"
     )
 
     # STEP 11b — CONFIDENCE THRESHOLD GATE
