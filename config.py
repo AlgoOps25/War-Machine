@@ -2,6 +2,8 @@
 War Machine Configuration - Complete CFW6 + Options Integration
 Consolidates: config.py + config_updates.py
 Single source of truth for all system parameters
+
+Phase 1.9: Enhanced with portfolio-level risk management
 """
 import os
 from datetime import time
@@ -121,7 +123,14 @@ POSITION_RISK = {
 }
 
 ACCOUNT_SIZE   = float(os.getenv("ACCOUNT_SIZE", "25000"))
-MAX_CONTRACTS  = 10         # Hard cap on contracts per trade (was 1, raised to 10)
+MAX_CONTRACTS  = 10         # Hard cap on contracts per trade
+
+# Phase 1.9: Portfolio-level risk controls
+MAX_DAILY_LOSS_PCT        = 3.0    # Circuit breaker: stop trading at -3% daily loss
+MAX_INTRADAY_DRAWDOWN_PCT = 5.0    # Max drawdown from intraday peak (5%)
+MAX_OPEN_POSITIONS        = 5      # Maximum concurrent positions (prevent over-diversification)
+MAX_SECTOR_EXPOSURE_PCT   = 40.0   # Maximum exposure to single sector (40%)
+MIN_RISK_REWARD_RATIO     = 1.5    # Minimum R:R ratio to enter trade
 
 # ══════════════════════════════════════════════════════════════════════════════
 # CONFIDENCE DECAY SETTINGS
