@@ -1,28 +1,298 @@
 """
 Position Manager - Consolidated Position Tracking, Sizing, and Win Rate Analysis
 Replaces: position_tracker.py, position_sizing.py, win_rate_tracker.py
+
+Phase 1.9 Enhancements:
+  - Portfolio-level risk tracking (max drawdown, exposure limits)
+  - Correlation-based position limits (sector/ticker concentration)
+  - Dynamic position sizing (performance-based adjustment)
+  - Risk/reward validation (minimum R:R requirements)
+  - Circuit breaker (daily loss limits)
 """
 import config
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 import db_connection
 from db_connection import get_conn, ph, dict_cursor, serial_pk
+
+
+# Phase 1.9: Sector/ticker correlation mapping
+# Used to prevent over-concentration in correlated assets
+SECTOR_GROUPS = {
+    "TECH": ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "TSLA", "AMD", "INTC", "CRM"],
+    "FINANCE": ["JPM", "BAC", "WFC", "GS", "MS", "C"],
+    "ENERGY": ["XOM", "CVX", "COP", "SLB", "EOG"],
+    "HEALTHCARE": ["JNJ", "UNH", "PFE", "ABBV", "MRK", "TMO"],
+    "INDICES": ["SPY", "QQQ", "IWM", "DIA"],
+    "VOLATILITY": ["VIX", "UVXY", "SVXY", "VXX"]
+}
 
 
 class PositionManager:
 
     def __init__(self, db_path: str = None):
-        # Default to market_memory.db for unified storage (was config.TRADES_DB_PATH)
+        # Default to market_memory.db for unified storage
         self.db_path = db_path or "market_memory.db"
         self.positions = []  # Active positions cache
+        
+        # Phase 1.9: Portfolio risk tracking
+        self.account_size = getattr(config, "ACCOUNT_SIZE", 25_000)
+        self.intraday_high_water_mark = self.account_size  # Track peak balance for drawdown
+        self.session_starting_balance = self.account_size
+        self.max_daily_loss_pct = getattr(config, "MAX_DAILY_LOSS_PCT", 3.0)  # -3% daily limit
+        self.max_open_positions = getattr(config, "MAX_OPEN_POSITIONS", 5)
+        self.max_sector_exposure_pct = getattr(config, "MAX_SECTOR_EXPOSURE_PCT", 40.0)  # 40% max per sector
+        self.min_risk_reward_ratio = getattr(config, "MIN_RISK_REWARD_RATIO", 1.5)
+        
+        # Phase 1.9: Dynamic sizing adjustment factors
+        self.consecutive_wins = 0
+        self.consecutive_losses = 0
+        self.performance_multiplier = 1.0  # 0.5-1.5 range based on recent performance
+        
         self._initialize_database()
-        self._close_stale_positions()  # Force-close any positions from prior trading days
+        self._close_stale_positions()
+        self._load_session_state()
+
+    def _load_session_state(self) -> None:
+        """
+        Phase 1.9: Load session starting balance and performance streak.
+        Called on initialization to resume intraday state.
+        """
+        try:
+            stats = self.get_daily_stats()
+            total_pnl = stats.get("total_pnl", 0.0)
+            
+            # Update current account balance
+            self.account_size = self.session_starting_balance + total_pnl
+            self.intraday_high_water_mark = max(self.intraday_high_water_mark, self.account_size)
+            
+            # Calculate consecutive streak
+            closed_trades = self.get_todays_closed_trades()
+            if closed_trades:
+                self._update_performance_streak(closed_trades)
+            
+            print(f"[RISK] Session loaded | Balance: ${self.account_size:,.0f} | "
+                  f"P&L: ${total_pnl:+.0f} | Streak: {self._format_streak()}")
+        
+        except Exception as e:
+            print(f"[RISK] Session state load error: {e}")
+
+    def _update_performance_streak(self, trades: List[Dict]) -> None:
+        """
+        Phase 1.9: Update consecutive win/loss streak for dynamic sizing.
+        
+        Args:
+            trades: List of closed trades (must include 'pnl' field)
+        """
+        if not trades:
+            return
+        
+        # Reset streaks
+        self.consecutive_wins = 0
+        self.consecutive_losses = 0
+        
+        # Count from most recent trade backward
+        for trade in reversed(trades):
+            pnl = trade.get("pnl", 0.0)
+            if pnl > 0:
+                if self.consecutive_losses > 0:
+                    break  # Streak ended
+                self.consecutive_wins += 1
+            else:
+                if self.consecutive_wins > 0:
+                    break  # Streak ended
+                self.consecutive_losses += 1
+        
+        # Update performance multiplier (0.5 - 1.5 range)
+        # Scale down after losses, scale up after wins (conservative)
+        if self.consecutive_losses >= 3:
+            self.performance_multiplier = 0.5  # 50% size after 3+ losses
+        elif self.consecutive_losses >= 2:
+            self.performance_multiplier = 0.75  # 75% size after 2 losses
+        elif self.consecutive_wins >= 3:
+            self.performance_multiplier = 1.25  # 125% size after 3+ wins
+        elif self.consecutive_wins >= 2:
+            self.performance_multiplier = 1.1   # 110% size after 2 wins
+        else:
+            self.performance_multiplier = 1.0   # Normal size
+
+    def _format_streak(self) -> str:
+        """Format performance streak for display."""
+        if self.consecutive_wins > 0:
+            return f"{self.consecutive_wins}W (x{self.performance_multiplier:.2f})"
+        elif self.consecutive_losses > 0:
+            return f"{self.consecutive_losses}L (x{self.performance_multiplier:.2f})"
+        else:
+            return "0 (x1.00)"
+
+    def check_circuit_breaker(self) -> Tuple[bool, str]:
+        """
+        Phase 1.9: Check if daily loss limit has been hit.
+        Returns (is_breached, reason)
+        
+        Returns:
+            (True, reason) if circuit breaker triggered, (False, "") otherwise
+        """
+        stats = self.get_daily_stats()
+        total_pnl = stats.get("total_pnl", 0.0)
+        
+        # Calculate daily loss percentage
+        daily_loss_pct = (total_pnl / self.session_starting_balance) * 100
+        
+        # Check if daily loss limit exceeded
+        if daily_loss_pct <= -self.max_daily_loss_pct:
+            reason = (
+                f"CIRCUIT BREAKER TRIGGERED: Daily loss limit reached "
+                f"({daily_loss_pct:.1f}% / -{self.max_daily_loss_pct}% max)"
+            )
+            return True, reason
+        
+        return False, ""
+
+    def check_max_drawdown(self) -> Tuple[bool, str]:
+        """
+        Phase 1.9: Check if max drawdown from intraday high has been exceeded.
+        
+        Returns:
+            (True, reason) if max drawdown exceeded, (False, "") otherwise
+        """
+        # Update current balance
+        stats = self.get_daily_stats()
+        total_pnl = stats.get("total_pnl", 0.0)
+        current_balance = self.session_starting_balance + total_pnl
+        
+        # Calculate drawdown from intraday peak
+        drawdown = ((current_balance - self.intraday_high_water_mark) / 
+                    self.intraday_high_water_mark) * 100
+        
+        # Update high water mark if new peak
+        if current_balance > self.intraday_high_water_mark:
+            self.intraday_high_water_mark = current_balance
+        
+        # Check if drawdown exceeds limit (default 5% from peak)
+        max_drawdown_pct = getattr(config, "MAX_INTRADAY_DRAWDOWN_PCT", 5.0)
+        if drawdown <= -max_drawdown_pct:
+            reason = (
+                f"MAX DRAWDOWN EXCEEDED: {drawdown:.1f}% from peak "
+                f"(${self.intraday_high_water_mark:,.0f} → ${current_balance:,.0f})"
+            )
+            return True, reason
+        
+        return False, ""
+
+    def can_open_position(self, ticker: str, risk_dollars: float) -> Tuple[bool, str]:
+        """
+        Phase 1.9: Validate if new position can be opened based on risk limits.
+        
+        Args:
+            ticker: Stock ticker
+            risk_dollars: Position risk in dollars
+        
+        Returns:
+            (can_open, reason) tuple
+        """
+        # Check circuit breaker
+        breached, reason = self.check_circuit_breaker()
+        if breached:
+            return False, reason
+        
+        # Check max drawdown
+        breached, reason = self.check_max_drawdown()
+        if breached:
+            return False, reason
+        
+        # Check max open positions
+        open_positions = self.get_open_positions()
+        if len(open_positions) >= self.max_open_positions:
+            return False, f"Max open positions reached ({self.max_open_positions})"
+        
+        # Phase 1.9: Check sector exposure
+        sector = self._get_ticker_sector(ticker)
+        if sector:
+            sector_exposure = self._calculate_sector_exposure(sector)
+            position_exposure_pct = (risk_dollars / self.account_size) * 100
+            
+            if sector_exposure + position_exposure_pct > self.max_sector_exposure_pct:
+                return False, (
+                    f"Sector exposure limit ({sector}): "
+                    f"{sector_exposure:.0f}% + {position_exposure_pct:.0f}% "
+                    f"> {self.max_sector_exposure_pct:.0f}% max"
+                )
+        
+        # Check if ticker already has open position
+        for pos in open_positions:
+            if pos["ticker"] == ticker:
+                return False, f"Position already open for {ticker}"
+        
+        return True, "OK"
+
+    def _get_ticker_sector(self, ticker: str) -> Optional[str]:
+        """
+        Phase 1.9: Get sector for ticker from SECTOR_GROUPS mapping.
+        
+        Args:
+            ticker: Stock ticker
+        
+        Returns:
+            Sector name or None if not found
+        """
+        for sector, tickers in SECTOR_GROUPS.items():
+            if ticker in tickers:
+                return sector
+        return None
+
+    def _calculate_sector_exposure(self, sector: str) -> float:
+        """
+        Phase 1.9: Calculate current exposure to a sector.
+        
+        Args:
+            sector: Sector name from SECTOR_GROUPS
+        
+        Returns:
+            Exposure percentage of account balance
+        """
+        sector_tickers = SECTOR_GROUPS.get(sector, [])
+        open_positions = self.get_open_positions()
+        
+        sector_risk = 0.0
+        for pos in open_positions:
+            if pos["ticker"] in sector_tickers:
+                # Calculate position risk
+                entry = pos["entry_price"]
+                stop = pos["stop_price"]
+                contracts = pos["remaining_contracts"]
+                risk_per_contract = abs(entry - stop) * 100
+                sector_risk += risk_per_contract * contracts
+        
+        return (sector_risk / self.account_size) * 100
+
+    def validate_risk_reward(self, entry: float, stop: float, target: float) -> Tuple[bool, float]:
+        """
+        Phase 1.9: Validate risk/reward ratio meets minimum threshold.
+        
+        Args:
+            entry: Entry price
+            stop: Stop loss price
+            target: Target price
+        
+        Returns:
+            (is_valid, risk_reward_ratio) tuple
+        """
+        risk = abs(entry - stop)
+        reward = abs(target - entry)
+        
+        if risk == 0:
+            return False, 0.0
+        
+        risk_reward = reward / risk
+        is_valid = risk_reward >= self.min_risk_reward_ratio
+        
+        return is_valid, risk_reward
 
     def has_loss_streak(self, max_consecutive_losses: int = 3) -> bool:
         """
         Return True if today's closed trades end with a losing streak
         of length >= max_consecutive_losses.
-        Uses db_connection (Postgres-safe — does NOT call sqlite3 directly).
         """
         try:
             today  = datetime.now().strftime("%Y-%m-%d")
@@ -100,7 +370,6 @@ class PositionManager:
         """
         Force-close any OPEN positions whose entry_time is from a prior trading day.
         Called on startup — ensures no overnight/weekend carryover for the 0DTE system.
-        Closed at entry_price (no current price available) with reason STALE_EOD.
         """
         today  = datetime.now().strftime("%Y-%m-%d")
         p      = ph()
@@ -120,19 +389,23 @@ class PositionManager:
             print("[POSITION] No stale positions from prior sessions")
             return
 
-        print(f"[POSITION] \u26a0\ufe0f  Found {len(stale)} stale position(s) \u2014 force closing before session")
+        print(f"[POSITION] ⚠️  Found {len(stale)} stale position(s) — force closing before session")
         for pos in stale:
             pos = dict(pos)
             print(f"[POSITION] Force closing {pos['ticker']} {pos['direction'].upper()} "
-                  f"(ID: {pos['id']}) entered @ ${pos['entry_price']:.2f} \u2014 STALE EOD")
+                  f"(ID: {pos['id']}) entered @ ${pos['entry_price']:.2f} — STALE EOD")
             self.close_position(pos["id"], pos["entry_price"], "STALE_EOD")
 
 
     def calculate_position_size(self, confidence: float, grade: str,
                                 account_size: float = None,
                                 risk_per_share: float = 1.0) -> Dict:
-        """Calculate contract size based on confidence, grade, and risk."""
-        account_size = account_size or getattr(config, "ACCOUNT_SIZE", 25_000)
+        """
+        Calculate contract size based on confidence, grade, and risk.
+        
+        Phase 1.9: Now applies performance multiplier for dynamic sizing.
+        """
+        account_size = account_size or self.account_size
 
         if confidence >= 0.85 and grade == "A+":
             risk_pct = config.POSITION_RISK["A+_high_confidence"]
@@ -143,7 +416,10 @@ class PositionManager:
         else:
             risk_pct = config.POSITION_RISK["conservative"]
 
-        position_risk = account_size * risk_pct
+        # Phase 1.9: Apply performance multiplier
+        adjusted_risk_pct = risk_pct * self.performance_multiplier
+        
+        position_risk = account_size * adjusted_risk_pct
         contracts     = max(1, int(position_risk / (risk_per_share * 100)))
         if contracts > 1 and contracts % 2 != 0:
             contracts += 1
@@ -154,8 +430,9 @@ class PositionManager:
         return {
             "contracts":       contracts,
             "risk_dollars":    round(position_risk, 2),
-            "risk_percentage": round(risk_pct * 100, 2),
-            "allocation_type": f"{round(risk_pct * 100, 1)}% risk"
+            "risk_percentage": round(adjusted_risk_pct * 100, 2),
+            "allocation_type": f"{round(adjusted_risk_pct * 100, 1)}% risk",
+            "performance_adj": self.performance_multiplier  # Phase 1.9: Track adjustment
         }
 
 
@@ -166,7 +443,11 @@ class PositionManager:
                       t1: float, t2: float,
                       confidence: float, grade: str,
                       options_rec=None) -> int:
-        """Open a new position and return position ID."""
+        """
+        Open a new position and return position ID.
+        
+        Phase 1.9: Now validates risk limits before opening.
+        """
         # Cast numpy types to native Python BEFORE SQL
         entry_price = float(entry_price)
         stop_price  = float(stop_price)
@@ -178,11 +459,24 @@ class PositionManager:
         t2          = float(t2)
         confidence  = float(confidence)
 
+        # Phase 1.9: Validate risk/reward ratio
+        is_valid_rr, risk_reward = self.validate_risk_reward(entry_price, stop_price, t2)
+        if not is_valid_rr:
+            print(f"[RISK] ❌ {ticker} rejected - R:R {risk_reward:.2f} < {self.min_risk_reward_ratio:.2f} minimum")
+            return -1
+
         # Size the position based on actual stop distance
         risk_per_share = round(abs(entry_price - stop_price), 4) or 1.0
         sizing    = self.calculate_position_size(confidence, grade,
                                                  risk_per_share=risk_per_share)
         contracts = sizing["contracts"]
+        risk_dollars = sizing["risk_dollars"]
+
+        # Phase 1.9: Validate position can be opened
+        can_open, reason = self.can_open_position(ticker, risk_dollars)
+        if not can_open:
+            print(f"[RISK] ❌ {ticker} rejected - {reason}")
+            return -1
 
         # Extract options data if provided
         strike         = None
@@ -195,10 +489,10 @@ class PositionManager:
         if options_rec:
             strike        = options_rec.get("strike")
             expiry        = options_rec.get("expiry")
-            contract_type = options_rec.get("contract_type")  # "CALL" or "PUT"
+            contract_type = options_rec.get("contract_type")
             delta         = options_rec.get("delta")
             ivr           = options_rec.get("ivr")
-            gex_context   = options_rec.get("gex_label")  # e.g. "GEX-NEG|PIN-$225"
+            gex_context   = options_rec.get("gex_label")
 
         p      = ph()
         values = (ticker, direction, entry_price, stop_price, t1, t2,
@@ -249,11 +543,15 @@ class PositionManager:
             "pnl":                  0.0
         })
 
+        # Phase 1.9: Enhanced logging with risk context
+        sector = self._get_ticker_sector(ticker) or "UNKNOWN"
         print(f"[POSITION] Opened {ticker} {direction.upper()} - ID {position_id}")
         print(f"  Entry: {entry_price:.2f}  Stop: {stop_price:.2f}  "
-              f"T1: {t1:.2f}  T2: {t2:.2f}")
+              f"T1: {t1:.2f}  T2: {t2:.2f}  R:R: {risk_reward:.2f}:1")
         print(f"  Contracts: {contracts}  Grade: {grade}  "
-              f"Confidence: {confidence:.1%}  Risk/share: ${risk_per_share:.2f}")
+              f"Confidence: {confidence:.1%}  Risk: ${risk_dollars:.0f} "
+              f"({sizing['risk_percentage']:.1f}%)")
+        print(f"  Sector: {sector}  Streak: {self._format_streak()}")
         
         # Log options context if available
         if options_rec:
@@ -347,9 +645,9 @@ class PositionManager:
                 cached["pnl"]                = cached.get("pnl", 0) + partial_pnl
                 break
 
-        print(f"[POSITION] \u26a1 SCALE OUT {ticker} @ {exit_price:.2f}")
+        print(f"[POSITION] ⚡ SCALE OUT {ticker} @ {exit_price:.2f}")
         print(f"  Closed {contracts_to_close} contracts | Remaining: {contracts_left}")
-        print(f"  Partial P&L: ${partial_pnl:.2f} | Stop \u2192 BE: {entry_price:.2f}")
+        print(f"  Partial P&L: ${partial_pnl:.2f} | Stop → BE: {entry_price:.2f}")
 
         try:
             from discord_helpers import send_scaling_alert
@@ -360,7 +658,11 @@ class PositionManager:
 
 
     def close_position(self, position_id: int, exit_price: float, exit_reason: str):
-        """Close a position fully and record final P&L."""
+        """
+        Close a position fully and record final P&L.
+        
+        Phase 1.9: Updates performance streak and checks circuit breaker.
+        """
         p      = ph()
         conn   = get_conn(self.db_path)
         cursor = dict_cursor(conn)
@@ -397,15 +699,24 @@ class PositionManager:
 
         self.positions = [p for p in self.positions if p["id"] != position_id]
 
-        emoji = "\u2705" if final_pnl > 0 else "\u274c"
-        print(f"[POSITION] {emoji} CLOSED {ticker} @ {exit_price:.2f} | {exit_reason}")
-        print(f"  Total P&L: ${final_pnl:.2f}")
+        # Phase 1.9: Update performance streak
+        if exit_reason != "STALE_EOD":
+            if final_pnl > 0:
+                self.consecutive_wins += 1
+                self.consecutive_losses = 0
+            else:
+                self.consecutive_losses += 1
+                self.consecutive_wins = 0
+            
+            # Recalculate performance multiplier
+            closed_trades = self.get_todays_closed_trades()
+            self._update_performance_streak(closed_trades)
 
-        # FIX Bug #9: record every closed trade to the AI learning engine.
-        # Previously learning_engine.record_trade() was never called anywhere,
-        # so optimize_confirmation_weights() and optimize_fvg_threshold() ran
-        # on an empty trades list every EOD and produced no useful output.
-        # STALE_EOD closures are excluded — they carry no useful signal data.
+        emoji = "✅" if final_pnl > 0 else "❌"
+        print(f"[POSITION] {emoji} CLOSED {ticker} @ {exit_price:.2f} | {exit_reason}")
+        print(f"  Total P&L: ${final_pnl:.2f}  Streak: {self._format_streak()}")
+
+        # FIX Bug #9: record every closed trade to the AI learning engine
         if exit_reason != "STALE_EOD":
             try:
                 from ai_learning import learning_engine
@@ -426,6 +737,12 @@ class PositionManager:
             send_exit_alert(ticker, exit_price, exit_reason, final_pnl)
         except Exception as e:
             print(f"[POSITION] Discord exit alert failed: {e}")
+        
+        # Phase 1.9: Check circuit breaker after close
+        breached, reason = self.check_circuit_breaker()
+        if breached:
+            print(f"\n[RISK] 🚨 {reason}")
+            print("[RISK] No new positions will be opened until next session\n")
 
 
     def close_all_eod(self, current_prices: Dict[str, float]):
@@ -512,7 +829,11 @@ class PositionManager:
 
 
     def generate_report(self) -> str:
-        """Generate end-of-day performance report string."""
+        """
+        Generate end-of-day performance report string.
+        
+        Phase 1.9: Enhanced with risk metrics.
+        """
         stats         = self.get_daily_stats()
         win_rate_data = self.get_win_rate(lookback_days=30)
 
@@ -521,19 +842,26 @@ class PositionManager:
         losses    = stats.get("losses",    0)
         total_pnl = stats.get("total_pnl", 0.0)
         win_rate  = stats.get("win_rate",  0.0)
+        
+        # Phase 1.9: Risk metrics
+        daily_return_pct = (total_pnl / self.session_starting_balance) * 100
+        max_dd_pct = ((self.account_size - self.intraday_high_water_mark) / 
+                      self.intraday_high_water_mark) * 100
 
         lines = [
             "=" * 50,
-            "WAR MACHINE \u2014 END OF DAY REPORT",
+            "WAR MACHINE — END OF DAY REPORT",
             "=" * 50,
             f"Date:         {datetime.now().strftime('%A, %B %d, %Y')}",
             f"Total Trades: {trades}",
             f"Winners:      {wins}",
             f"Losers:       {losses}",
             f"Win Rate:     {win_rate:.1f}%",
-            f"Net P&L:      ${total_pnl:+.2f}",
+            f"Net P&L:      ${total_pnl:+.2f} ({daily_return_pct:+.2f}%)",
+            f"Max Drawdown: {max_dd_pct:.2f}%",
+            f"Final Streak: {self._format_streak()}",
             "",
-            "\u2014 30-Day Grade Breakdown \u2014"
+            "— 30-Day Grade Breakdown —"
         ]
 
         if win_rate_data:
@@ -566,6 +894,46 @@ class PositionManager:
         rows = cursor.fetchall()
         conn.close()
         return [dict(row) for row in rows]
+
+    def get_risk_summary(self) -> str:
+        """
+        Phase 1.9: Get formatted risk management summary.
+        
+        Returns:
+            Formatted string with current risk metrics
+        """
+        stats = self.get_daily_stats()
+        total_pnl = stats.get("total_pnl", 0.0)
+        
+        current_balance = self.session_starting_balance + total_pnl
+        daily_return_pct = (total_pnl / self.session_starting_balance) * 100
+        max_dd_pct = ((current_balance - self.intraday_high_water_mark) / 
+                      self.intraday_high_water_mark) * 100
+        
+        open_positions = self.get_open_positions()
+        total_exposure = sum(
+            abs(pos["entry_price"] - pos["stop_price"]) * 100 * pos["remaining_contracts"]
+            for pos in open_positions
+        )
+        exposure_pct = (total_exposure / current_balance) * 100
+        
+        circuit_breached, _ = self.check_circuit_breaker()
+        
+        summary = "\n" + "="*60 + "\n"
+        summary += "RISK MANAGEMENT SUMMARY\n"
+        summary += "="*60 + "\n"
+        summary += f"Account Balance:  ${current_balance:,.0f}\n"
+        summary += f"Session Start:    ${self.session_starting_balance:,.0f}\n"
+        summary += f"High Water Mark:  ${self.intraday_high_water_mark:,.0f}\n"
+        summary += f"Daily P&L:        ${total_pnl:+,.0f} ({daily_return_pct:+.2f}%)\n"
+        summary += f"Max Drawdown:     {max_dd_pct:.2f}% (limit: -{self.max_daily_loss_pct}%)\n"
+        summary += f"Open Positions:   {len(open_positions)} / {self.max_open_positions} max\n"
+        summary += f"Total Exposure:   ${total_exposure:,.0f} ({exposure_pct:.1f}%)\n"
+        summary += f"Performance:      {self._format_streak()}\n"
+        summary += f"Circuit Breaker:  {'🚨 TRIGGERED' if circuit_breached else '✅ OK'}\n"
+        summary += "="*60 + "\n"
+        
+        return summary
 
 
 # ── Global singleton ──────────────────────────────────────────────────────────────────
