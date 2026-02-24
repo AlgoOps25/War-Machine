@@ -31,7 +31,7 @@ except ImportError:
 try:
     from signal_validator import get_validator
     VALIDATOR_ENABLED = True
-    VALIDATOR_TEST_MODE = True  # Set to False to enable filtering
+    VALIDATOR_TEST_MODE = False  # Set to False to enable filtering
 except ImportError:
     VALIDATOR_ENABLED = False
     print("[SIGNALS] ⚠️  signal_validator not available - multi-indicator validation disabled")
