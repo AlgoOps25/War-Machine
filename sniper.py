@@ -23,7 +23,7 @@ from options_filter import get_options_recommendation
 from ai_learning import learning_engine
 from cfw6_confirmation import wait_for_confirmation, grade_signal_with_confirmations
 from trade_calculator import compute_stop_and_targets, get_adaptive_fvg_threshold
-from data_manager import datamanager
+from data_manager import data_manager
 from position_manager import position_manager
 from learning_policy import compute_confidence
 import config
@@ -600,7 +600,7 @@ def _pearson_corr(xs, ys) -> float:
 def _is_highly_correlated(ticker: str, open_positions: list,
                           window_bars: int = 60, threshold: float = 0.9) -> bool:
     """Return True if 'ticker' is highly correlated with any open position."""
-    bars_main = datamanager.get_today_5m_bars(ticker)
+    bars_main = data_manager.get_today_5m_bars(ticker)
     if len(bars_main) < 10:
         return False
 
@@ -608,7 +608,7 @@ def _is_highly_correlated(ticker: str, open_positions: list,
         other = pos["ticker"]
         if other == ticker:
             continue
-        bars_other = datamanager.get_today_5m_bars(other)
+        bars_other = data_manager.get_today_5m_bars(other)
         if len(bars_other) < 10:
             continue
 
@@ -1086,8 +1086,8 @@ def process_ticker(ticker: str):
         if ticker in armed_signals:
             return
 
-        datamanager.update_ticker(ticker)
-        bars_session = datamanager.get_today_session_bars(ticker)
+        data_manager.update_ticker(ticker)
+        bars_session = data_manager.get_today_session_bars(ticker)
         if not bars_session:
             print(f"[{ticker}] No session bars")
             return
