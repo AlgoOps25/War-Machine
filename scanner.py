@@ -51,7 +51,7 @@ except ImportError:
     print("[SCANNER] ⚠️  signal_analytics not available — analytics disabled")
 
 try:
-    from pnl_digest import generate_eod_digest
+    from pnl_digest import send_pnl_digest
     PNL_DIGEST_ENABLED = True
     print("[SCANNER] ✅ PnL digest enabled")
 except ImportError:
@@ -589,7 +589,7 @@ def start_scanner_loop():
                     if PNL_DIGEST_ENABLED:
                         try:
                             print("[EOD] Generating PnL digest for Discord...")
-                            digest_success = generate_eod_digest()
+                            digest_success = send_pnl_digest()
                             if digest_success:
                                 print("[EOD] ✅ PnL digest sent to Discord")
                             else:

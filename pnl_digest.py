@@ -308,7 +308,7 @@ def format_discord_digest(s: dict) -> str:
 
 
 # ─────────────────────────────────────────────────────────────
-def send_pnl_digest() -> None:
+def send_pnl_digest() -> bool:
     """
     Build and send the daily P&L digest to Discord.
     Safe to call at any time — silent no-op if no trades or Discord unavailable.
@@ -327,3 +327,4 @@ def send_pnl_digest() -> None:
 
     except Exception as e:
         print(f"[DIGEST] Error: {e}")
+        return False
