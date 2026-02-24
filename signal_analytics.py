@@ -8,6 +8,7 @@ Features:
   - Calculates win rate, profit factor, average R:R
   - Generates performance reports for tuning
   - Stores in PostgreSQL for historical analysis
+  - Phase 1.10: Advanced performance metrics, quality scoring, optimization recommendations
 
 Usage:
   from signal_analytics import log_signal, update_signal_outcome, get_performance_stats
@@ -22,11 +23,13 @@ Usage:
   stats = get_performance_stats(days=30)
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 from zoneinfo import ZoneInfo
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 import db_connection
 from db_connection import get_conn, ph, dict_cursor, serial_pk
+import statistics
+import math
 
 ET = ZoneInfo("America/New_York")
 
@@ -234,23 +237,7 @@ class SignalAnalytics:
         """
         Calculate performance statistics for completed signals.
         
-        Returns:
-            {
-                'total_signals': int,
-                'completed': int,
-                'wins': int,
-                'losses': int,
-                'win_rate': float,
-                'avg_win': float,
-                'avg_loss': float,
-                'profit_factor': float,
-                'avg_rr': float,
-                'avg_hold_mins': float,
-                'total_pnl': float,
-                'total_r': float,
-                'by_ticker': dict,
-                'by_direction': dict
-            }
+        Returns comprehensive performance metrics including Phase 1.10 enhancements.
         """
         cutoff = datetime.now(ET) - timedelta(days=days)
         p = ph()
@@ -266,7 +253,8 @@ class SignalAnalytics:
 
         # Completed signals only
         cursor.execute(f"""
-            SELECT ticker, direction, outcome, pnl, pnl_r, hold_duration, risk_reward
+            SELECT ticker, direction, outcome, pnl, pnl_r, hold_duration, risk_reward,
+                   confidence, signal_time, signal_type, volume_multiple
             FROM signals
             WHERE signal_time >= {p}
               AND outcome IS NOT NULL
@@ -275,27 +263,12 @@ class SignalAnalytics:
         conn.close()
 
         if not rows:
-            return {
-                'total_signals': total_signals,
-                'completed': 0,
-                'wins': 0,
-                'losses': 0,
-                'win_rate': 0.0,
-                'avg_win': 0.0,
-                'avg_loss': 0.0,
-                'profit_factor': 0.0,
-                'avg_rr': 0.0,
-                'avg_hold_mins': 0.0,
-                'total_pnl': 0.0,
-                'total_r': 0.0,
-                'by_ticker': {},
-                'by_direction': {}
-            }
+            return self._empty_stats(total_signals)
 
+        # Basic metrics
         completed = len(rows)
         wins = [r for r in rows if r["outcome"] == "WIN"]
         losses = [r for r in rows if r["outcome"] == "LOSS"]
-
         win_count = len(wins)
         loss_count = len(losses)
         win_rate = (win_count / completed * 100) if completed > 0 else 0.0
@@ -307,35 +280,23 @@ class SignalAnalytics:
         total_losses_pnl = abs(sum(r["pnl"] for r in losses))
         profit_factor = (total_wins_pnl / total_losses_pnl) if total_losses_pnl > 0 else 0.0
 
-        avg_rr = sum(r["risk_reward"] for r in rows) / completed if completed > 0 else 0.0
-        avg_hold = sum(r["hold_duration"] or 0 for r in rows) / completed if completed > 0 else 0.0
-
+        avg_rr = sum(r["risk_reward"] for r in rows) / completed
+        avg_hold = sum(r["hold_duration"] or 0 for r in rows) / completed
         total_pnl = sum(r["pnl"] or 0 for r in rows)
         total_r = sum(r["pnl_r"] or 0 for r in rows)
 
-        # By ticker
-        by_ticker = {}
-        for row in rows:
-            t = row["ticker"]
-            if t not in by_ticker:
-                by_ticker[t] = {'wins': 0, 'losses': 0, 'pnl': 0.0}
-            if row["outcome"] == "WIN":
-                by_ticker[t]['wins'] += 1
-            elif row["outcome"] == "LOSS":
-                by_ticker[t]['losses'] += 1
-            by_ticker[t]['pnl'] += (row["pnl"] or 0)
+        # Phase 1.10: Advanced metrics
+        expectancy = self._calculate_expectancy(rows)
+        sharpe = self._calculate_sharpe_ratio(rows)
+        max_dd = self._calculate_max_drawdown(rows)
+        quality_score = self._calculate_quality_score(win_rate, profit_factor, avg_rr)
+        confidence_calibration = self._analyze_confidence_calibration(rows)
+        time_of_day_stats = self._analyze_time_of_day(rows)
+        signal_type_stats = self._analyze_by_signal_type(rows)
 
-        # By direction
-        by_direction = {}
-        for row in rows:
-            d = row["direction"]
-            if d not in by_direction:
-                by_direction[d] = {'wins': 0, 'losses': 0, 'pnl': 0.0}
-            if row["outcome"] == "WIN":
-                by_direction[d]['wins'] += 1
-            elif row["outcome"] == "LOSS":
-                by_direction[d]['losses'] += 1
-            by_direction[d]['pnl'] += (row["pnl"] or 0)
+        # By ticker/direction (existing logic)
+        by_ticker = self._group_by_ticker(rows)
+        by_direction = self._group_by_direction(rows)
 
         return {
             'total_signals': total_signals,
@@ -351,28 +312,360 @@ class SignalAnalytics:
             'total_pnl': total_pnl,
             'total_r': total_r,
             'by_ticker': by_ticker,
-            'by_direction': by_direction
+            'by_direction': by_direction,
+            # Phase 1.10: Advanced metrics
+            'expectancy': expectancy,
+            'sharpe_ratio': sharpe,
+            'max_drawdown': max_dd,
+            'quality_score': quality_score,
+            'confidence_calibration': confidence_calibration,
+            'time_of_day': time_of_day_stats,
+            'by_signal_type': signal_type_stats
         }
 
-    def get_recent_signals(self, limit: int = 50) -> List[Dict]:
-        """Get most recent signals with outcomes."""
+    def _empty_stats(self, total_signals: int) -> Dict:
+        """Return empty stats dict."""
+        return {
+            'total_signals': total_signals,
+            'completed': 0,
+            'wins': 0,
+            'losses': 0,
+            'win_rate': 0.0,
+            'avg_win': 0.0,
+            'avg_loss': 0.0,
+            'profit_factor': 0.0,
+            'avg_rr': 0.0,
+            'avg_hold_mins': 0.0,
+            'total_pnl': 0.0,
+            'total_r': 0.0,
+            'by_ticker': {},
+            'by_direction': {},
+            'expectancy': 0.0,
+            'sharpe_ratio': 0.0,
+            'max_drawdown': 0.0,
+            'quality_score': 0.0,
+            'confidence_calibration': {},
+            'time_of_day': {},
+            'by_signal_type': {}
+        }
+
+    def _calculate_expectancy(self, rows: List[Dict]) -> float:
+        """
+        Phase 1.10: Calculate expectancy (average $ per trade).
+        Expectancy = (Win% × Avg Win) - (Loss% × Avg Loss)
+        """
+        if not rows:
+            return 0.0
+        
+        wins = [r for r in rows if r["outcome"] == "WIN"]
+        losses = [r for r in rows if r["outcome"] == "LOSS"]
+        
+        win_rate = len(wins) / len(rows)
+        loss_rate = len(losses) / len(rows)
+        
+        avg_win = sum(r["pnl"] for r in wins) / len(wins) if wins else 0.0
+        avg_loss = abs(sum(r["pnl"] for r in losses) / len(losses)) if losses else 0.0
+        
+        return (win_rate * avg_win) - (loss_rate * avg_loss)
+
+    def _calculate_sharpe_ratio(self, rows: List[Dict]) -> float:
+        """
+        Phase 1.10: Calculate Sharpe ratio (risk-adjusted returns).
+        Sharpe = (Mean Return) / (Std Dev of Returns)
+        """
+        if len(rows) < 2:
+            return 0.0
+        
+        returns = [r["pnl_r"] or 0 for r in rows]
+        mean_return = statistics.mean(returns)
+        std_dev = statistics.stdev(returns)
+        
+        if std_dev == 0:
+            return 0.0
+        
+        # Annualized Sharpe (assuming ~250 trading days, ~6 trades/day)
+        return (mean_return / std_dev) * math.sqrt(250 * 6)
+
+    def _calculate_max_drawdown(self, rows: List[Dict]) -> float:
+        """
+        Phase 1.10: Calculate maximum drawdown percentage.
+        """
+        if not rows:
+            return 0.0
+        
+        # Sort by time
+        sorted_rows = sorted(rows, key=lambda r: r["signal_time"])
+        
+        cumulative_pnl = 0.0
+        peak = 0.0
+        max_dd = 0.0
+        
+        for row in sorted_rows:
+            cumulative_pnl += (row["pnl"] or 0)
+            if cumulative_pnl > peak:
+                peak = cumulative_pnl
+            
+            drawdown = ((cumulative_pnl - peak) / peak * 100) if peak > 0 else 0.0
+            max_dd = min(max_dd, drawdown)
+        
+        return abs(max_dd)
+
+    def _calculate_quality_score(self, win_rate: float, profit_factor: float, avg_rr: float) -> float:
+        """
+        Phase 1.10: Calculate overall signal quality score (0-100).
+        
+        Factors:
+        - Win rate (target 60%+)
+        - Profit factor (target 2.0+)
+        - Avg R:R (target 2.0+)
+        """
+        wr_score = min(win_rate / 60.0 * 40, 40)  # Max 40 pts
+        pf_score = min(profit_factor / 2.0 * 35, 35)  # Max 35 pts
+        rr_score = min(avg_rr / 2.0 * 25, 25)  # Max 25 pts
+        
+        return round(wr_score + pf_score + rr_score, 1)
+
+    def _analyze_confidence_calibration(self, rows: List[Dict]) -> Dict:
+        """
+        Phase 1.10: Analyze if confidence scores match actual win rates.
+        
+        Returns dict with confidence buckets and their actual win rates.
+        """
+        buckets = {
+            '90-100%': {'total': 0, 'wins': 0, 'actual_wr': 0.0},
+            '80-89%': {'total': 0, 'wins': 0, 'actual_wr': 0.0},
+            '70-79%': {'total': 0, 'wins': 0, 'actual_wr': 0.0},
+            '60-69%': {'total': 0, 'wins': 0, 'actual_wr': 0.0},
+            '<60%': {'total': 0, 'wins': 0, 'actual_wr': 0.0}
+        }
+        
+        for row in rows:
+            conf = row["confidence"]
+            is_win = row["outcome"] == "WIN"
+            
+            if conf >= 90:
+                bucket = '90-100%'
+            elif conf >= 80:
+                bucket = '80-89%'
+            elif conf >= 70:
+                bucket = '70-79%'
+            elif conf >= 60:
+                bucket = '60-69%'
+            else:
+                bucket = '<60%'
+            
+            buckets[bucket]['total'] += 1
+            if is_win:
+                buckets[bucket]['wins'] += 1
+        
+        # Calculate actual win rates
+        for bucket, data in buckets.items():
+            if data['total'] > 0:
+                data['actual_wr'] = (data['wins'] / data['total']) * 100
+        
+        return buckets
+
+    def _analyze_time_of_day(self, rows: List[Dict]) -> Dict:
+        """
+        Phase 1.10: Analyze performance by time of day.
+        """
+        periods = {
+            'Opening (9:30-10:00)': {'wins': 0, 'losses': 0, 'pnl': 0.0},
+            'Morning (10:00-12:00)': {'wins': 0, 'losses': 0, 'pnl': 0.0},
+            'Midday (12:00-14:00)': {'wins': 0, 'losses': 0, 'pnl': 0.0},
+            'Afternoon (14:00-16:00)': {'wins': 0, 'losses': 0, 'pnl': 0.0}
+        }
+        
+        for row in rows:
+            signal_time = row["signal_time"]
+            if isinstance(signal_time, str):
+                signal_time = datetime.fromisoformat(signal_time)
+            
+            hour = signal_time.hour
+            minute = signal_time.minute
+            
+            if hour == 9 and minute >= 30:
+                period = 'Opening (9:30-10:00)'
+            elif 10 <= hour < 12:
+                period = 'Morning (10:00-12:00)'
+            elif 12 <= hour < 14:
+                period = 'Midday (12:00-14:00)'
+            elif 14 <= hour < 16:
+                period = 'Afternoon (14:00-16:00)'
+            else:
+                continue
+            
+            if row["outcome"] == "WIN":
+                periods[period]['wins'] += 1
+            elif row["outcome"] == "LOSS":
+                periods[period]['losses'] += 1
+            periods[period]['pnl'] += (row["pnl"] or 0)
+        
+        return periods
+
+    def _analyze_by_signal_type(self, rows: List[Dict]) -> Dict:
+        """
+        Phase 1.10: Analyze performance by signal type (BREAKOUT, RETEST, etc.).
+        """
+        by_type = {}
+        for row in rows:
+            sig_type = row.get("signal_type") or "UNKNOWN"
+            if sig_type not in by_type:
+                by_type[sig_type] = {'wins': 0, 'losses': 0, 'pnl': 0.0}
+            
+            if row["outcome"] == "WIN":
+                by_type[sig_type]['wins'] += 1
+            elif row["outcome"] == "LOSS":
+                by_type[sig_type]['losses'] += 1
+            by_type[sig_type]['pnl'] += (row["pnl"] or 0)
+        
+        return by_type
+
+    def _group_by_ticker(self, rows: List[Dict]) -> Dict:
+        """Group signals by ticker."""
+        by_ticker = {}
+        for row in rows:
+            t = row["ticker"]
+            if t not in by_ticker:
+                by_ticker[t] = {'wins': 0, 'losses': 0, 'pnl': 0.0}
+            if row["outcome"] == "WIN":
+                by_ticker[t]['wins'] += 1
+            elif row["outcome"] == "LOSS":
+                by_ticker[t]['losses'] += 1
+            by_ticker[t]['pnl'] += (row["pnl"] or 0)
+        return by_ticker
+
+    def _group_by_direction(self, rows: List[Dict]) -> Dict:
+        """Group signals by direction."""
+        by_direction = {}
+        for row in rows:
+            d = row["direction"]
+            if d not in by_direction:
+                by_direction[d] = {'wins': 0, 'losses': 0, 'pnl': 0.0}
+            if row["outcome"] == "WIN":
+                by_direction[d]['wins'] += 1
+            elif row["outcome"] == "LOSS":
+                by_direction[d]['losses'] += 1
+            by_direction[d]['pnl'] += (row["pnl"] or 0)
+        return by_direction
+
+    def get_optimization_recommendations(self, days: int = 30) -> List[str]:
+        """
+        Phase 1.10: Generate automated optimization recommendations based on performance data.
+        
+        Returns list of actionable recommendations.
+        """
+        stats = self.get_performance_stats(days)
+        recommendations = []
+        
+        # Win rate analysis
+        if stats['win_rate'] < 50:
+            recommendations.append("⚠️ Win rate below 50% - Consider increasing confidence threshold")
+        elif stats['win_rate'] > 70:
+            recommendations.append("✅ Excellent win rate - System is performing well")
+        
+        # Profit factor analysis
+        if stats['profit_factor'] < 1.5:
+            recommendations.append("⚠️ Low profit factor - Review stop loss placement and target levels")
+        elif stats['profit_factor'] > 2.5:
+            recommendations.append("✅ Strong profit factor - Risk/reward management is excellent")
+        
+        # Confidence calibration
+        for bucket, data in stats['confidence_calibration'].items():
+            if data['total'] >= 10:  # Enough sample size
+                expected_wr = int(bucket.split('-')[0].replace('%', '').replace('<', '0'))
+                actual_wr = data['actual_wr']
+                deviation = abs(actual_wr - expected_wr)
+                
+                if deviation > 15:
+                    recommendations.append(
+                        f"⚠️ Confidence {bucket} signals have {actual_wr:.0f}% win rate "
+                        f"(expected ~{expected_wr}%) - Recalibrate confidence scoring"
+                    )
+        
+        # Time of day performance
+        best_period = max(stats['time_of_day'].items(), 
+                         key=lambda x: x[1]['pnl'] if x[1]['pnl'] else -999)
+        worst_period = min(stats['time_of_day'].items(),
+                          key=lambda x: x[1]['pnl'] if x[1]['pnl'] else 999)
+        
+        if best_period[1]['pnl'] > 0 and worst_period[1]['pnl'] < 0:
+            recommendations.append(
+                f"📈 Best performance: {best_period[0]} (${best_period[1]['pnl']:+.0f})"
+            )
+            recommendations.append(
+                f"📉 Worst performance: {worst_period[0]} (${worst_period[1]['pnl']:+.0f}) "
+                "- Consider avoiding this period"
+            )
+        
+        # Sharpe ratio analysis
+        if stats['sharpe_ratio'] < 1.0:
+            recommendations.append("⚠️ Low Sharpe ratio - Returns not justifying risk taken")
+        elif stats['sharpe_ratio'] > 2.0:
+            recommendations.append("✅ Excellent Sharpe ratio - Strong risk-adjusted returns")
+        
+        # Max drawdown
+        if stats['max_drawdown'] > 15:
+            recommendations.append(
+                f"⚠️ High max drawdown ({stats['max_drawdown']:.1f}%) - "
+                "Implement stricter position sizing or daily loss limits"
+            )
+        
+        # Quality score
+        quality = stats['quality_score']
+        if quality < 60:
+            recommendations.append(f"⚠️ Quality score {quality:.0f}/100 - System needs optimization")
+        elif quality > 80:
+            recommendations.append(f"✅ Quality score {quality:.0f}/100 - Excellent signal quality")
+        
+        if not recommendations:
+            recommendations.append("ℹ️ Insufficient data for recommendations (need 30+ completed signals)")
+        
+        return recommendations
+
+    def get_recent_signals(self, limit: int = 50, hours: Optional[int] = None) -> List[Dict]:
+        """
+        Get most recent signals with outcomes.
+        
+        Args:
+            limit: Maximum number of signals to return
+            hours: Optional filter for signals within last N hours
+        """
         p = ph()
         conn = get_conn(self.db_path)
         cursor = dict_cursor(conn)
-        cursor.execute(f"""
-            SELECT id, ticker, direction, signal_time, entry_price, stop_price,
-                   target_price, risk, reward, risk_reward, confidence,
-                   outcome, exit_price, exit_time, pnl, pnl_r, hold_duration
-            FROM signals
-            ORDER BY signal_time DESC
-            LIMIT {p}
-        """, (limit,))
+        
+        if hours:
+            cutoff = datetime.now(ET) - timedelta(hours=hours)
+            cursor.execute(f"""
+                SELECT id, ticker, direction, signal_time, entry_price, stop_price,
+                       target_price, risk, reward, risk_reward, confidence,
+                       outcome, exit_price, exit_time, pnl, pnl_r, hold_duration
+                FROM signals
+                WHERE signal_time >= {p}
+                ORDER BY signal_time DESC
+                LIMIT {p}
+            """, (cutoff, limit))
+        else:
+            cursor.execute(f"""
+                SELECT id, ticker, direction, signal_time, entry_price, stop_price,
+                       target_price, risk, reward, risk_reward, confidence,
+                       outcome, exit_price, exit_time, pnl, pnl_r, hold_duration
+                FROM signals
+                ORDER BY signal_time DESC
+                LIMIT {p}
+            """, (limit,))
+        
         rows = cursor.fetchall()
         conn.close()
         return [dict(row) for row in rows]
 
     def print_performance_report(self, days: int = 30):
-        """Print formatted performance report."""
+        """
+        Print formatted performance report.
+        
+        Phase 1.10: Enhanced with advanced metrics and recommendations.
+        """
         stats = self.get_performance_stats(days)
 
         print("\n" + "="*70)
@@ -390,12 +683,20 @@ class SignalAnalytics:
         print(f"Avg Hold:         {stats['avg_hold_mins']:.0f} mins")
         print(f"Total P&L:        ${stats['total_pnl']:+.2f}")
         print(f"Total R:          {stats['total_r']:+.2f}R")
+        
+        # Phase 1.10: Advanced metrics
+        print("\n" + "-"*70)
+        print("ADVANCED METRICS:")
+        print(f"Expectancy:       ${stats['expectancy']:+.2f} per trade")
+        print(f"Sharpe Ratio:     {stats['sharpe_ratio']:.2f}")
+        print(f"Max Drawdown:     {stats['max_drawdown']:.1f}%")
+        print(f"Quality Score:    {stats['quality_score']:.0f}/100")
 
         if stats['by_ticker']:
             print("\n" + "-"*70)
             print("BY TICKER:")
             for ticker, data in sorted(stats['by_ticker'].items(),
-                                      key=lambda x: x[1]['pnl'], reverse=True):
+                                      key=lambda x: x[1]['pnl'], reverse=True)[:10]:
                 total = data['wins'] + data['losses']
                 wr = (data['wins'] / total * 100) if total > 0 else 0
                 print(f"  {ticker:6} | W/L: {data['wins']}/{data['losses']} "
@@ -409,6 +710,25 @@ class SignalAnalytics:
                 wr = (data['wins'] / total * 100) if total > 0 else 0
                 print(f"  {direction:6} | W/L: {data['wins']}/{data['losses']} "
                       f"({wr:.0f}%) | P&L: ${data['pnl']:+.2f}")
+        
+        # Phase 1.10: Time of day performance
+        if any(v['wins'] + v['losses'] > 0 for v in stats['time_of_day'].values()):
+            print("\n" + "-"*70)
+            print("BY TIME OF DAY:")
+            for period, data in stats['time_of_day'].items():
+                total = data['wins'] + data['losses']
+                if total > 0:
+                    wr = (data['wins'] / total * 100)
+                    print(f"  {period:25} | W/L: {data['wins']}/{data['losses']} "
+                          f"({wr:.0f}%) | P&L: ${data['pnl']:+.2f}")
+        
+        # Phase 1.10: Optimization recommendations
+        print("\n" + "="*70)
+        print("OPTIMIZATION RECOMMENDATIONS:")
+        print("="*70)
+        recommendations = self.get_optimization_recommendations(days)
+        for rec in recommendations:
+            print(f"  {rec}")
 
         print("="*70 + "\n")
 
@@ -436,6 +756,16 @@ def get_performance_stats(days: int = 30) -> Dict:
     return analytics.get_performance_stats(days)
 
 
+def get_recent_signals(hours: Optional[int] = None, limit: int = 50) -> List[Dict]:
+    """Convenience function to get recent signals."""
+    return analytics.get_recent_signals(limit=limit, hours=hours)
+
+
 def print_performance_report(days: int = 30):
     """Convenience function to print performance report."""
     analytics.print_performance_report(days)
+
+
+def get_optimization_recommendations(days: int = 30) -> List[str]:
+    """Convenience function to get optimization recommendations."""
+    return analytics.get_optimization_recommendations(days)
