@@ -250,7 +250,7 @@ def test_bulk_download():
     print_section("TEST 5: Bulk Download API")
     
     try:
-        from bulk_downloader import (
+        from archive.bulk_downloader import (
             download_bulk_eod_data,
             get_previous_close_bulk
         )

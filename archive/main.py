@@ -229,7 +229,7 @@ def run_eod_digest():
 
     try:
         # 2. Session heatmap (Fridays only — the function checks internally)
-        from session_heatmap import send_heatmap
+        from archive.session_heatmap import send_heatmap
         send_heatmap()
     except Exception as e:
         print(f"[EOD] Heatmap error: {e}")

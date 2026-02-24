@@ -65,7 +65,7 @@ def find_highest_timeframe_setup(ticker: str) -> Optional[Dict]:
     Priority order: 5m -> 3m -> 2m -> 1m
     Returns the setup from the highest timeframe available
     """
-    from scanner_helpers import get_recent_bars_from_memory
+    from archive.scanner_helpers import get_recent_bars_from_memory
 
     timeframes = config.CONFIRMATION_TIMEFRAMES  # ["5m", "3m", "2m", "1m"]
 
@@ -147,7 +147,7 @@ def calculate_mtf_convergence_boost(ticker: str) -> float:
     Logs are deduplicated - only prints when result changes.
     """
     global _last_logged_mtf
-    from scanner_helpers import get_recent_bars_from_memory
+    from archive.scanner_helpers import get_recent_bars_from_memory
 
     timeframes = ["1m", "2m", "3m", "5m"]
     signals_found = 0

@@ -1,0 +1,20 @@
+add return 0.95 for the 0.45–0.55 bracket and a final return 1.0 catch-all
+add columns to the positions table and wire it in
+change PositionManager's default to "market_memory.db" and remove TRADES_DB_PATH from config.py
+set MAX_CONTRACTS = 10
+wire options_flow in from options_data_manager
+Delete both update_ticker() and cleanup_old_bars()
+delete store_daily_bars(), get_bars_by_date(), and get_available_dates()
+refactor wait_for_confirmation() to explicitly re-check the latest bar per cycle rather than one-shot scanning
+for get_previous_day_ohlc() call a new get_daily_ohlc(ticker, date) call a new get_daily_ohlc(ticker, date) and shouldn't it get volume and other parameters too? 
+Add an EOD job in scanner.py that pipes signal_analytics.get_recent_signals() into ai_learning.record_trade().
+scanner.py EOD block — Should call clear_prev_day_cache() (already confirmed) and also call ai_learning.optimize_confirmation_weights() + optimize_fvg_threshold()
+PositionManager DB path — Consolidate everything to market_memory.db so local dev has one unified SQLite file matching what gets migrated to Postgres on Railway
+change data[-1] to data[0] in get_latest_value(). Same bug exists in check_bollinger_squeeze() and get_trend_direction() where they also read from [-1] directly.
+delete the if __name__ == "__main__" block entirely from technical_indicators.py
+remove the assignment or replace with _ (bos_fvg_engine.py — c1 dead variable in find_fvg_after_bos()c1 = search_bars[i - 1] # middle candle (not used directly))
+wrap the backfill calls in scanner.py with a finally: set_backfill_complete()
+technical_indicators.py — Verify if it's actually used
+bos_fvg_engine.py — 0DTE constants not in config.py HARD_CLOSE_TIME = time(15, 45) and FORCE_CLOSE_TIME = time(15, 55)
+FLUSH_INTERVAL = 10 and RECONNECT_DELAY = 5 are module-level constants not in config.py
+two separate stop-calculation systems running in parallel. (compute_0dte_stops_and_targets() and signal_generator.py / sniper.py)
