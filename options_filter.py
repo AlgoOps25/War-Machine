@@ -165,7 +165,7 @@ class OptionsFilter:
     def find_best_strike(self, ticker: str, direction: str,
                          entry_price: float, target_price: float,
                          stop_price: float = 0.0) -> Optional[Dict]:
-        """Find the optimal option strike and enrich with IVR + UOA + GEX."""
+        """Find the optimal option strike and enrich with IVR + UOA + GEX + limit entry."""
         chain = self.get_options_chain(ticker)
         if not chain:
             return None
@@ -223,7 +223,7 @@ class OptionsFilter:
         if not best_option:
             return None
 
-        # ── IVR enrichment ───────────────────────────────────────────────
+        # ── IVR enrichment ────────────────────────────────────────────
         iv = best_option.get("iv", 0)
         if iv and iv > 0:
             store_iv_observation(ticker, iv)
@@ -241,7 +241,7 @@ class OptionsFilter:
                 "ivr_multiplier": 1.0, "ivr_label": "IVR-NO-DATA"
             })
 
-        # ── UOA enrichment (DISABLED) ────────────────────────────────────
+        # ── UOA enrichment (DISABLED) ────────────────────────────────────────
         # UOA scanner not needed yet - will enable in Phase 3
         best_option.update({
             "uoa_multiplier": 1.0, "uoa_label": "UOA-DISABLED",
@@ -250,7 +250,7 @@ class OptionsFilter:
             "uoa_top_aligned": [], "uoa_top_opposing": []
         })
 
-        # ── GEX enrichment ───────────────────────────────────────────────
+        # ── GEX enrichment ────────────────────────────────────────────
         # stop_price is threaded through from _run_signal_pipeline so
         # gamma wall / pin logic uses the actual trade stop, not the strike.
         gex_stop_ref = stop_price if stop_price > 0 else best_option.get("strike", entry_price)
@@ -294,6 +294,37 @@ class OptionsFilter:
                 "gex_top_pos": [], "gex_top_neg": []
             })
 
+        # ── Limit price entry enrichment ───────────────────────────────────────
+        # mid          = (bid + ask) / 2  — best first limit to place
+        # limit_entry  = mid              — start here; raise to ask if no fill
+        # max_entry    = ask              — hard cap: never pay above this
+        # spread_pct   = bid/ask spread as %  (quality indicator)
+        # contract_label = e.g. "SPY $695C 2/28"  (human-readable Discord label)
+        _bid   = best_option["bid"]
+        _ask   = best_option["ask"]
+        _mid   = round((_bid + _ask) / 2, 2) if (_bid and _ask) else 0.0
+        _spd   = round(((_ask - _bid) / _mid) * 100, 1) if _mid > 0 else 0.0
+        _ctype = "CALL" if direction == "bull" else "PUT"
+        try:
+            _m = int(best_option["expiration"][5:7])
+            _d = int(best_option["expiration"][8:10])
+            _exp_label = f"{_m}/{_d}"
+        except Exception:
+            _exp_label = best_option["expiration"]
+        best_option.update({
+            "mid":            _mid,
+            "limit_entry":    _mid,
+            "max_entry":      _ask,
+            "contract_type":  _ctype,
+            "spread_pct":     _spd,
+            "contract_label": f"{ticker} ${int(best_option['strike'])}{_ctype[0]} {_exp_label}",
+        })
+        print(
+            f"[LIMIT-ENTRY] {ticker}: {_ctype} ${int(best_option['strike'])} "
+            f"Bid:${_bid:.2f}  Mid:${_mid:.2f}  Ask:${_ask:.2f}  "
+            f"Spread:{_spd:.1f}%"
+        )
+
         return best_option
 
     def validate_signal_for_options(self, ticker, direction, entry_price,
@@ -335,7 +366,7 @@ def get_options_recommendation(ticker, direction, entry_price,
         ticker, direction, entry_price, target_price, stop_price=stop_price
     )
     if is_valid and data:
-        print(f"[OPTIONS] ✅ {ticker}: {reason}")
+        print(f"[OPTIONS] \u2705 {ticker}: {reason}")
         return data
-    print(f"[OPTIONS] ⚠️ {ticker}: {reason}")
+    print(f"[OPTIONS] \u26a0\ufe0f {ticker}: {reason}")
     return None
