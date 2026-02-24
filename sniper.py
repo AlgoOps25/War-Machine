@@ -35,8 +35,8 @@ try:
     from signal_validator import get_validator
     VALIDATOR_ENABLED = True
     VALIDATOR_TEST_MODE = False  # Set to False to enable filtering
-    _validator_stats = {'tested': 0, 'would_pass': 0, 'would_filter': 0, 'boosted': 0, 'penalized': 0}
-    print("[SIGNALS] \u2705 Multi-indicator validator enabled - TEST MODE (no filtering)")
+    _validator_stats = {'tested': 0, 'passed': 0, 'filtered': 0, 'boosted': 0, 'penalized': 0}
+    print("[SIGNALS] \u2705 Multi-indicator validator ACTIVE (filtering enabled)")
 except ImportError:
     VALIDATOR_ENABLED = False
     print("[SIGNALS] \u26a0\ufe0f  signal_validator not available - validation disabled")
@@ -119,21 +119,21 @@ def print_validation_stats():
     
     stats = _validator_stats
     total = stats['tested']
-    pass_pct = (stats['would_pass'] / total * 100) if total > 0 else 0
-    filter_pct = (stats['would_filter'] / total * 100) if total > 0 else 0
+    pass_pct = (stats['passed'] / total * 100) if total > 0 else 0
+    filter_pct = (stats['filtered'] / total * 100) if total > 0 else 0
     boost_pct = (stats['boosted'] / total * 100) if total > 0 else 0
     
     print("\n" + "="*80)
-    print("VALIDATOR TEST MODE STATISTICS")
+    print("VALIDATOR DAILY STATISTICS")
     print("="*80)
     print(f"Total Signals Tested: {total}")
-    print(f"Would Pass: {stats['would_pass']} ({pass_pct:.1f}%)")
-    print(f"Would Filter: {stats['would_filter']} ({filter_pct:.1f}%)")
+    print(f"Passed: {stats['passed']} ({pass_pct:.1f}%)")
+    print(f"Filtered: {stats['filtered']} ({filter_pct:.1f}%)")
     print(f"Confidence Boosted: {stats['boosted']} ({boost_pct:.1f}%)")
     print(f"Confidence Penalized: {stats['penalized']}")
     print("="*80)
     print("\u26a0\ufe0f  TEST MODE ACTIVE - Signals NOT being filtered")
-    print("Switch VALIDATOR_TEST_MODE to False to enable filtering")
+
     print("="*80 + "\n")
 
 
@@ -834,9 +834,9 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
 
             _validator_stats['tested'] += 1
             if validation_result['should_take']:
-                _validator_stats['would_pass'] += 1
+                _validator_stats['passed'] += 1
             else:
-                _validator_stats['would_filter'] += 1
+                _validator_stats['filtered'] += 1
 
             conf_change = validation_result['adjusted_confidence'] - validation_result['original_confidence']
             if conf_change > 0:
