@@ -25,6 +25,10 @@ MARKET_CLOSE          = time(16, 0)
 OPENING_RANGE_END     = time(9, 40)   # CFW6: 10-minute OR window
 PREMARKET_START       = time(4, 0)    # CFW6: Advanced pre-market levels
 
+# 0DTE forced close times (moved from bos_fvg_engine.py)
+HARD_CLOSE_TIME       = time(15, 45)  # Begin closing all 0DTE positions
+FORCE_CLOSE_TIME      = time(15, 55)  # Liquidate any remaining 0DTE at market
+
 # ══════════════════════════════════════════════════════════════════════════════
 # SCANNER SETTINGS
 # ══════════════════════════════════════════════════════════════════════════════
@@ -117,7 +121,7 @@ POSITION_RISK = {
 }
 
 ACCOUNT_SIZE   = float(os.getenv("ACCOUNT_SIZE", "25000"))
-MAX_CONTRACTS  = 1          # Hard cap on contracts per trade (set to 1 for single-contract trading)
+MAX_CONTRACTS  = 10         # Hard cap on contracts per trade (was 1, raised to 10)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # CONFIDENCE DECAY SETTINGS
@@ -201,10 +205,34 @@ DARKPOOL_BOOST_THRESHOLD = 1_000_000    # $1M+ dark pool adds confidence
 DARKPOOL_BOOST_FACTOR    = 0.05         # +5% confidence for dark pool
 
 # ══════════════════════════════════════════════════════════════════════════════
+# GEX (GAMMA EXPOSURE) MULTIPLIERS
+# These multipliers are applied to base confidence in sniper.py Step 11.
+# The IVR/UOA/GEX multipliers stack multiplicatively.
+#
+# Theoretical bounds (for reference only, not enforced):
+#   Maximum combined multiplier: 1.134  (1.08 IVR × 1.05 UOA/GEX)
+#   Minimum combined multiplier: 0.8924 (0.97 IVR × 0.92 UOA/GEX)
+#
+# Actual ceiling/floor guard rails (enforced in options_filter.py):
+#   IVR multiplier ceiling:  1.30 (IVR < 20, very cheap IV)
+#   IVR multiplier floor:    0.70 (IVR > 80, expensive IV)
+#   UOA multiplier ceiling:  1.30 (strong unusual flow)
+#   UOA multiplier floor:    0.70 (adverse flow)
+#   GEX multiplier ceiling:  1.30 (favorable gamma environment)
+#   GEX multiplier floor:    0.70 (unfavorable gamma headwinds)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ══════════════════════════════════════════════════════════════════════════════
+# WEBSOCKET FEED SETTINGS (moved from ws_feed.py)
+# ══════════════════════════════════════════════════════════════════════════════
+FLUSH_INTERVAL    = 10      # Flush bars to DB every N seconds
+RECONNECT_DELAY   = 5       # Wait N seconds before reconnecting on error
+
+# ══════════════════════════════════════════════════════════════════════════════
 # DATABASE & LOGGING
 # ══════════════════════════════════════════════════════════════════════════════
 DB_PATH             = "market_memory.db"        # Main market data database (SQLite fallback)
-TRADES_DB_PATH      = "war_machine_trades.db"   # Trade history database
+# TRADES_DB_PATH removed — position_manager now defaults to market_memory.db for unified storage
 LOG_LEVEL           = "INFO"
 BARS_RETENTION_DAYS = 60                         # Auto-cleanup bars older than 60 days
 
