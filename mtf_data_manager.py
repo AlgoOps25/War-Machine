@@ -1,396 +1,357 @@
 """
 Multi-Timeframe Data Manager
 
-Manages fetching, caching, and synchronization of market data across
-multiple timeframes (5m, 3m, 2m, 1m) for MTF confluence analysis.
+Fetches and caches market data across multiple timeframes (5m, 3m, 2m, 1m)
+for simultaneous FVG detection and MTF convergence analysis.
 
 Key Features:
-  - Smart caching with TTL to minimize API calls
-  - Batch updates for efficiency
-  - Timestamp alignment across timeframes
-  - Memory-efficient data structures
-  - Graceful degradation if timeframe unavailable
-
-Architecture:
-  1. EODHD API fetches intraday data for each timeframe
-  2. Cache stores bars with 5-minute TTL (fresh data guarantee)
-  3. Synchronization ensures bars align at equivalent timestamps
-  4. Batch mode updates all tickers at once for scanning
+  - Smart caching to minimize API calls
+  - Timestamp synchronization across timeframes
+  - Session-based cache management
+  - Compatible with existing data_manager.py
+  - Graceful degradation if timeframes unavailable
 
 Usage:
   from mtf_data_manager import mtf_data_manager
   
-  # Single ticker, all timeframes
-  data = mtf_data_manager.get_all_timeframes('AAPL')
-  bars_5m = data['5m']
-  bars_3m = data['3m']
+  # Get single timeframe
+  bars_5m = mtf_data_manager.get_bars('SPY', '5m')
   
-  # Batch update for multiple tickers
-  tickers = ['AAPL', 'MSFT', 'NVDA']
-  mtf_data_manager.batch_update(tickers)
+  # Get all timeframes at once
+  all_bars = mtf_data_manager.get_all_timeframes('SPY')
+  # Returns: {'5m': [...], '3m': [...], '2m': [...], '1m': [...]}
   
-  # Check cache freshness
-  if mtf_data_manager.is_cache_stale('AAPL', '5m'):
-      mtf_data_manager.update_ticker('AAPL')
+  # Clear cache at EOD
+  mtf_data_manager.clear_cache()
 """
 
-from typing import Dict, List, Optional, Tuple
-from datetime import datetime, timedelta, time as dtime
+from typing import Dict, List, Optional
+from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 import requests
 from collections import defaultdict
+
 import config
+from data_manager import data_manager  # Leverage existing data_manager for 5m
 
 ET = ZoneInfo("America/New_York")
 
-# Supported timeframes with their interval codes for EODHD API
-TIMEFRAMES = {
-    '5m': 5,
-    '3m': 3,
-    '2m': 2,
-    '1m': 1
-}
-
-# Cache TTL: 5 minutes (data refreshes frequently during trading)
-CACHE_TTL_SECONDS = 300
-
 
 class MTFDataManager:
-    """Multi-timeframe data fetcher and cache manager."""
+    """Multi-timeframe data fetching and caching."""
     
     def __init__(self):
-        # Cache structure: {ticker: {timeframe: {'bars': [...], 'timestamp': datetime}}}
-        self.cache: Dict[str, Dict[str, Dict]] = defaultdict(lambda: defaultdict(dict))
+        # Cache structure: {ticker: {timeframe: bars}}
+        self.cache: Dict[str, Dict[str, List[dict]]] = defaultdict(dict)
         
-        # API configuration
-        self.api_token = config.EODHD_API_KEY
-        self.base_url = "https://eodhd.com/api/intraday"
+        # Supported timeframes (in order of priority)
+        self.timeframes = ['5m', '3m', '2m', '1m']
         
-        # Statistics
-        self.stats = {
-            'api_calls': 0,
-            'cache_hits': 0,
-            'cache_misses': 0
-        }
+        # Session tracking for cache invalidation
+        self.current_session_date = datetime.now(ET).date()
         
-        print("[MTF-DATA] Multi-Timeframe Data Manager initialized")
-        print(f"[MTF-DATA] Timeframes: {', '.join(TIMEFRAMES.keys())}")
-        print(f"[MTF-DATA] Cache TTL: {CACHE_TTL_SECONDS}s")
+        # API endpoint (using existing EODHD from config)
+        self.api_token = getattr(config, 'EODHD_API_TOKEN', '')
+        self.base_url = 'https://eodhd.com/api/intraday'
+        
+        print("[MTF] Multi-Timeframe Data Manager initialized")
+        print(f"[MTF] Supported timeframes: {', '.join(self.timeframes)}")
     
-    def _fetch_intraday_bars(self, ticker: str, interval_minutes: int) -> List[Dict]:
+    def _check_session_rollover(self) -> bool:
         """
-        Fetch intraday bars from EODHD API for specific timeframe.
+        Check if we've rolled over to a new trading session.
+        Returns True if cache should be cleared.
+        """
+        today = datetime.now(ET).date()
+        if today != self.current_session_date:
+            print(f"[MTF] Session rollover detected: {self.current_session_date} → {today}")
+            self.current_session_date = today
+            return True
+        return False
+    
+    def get_bars(self, ticker: str, timeframe: str, force_refresh: bool = False) -> List[dict]:
+        """
+        Get bars for a specific ticker and timeframe.
         
         Args:
             ticker: Stock symbol
-            interval_minutes: Bar interval (1, 2, 3, or 5 minutes)
+            timeframe: '5m', '3m', '2m', or '1m'
+            force_refresh: Bypass cache and fetch fresh data
         
         Returns:
-            List of bar dicts with datetime, open, high, low, close, volume
+            List of bar dicts with keys: datetime, open, high, low, close, volume
+        """
+        # Session rollover check
+        if self._check_session_rollover():
+            self.clear_cache()
+        
+        # Validate timeframe
+        if timeframe not in self.timeframes:
+            print(f"[MTF] Unsupported timeframe: {timeframe}")
+            return []
+        
+        # Check cache first
+        if not force_refresh and ticker in self.cache and timeframe in self.cache[ticker]:
+            bars = self.cache[ticker][timeframe]
+            if bars:  # Non-empty cache
+                return bars
+        
+        # Special handling for 5m: use existing data_manager
+        if timeframe == '5m':
+            bars = self._get_5m_bars(ticker)
+        else:
+            # Fetch from API for other timeframes
+            bars = self._fetch_from_api(ticker, timeframe)
+        
+        # Cache result
+        if bars:
+            self.cache[ticker][timeframe] = bars
+        
+        return bars
+    
+    def _get_5m_bars(self, ticker: str) -> List[dict]:
+        """
+        Get 5m bars using existing data_manager (already optimized).
+        
+        Args:
+            ticker: Stock symbol
+        
+        Returns:
+            List of 5m bars
         """
         try:
-            params = {
-                'api_token': self.api_token,
-                'interval': f'{interval_minutes}m',
-                'fmt': 'json',
-                'from': int((datetime.now(ET) - timedelta(days=1)).timestamp()),
-                'to': int(datetime.now(ET).timestamp())
+            # Leverage existing data_manager for 5m data
+            data_manager.update_ticker(ticker)
+            bars = data_manager.get_today_session_bars(ticker)
+            
+            if bars:
+                print(f"[MTF] {ticker} 5m: {len(bars)} bars (from data_manager)")
+            return bars
+        
+        except Exception as e:
+            print(f"[MTF] Error fetching 5m bars for {ticker}: {e}")
+            return []
+    
+    def _fetch_from_api(self, ticker: str, timeframe: str) -> List[dict]:
+        """
+        Fetch intraday bars from EODHD API for non-5m timeframes.
+        
+        Args:
+            ticker: Stock symbol
+            timeframe: '3m', '2m', or '1m'
+        
+        Returns:
+            List of bars
+        """
+        try:
+            # Convert timeframe format for API
+            interval_map = {
+                '3m': '3m',
+                '2m': '2m',
+                '1m': '1m'
             }
             
+            interval = interval_map.get(timeframe)
+            if not interval:
+                return []
+            
+            # Build API URL
             url = f"{self.base_url}/{ticker}.US"
+            params = {
+                'api_token': self.api_token,
+                'interval': interval,
+                'fmt': 'json'
+            }
+            
+            # Fetch data
             response = requests.get(url, params=params, timeout=10)
             response.raise_for_status()
             
-            self.stats['api_calls'] += 1
-            
-            raw_data = response.json()
-            if not raw_data:
+            raw_bars = response.json()
+            if not raw_bars:
+                print(f"[MTF] No data returned for {ticker} {timeframe}")
                 return []
             
-            # Convert to consistent format
-            bars = []
-            for bar in raw_data:
-                try:
-                    # Parse timestamp (EODHD returns Unix timestamp)
-                    dt = datetime.fromtimestamp(bar['timestamp'], tz=ET)
-                    
-                    bars.append({
-                        'datetime': dt,
-                        'open': float(bar['open']),
-                        'high': float(bar['high']),
-                        'low': float(bar['low']),
-                        'close': float(bar['close']),
-                        'volume': int(bar['volume'])
-                    })
-                except (KeyError, ValueError) as e:
-                    # Skip malformed bars
-                    continue
+            # Parse and filter to today's session
+            bars = self._parse_and_filter_bars(raw_bars, ticker, timeframe)
+            
+            if bars:
+                print(f"[MTF] {ticker} {timeframe}: {len(bars)} bars (from API)")
             
             return bars
         
         except requests.exceptions.RequestException as e:
-            print(f"[MTF-DATA] API error for {ticker} {interval_minutes}m: {e}")
+            print(f"[MTF] API request failed for {ticker} {timeframe}: {e}")
             return []
         except Exception as e:
-            print(f"[MTF-DATA] Unexpected error for {ticker} {interval_minutes}m: {e}")
+            print(f"[MTF] Error fetching {ticker} {timeframe}: {e}")
             return []
     
-    def _filter_session_bars(self, bars: List[Dict]) -> List[Dict]:
+    def _parse_and_filter_bars(self, raw_bars: List[dict], ticker: str, timeframe: str) -> List[dict]:
         """
-        Filter bars to only include regular trading session (9:30 AM - 4:00 PM ET).
+        Parse API response and filter to today's session (9:30 AM - 4:00 PM ET).
         
         Args:
-            bars: List of bar dicts
-        
-        Returns:
-            Filtered list containing only session bars
-        """
-        session_bars = []
-        for bar in bars:
-            bar_time = bar['datetime'].time()
-            # Include premarket for OR calculation (4:00 AM - 4:00 PM)
-            if dtime(4, 0) <= bar_time < dtime(16, 0):
-                session_bars.append(bar)
-        
-        return session_bars
-    
-    def is_cache_stale(self, ticker: str, timeframe: str) -> bool:
-        """
-        Check if cached data for ticker/timeframe is stale.
-        
-        Args:
+            raw_bars: Raw API response
             ticker: Stock symbol
-            timeframe: Timeframe string ('5m', '3m', '2m', '1m')
+            timeframe: Timeframe string
         
         Returns:
-            True if cache is stale or missing, False if fresh
+            Filtered and parsed bars
         """
-        if ticker not in self.cache:
-            return True
-        
-        if timeframe not in self.cache[ticker]:
-            return True
-        
-        cached_data = self.cache[ticker][timeframe]
-        if 'timestamp' not in cached_data:
-            return True
-        
-        age_seconds = (datetime.now(ET) - cached_data['timestamp']).total_seconds()
-        return age_seconds > CACHE_TTL_SECONDS
-    
-    def update_ticker(self, ticker: str, force: bool = False) -> bool:
-        """
-        Update all timeframes for a ticker.
-        
-        Args:
-            ticker: Stock symbol
-            force: Force update even if cache is fresh
-        
-        Returns:
-            True if update successful, False otherwise
-        """
-        # Check if update needed
-        if not force:
-            all_fresh = all(
-                not self.is_cache_stale(ticker, tf)
-                for tf in TIMEFRAMES.keys()
-            )
-            if all_fresh:
-                self.stats['cache_hits'] += 1
-                return True
-        
-        self.stats['cache_misses'] += 1
-        
-        # Fetch all timeframes
-        success = True
-        for timeframe, interval in TIMEFRAMES.items():
-            bars = self._fetch_intraday_bars(ticker, interval)
+        try:
+            today = datetime.now(ET).date()
+            session_start = time(9, 30)
+            session_end = time(16, 0)
             
-            if not bars:
-                print(f"[MTF-DATA] Warning: No data for {ticker} {timeframe}")
-                success = False
-                continue
+            parsed_bars = []
             
-            # Filter to session hours
-            session_bars = self._filter_session_bars(bars)
+            for bar in raw_bars:
+                # Parse timestamp
+                timestamp = bar.get('datetime') or bar.get('timestamp')
+                if not timestamp:
+                    continue
+                
+                # Convert to datetime (handle both Unix timestamp and ISO format)
+                if isinstance(timestamp, (int, float)):
+                    dt = datetime.fromtimestamp(timestamp, tz=ET)
+                else:
+                    dt = datetime.fromisoformat(str(timestamp).replace('Z', '+00:00'))
+                    dt = dt.astimezone(ET)
+                
+                # Filter to today's session
+                if dt.date() != today:
+                    continue
+                if not (session_start <= dt.time() < session_end):
+                    continue
+                
+                # Build bar dict (normalize field names)
+                parsed_bar = {
+                    'datetime': dt,
+                    'open': float(bar.get('open', 0)),
+                    'high': float(bar.get('high', 0)),
+                    'low': float(bar.get('low', 0)),
+                    'close': float(bar.get('close', 0)),
+                    'volume': int(bar.get('volume', 0))
+                }
+                
+                parsed_bars.append(parsed_bar)
             
-            # Cache the data
-            self.cache[ticker][timeframe] = {
-                'bars': session_bars,
-                'timestamp': datetime.now(ET)
-            }
+            # Sort by datetime
+            parsed_bars.sort(key=lambda x: x['datetime'])
+            
+            return parsed_bars
         
-        if success:
-            print(f"[MTF-DATA] ✅ Updated {ticker}: {', '.join(f'{tf}={len(self.cache[ticker][tf]['bars'])}' for tf in TIMEFRAMES.keys())}")
-        
-        return success
+        except Exception as e:
+            print(f"[MTF] Error parsing bars for {ticker} {timeframe}: {e}")
+            return []
     
-    def batch_update(self, tickers: List[str], force: bool = False) -> Dict[str, bool]:
+    def get_all_timeframes(self, ticker: str, required_timeframes: Optional[List[str]] = None) -> Dict[str, List[dict]]:
         """
-        Update multiple tickers at once (for scanning).
-        
-        Args:
-            tickers: List of stock symbols
-            force: Force update even if cache is fresh
-        
-        Returns:
-            Dict mapping ticker -> success status
-        """
-        print(f"[MTF-DATA] Batch updating {len(tickers)} tickers...")
-        
-        results = {}
-        for ticker in tickers:
-            results[ticker] = self.update_ticker(ticker, force=force)
-        
-        successful = sum(1 for success in results.values() if success)
-        print(f"[MTF-DATA] Batch complete: {successful}/{len(tickers)} successful")
-        
-        return results
-    
-    def get_timeframe_bars(self, ticker: str, timeframe: str) -> Optional[List[Dict]]:
-        """
-        Get bars for specific ticker and timeframe.
+        Get bars for all timeframes simultaneously.
         
         Args:
             ticker: Stock symbol
-            timeframe: Timeframe string ('5m', '3m', '2m', '1m')
+            required_timeframes: Optional list of required timeframes (default: all supported)
         
         Returns:
-            List of bars or None if unavailable
-        """
-        if timeframe not in TIMEFRAMES:
-            print(f"[MTF-DATA] Invalid timeframe: {timeframe}")
-            return None
-        
-        # Update if stale
-        if self.is_cache_stale(ticker, timeframe):
-            self.update_ticker(ticker)
-        
-        # Return cached data
-        if ticker in self.cache and timeframe in self.cache[ticker]:
-            return self.cache[ticker][timeframe]['bars']
-        
-        return None
-    
-    def get_all_timeframes(self, ticker: str) -> Dict[str, List[Dict]]:
-        """
-        Get bars for all timeframes for a ticker.
-        
-        Args:
-            ticker: Stock symbol
-        
-        Returns:
-            Dict mapping timeframe -> bars list
+            Dict mapping timeframe -> bars
             Example: {'5m': [...], '3m': [...], '2m': [...], '1m': [...]}
         """
-        # Update if any timeframe is stale
-        needs_update = any(
-            self.is_cache_stale(ticker, tf)
-            for tf in TIMEFRAMES.keys()
-        )
+        timeframes_to_fetch = required_timeframes or self.timeframes
         
-        if needs_update:
-            self.update_ticker(ticker)
-        
-        # Return all timeframes
         result = {}
-        for timeframe in TIMEFRAMES.keys():
-            if ticker in self.cache and timeframe in self.cache[ticker]:
-                result[timeframe] = self.cache[ticker][timeframe]['bars']
-            else:
-                result[timeframe] = []
+        for tf in timeframes_to_fetch:
+            bars = self.get_bars(ticker, tf)
+            if bars:
+                result[tf] = bars
+        
+        # Log summary
+        available_tfs = ', '.join(result.keys())
+        missing_tfs = ', '.join(set(timeframes_to_fetch) - set(result.keys()))
+        
+        print(f"[MTF] {ticker} timeframes available: {available_tfs}")
+        if missing_tfs:
+            print(f"[MTF] {ticker} timeframes missing: {missing_tfs}")
         
         return result
     
-    def get_aligned_bars(self, ticker: str, reference_time: datetime) -> Dict[str, Optional[Dict]]:
+    def get_latest_price(self, ticker: str) -> Optional[float]:
         """
-        Get bars from all timeframes that align with a reference timestamp.
-        
-        This is used to find bars across timeframes that represent the
-        same or closest time period for comparison.
+        Get latest price across all available timeframes (prefer 1m for recency).
         
         Args:
             ticker: Stock symbol
-            reference_time: Reference timestamp (typically from 5m bar)
         
         Returns:
-            Dict mapping timeframe -> closest bar dict
-            Example: {'5m': {...}, '3m': {...}, '2m': {...}, '1m': {...}}
+            Latest close price or None
         """
-        all_bars = self.get_all_timeframes(ticker)
-        aligned = {}
+        # Try timeframes in order of recency (1m -> 2m -> 3m -> 5m)
+        for tf in ['1m', '2m', '3m', '5m']:
+            bars = self.get_bars(ticker, tf)
+            if bars:
+                return bars[-1]['close']
         
-        for timeframe, bars in all_bars.items():
-            if not bars:
-                aligned[timeframe] = None
-                continue
-            
-            # Find closest bar to reference time
-            closest_bar = None
-            min_diff = float('inf')
-            
-            for bar in bars:
-                diff = abs((bar['datetime'] - reference_time).total_seconds())
-                if diff < min_diff:
-                    min_diff = diff
-                    closest_bar = bar
-            
-            # Only include if within reasonable window (10 minutes)
-            if min_diff <= 600:
-                aligned[timeframe] = closest_bar
-            else:
-                aligned[timeframe] = None
-        
-        return aligned
+        return None
     
-    def get_stats(self) -> Dict:
+    def clear_cache(self, ticker: Optional[str] = None, timeframe: Optional[str] = None):
         """
-        Get cache performance statistics.
-        
-        Returns:
-            Dict with API calls, cache hits/misses, hit rate
-        """
-        total_requests = self.stats['cache_hits'] + self.stats['cache_misses']
-        hit_rate = (self.stats['cache_hits'] / total_requests * 100) if total_requests > 0 else 0
-        
-        return {
-            'api_calls': self.stats['api_calls'],
-            'cache_hits': self.stats['cache_hits'],
-            'cache_misses': self.stats['cache_misses'],
-            'hit_rate': round(hit_rate, 1),
-            'cached_tickers': len(self.cache)
-        }
-    
-    def clear_cache(self, ticker: Optional[str] = None):
-        """
-        Clear cache for specific ticker or all tickers.
+        Clear cached data.
         
         Args:
-            ticker: Stock symbol or None to clear all
+            ticker: Optional ticker to clear (if None, clear all tickers)
+            timeframe: Optional timeframe to clear (if None, clear all timeframes)
         """
-        if ticker:
+        if ticker and timeframe:
+            # Clear specific ticker + timeframe
+            if ticker in self.cache and timeframe in self.cache[ticker]:
+                del self.cache[ticker][timeframe]
+                print(f"[MTF] Cleared cache: {ticker} {timeframe}")
+        elif ticker:
+            # Clear all timeframes for ticker
             if ticker in self.cache:
                 del self.cache[ticker]
-                print(f"[MTF-DATA] Cleared cache for {ticker}")
+                print(f"[MTF] Cleared cache: {ticker} (all timeframes)")
         else:
+            # Clear entire cache
             self.cache.clear()
-            print("[MTF-DATA] Cleared entire cache")
+            print("[MTF] Cleared entire cache")
     
-    def print_status(self):
-        """Print current status and statistics."""
-        stats = self.get_stats()
+    def get_cache_stats(self) -> Dict:
+        """
+        Get cache statistics for monitoring.
         
-        print("\n" + "="*80)
-        print("MTF DATA MANAGER STATUS")
-        print("="*80)
-        print(f"Timeframes:      {', '.join(TIMEFRAMES.keys())}")
-        print(f"Cache TTL:       {CACHE_TTL_SECONDS}s")
-        print(f"Cached Tickers:  {stats['cached_tickers']}")
-        print(f"API Calls:       {stats['api_calls']}")
-        print(f"Cache Hits:      {stats['cache_hits']}")
-        print(f"Cache Misses:    {stats['cache_misses']}")
-        print(f"Hit Rate:        {stats['hit_rate']}%")
-        print("="*80 + "\n")
+        Returns:
+            Dict with cache size and hit info
+        """
+        total_tickers = len(self.cache)
+        total_entries = sum(len(tfs) for tfs in self.cache.values())
+        
+        timeframe_counts = defaultdict(int)
+        for ticker_cache in self.cache.values():
+            for tf in ticker_cache.keys():
+                timeframe_counts[tf] += 1
+        
+        return {
+            'total_tickers': total_tickers,
+            'total_entries': total_entries,
+            'by_timeframe': dict(timeframe_counts),
+            'session_date': str(self.current_session_date)
+        }
+    
+    def print_cache_stats(self):
+        """Print formatted cache statistics."""
+        stats = self.get_cache_stats()
+        print("\n" + "="*60)
+        print("MTF DATA MANAGER - CACHE STATISTICS")
+        print("="*60)
+        print(f"Session Date:    {stats['session_date']}")
+        print(f"Cached Tickers:  {stats['total_tickers']}")
+        print(f"Total Entries:   {stats['total_entries']}")
+        print("\nBy Timeframe:")
+        for tf, count in sorted(stats['by_timeframe'].items()):
+            print(f"  {tf:>3}: {count:>2} tickers")
+        print("="*60 + "\n")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -401,57 +362,45 @@ mtf_data_manager = MTFDataManager()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TESTING & CLI
+# TESTING / CLI USAGE
 # ═══════════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
     import sys
     
-    print("\n🔍 MTF Data Manager Test\n")
+    if len(sys.argv) < 2:
+        print("Usage: python mtf_data_manager.py <ticker> [timeframe]")
+        print("Example: python mtf_data_manager.py SPY")
+        print("Example: python mtf_data_manager.py SPY 3m")
+        sys.exit(1)
     
-    # Test with a sample ticker
-    test_ticker = "AAPL"
+    ticker = sys.argv[1].upper()
     
-    if len(sys.argv) > 1:
-        test_ticker = sys.argv[1].upper()
-    
-    print(f"Testing with ticker: {test_ticker}\n")
-    
-    # Fetch all timeframes
-    print("[TEST] Fetching all timeframes...")
-    data = mtf_data_manager.get_all_timeframes(test_ticker)
-    
-    # Display results
-    print("\n" + "─"*80)
-    print("DATA SUMMARY")
-    print("─"*80)
-    for tf, bars in data.items():
-        if bars:
-            print(f"{tf:>3}: {len(bars):>4} bars | "
-                  f"Range: {bars[0]['datetime'].strftime('%H:%M')} - {bars[-1]['datetime'].strftime('%H:%M')} | "
-                  f"Latest: ${bars[-1]['close']:.2f}")
-        else:
-            print(f"{tf:>3}: No data available")
-    
-    # Cache status
-    print("\n")
-    mtf_data_manager.print_status()
-    
-    # Test cache hit
-    print("[TEST] Testing cache hit (should be instant)...")
-    data2 = mtf_data_manager.get_all_timeframes(test_ticker)
-    print(f"✅ Cache working: Same data returned = {data == data2}")
-    
-    # Test alignment
-    if data['5m']:
-        print(f"\n[TEST] Testing bar alignment at {data['5m'][-1]['datetime'].strftime('%H:%M')}...")
-        aligned = mtf_data_manager.get_aligned_bars(test_ticker, data['5m'][-1]['datetime'])
+    if len(sys.argv) == 3:
+        # Single timeframe test
+        timeframe = sys.argv[2]
+        print(f"\nFetching {ticker} {timeframe} bars...\n")
+        bars = mtf_data_manager.get_bars(ticker, timeframe)
         
-        print("\nAligned Bars:")
-        for tf, bar in aligned.items():
-            if bar:
-                print(f"  {tf}: {bar['datetime'].strftime('%H:%M:%S')} | Close: ${bar['close']:.2f}")
-            else:
-                print(f"  {tf}: No aligned bar found")
-    
-    print("\n✅ MTF Data Manager test complete!\n")
+        if bars:
+            print(f"\nReceived {len(bars)} bars:")
+            print(f"First bar: {bars[0]['datetime']} | Close: ${bars[0]['close']:.2f}")
+            print(f"Last bar:  {bars[-1]['datetime']} | Close: ${bars[-1]['close']:.2f}")
+        else:
+            print("No bars received")
+    else:
+        # All timeframes test
+        print(f"\nFetching {ticker} across all timeframes...\n")
+        all_bars = mtf_data_manager.get_all_timeframes(ticker)
+        
+        print("\n" + "="*60)
+        print("RESULTS")
+        print("="*60)
+        for tf, bars in all_bars.items():
+            if bars:
+                print(f"{tf:>3}: {len(bars):>3} bars | "
+                      f"Latest: ${bars[-1]['close']:>7.2f} @ {bars[-1]['datetime'].strftime('%I:%M %p')}")
+        print("="*60)
+        
+        # Show cache stats
+        mtf_data_manager.print_cache_stats()
