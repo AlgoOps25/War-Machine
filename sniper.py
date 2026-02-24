@@ -11,6 +11,8 @@
 # OR WIDTH FILTER: OR range < MIN_OR_RANGE_PCT skips OR path (choppy), falls to intraday BOS
 # WATCH PERSISTENCE: watching_signals + armed_signals tables survive Railway redeploys;
 #                    Smart expiration auto-cleans stale entries on load.
+# OPTIONS PRE-GATE: Early options validation before confirmation — kills bad setups
+#                   before CPU-heavy confirmation runs (Step 6.5, SOFT/HARD modes).
 import traceback
 import requests
 import json
@@ -34,12 +36,25 @@ try:
     VALIDATOR_ENABLED = True
     VALIDATOR_TEST_MODE = True  # Set to False to enable filtering
     _validator_stats = {'tested': 0, 'would_pass': 0, 'would_filter': 0, 'boosted': 0, 'penalized': 0}
-    print("[SIGNALS] ✅ Multi-indicator validator enabled - TEST MODE (no filtering)")
+    print("[SIGNALS] \u2705 Multi-indicator validator enabled - TEST MODE (no filtering)")
 except ImportError:
     VALIDATOR_ENABLED = False
-    print("[SIGNALS] ⚠️  signal_validator not available - validation disabled")
+    print("[SIGNALS] \u26a0\ufe0f  signal_validator not available - validation disabled")
 
-# ── Global State ─────────────────────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────
+# OPTIONS PRE-VALIDATION GATE
+# Non-fatal import: sniper works normally if options_data_manager is missing.
+# ────────────────────────────────────────────────────────────────────────
+try:
+    from options_data_manager import options_dm
+    OPTIONS_PRE_GATE_ENABLED = True
+    print("[SNIPER] \u2705 Options pre-validation gate enabled")
+except ImportError:
+    options_dm = None
+    OPTIONS_PRE_GATE_ENABLED = False
+    print("[SNIPER] \u26a0\ufe0f  options_data_manager not available \u2014 options gate disabled")
+
+# ── Global State ─────────────────────────────────────────────────────────────────────────────────────────────────────────
 armed_signals    = {}
 watching_signals   = {}
 _watches_loaded    = False   # True after first DB load attempt this session
@@ -47,6 +62,12 @@ _armed_loaded      = False   # True after first armed signals load
 
 MAX_WATCH_BARS      = 30
 INTRADAY_MIN_GRADES = {"A+", "A"}
+
+# Options pre-gate mode:
+#   "SOFT" — log result but never filter (data collection phase, safe default)
+#   "HARD" — filter signals with no tradeable options or GEX headwinds
+# Switch to "HARD" after confirming gate logic is sound against real signals.
+OPTIONS_PRE_GATE_MODE = "SOFT"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -111,7 +132,7 @@ def print_validation_stats():
     print(f"Confidence Boosted: {stats['boosted']} ({boost_pct:.1f}%)")
     print(f"Confidence Penalized: {stats['penalized']}")
     print("="*80)
-    print("⚠️  TEST MODE ACTIVE - Signals NOT being filtered")
+    print("\u26a0\ufe0f  TEST MODE ACTIVE - Signals NOT being filtered")
     print("Switch VALIDATOR_TEST_MODE to False to enable filtering")
     print("="*80 + "\n")
 
@@ -260,7 +281,7 @@ def _cleanup_stale_armed_signals():
                 stale_tickers
             )
             conn.commit()
-            print(f"[ARMED-DB] 🧹 Auto-cleaned {len(stale_tickers)} closed position(s): {', '.join(stale_tickers)}")
+            print(f"[ARMED-DB] \U0001f9f9 Auto-cleaned {len(stale_tickers)} closed position(s): {', '.join(stale_tickers)}")
         
         conn.close()
         
@@ -334,7 +355,7 @@ def _load_armed_signals_from_db() -> dict:
         
         if loaded:
             print(
-                f"[ARMED-DB] 🔄 Reloaded {len(loaded)} armed signal(s) from DB after restart: "
+                f"[ARMED-DB] \U0001f504 Reloaded {len(loaded)} armed signal(s) from DB after restart: "
                 f"{', '.join(loaded.keys())}"
             )
         return loaded
@@ -476,7 +497,7 @@ def _cleanup_stale_watches():
         conn.close()
         
         if deleted_count > 0:
-            print(f"[WATCH-DB] 🧹 Auto-cleaned {deleted_count} stale watch(es) (older than {watch_window_minutes}min)")
+            print(f"[WATCH-DB] \U0001f9f9 Auto-cleaned {deleted_count} stale watch(es) (older than {watch_window_minutes}min)")
         
     except Exception as e:
         print(f"[WATCH-DB] Cleanup error: {e}")
@@ -534,7 +555,7 @@ def _load_watches_from_db() -> dict:
             }
         if loaded:
             print(
-                f"[WATCH-DB] 🔄 Reloaded {len(loaded)} watch state(s) from DB after restart: "
+                f"[WATCH-DB] \U0001f504 Reloaded {len(loaded)} watch state(s) from DB after restart: "
                 f"{', '.join(loaded.keys())}"
             )
         return loaded
@@ -618,7 +639,7 @@ def _is_highly_correlated(ticker: str, open_positions: list,
             continue
         corr = _pearson_corr(xs_ret[-m:], ys_ret[-m:])
         if corr >= threshold:
-            print(f"[CORR] {ticker} vs {other} corr={corr:.2f} — blocking new signal")
+            print(f"[CORR] {ticker} vs {other} corr={corr:.2f} \u2014 blocking new signal")
             return True
 
     return False
@@ -630,18 +651,18 @@ def _is_highly_correlated(ticker: str, open_positions: list,
 
 def send_bos_watch_alert(ticker, direction, bos_price, struct_high, struct_low,
                           signal_type="CFW6_INTRADAY"):
-    arrow    = "🟢" if direction == "bull" else "🔴"
+    arrow    = "\U0001f7e2" if direction == "bull" else "\U0001f534"
     level    = f"${struct_high:.2f}" if direction == "bull" else f"${struct_low:.2f}"
     mode_tag = "[OR]" if signal_type == "CFW6_OR" else "[INTRADAY]"
     msg = (
-        f"📡 **BOS ALERT {mode_tag}: {ticker}** — {arrow} {direction.upper()}\n"
+        f"\U0001f4e1 **BOS ALERT {mode_tag}: {ticker}** \u2014 {arrow} {direction.upper()}\n"
         f"Break: **${bos_price:.2f}** | Level: {level}\n"
-        f"⏳ Watching for FVG (up to {MAX_WATCH_BARS} min) | "
-        f"🕐 {_now_et().strftime('%I:%M %p ET')}"
+        f"\u23f3 Watching for FVG (up to {MAX_WATCH_BARS} min) | "
+        f"\U0001f550 {_now_et().strftime('%I:%M %p ET')}"
     )
     try:
         send_simple_message(msg)
-        print(f"[WATCH] 📡 {ticker} {direction.upper()} BOS @ ${bos_price:.2f}")
+        print(f"[WATCH] \U0001f4e1 {ticker} {direction.upper()} BOS @ ${bos_price:.2f}")
     except Exception as e:
         print(f"[WATCH] Alert error: {e}")
 
@@ -688,34 +709,83 @@ def detect_fvg_after_break(bars, breakout_idx, direction):
         if direction == "bull":
             gap = c2["low"] - c0["high"]
             if gap > 0 and (gap / c0["high"]) >= config.FVG_MIN_SIZE_PCT:
-                print(f"[FVG] BULL ${c0['high']:.2f}–${c2['low']:.2f}")
+                print(f"[FVG] BULL ${c0['high']:.2f}\u2013${c2['low']:.2f}")
                 return c0["high"], c2["low"]
         elif direction == "bear":
             gap = c0["low"] - c2["high"]
             if gap > 0 and (gap / c0["low"]) >= config.FVG_MIN_SIZE_PCT:
-                print(f"[FVG] BEAR ${c2['high']:.2f}–${c0['low']:.2f}")
+                print(f"[FVG] BEAR ${c2['high']:.2f}\u2013${c0['low']:.2f}")
                 return c2["high"], c0["low"]
     return None, None
 
 
 # ─────────────────────────────────────────────────────────────
-# PHASE 2 — SIGNAL PIPELINE (Steps 7-12)
+# PHASE 2 — SIGNAL PIPELINE (Steps 6.5–12)
 # ─────────────────────────────────────────────────────────────
 
 def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
                           or_high_ref, or_low_ref, signal_type,
                           bars_session, breakout_idx):
+
+    # ════════════════════════════════════════════════════════════
+    # STEP 6.5 — OPTIONS PRE-VALIDATION GATE  (★ NEW)
+    # Runs BEFORE confirmation (Step 7) to avoid wasting time on bad setups.
+    # Uses the current bar close as a proxy entry price (actual entry is
+    # determined in Step 7; we only need a ballpark for GEX headwind check).
+    #
+    # SOFT mode (default): logs tradability result, never drops signals.
+    #   → Use this to collect data on how often the gate would fire.
+    # HARD mode: drops signals that fail tradability or have GEX headwinds.
+    #   → Switch OPTIONS_PRE_GATE_MODE to "HARD" after validating gate logic.
+    #
+    # _pre_options_data is carried forward to Step 10 so the GEX/IVR data
+    # fetched here does not need to be re-fetched from the API.
+    # ════════════════════════════════════════════════════════════
+    _pre_options_data = None
+    if OPTIONS_PRE_GATE_ENABLED and options_dm is not None:
+        try:
+            _proxy_entry = bars_session[-1]["close"]
+            _opts_check  = options_dm.validate_for_trading(ticker, direction, _proxy_entry)
+            _tradeable   = _opts_check.get("tradeable", True)
+            _reason      = _opts_check.get("reason", "")
+            _pre_options_data = _opts_check  # carry gex_data + ivr_data forward to Step 10/11
+
+            if OPTIONS_PRE_GATE_MODE == "HARD":
+                if not _tradeable:
+                    print(
+                        f"[{ticker}] \u274c OPTIONS GATE [HARD]: {_reason} "
+                        f"\u2014 signal dropped before confirmation"
+                    )
+                    return False
+                print(f"[{ticker}] \u2705 OPTIONS GATE [HARD]: passed \u2014 proceeding to confirmation")
+            else:  # SOFT (default)
+                _gate_emoji = "\u2705" if _tradeable else "\u26a0\ufe0f"
+                print(
+                    f"[{ticker}] {_gate_emoji} OPTIONS GATE [SOFT]: "
+                    f"tradeable={_tradeable} | {_reason}"
+                )
+                if _opts_check.get("gex_data") and _opts_check["gex_data"].get("has_data"):
+                    _gd = _opts_check["gex_data"]
+                    print(
+                        f"[{ticker}]   GEX zone={('NEG' if _gd.get('neg_gex_zone') else 'POS')} "
+                        f"pin=${_gd.get('gamma_pin', 'N/A')} "
+                        f"flip=${_gd.get('gamma_flip', 'N/A')}"
+                    )
+        except Exception as _gate_err:
+            print(f"[{ticker}] OPTIONS GATE error (non-fatal): {_gate_err}")
+            _pre_options_data = None
+
     # STEP 7 — CONFIRMATION CANDLE
     result = wait_for_confirmation(
         bars_session, direction, (zone_low, zone_high), breakout_idx + 1
     )
     found, entry_price, base_grade, confirm_idx, confirm_type = result
     if not found or base_grade == "reject":
-        print(f"[{ticker}] — No confirmation (found={found}, grade={base_grade})")
+        print(f"[{ticker}] \u2014 No confirmation (found={found}, grade={base_grade})")
         return False
 
     if signal_type == "CFW6_INTRADAY" and base_grade not in INTRADAY_MIN_GRADES:
-        print(f"[{ticker}] — Intraday grade {base_grade} below A threshold")
+        print(f"[{ticker}] \u2014 Intraday grade {base_grade} below A threshold")
         return False
 
     # STEP 8 — CONFIRMATION LAYERS
@@ -724,91 +794,88 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         current_price=entry_price, breakout_idx=breakout_idx, base_grade=base_grade
     )
     if conf_result["final_grade"] == "reject":
-        print(f"[{ticker}] — Rejected by confirmation layers")
+        print(f"[{ticker}] \u2014 Rejected by confirmation layers")
         return False
     final_grade = conf_result["final_grade"]
 
     # STEP 8.5 — MULTI-INDICATOR VALIDATION
-    latest_bar = bars_session[-1]
+    latest_bar     = bars_session[-1]
     current_volume = latest_bar.get("volume", 0)
-    
+
     # Convert direction to signal_direction for validator
     signal_direction = "LONG" if direction == "bull" else "SHORT"
-    
+
     # Store original confidence for comparison
-    base_confidence = compute_confidence(final_grade, "5m", ticker)
+    base_confidence    = compute_confidence(final_grade, "5m", ticker)
     original_confidence = base_confidence
-    
+
     # Run validation if enabled
     validation_result = None
     if VALIDATOR_ENABLED:
         try:
             validator = get_validator()
-            # FIXED: Use correct parameter names from validator API
             should_pass, adjusted_conf, metadata = validator.validate_signal(
                 ticker=ticker,
                 signal_direction=signal_direction,
-                current_price=entry_price,  # Fixed: was 'price'
+                current_price=entry_price,
                 current_volume=current_volume,
-                base_confidence=original_confidence  # Fixed: was 'confidence'
+                base_confidence=original_confidence
             )
-            
-            # Package result in expected format for compatibility
+
             validation_result = {
-                'should_take': should_pass,
-                'original_confidence': original_confidence * 100,
-                'adjusted_confidence': adjusted_conf * 100,
-                'checks_passed': len(metadata['summary']['passed_checks']),
-                'total_checks': len(metadata['summary']['passed_checks']) + len(metadata['summary']['failed_checks']),
-                'checks': metadata['checks'],
-                'failed_checks': metadata['summary']['failed_checks']
+                'should_take':           should_pass,
+                'original_confidence':   original_confidence * 100,
+                'adjusted_confidence':   adjusted_conf * 100,
+                'checks_passed':         len(metadata['summary']['passed_checks']),
+                'total_checks':          len(metadata['summary']['passed_checks']) + len(metadata['summary']['failed_checks']),
+                'checks':                metadata['checks'],
+                'failed_checks':         metadata['summary']['failed_checks']
             }
-            
-            # Update statistics
+
             _validator_stats['tested'] += 1
             if validation_result['should_take']:
                 _validator_stats['would_pass'] += 1
             else:
                 _validator_stats['would_filter'] += 1
-            
+
             conf_change = validation_result['adjusted_confidence'] - validation_result['original_confidence']
             if conf_change > 0:
                 _validator_stats['boosted'] += 1
             elif conf_change < 0:
                 _validator_stats['penalized'] += 1
-            
-            # Format test log message
-            status_emoji = "✅" if validation_result['should_take'] else "❌"
-            trend_emoji = "📈" if conf_change > 0 else "📉" if conf_change < 0 else "➡️"
-            
-            print(f"[VALIDATOR TEST] {ticker} {status_emoji} | "
-                  f"Conf: {validation_result['original_confidence']:.0f}% → "
-                  f"{validation_result['adjusted_confidence']:.0f}% {trend_emoji} "
-                  f"({conf_change:+.0f}%) | "
-                  f"Score: {validation_result['checks_passed']}/{validation_result['total_checks']}")
-            
+
+            status_emoji = "\u2705" if validation_result['should_take'] else "\u274c"
+            trend_emoji  = "\U0001f4c8" if conf_change > 0 else "\U0001f4c9" if conf_change < 0 else "\u27a1\ufe0f"
+
+            print(
+                f"[VALIDATOR TEST] {ticker} {status_emoji} | "
+                f"Conf: {validation_result['original_confidence']:.0f}% \u2192 "
+                f"{validation_result['adjusted_confidence']:.0f}% {trend_emoji} "
+                f"({conf_change:+.0f}%) | "
+                f"Score: {validation_result['checks_passed']}/{validation_result['total_checks']}"
+            )
+
             if not validation_result['should_take']:
-                failed = [k.upper() for k, v in validation_result['checks'].items() 
-                         if isinstance(v, dict) and not v.get('passed', True)]
+                failed = [
+                    k.upper() for k, v in validation_result['checks'].items()
+                    if isinstance(v, dict) and not v.get('passed', True)
+                ]
                 if failed:
                     print(f"[VALIDATOR TEST]   Would filter: {', '.join(failed)}")
-            
-            # In TEST MODE, adjust confidence but don't filter
+
             if VALIDATOR_TEST_MODE:
                 base_confidence = adjusted_conf
             else:
-                # FULL MODE - actually filter signals
                 if not validation_result['should_take']:
                     print(f"[VALIDATOR] {ticker} FILTERED - {', '.join(validation_result['failed_checks'])}")
                     return False
                 base_confidence = adjusted_conf
-                
+
         except Exception as e:
             print(f"[VALIDATOR] Error validating {ticker}: {e}")
             import traceback
             traceback.print_exc()
-            # On error, continue without validation
-    
+
     # STEP 9 — STOPS & TARGETS
     stop_price, t1, t2 = compute_stop_and_targets(
         bars_session, direction, or_high_ref, or_low_ref, entry_price,
@@ -816,13 +883,18 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
     )
 
     # STEP 10 — OPTIONS
+    # get_options_recommendation() fetches chain internally; if _pre_options_data
+    # was captured in Step 6.5 the chain is already cached in options_dm and
+    # this call returns instantly without a new API round-trip.
     options_rec = get_options_recommendation(
         ticker=ticker, direction=direction,
         entry_price=entry_price, target_price=t1,
         stop_price=stop_price
     )
+    if _pre_options_data and _pre_options_data.get("gex_data"):
+        print(f"[{ticker}] [OPTIONS] GEX data reused from Step 6.5 cache")
 
-    # STEP 11 — CONFIDENCE (now uses validator-adjusted base_confidence)
+    # STEP 11 — CONFIDENCE (uses validator-adjusted base_confidence)
     ticker_multiplier = learning_engine.get_ticker_confidence_multiplier(ticker)
     try:
         from timeframe_manager import calculate_mtf_convergence_boost
@@ -845,30 +917,32 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         1.0
     )
     print(
-        f"[CONFIDENCE] Base:{base_confidence:.2f} × Ticker:{ticker_multiplier:.2f} "
-        f"× Mode:{mode_decay:.2f} × IVR:{ivr_multiplier:.2f}[{ivr_label}] "
-        f"× UOA:{uoa_multiplier:.2f}[{uoa_label}] "
-        f"× GEX:{gex_multiplier:.2f}[{gex_label}] "
+        f"[CONFIDENCE] Base:{base_confidence:.2f} \u00d7 Ticker:{ticker_multiplier:.2f} "
+        f"\u00d7 Mode:{mode_decay:.2f} \u00d7 IVR:{ivr_multiplier:.2f}[{ivr_label}] "
+        f"\u00d7 UOA:{uoa_multiplier:.2f}[{uoa_label}] "
+        f"\u00d7 GEX:{gex_multiplier:.2f}[{gex_label}] "
         f"+ MTF:{mtf_boost:.2f} = {final_confidence:.2f}"
     )
 
     # STEP 11b — CONFIDENCE THRESHOLD GATE
-    min_type  = (config.MIN_CONFIDENCE_INTRADAY
-                 if signal_type == "CFW6_INTRADAY"
-                 else config.MIN_CONFIDENCE_OR)
+    min_type  = (
+        config.MIN_CONFIDENCE_INTRADAY
+        if signal_type == "CFW6_INTRADAY"
+        else config.MIN_CONFIDENCE_OR
+    )
     min_grade = config.MIN_CONFIDENCE_BY_GRADE.get(final_grade, min_type)
     eff_min   = max(min_type, min_grade, config.CONFIDENCE_ABSOLUTE_FLOOR)
 
     if final_confidence < eff_min:
         print(
-            f"[{ticker}] 🚫 GATED: confidence {final_confidence:.2f} < "
+            f"[{ticker}] \U0001f6ab GATED: confidence {final_confidence:.2f} < "
             f"min {eff_min:.2f} "
             f"[type={min_type:.2f} grade={min_grade:.2f} abs={config.CONFIDENCE_ABSOLUTE_FLOOR:.2f}] "
-            f"[{signal_type}/{final_grade}] — signal dropped"
+            f"[{signal_type}/{final_grade}] \u2014 signal dropped"
         )
         return False
 
-    print(f"[{ticker}] ✅ GATE PASSED: {final_confidence:.2f} >= {eff_min:.2f}")
+    print(f"[{ticker}] \u2705 GATE PASSED: {final_confidence:.2f} >= {eff_min:.2f}")
 
     # STEP 12 — ARM (with validation result attached)
     arm_ticker(
@@ -893,18 +967,20 @@ def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high,
     # Allows tighter stops on low volatility setups while
     # wider ATR multipliers (2.0x-3.0x) ensure reasonable risk
     if abs(entry_price - stop_price) < entry_price * 0.001:  # Was 0.002 (0.2%), now 0.001 (0.1%)
-        print(f"[ARM] ⚠️ {ticker} stop too tight — skipping")
+        print(f"[ARM] \u26a0\ufe0f {ticker} stop too tight \u2014 skipping")
         return
 
     open_positions = position_manager.get_open_positions()
     if _is_highly_correlated(ticker, open_positions, window_bars=60, threshold=0.9):
-        print(f"[CORR] Skipping {ticker} — highly correlated with open book")
+        print(f"[CORR] Skipping {ticker} \u2014 highly correlated with open book")
         return
 
     mode_label = " [INTRADAY]" if signal_type == "CFW6_INTRADAY" else " [OR]"
-    print(f"✅ {ticker} ARMED{mode_label}: {direction.upper()} | "
-          f"Entry:${entry_price:.2f} Stop:${stop_price:.2f} "
-          f"T1:${t1:.2f} T2:${t2:.2f} | {confidence*100:.1f}% ({grade})")
+    print(
+        f"\u2705 {ticker} ARMED{mode_label}: {direction.upper()} | "
+        f"Entry:${entry_price:.2f} Stop:${stop_price:.2f} "
+        f"T1:${t1:.2f} T2:${t2:.2f} | {confidence*100:.1f}% ({grade})"
+    )
 
     log_proposed_trade(ticker, signal_type, direction, entry_price, confidence, grade)
     send_options_signal_alert(
@@ -919,7 +995,7 @@ def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high,
         entry_price=entry_price, stop_price=stop_price,
         t1=t1, t2=t2, confidence=confidence, grade=grade, options_rec=options_rec
     )
-    
+
     # Store armed signal in memory AND DB
     armed_signal_data = {
         "position_id": position_id, "direction": direction,
@@ -928,9 +1004,9 @@ def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high,
         "grade": grade, "signal_type": signal_type,
         "validation": validation_result
     }
-    armed_signals[ticker] = armed_signal_data
+    armed_signals[ticker]     = armed_signal_data
     _persist_armed_signal(ticker, armed_signal_data)
-    
+
     print(f"[ARMED] {ticker} ID:{position_id}")
 
 
@@ -988,8 +1064,10 @@ def process_ticker(ticker: str):
             print(f"[{ticker}] No session bars")
             return
 
-        print(f"[{ticker}] {_now_et().date()} ({len(bars_session)} bars) "
-              f"{_bar_time(bars_session[0])} → {_bar_time(bars_session[-1])}")
+        print(
+            f"[{ticker}] {_now_et().date()} ({len(bars_session)} bars) "
+            f"{_bar_time(bars_session[0])} \u2192 {_bar_time(bars_session[-1])}"
+        )
 
         if is_force_close_time(bars_session[-1]):
             position_manager.close_all_eod({ticker: bars_session[-1]["close"]})
@@ -999,16 +1077,14 @@ def process_ticker(ticker: str):
 
         has_earns, earns_date = has_earnings_soon(ticker)
         if has_earns:
-            print(f"[{ticker}] ❌ Earnings {earns_date} — skip")
+            print(f"[{ticker}] \u274c Earnings {earns_date} \u2014 skip")
             return
 
-        # ── WATCHING STATE ─────────────────────────────────────────────────────────
+        # ── WATCHING STATE ────────────────────────────────────────────────────────────────────────
         if ticker in watching_signals:
             w = watching_signals[ticker]
 
             # Resolve breakout_idx for entries reloaded from DB after a restart.
-            # breakout_idx is an array position and invalid across restarts, so
-            # we store breakout_bar_dt and find the matching bar in today's session.
             if w.get("breakout_idx") is None:
                 bar_dt_target = _strip_tz(w.get("breakout_bar_dt"))
                 resolved_idx  = None
@@ -1019,26 +1095,28 @@ def process_ticker(ticker: str):
                             break
                 if resolved_idx is None:
                     print(
-                        f"[{ticker}] ⚠️ Watch DB entry: breakout bar "
-                        f"{bar_dt_target} not found in today's session — discarding"
+                        f"[{ticker}] \u26a0\ufe0f Watch DB entry: breakout bar "
+                        f"{bar_dt_target} not found in today's session \u2014 discarding"
                     )
                     del watching_signals[ticker]
                     _remove_watch_from_db(ticker)
                     # fall through to fresh scan
                 else:
                     w["breakout_idx"] = resolved_idx
-                    print(f"[{ticker}] 🔄 Watch restored from DB: "
-                          f"breakout_idx={resolved_idx} ({bar_dt_target})")
+                    print(
+                        f"[{ticker}] \U0001f504 Watch restored from DB: "
+                        f"breakout_idx={resolved_idx} ({bar_dt_target})"
+                    )
 
         if ticker in watching_signals:   # may have been removed in resolution block above
             w          = watching_signals[ticker]
             bars_since = len(bars_session) - w["breakout_idx"]
             if bars_since > MAX_WATCH_BARS:
-                print(f"[{ticker}] ⏰ Watch expired — clearing")
+                print(f"[{ticker}] \u23f0 Watch expired \u2014 clearing")
                 del watching_signals[ticker]
                 _remove_watch_from_db(ticker)
             else:
-                print(f"[{ticker}] 👁️ WATCHING [{bars_since}/{MAX_WATCH_BARS}]")
+                print(f"[{ticker}] \U0001f441\ufe0f WATCHING [{bars_since}/{MAX_WATCH_BARS}]")
                 zl, zh = detect_fvg_after_break(bars_session, w["breakout_idx"], w["direction"])
                 if zl is None:
                     return
@@ -1051,7 +1129,7 @@ def process_ticker(ticker: str):
                 _remove_watch_from_db(ticker)
                 return
 
-        # ── FRESH SCAN ──────────────────────────────────────────────────────────
+        # ── FRESH SCAN ────────────────────────────────────────────────────────────────────
         direction = breakout_idx = zone_low = zone_high = None
         or_high_ref = or_low_ref = scan_mode = None
 
@@ -1062,10 +1140,10 @@ def process_ticker(ticker: str):
                 print(
                     f"[{ticker}] OR too narrow "
                     f"({or_range_pct:.2%} < {config.MIN_OR_RANGE_PCT:.2%}) "
-                    f"— skipping OR path, trying intraday BOS"
+                    f"\u2014 skipping OR path, trying intraday BOS"
                 )
             else:
-                print(f"[{ticker}] OR: ${or_low:.2f}–${or_high:.2f} ({or_range_pct:.2%})")
+                print(f"[{ticker}] OR: ${or_low:.2f}\u2013${or_high:.2f} ({or_range_pct:.2%})")
                 direction, breakout_idx = detect_breakout_after_or(bars_session, or_high, or_low)
                 if direction:
                     zone_low, zone_high = detect_fvg_after_break(
@@ -1097,11 +1175,7 @@ def process_ticker(ticker: str):
         else:
             print(f"[{ticker}] No OR bars")
 
-        # ── INTRADAY BOS+FVG PATH (scan_bos_fvg from bos_fvg_engine) ───────────
-        # Uses proper swing-point structure BOS detection and adaptive FVG
-        # threshold from get_adaptive_fvg_threshold(). Called every bar —
-        # no watch state needed because scan_bos_fvg() checks entry alignment
-        # in real-time on the latest bar.
+        # ── INTRADAY BOS+FVG PATH (scan_bos_fvg from bos_fvg_engine) ─────────────────────
         if scan_mode is None:
             if len(bars_session) < 30:
                 return
@@ -1109,7 +1183,7 @@ def process_ticker(ticker: str):
             fvg_threshold, _ = get_adaptive_fvg_threshold(bars_session, ticker)
             bos_signal = scan_bos_fvg(ticker, bars_session, fvg_min_pct=fvg_threshold)
             if bos_signal is None:
-                print(f"[{ticker}] — No BOS+FVG signal")
+                print(f"[{ticker}] \u2014 No BOS+FVG signal")
                 return
 
             direction    = bos_signal["direction"]
@@ -1117,9 +1191,6 @@ def process_ticker(ticker: str):
             zone_high    = bos_signal["fvg_high"]
             breakout_idx = bos_signal["bos_idx"]
 
-            # Structural reference levels for stop calculation.
-            # Bull: broken resistance as upper ref; FVG low as support floor.
-            # Bear: FVG high as resistance ceiling; broken support as lower ref.
             if direction == "bull":
                 or_high_ref = bos_signal["bos_price"]
                 or_low_ref  = bos_signal["fvg_low"]
@@ -1130,10 +1201,12 @@ def process_ticker(ticker: str):
             scan_mode = "INTRADAY_BOS"
 
         signal_type = "CFW6_OR" if scan_mode == "OR_ANCHORED" else "CFW6_INTRADAY"
-        print(f"[{ticker}] {scan_mode} | FVG ${zone_low:.2f}–${zone_high:.2f}")
-        _run_signal_pipeline(ticker, direction, zone_low, zone_high,
-                             or_high_ref, or_low_ref, signal_type,
-                             bars_session, breakout_idx)
+        print(f"[{ticker}] {scan_mode} | FVG ${zone_low:.2f}\u2013${zone_high:.2f}")
+        _run_signal_pipeline(
+            ticker, direction, zone_low, zone_high,
+            or_high_ref, or_low_ref, signal_type,
+            bars_session, breakout_idx
+        )
 
     except Exception as e:
         print(f"process_ticker error {ticker}:", e)
