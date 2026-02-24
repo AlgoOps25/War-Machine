@@ -43,6 +43,8 @@ from db_connection import (
 
 ET = ZoneInfo("America/New_York")
 
+_logged_skip = set()  # Track tickers we've logged skip messages for
+
 # Per-ticker update TTL — prevents hammering EODHD during rapid scan cycles.
 _last_update: Dict[str, datetime] = {}
 UPDATE_TTL = timedelta(minutes=2)
@@ -163,20 +165,31 @@ class DataManager:
             bars = []
             for bar in data:
                 try:
+                    # Check for required fields
+                    required = ["timestamp", "open", "high", "low", "close", "volume"]
+                    missing = [k for k in required if k not in bar or bar[k] is None]
+                    
+                    if missing:
+                        print(f"[DATA] {ticker}: Skipping bar with missing fields: {missing}")
+                        continue
+                    
                     dt_et = datetime.fromtimestamp(
                         bar["timestamp"], tz=ET
                     ).replace(tzinfo=None)
+                    
+                    # Legitimate zero volume is fine - we already validated it exists
                     bars.append({
                         "datetime": dt_et,
                         "open":     float(bar["open"]),
                         "high":     float(bar["high"]),
                         "low":      float(bar["low"]),
                         "close":    float(bar["close"]),
-                        "volume":   int(bar["volume"])
+                        "volume":   int(bar["volume"])  # Can be 0 legitimately
                     })
-                except Exception as e:
+                except (ValueError, TypeError, KeyError) as e:
                     print(f"[DATA] Bar parse error for {ticker}: {e}")
                     continue
+
             return bars
 
         except requests.exceptions.HTTPError as e:
@@ -664,38 +677,38 @@ class DataManager:
             "size":           db_size
         }
 
-        def get_vix_level(self):
-            """
-            Get current VIX level for volatility-based threshold adjustments.
+    def get_vix_level(self):
+        """
+        Get current VIX level for volatility-based threshold adjustments.
 
-            Returns:
-                dict with 'close' key containing VIX level, or None if unavailable
-            """
-            try:
-                # Try to get VIX from today's cached data first
-                if "^VIX" in self._today_5m_bars:
-                    bars = self._today_5m_bars["^VIX"]
-                    if bars:
-                        return {"close": bars[-1]["close"]}
+        Returns:
+            dict with 'close' key containing VIX level, or None if unavailable
+        """
+        try:
+            # Try to get VIX from today's cached data first
+            if "^VIX" in self._today_5m_bars:
+                bars = self._today_5m_bars["^VIX"]
+                if bars:
+                    return {"close": bars[-1]["close"]}
 
-                # Fall back to fetching latest VIX data
-                import requests
-                url = f"https://eodhd.com/api/real-time/VIX.INDX"
-                params = {
-                    "api_token": config.EODHD_API_KEY,
-                    "fmt": "json"
-                }
+            # Fall back to fetching latest VIX data
+            import requests
+            url = f"https://eodhd.com/api/real-time/VIX.INDX"
+            params = {
+                "api_token": config.EODHD_API_KEY,
+                "fmt": "json"
+            }
 
-                response = requests.get(url, params=params, timeout=5)
-                if response.status_code == 200:
-                    data = response.json()
-                    return {"close": float(data.get("close", 0))}
+            response = requests.get(url, params=params, timeout=5)
+            if response.status_code == 200:
+                data = response.json()
+                return {"close": float(data.get("close", 0))}
 
-                return None
+            return None
 
-            except Exception as e:
-                print(f"[DATA-MGR] VIX fetch error: {e}")
-                return None
+        except Exception as e:
+            print(f"[DATA-MGR] VIX fetch error: {e}")
+            return None
 # ─────────────────────────────────────────────────────────────
 # Global singleton
 # ─────────────────────────────────────────────────────────────
