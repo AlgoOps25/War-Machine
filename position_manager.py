@@ -12,7 +12,8 @@ from db_connection import get_conn, ph, dict_cursor, serial_pk
 class PositionManager:
 
     def __init__(self, db_path: str = None):
-        self.db_path = db_path or config.TRADES_DB_PATH
+        # Default to market_memory.db for unified storage (was config.TRADES_DB_PATH)
+        self.db_path = db_path or "market_memory.db"
         self.positions = []  # Active positions cache
         self._initialize_database()
         self._close_stale_positions()  # Force-close any positions from prior trading days
@@ -59,7 +60,7 @@ class PositionManager:
             return False
 
     def _initialize_database(self):
-        """Create positions table if not exists."""
+        """Create positions table if not exists with options columns."""
         conn = get_conn(self.db_path)
         cursor = conn.cursor()
         cursor.execute(f"""
@@ -82,7 +83,13 @@ class PositionManager:
                 exit_reason TEXT,
                 pnl REAL,
                 status TEXT DEFAULT 'OPEN',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                strike REAL,
+                expiry TEXT,
+                contract_type TEXT,
+                delta REAL,
+                ivr REAL,
+                gex_context TEXT
             )
         """)
         conn.commit()
@@ -177,9 +184,26 @@ class PositionManager:
                                                  risk_per_share=risk_per_share)
         contracts = sizing["contracts"]
 
+        # Extract options data if provided
+        strike         = None
+        expiry         = None
+        contract_type  = None
+        delta          = None
+        ivr            = None
+        gex_context    = None
+
+        if options_rec:
+            strike        = options_rec.get("strike")
+            expiry        = options_rec.get("expiry")
+            contract_type = options_rec.get("contract_type")  # "CALL" or "PUT"
+            delta         = options_rec.get("delta")
+            ivr           = options_rec.get("ivr")
+            gex_context   = options_rec.get("gex_label")  # e.g. "GEX-NEG|PIN-$225"
+
         p      = ph()
         values = (ticker, direction, entry_price, stop_price, t1, t2,
-                  contracts, contracts, grade, confidence)
+                  contracts, contracts, grade, confidence,
+                  strike, expiry, contract_type, delta, ivr, gex_context)
 
         conn   = get_conn(self.db_path)
         cursor = dict_cursor(conn)
@@ -188,8 +212,10 @@ class PositionManager:
             cursor.execute(f"""
                 INSERT INTO positions
                     (ticker, direction, entry_price, stop_price, t1_price, t2_price,
-                     contracts, remaining_contracts, grade, confidence, status)
-                VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p},{p},'OPEN')
+                     contracts, remaining_contracts, grade, confidence, status,
+                     strike, expiry, contract_type, delta, ivr, gex_context)
+                VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p},{p},'OPEN',
+                        {p},{p},{p},{p},{p},{p})
                 RETURNING id
             """, values)
             position_id = cursor.fetchone()["id"]
@@ -197,8 +223,10 @@ class PositionManager:
             cursor.execute(f"""
                 INSERT INTO positions
                     (ticker, direction, entry_price, stop_price, t1_price, t2_price,
-                     contracts, remaining_contracts, grade, confidence, status)
-                VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p},{p},'OPEN')
+                     contracts, remaining_contracts, grade, confidence, status,
+                     strike, expiry, contract_type, delta, ivr, gex_context)
+                VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p},{p},'OPEN',
+                        {p},{p},{p},{p},{p},{p})
             """, values)
             position_id = cursor.lastrowid
 
@@ -226,6 +254,18 @@ class PositionManager:
               f"T1: {t1:.2f}  T2: {t2:.2f}")
         print(f"  Contracts: {contracts}  Grade: {grade}  "
               f"Confidence: {confidence:.1%}  Risk/share: ${risk_per_share:.2f}")
+        
+        # Log options context if available
+        if options_rec:
+            opt_str = f"  Options: {contract_type} ${strike} exp {expiry}"
+            if delta:
+                opt_str += f" | Delta: {delta:.2f}"
+            if ivr:
+                opt_str += f" | IVR: {ivr:.0f}"
+            if gex_context:
+                opt_str += f" | {gex_context}"
+            print(opt_str)
+        
         return position_id
 
 
@@ -511,19 +551,22 @@ class PositionManager:
         lines.append("=" * 50)
         return "\n".join(lines)
 
+    def get_todays_closed_trades(self) -> List[Dict]:
+        """Return all trades closed today for EOD ML training."""
+        p      = ph()
+        conn   = get_conn(self.db_path)
+        cursor = dict_cursor(conn)
+        today  = datetime.now().strftime("%Y-%m-%d")
+        cursor.execute(f"""
+            SELECT ticker, direction, grade, entry_price, exit_price, pnl
+            FROM positions
+            WHERE status = 'CLOSED' AND DATE(exit_time) = {p}
+            AND exit_reason != 'STALE_EOD'
+        """, (today,))
+        rows = cursor.fetchall()
+        conn.close()
+        return [dict(row) for row in rows]
+
 
 # ── Global singleton ──────────────────────────────────────────────────────────────────
 position_manager = PositionManager()
-
-
-# ── Legacy compatibility shims ──────────────────────────────────────────────────────────────────
-def update_ticker(ticker: str):
-    """Legacy function — calls DataManager."""
-    from data_manager import data_manager
-    data_manager.update_ticker(ticker)
-
-
-def cleanup_old_bars(days_to_keep: int = 7):
-    """Legacy function — calls DataManager."""
-    from data_manager import data_manager
-    data_manager.cleanup_old_bars(days_to_keep)
