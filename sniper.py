@@ -13,6 +13,7 @@
 #                    Smart expiration auto-cleans stale entries on load.
 # OPTIONS PRE-GATE: Early options validation before confirmation — kills bad setups
 #                   before CPU-heavy confirmation runs (Step 6.5, SOFT/HARD modes).
+# PHASE 4 TRACKING: Signal funnel analytics for optimization visibility
 import traceback
 import requests
 import json
@@ -29,16 +30,30 @@ from learning_policy import compute_confidence
 import config
 from bos_fvg_engine import scan_bos_fvg, is_force_close_time
 
+# ════════════════════════════════════════════════════════════════════════════════
+# PHASE 4 INTEGRATION - Signal Analytics & Performance Monitoring
+# ════════════════════════════════════════════════════════════════════════════════
+try:
+    from signal_analytics import signal_tracker
+    from performance_alerts import alert_manager
+    PHASE_4_ENABLED = True
+    print("[SIGNALS] ✅ Phase 4 tracking enabled (signal_analytics + performance_alerts)")
+except ImportError:
+    signal_tracker = None
+    alert_manager = None
+    PHASE_4_ENABLED = False
+    print("[SIGNALS] ⚠️  Phase 4 tracking disabled (modules not available)")
+
 # Multi-indicator validator
 try:
     from signal_validator import get_validator
     VALIDATOR_ENABLED = True
     VALIDATOR_TEST_MODE = False  # Set to False to enable filtering
     _validator_stats = {'tested': 0, 'passed': 0, 'filtered': 0, 'boosted': 0, 'penalized': 0}
-    print("[SIGNALS] \u2705 Multi-indicator validator ACTIVE (filtering enabled)")
+    print("[SIGNALS] ✅ Multi-indicator validator ACTIVE (filtering enabled)")
 except ImportError:
     VALIDATOR_ENABLED = False
-    print("[SIGNALS] \u26a0\ufe0f  signal_validator not available - validation disabled")
+    print("[SIGNALS] ⚠️  signal_validator not available - validation disabled")
 
 # ────────────────────────────────────────────────────────────────────────
 # OPTIONS PRE-VALIDATION GATE
@@ -47,11 +62,11 @@ except ImportError:
 try:
     from options_data_manager import options_dm
     OPTIONS_PRE_GATE_ENABLED = True
-    print("[SNIPER] \u2705 Options pre-validation gate enabled")
+    print("[SNIPER] ✅ Options pre-validation gate enabled")
 except ImportError:
     options_dm = None
     OPTIONS_PRE_GATE_ENABLED = False
-    print("[SNIPER] \u26a0\ufe0f  options_data_manager not available \u2014 options gate disabled")
+    print("[SNIPER] ⚠️  options_data_manager not available — options gate disabled")
 
 # ── Global State ─────────────────────────────────────────────────────────────────────────────────────────────────────────
 armed_signals    = {}
@@ -131,7 +146,7 @@ def print_validation_stats():
     print(f"Confidence Boosted: {stats['boosted']} ({boost_pct:.1f}%)")
     print(f"Confidence Penalized: {stats['penalized']}")
     print("="*80)
-    print("\u26a0\ufe0f  TEST MODE ACTIVE - Signals NOT being filtered")
+    print("⚠️  TEST MODE ACTIVE - Signals NOT being filtered")
 
     print("="*80 + "\n")
 
@@ -280,7 +295,7 @@ def _cleanup_stale_armed_signals():
                 stale_tickers
             )
             conn.commit()
-            print(f"[ARMED-DB] \U0001f9f9 Auto-cleaned {len(stale_tickers)} closed position(s): {', '.join(stale_tickers)}")
+            print(f"[ARMED-DB] 🧹 Auto-cleaned {len(stale_tickers)} closed position(s): {', '.join(stale_tickers)}")
         
         conn.close()
         
@@ -354,7 +369,7 @@ def _load_armed_signals_from_db() -> dict:
         
         if loaded:
             print(
-                f"[ARMED-DB] \U0001f504 Reloaded {len(loaded)} armed signal(s) from DB after restart: "
+                f"[ARMED-DB] 🔄 Reloaded {len(loaded)} armed signal(s) from DB after restart: "
                 f"{', '.join(loaded.keys())}"
             )
         return loaded
@@ -496,7 +511,7 @@ def _cleanup_stale_watches():
         conn.close()
         
         if deleted_count > 0:
-            print(f"[WATCH-DB] \U0001f9f9 Auto-cleaned {deleted_count} stale watch(es) (older than {watch_window_minutes}min)")
+            print(f"[WATCH-DB] 🧹 Auto-cleaned {deleted_count} stale watch(es) (older than {watch_window_minutes}min)")
         
     except Exception as e:
         print(f"[WATCH-DB] Cleanup error: {e}")
@@ -554,7 +569,7 @@ def _load_watches_from_db() -> dict:
             }
         if loaded:
             print(
-                f"[WATCH-DB] \U0001f504 Reloaded {len(loaded)} watch state(s) from DB after restart: "
+                f"[WATCH-DB] 🔄 Reloaded {len(loaded)} watch state(s) from DB after restart: "
                 f"{', '.join(loaded.keys())}"
             )
         return loaded
@@ -638,7 +653,7 @@ def _is_highly_correlated(ticker: str, open_positions: list,
             continue
         corr = _pearson_corr(xs_ret[-m:], ys_ret[-m:])
         if corr >= threshold:
-            print(f"[CORR] {ticker} vs {other} corr={corr:.2f} \u2014 blocking new signal")
+            print(f"[CORR] {ticker} vs {other} corr={corr:.2f} — blocking new signal")
             return True
 
     return False
@@ -650,18 +665,18 @@ def _is_highly_correlated(ticker: str, open_positions: list,
 
 def send_bos_watch_alert(ticker, direction, bos_price, struct_high, struct_low,
                           signal_type="CFW6_INTRADAY"):
-    arrow    = "\U0001f7e2" if direction == "bull" else "\U0001f534"
+    arrow    = "🟢" if direction == "bull" else "🔴"
     level    = f"${struct_high:.2f}" if direction == "bull" else f"${struct_low:.2f}"
     mode_tag = "[OR]" if signal_type == "CFW6_OR" else "[INTRADAY]"
     msg = (
-        f"\U0001f4e1 **BOS ALERT {mode_tag}: {ticker}** \u2014 {arrow} {direction.upper()}\n"
+        f"📡 **BOS ALERT {mode_tag}: {ticker}** — {arrow} {direction.upper()}\n"
         f"Break: **${bos_price:.2f}** | Level: {level}\n"
-        f"\u23f3 Watching for FVG (up to {MAX_WATCH_BARS} min) | "
-        f"\U0001f550 {_now_et().strftime('%I:%M %p ET')}"
+        f"⏳ Watching for FVG (up to {MAX_WATCH_BARS} min) | "
+        f"🕐 {_now_et().strftime('%I:%M %p ET')}"
     )
     try:
         send_simple_message(msg)
-        print(f"[WATCH] \U0001f4e1 {ticker} {direction.upper()} BOS @ ${bos_price:.2f}")
+        print(f"[WATCH] 📡 {ticker} {direction.upper()} BOS @ ${bos_price:.2f}")
     except Exception as e:
         print(f"[WATCH] Alert error: {e}")
 
@@ -708,12 +723,12 @@ def detect_fvg_after_break(bars, breakout_idx, direction):
         if direction == "bull":
             gap = c2["low"] - c0["high"]
             if gap > 0 and (gap / c0["high"]) >= config.FVG_MIN_SIZE_PCT:
-                print(f"[FVG] BULL ${c0['high']:.2f}\u2013${c2['low']:.2f}")
+                print(f"[FVG] BULL ${c0['high']:.2f}–${c2['low']:.2f}")
                 return c0["high"], c2["low"]
         elif direction == "bear":
             gap = c0["low"] - c2["high"]
             if gap > 0 and (gap / c0["low"]) >= config.FVG_MIN_SIZE_PCT:
-                print(f"[FVG] BEAR ${c2['high']:.2f}\u2013${c0['low']:.2f}")
+                print(f"[FVG] BEAR ${c2['high']:.2f}–${c0['low']:.2f}")
                 return c2["high"], c0["low"]
     return None, None
 
@@ -752,13 +767,13 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
             if OPTIONS_PRE_GATE_MODE == "HARD":
                 if not _tradeable:
                     print(
-                        f"[{ticker}] \u274c OPTIONS GATE [HARD]: {_reason} "
-                        f"\u2014 signal dropped before confirmation"
+                        f"[{ticker}] ❌ OPTIONS GATE [HARD]: {_reason} "
+                        f"— signal dropped before confirmation"
                     )
                     return False
-                print(f"[{ticker}] \u2705 OPTIONS GATE [HARD]: passed \u2014 proceeding to confirmation")
+                print(f"[{ticker}] ✅ OPTIONS GATE [HARD]: passed — proceeding to confirmation")
             else:  # SOFT (default)
-                _gate_emoji = "\u2705" if _tradeable else "\u26a0\ufe0f"
+                _gate_emoji = "✅" if _tradeable else "⚠️"
                 print(
                     f"[{ticker}] {_gate_emoji} OPTIONS GATE [SOFT]: "
                     f"tradeable={_tradeable} | {_reason}"
@@ -780,11 +795,11 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
     )
     found, entry_price, base_grade, confirm_idx, confirm_type = result
     if not found or base_grade == "reject":
-        print(f"[{ticker}] \u2014 No confirmation (found={found}, grade={base_grade})")
+        print(f"[{ticker}] — No confirmation (found={found}, grade={base_grade})")
         return False
 
     if signal_type == "CFW6_INTRADAY" and base_grade not in INTRADAY_MIN_GRADES:
-        print(f"[{ticker}] \u2014 Intraday grade {base_grade} below A threshold")
+        print(f"[{ticker}] — Intraday grade {base_grade} below A threshold")
         return False
 
     # STEP 8 — CONFIRMATION LAYERS
@@ -793,9 +808,38 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         current_price=entry_price, breakout_idx=breakout_idx, base_grade=base_grade
     )
     if conf_result["final_grade"] == "reject":
-        print(f"[{ticker}] \u2014 Rejected by confirmation layers")
+        print(f"[{ticker}] — Rejected by confirmation layers")
         return False
     final_grade = conf_result["final_grade"]
+
+    # ════════════════════════════════════════════════════════════
+    # PHASE 4 INTEGRATION POINT #2 - Track Signal Generated
+    # Record after grade assignment (GENERATED stage)
+    # ════════════════════════════════════════════════════════════
+    
+    # Calculate preliminary stop/targets for tracking
+    _prelim_stop, _prelim_t1, _prelim_t2 = compute_stop_and_targets(
+        bars_session, direction, or_high_ref, or_low_ref, entry_price,
+        grade=final_grade
+    )
+    
+    # Track signal generation
+    if PHASE_4_ENABLED and signal_tracker:
+        try:
+            signal_tracker.record_signal_generated(
+                ticker=ticker,
+                signal_type=signal_type,
+                direction=direction,
+                grade=final_grade,
+                confidence=compute_confidence(final_grade, "5m", ticker),
+                entry_price=entry_price,
+                stop_price=_prelim_stop,
+                t1_price=_prelim_t1,
+                t2_price=_prelim_t2
+            )
+            print(f"[PHASE 4] 📊 {ticker} signal GENERATED - {signal_type} {direction.upper()} {final_grade}")
+        except Exception as e:
+            print(f"[PHASE 4] Signal tracking error: {e}")
 
     # STEP 8.5 — MULTI-INDICATOR VALIDATION
     latest_bar     = bars_session[-1]
@@ -843,12 +887,12 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
             elif conf_change < 0:
                 _validator_stats['penalized'] += 1
 
-            status_emoji = "\u2705" if validation_result['should_take'] else "\u274c"
-            trend_emoji  = "\U0001f4c8" if conf_change > 0 else "\U0001f4c9" if conf_change < 0 else "\u27a1\ufe0f"
+            status_emoji = "✅" if validation_result['should_take'] else "❌"
+            trend_emoji  = "📈" if conf_change > 0 else "📉" if conf_change < 0 else "➡️"
 
             print(
                 f"[VALIDATOR TEST] {ticker} {status_emoji} | "
-                f"Conf: {validation_result['original_confidence']:.0f}% \u2192 "
+                f"Conf: {validation_result['original_confidence']:.0f}% → "
                 f"{validation_result['adjusted_confidence']:.0f}% {trend_emoji} "
                 f"({conf_change:+.0f}%) | "
                 f"Score: {validation_result['checks_passed']}/{validation_result['total_checks']}"
@@ -875,7 +919,7 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
             import traceback
             traceback.print_exc()
 
-    # STEP 9 — STOPS & TARGETS
+    # STEP 9 — STOPS & TARGETS (recalculate with actual values)
     stop_price, t1, t2 = compute_stop_and_targets(
         bars_session, direction, or_high_ref, or_low_ref, entry_price,
         grade=final_grade
@@ -972,6 +1016,23 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
 
     print(f"[{ticker}] ✅ GATE PASSED: {final_confidence:.2f} >= {eff_min:.2f} (dynamic)")
     
+    # ════════════════════════════════════════════════════════════
+    # PHASE 4 INTEGRATION POINT #3 - Track Signal Armed
+    # Record after confirmation passes (ARMED stage)
+    # ════════════════════════════════════════════════════════════
+    if PHASE_4_ENABLED and signal_tracker:
+        try:
+            bars_to_confirmation = len(bars_session) - confirm_idx if confirm_idx else 0
+            signal_tracker.record_signal_armed(
+                ticker=ticker,
+                final_confidence=final_confidence,
+                bars_to_confirmation=bars_to_confirmation,
+                confirmation_type=confirm_type or 'retest'
+            )
+            print(f"[PHASE 4] 🎯 {ticker} signal ARMED - confidence={final_confidence:.2f}")
+        except Exception as e:
+            print(f"[PHASE 4] Armed tracking error: {e}")
+    
     # STEP 12 — ARM (with validation result attached)
     arm_ticker(
         ticker, direction, zone_low, zone_high,
@@ -995,17 +1056,17 @@ def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high,
     # Allows tighter stops on low volatility setups while
     # wider ATR multipliers (2.0x-3.0x) ensure reasonable risk
     if abs(entry_price - stop_price) < entry_price * 0.001:  # Was 0.002 (0.2%), now 0.001 (0.1%)
-        print(f"[ARM] \u26a0\ufe0f {ticker} stop too tight \u2014 skipping")
+        print(f"[ARM] ⚠️ {ticker} stop too tight — skipping")
         return
 
     open_positions = position_manager.get_open_positions()
     if _is_highly_correlated(ticker, open_positions, window_bars=60, threshold=0.9):
-        print(f"[CORR] Skipping {ticker} \u2014 highly correlated with open book")
+        print(f"[CORR] Skipping {ticker} — highly correlated with open book")
         return
 
     mode_label = " [INTRADAY]" if signal_type == "CFW6_INTRADAY" else " [OR]"
     print(
-        f"\u2705 {ticker} ARMED{mode_label}: {direction.upper()} | "
+        f"✅ {ticker} ARMED{mode_label}: {direction.upper()} | "
         f"Entry:${entry_price:.2f} Stop:${stop_price:.2f} "
         f"T1:${t1:.2f} T2:${t2:.2f} | {confidence*100:.1f}% ({grade})"
     )
@@ -1094,13 +1155,22 @@ def process_ticker(ticker: str):
 
         print(
             f"[{ticker}] {_now_et().date()} ({len(bars_session)} bars) "
-            f"{_bar_time(bars_session[0])} \u2192 {_bar_time(bars_session[-1])}"
+            f"{_bar_time(bars_session[0])} → {_bar_time(bars_session[-1])}"
         )
 
         if is_force_close_time(bars_session[-1]):
             position_manager.close_all_eod({ticker: bars_session[-1]["close"]})
             # Print validation stats before market close
             print_validation_stats()
+            
+            # Print Phase 4 analytics summary
+            if PHASE_4_ENABLED and signal_tracker:
+                try:
+                    summary = signal_tracker.get_daily_summary()
+                    print(summary)
+                except Exception as e:
+                    print(f"[PHASE 4] Summary error: {e}")
+            
             return
 
         
@@ -1120,8 +1190,8 @@ def process_ticker(ticker: str):
                             break
                 if resolved_idx is None:
                     print(
-                        f"[{ticker}] \u26a0\ufe0f Watch DB entry: breakout bar "
-                        f"{bar_dt_target} not found in today's session \u2014 discarding"
+                        f"[{ticker}] ⚠️ Watch DB entry: breakout bar "
+                        f"{bar_dt_target} not found in today's session — discarding"
                     )
                     del watching_signals[ticker]
                     _remove_watch_from_db(ticker)
@@ -1129,7 +1199,7 @@ def process_ticker(ticker: str):
                 else:
                     w["breakout_idx"] = resolved_idx
                     print(
-                        f"[{ticker}] \U0001f504 Watch restored from DB: "
+                        f"[{ticker}] 🔄 Watch restored from DB: "
                         f"breakout_idx={resolved_idx} ({bar_dt_target})"
                     )
 
@@ -1137,11 +1207,11 @@ def process_ticker(ticker: str):
             w          = watching_signals[ticker]
             bars_since = len(bars_session) - w["breakout_idx"]
             if bars_since > MAX_WATCH_BARS:
-                print(f"[{ticker}] \u23f0 Watch expired \u2014 clearing")
+                print(f"[{ticker}] ⏰ Watch expired — clearing")
                 del watching_signals[ticker]
                 _remove_watch_from_db(ticker)
             else:
-                print(f"[{ticker}] \U0001f441\ufe0f WATCHING [{bars_since}/{MAX_WATCH_BARS}]")
+                print(f"[{ticker}] 👁️ WATCHING [{bars_since}/{MAX_WATCH_BARS}]")
                 zl, zh = detect_fvg_after_break(bars_session, w["breakout_idx"], w["direction"])
                 if zl is None:
                     return
@@ -1165,10 +1235,10 @@ def process_ticker(ticker: str):
                 print(
                     f"[{ticker}] OR too narrow "
                     f"({or_range_pct:.2%} < {config.MIN_OR_RANGE_PCT:.2%}) "
-                    f"\u2014 skipping OR path, trying intraday BOS"
+                    f"— skipping OR path, trying intraday BOS"
                 )
             else:
-                print(f"[{ticker}] OR: ${or_low:.2f}\u2013${or_high:.2f} ({or_range_pct:.2%})")
+                print(f"[{ticker}] OR: ${or_low:.2f}–${or_high:.2f} ({or_range_pct:.2%})")
                 direction, breakout_idx = detect_breakout_after_or(bars_session, or_high, or_low)
                 if direction:
                     zone_low, zone_high = detect_fvg_after_break(
@@ -1208,7 +1278,7 @@ def process_ticker(ticker: str):
             fvg_threshold, _ = get_adaptive_fvg_threshold(bars_session, ticker)
             bos_signal = scan_bos_fvg(ticker, bars_session, fvg_min_pct=fvg_threshold)
             if bos_signal is None:
-                print(f"[{ticker}] \u2014 No BOS+FVG signal")
+                print(f"[{ticker}] — No BOS+FVG signal")
                 return
 
             direction    = bos_signal["direction"]
@@ -1226,7 +1296,7 @@ def process_ticker(ticker: str):
             scan_mode = "INTRADAY_BOS"
 
         signal_type = "CFW6_OR" if scan_mode == "OR_ANCHORED" else "CFW6_INTRADAY"
-        print(f"[{ticker}] {scan_mode} | FVG ${zone_low:.2f}\u2013${zone_high:.2f}")
+        print(f"[{ticker}] {scan_mode} | FVG ${zone_low:.2f}–${zone_high:.2f}")
         _run_signal_pipeline(
             ticker, direction, zone_low, zone_high,
             or_high_ref, or_low_ref, signal_type,
@@ -1243,4 +1313,3 @@ def send_discord(message: str):
         requests.post(config.DISCORD_WEBHOOK_URL, json={"content": message}, timeout=5)
     except Exception as e:
         print(f"[DISCORD] Error: {e}")
-
