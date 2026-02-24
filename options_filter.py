@@ -38,7 +38,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 import config
 from iv_tracker   import store_iv_observation, compute_ivr, ivr_to_confidence_multiplier
-# from uoa_scanner  import scan_chain_for_uoa  # Disabled - not needed yet
+from uoa_scanner  import scan_chain_for_uoa, format_uoa_summary  # Phase 3B: UOA enabled
 from gex_engine   import compute_gex_levels, get_gex_signal_context
 
 
@@ -241,14 +241,25 @@ class OptionsFilter:
                 "ivr_multiplier": 1.0, "ivr_label": "IVR-NO-DATA"
             })
 
-        # ── UOA enrichment (DISABLED) ────────────────────────────────────────
-        # UOA scanner not needed yet - will enable in Phase 3
-        best_option.update({
-            "uoa_multiplier": 1.0, "uoa_label": "UOA-DISABLED",
-            "uoa_detected": False, "uoa_aligned": False,
-            "uoa_opposing": False, "uoa_max_score": 0.0,
-            "uoa_top_aligned": [], "uoa_top_opposing": []
-        })
+        # ── UOA enrichment (Phase 3B: ENABLED) ────────────────────────────────
+        try:
+            uoa_result = scan_chain_for_uoa(chain, direction, entry_price)
+            best_option.update(uoa_result)
+            
+            # Log UOA findings
+            if uoa_result.get('uoa_detected'):
+                print(f"[UOA] {ticker}: {format_uoa_summary(uoa_result)}")
+            else:
+                print(f"[UOA] {ticker}: No unusual activity detected")
+        except Exception as e:
+            print(f"[UOA] {ticker} error: {e}")
+            # Fallback to neutral if UOA scan fails
+            best_option.update({
+                "uoa_multiplier": 1.0, "uoa_label": "UOA-ERROR",
+                "uoa_detected": False, "uoa_aligned": False,
+                "uoa_opposing": False, "uoa_max_score": 0.0,
+                "uoa_top_aligned": [], "uoa_top_opposing": []
+            })
 
         # ── GEX enrichment ────────────────────────────────────────────
         # stop_price is threaded through from _run_signal_pipeline so
@@ -366,7 +377,7 @@ def get_options_recommendation(ticker, direction, entry_price,
         ticker, direction, entry_price, target_price, stop_price=stop_price
     )
     if is_valid and data:
-        print(f"[OPTIONS] \u2705 {ticker}: {reason}")
+        print(f"[OPTIONS] ✅ {ticker}: {reason}")
         return data
-    print(f"[OPTIONS] \u26a0\ufe0f {ticker}: {reason}")
+    print(f"[OPTIONS] ⚠️ {ticker}: {reason}")
     return None
