@@ -71,8 +71,9 @@ class PerformanceMonitor:
         # Get today's realized P&L
         realized_pnl = self._get_realized_pnl(days=0)
         
-        # Get unrealized P&L from open positions
-        unrealized_pnl = self._get_unrealized_pnl()
+        # Get unrealized P&L from open positions (not yet implemented in positions table)
+        # For now, only count realized P&L
+        unrealized_pnl = 0.0
         
         return self.account_size + realized_pnl + unrealized_pnl
     
@@ -85,6 +86,8 @@ class PerformanceMonitor:
         
         Returns:
             Total realized P&L
+        
+        Note: Uses 'pnl' column (not 'realized_pnl') to match positions table schema
         """
         p = ph()
         conn = get_conn(self.db_path)
@@ -93,24 +96,24 @@ class PerformanceMonitor:
         if days == 0:
             # Today only
             cursor.execute(f"""
-                SELECT COALESCE(SUM(realized_pnl), 0) as total_pnl
+                SELECT COALESCE(SUM(pnl), 0) as total_pnl
                 FROM positions
-                WHERE DATE(exit_time) = {p} AND status = 'closed'
+                WHERE DATE(exit_time) = {p} AND status = 'CLOSED'
             """, (self._get_session_date(),))
         elif days == 999:
             # All-time
             cursor.execute("""
-                SELECT COALESCE(SUM(realized_pnl), 0) as total_pnl
+                SELECT COALESCE(SUM(pnl), 0) as total_pnl
                 FROM positions
-                WHERE status = 'closed'
+                WHERE status = 'CLOSED'
             """)
         else:
             # Last N days
             cutoff = (datetime.now(ET) - timedelta(days=days)).strftime("%Y-%m-%d")
             cursor.execute(f"""
-                SELECT COALESCE(SUM(realized_pnl), 0) as total_pnl
+                SELECT COALESCE(SUM(pnl), 0) as total_pnl
                 FROM positions
-                WHERE DATE(exit_time) >= {p} AND status = 'closed'
+                WHERE DATE(exit_time) >= {p} AND status = 'CLOSED'
             """, (cutoff,))
         
         row = cursor.fetchone()
@@ -122,25 +125,15 @@ class PerformanceMonitor:
         """
         Get unrealized P&L from open positions.
         
-        Note: Requires real-time price updates in positions table.
-        If current_price is not tracked, returns 0.
+        Note: Currently returns 0 since positions table doesn't track
+        real-time unrealized P&L. This would require live price updates.
         
         Returns:
-            Total unrealized P&L
+            Total unrealized P&L (0.0 for now)
         """
-        conn = get_conn(self.db_path)
-        cursor = dict_cursor(conn)
-        
-        cursor.execute("""
-            SELECT COALESCE(SUM(unrealized_pnl), 0) as total_pnl
-            FROM positions
-            WHERE status = 'open'
-        """)
-        
-        row = cursor.fetchone()
-        conn.close()
-        
-        return row['total_pnl'] if row else 0.0
+        # Future enhancement: Track current_price in positions table
+        # and calculate (current_price - entry_price) * contracts * 100
+        return 0.0
     
     def get_session_pnl(self) -> Dict:
         """
@@ -169,11 +162,11 @@ class PerformanceMonitor:
         
         cursor.execute(f"""
             SELECT COUNT(*) as count FROM positions
-            WHERE DATE(entry_time) = {p} AND status = 'closed'
+            WHERE DATE(entry_time) = {p} AND status = 'CLOSED'
         """, (self._get_session_date(),))
         closed_count = cursor.fetchone()['count']
         
-        cursor.execute("SELECT COUNT(*) as count FROM positions WHERE status = 'open'")
+        cursor.execute("SELECT COUNT(*) as count FROM positions WHERE status = 'OPEN'")
         open_count = cursor.fetchone()['count']
         
         conn.close()
@@ -202,6 +195,8 @@ class PerformanceMonitor:
                 'A-': {...},
                 'overall': {...}
             }
+        
+        Note: Uses 'pnl' column (not 'realized_pnl') to match positions table schema
         """
         p = ph()
         conn = get_conn(self.db_path)
@@ -213,10 +208,10 @@ class PerformanceMonitor:
             SELECT 
                 grade,
                 COUNT(*) as total,
-                SUM(CASE WHEN realized_pnl > 0 THEN 1 ELSE 0 END) as wins,
-                SUM(CASE WHEN realized_pnl <= 0 THEN 1 ELSE 0 END) as losses
+                SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
+                SUM(CASE WHEN pnl <= 0 THEN 1 ELSE 0 END) as losses
             FROM positions
-            WHERE status = 'closed' 
+            WHERE status = 'CLOSED' 
               AND DATE(exit_time) >= {p}
               AND grade IS NOT NULL
             GROUP BY grade
@@ -268,9 +263,10 @@ class PerformanceMonitor:
                 'open_positions': int,
                 'total_exposure_pct': float,
                 'max_single_position_pct': float,
-                'sector_exposure': {sector: pct},
                 'approaching_limits': List[str]
             }
+        
+        Note: Simplified version without sector tracking (would need sector column)
         """
         conn = get_conn(self.db_path)
         cursor = dict_cursor(conn)
@@ -280,11 +276,10 @@ class PerformanceMonitor:
             SELECT 
                 ticker,
                 entry_price,
-                stop_loss,
-                quantity,
-                sector
+                stop_price,
+                remaining_contracts as contracts
             FROM positions
-            WHERE status = 'open'
+            WHERE status = 'OPEN'
         """)
         
         positions = cursor.fetchall()
@@ -295,39 +290,29 @@ class PerformanceMonitor:
                 'open_positions': 0,
                 'total_exposure_pct': 0.0,
                 'max_single_position_pct': 0.0,
-                'sector_exposure': {},
                 'approaching_limits': []
             }
         
         # Calculate risk per position
         total_risk = 0.0
         max_risk = 0.0
-        sector_risk = defaultdict(float)
         
         for pos in positions:
-            risk_per_contract = abs(pos['entry_price'] - pos['stop_loss']) * pos['quantity']
+            risk_per_contract = abs(pos['entry_price'] - pos['stop_price']) * pos['contracts'] * 100
             risk_pct = (risk_per_contract / self.account_size * 100) if self.account_size > 0 else 0
             
             total_risk += risk_pct
             max_risk = max(max_risk, risk_pct)
-            
-            sector = pos.get('sector', 'Unknown')
-            sector_risk[sector] += risk_pct
         
         # Check limits
         warnings = []
         if len(positions) >= config.MAX_OPEN_POSITIONS:
             warnings.append(f"⚠️ Max positions reached ({len(positions)}/{config.MAX_OPEN_POSITIONS})")
         
-        for sector, risk_pct in sector_risk.items():
-            if risk_pct >= config.MAX_SECTOR_EXPOSURE_PCT:
-                warnings.append(f"⚠️ Sector limit exceeded: {sector} ({risk_pct:.1f}%)")
-        
         return {
             'open_positions': len(positions),
             'total_exposure_pct': round(total_risk, 2),
             'max_single_position_pct': round(max_risk, 2),
-            'sector_exposure': {k: round(v, 2) for k, v in sector_risk.items()},
             'approaching_limits': warnings
         }
     
@@ -383,6 +368,8 @@ class PerformanceMonitor:
                 'longest_loss_streak': int,
                 'current_momentum': str  # 'STRONG', 'MODERATE', 'WEAK', 'NEGATIVE'
             }
+        
+        Note: Uses 'pnl' column (not 'realized_pnl') to match positions table schema
         """
         p = ph()
         conn = get_conn(self.db_path)
@@ -391,13 +378,13 @@ class PerformanceMonitor:
         cutoff = (datetime.now(ET) - timedelta(days=days)).strftime("%Y-%m-%d")
         
         cursor.execute(f"""
-            SELECT realized_pnl
+            SELECT pnl
             FROM positions
-            WHERE status = 'closed' AND DATE(exit_time) >= {p}
+            WHERE status = 'CLOSED' AND DATE(exit_time) >= {p}
             ORDER BY exit_time DESC
         """, (cutoff,))
         
-        trades = [row['realized_pnl'] for row in cursor.fetchall()]
+        trades = [row['pnl'] for row in cursor.fetchall()]
         conn.close()
         
         if not trades:
@@ -475,6 +462,8 @@ class PerformanceMonitor:
         
         Returns:
             Sharpe ratio or None if insufficient data
+        
+        Note: Uses 'pnl' column (not 'realized_pnl') to match positions table schema
         """
         p = ph()
         conn = get_conn(self.db_path)
@@ -483,12 +472,12 @@ class PerformanceMonitor:
         cutoff = (datetime.now(ET) - timedelta(days=days)).strftime("%Y-%m-%d")
         
         cursor.execute(f"""
-            SELECT realized_pnl
+            SELECT pnl
             FROM positions
-            WHERE status = 'closed' AND DATE(exit_time) >= {p}
+            WHERE status = 'CLOSED' AND DATE(exit_time) >= {p}
         """, (cutoff,))
         
-        pnls = [row['realized_pnl'] for row in cursor.fetchall()]
+        pnls = [row['pnl'] for row in cursor.fetchall()]
         conn.close()
         
         if len(pnls) < 5:
@@ -584,10 +573,6 @@ class PerformanceMonitor:
         lines.append(f"  📍 Open Positions:  {risk['open_positions']}/{config.MAX_OPEN_POSITIONS}")
         lines.append(f"  💼 Total Exposure:  {risk['total_exposure_pct']:.2f}%")
         lines.append(f"  🎯 Largest Position: {risk['max_single_position_pct']:.2f}%")
-        if risk['sector_exposure']:
-            lines.append("  🏢 Sector Breakdown:")
-            for sector, exposure in sorted(risk['sector_exposure'].items(), key=lambda x: x[1], reverse=True):
-                lines.append(f"     {sector:<15} {exposure:>6.2f}%")
         if risk['approaching_limits']:
             for warning in risk['approaching_limits']:
                 lines.append(f"  {warning}")
@@ -628,6 +613,8 @@ class PerformanceMonitor:
         
         Returns:
             Formatted report string
+        
+        Note: Uses 'pnl' column (not 'realized_pnl') to match positions table schema
         """
         # Reuse live dashboard with additional EOD context
         dashboard = self.get_live_dashboard()
@@ -638,20 +625,20 @@ class PerformanceMonitor:
         cursor = dict_cursor(conn)
         
         cursor.execute(f"""
-            SELECT ticker, realized_pnl, grade
+            SELECT ticker, pnl, grade
             FROM positions
-            WHERE DATE(exit_time) = {p} AND status = 'closed'
-            ORDER BY realized_pnl DESC
+            WHERE DATE(exit_time) = {p} AND status = 'CLOSED'
+            ORDER BY pnl DESC
             LIMIT 3
         """, (self._get_session_date(),))
         
         best_trades = cursor.fetchall()
         
         cursor.execute(f"""
-            SELECT ticker, realized_pnl, grade
+            SELECT ticker, pnl, grade
             FROM positions
-            WHERE DATE(exit_time) = {p} AND status = 'closed'
-            ORDER BY realized_pnl ASC
+            WHERE DATE(exit_time) = {p} AND status = 'CLOSED'
+            ORDER BY pnl ASC
             LIMIT 3
         """, (self._get_session_date(),))
         
@@ -664,13 +651,13 @@ class PerformanceMonitor:
             lines.append("\n🏆 BEST TRADES OF THE DAY")
             lines.append("─"*80)
             for i, trade in enumerate(best_trades, 1):
-                lines.append(f"  {i}. {trade['ticker']:<6} {trade['grade']:<3}  ${trade['realized_pnl']:>8,.2f}")
+                lines.append(f"  {i}. {trade['ticker']:<6} {trade['grade']:<3}  ${trade['pnl']:>8,.2f}")
         
         if worst_trades:
             lines.append("\n💀 WORST TRADES OF THE DAY")
             lines.append("─"*80)
             for i, trade in enumerate(worst_trades, 1):
-                lines.append(f"  {i}. {trade['ticker']:<6} {trade['grade']:<3}  ${trade['realized_pnl']:>8,.2f}")
+                lines.append(f"  {i}. {trade['ticker']:<6} {trade['grade']:<3}  ${trade['pnl']:>8,.2f}")
         
         lines.append("\n" + "="*80)
         
