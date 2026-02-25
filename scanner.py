@@ -59,14 +59,12 @@ from watchlist_funnel import (
 # Non-fatal imports: scanner works normally if these modules are missing
 # ────────────────────────────────────────────────────────────────────────────────────
 try:
-    from signal_analytics import (
-        print_performance_report,
-        get_optimization_recommendations
-    )
+    from signal_analytics import signal_tracker
     ANALYTICS_ENABLED = True
     print("[SCANNER] ✅ Signal analytics enabled")
 except ImportError:
     ANALYTICS_ENABLED = False
+    signal_tracker = None
     print("[SCANNER] ⚠️  signal_analytics not available — analytics disabled")
 
 try:
@@ -585,20 +583,33 @@ def start_scanner_loop():
                     # ──────────────────────────────────────────────────────────────
                     
                     # 1. SIGNAL ANALYTICS (console output)
-                    if ANALYTICS_ENABLED:
+                    if ANALYTICS_ENABLED and signal_tracker:
                         try:
                             print("\n[ANALYTICS] Generating signal performance report...\n")
-                            print_performance_report(days=30)
+                            summary = signal_tracker.get_daily_summary()
+                            print(summary)
                             
-                            # Get optimization recommendations
-                            recommendations = get_optimization_recommendations(days=30)
-                            if recommendations:
-                                print("\n" + "="*80)
-                                print("OPTIMIZATION RECOMMENDATIONS")
-                                print("="*80)
-                                for rec in recommendations:
-                                    print(f"⚠️  {rec}")
-                                print("="*80 + "\n")
+                            # Get funnel and multiplier stats
+                            funnel_stats = signal_tracker.get_funnel_stats()
+                            mult_stats = signal_tracker.get_multiplier_impact()
+                            
+                            print("\n" + "="*80)
+                            print("SIGNAL FUNNEL ANALYSIS")
+                            print("="*80)
+                            print(f"Generated: {funnel_stats['generated']}")
+                            print(f"Validated: {funnel_stats['validated']} ({funnel_stats['validation_rate']}%)")
+                            print(f"Armed:     {funnel_stats['armed']} ({funnel_stats['arming_rate']}%)")
+                            print(f"Traded:    {funnel_stats['traded']} ({funnel_stats['execution_rate']}%)")
+                            print("\n" + "="*80)
+                            print("MULTIPLIER IMPACT")
+                            print("="*80)
+                            print(f"IVR Multiplier:  {mult_stats['ivr_avg']:.3f}x")
+                            print(f"UOA Multiplier:  {mult_stats['uoa_avg']:.3f}x")
+                            print(f"GEX Multiplier:  {mult_stats['gex_avg']:.3f}x")
+                            print(f"MTF Boost:       +{mult_stats['mtf_avg']:.3f}")
+                            print(f"Total Impact:    {mult_stats['total_boost_pct']:+.1f}%")
+                            print("="*80 + "\n")
+                            
                         except Exception as e:
                             print(f"[ANALYTICS] Error generating report: {e}")
                             import traceback
