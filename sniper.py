@@ -14,6 +14,7 @@
 # OPTIONS PRE-GATE: Early options validation before confirmation — kills bad setups
 #                   before CPU-heavy confirmation runs (Step 6.5, SOFT/HARD modes).
 # PHASE 4 TRACKING: Signal funnel analytics for optimization visibility
+# MTF CONVERGENCE: Multi-timeframe FVG alignment boost (5m + 3m convergence)
 import traceback
 import requests
 import json
@@ -67,6 +68,22 @@ except ImportError:
     options_dm = None
     OPTIONS_PRE_GATE_ENABLED = False
     print("[SNIPER] ⚠️  options_data_manager not available — options gate disabled")
+
+# ────────────────────────────────────────────────────────────────────────
+# MTF INTEGRATION - Multi-timeframe FVG convergence
+# Non-fatal import: sniper works normally if MTF system unavailable.
+# ────────────────────────────────────────────────────────────────────────
+try:
+    from mtf_integration import enhance_signal_with_mtf, print_mtf_stats
+    MTF_ENABLED = True
+    print("[SNIPER] ✅ MTF convergence boost enabled")
+except ImportError:
+    MTF_ENABLED = False
+    print("[SNIPER] ⚠️  MTF system not available — single-timeframe mode")
+    def enhance_signal_with_mtf(*args, **kwargs):
+        return {'enabled': False, 'convergence': False, 'boost': 0.0, 'reason': 'MTF disabled'}
+    def print_mtf_stats():
+        pass
 
 # ── Global State ─────────────────────────────────────────────────────────────────────────────────────────────────────────
 armed_signals    = {}
@@ -813,6 +830,27 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
     final_grade = conf_result["final_grade"]
 
     # ════════════════════════════════════════════════════════════
+    # STEP 8.2 — MTF CONVERGENCE DETECTION
+    # Check if signal has multi-timeframe convergence (5m + 3m FVG alignment)
+    # ════════════════════════════════════════════════════════════
+    mtf_result = enhance_signal_with_mtf(
+        ticker=ticker,
+        direction=direction,
+        bars_session=bars_session
+    )
+    
+    # Log MTF result
+    if mtf_result['convergence']:
+        print(
+            f"[{ticker}] ✅ MTF CONVERGENCE: "
+            f"{mtf_result['convergence_score']:.1%} across "
+            f"{', '.join(mtf_result['timeframes'])} | "
+            f"Boost: +{mtf_result['boost']:.2%}"
+        )
+    else:
+        print(f"[{ticker}] MTF: {mtf_result['reason']}")
+
+    # ════════════════════════════════════════════════════════════
     # PHASE 4 INTEGRATION POINT #2 - Track Signal Generated
     # Record after grade assignment (GENERATED stage)
     # ════════════════════════════════════════════════════════════
@@ -939,11 +977,9 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
 
     # STEP 11 — CONFIDENCE (uses validator-adjusted base_confidence)
     ticker_multiplier = learning_engine.get_ticker_confidence_multiplier(ticker)
-    try:
-        from timeframe_manager import calculate_mtf_convergence_boost
-        mtf_boost = calculate_mtf_convergence_boost(ticker)
-    except ImportError:
-        mtf_boost = 0.0
+    
+    # MTF boost from Step 8.2 (already calculated)
+    mtf_boost = mtf_result.get('boost', 0.0)
 
     mode_decay = 0.95 if signal_type == "CFW6_INTRADAY" else 1.0
 
@@ -1162,6 +1198,9 @@ def process_ticker(ticker: str):
             position_manager.close_all_eod({ticker: bars_session[-1]["close"]})
             # Print validation stats before market close
             print_validation_stats()
+            
+            # Print MTF stats
+            print_mtf_stats()
             
             # Print Phase 4 analytics summary
             if PHASE_4_ENABLED and signal_tracker:
