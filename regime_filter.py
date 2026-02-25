@@ -1,4 +1,3 @@
-﻿# Create the fixed regime_filter.py
 """
 Regime Filter - VIX/SPY Market Condition Detection
 
@@ -358,12 +357,12 @@ class RegimeFilter:
         state = self.get_regime_state()
         
         emoji = {
-            "TRENDING": "ðŸ“ˆ" if state.favorable else "ðŸ“‰",
-            "CHOPPY": "ã€°ï¸",
-            "VOLATILE": "âš¡"
+            "TRENDING": "📈" if state.favorable else "📉",
+            "CHOPPY": "〰️",
+            "VOLATILE": "⚡"
         }[state.regime]
         
-        status = "âœ… FAVORABLE" if state.favorable else "ðŸš« UNFAVORABLE"
+        status = "✅ FAVORABLE" if state.favorable else "🚫 UNFAVORABLE"
         
         print("\n" + "=" * 70)
         print(f"{emoji}  MARKET REGIME: {state.regime}  {status}")
@@ -377,4 +376,21 @@ class RegimeFilter:
     
     def reset_cache(self) -> None:
         """Clear cached regime state (force fresh calculation next check)."""
-        self._cache
+        self._cache = None
+        self._last_check = 0
+        print("[REGIME] Cache cleared")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GLOBAL INSTANCE
+# ══════════════════════════════════════════════════════════════════════════════
+regime_filter = RegimeFilter()
+
+
+if __name__ == "__main__":
+    # Test regime filter
+    print("Testing Regime Filter...\n")
+    regime_filter.print_regime_summary()
+    
+    state = regime_filter.get_regime_state()
+    print(f"\nFavorable for trading: {state.favorable}")
