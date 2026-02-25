@@ -2,7 +2,7 @@
 Signal Generator - Integrate Breakout Detector with Scanner
 
 Responsibilities:
-  - Check watchlist tickers for breakout signals
+  - Check watchlist for breakout signals
   - Filter duplicate signals (cooldown period)
   - Send Discord alerts with entry/stop/target
   - Track signal performance with signal_analytics
@@ -21,10 +21,12 @@ from discord_helpers import send_simple_message
 
 # Import signal analytics for performance tracking
 try:
-    from signal_analytics import log_signal, update_signal_outcome, get_recent_signals
+    from signal_analytics import signal_tracker
     ANALYTICS_ENABLED = True
+    print("[SIGNALS] ✅ Phase 4 tracking enabled (signal_analytics + performance_alerts)")
 except ImportError:
     ANALYTICS_ENABLED = False
+    signal_tracker = None
     print("[SIGNALS] ⚠️  signal_analytics not available - performance tracking disabled")
 
 # Import signal validator for multi-indicator confirmation
@@ -97,7 +99,7 @@ class SignalGenerator:
             try:
                 self.validator = get_validator()
                 mode = "TEST MODE (no filtering)" if VALIDATOR_TEST_MODE else "FULL MODE (filtering enabled)"
-                print(f"[SIGNALS] ✅ Multi-indicator validator enabled - {mode}")
+                print(f"[SIGNALS] ✅ Multi-indicator validator ACTIVE ({mode})")
             except Exception as e:
                 print(f"[SIGNALS] ⚠️  Validator initialization error: {e}")
                 self.validator = None
@@ -220,22 +222,22 @@ class SignalGenerator:
             # Update cooldown
             self.recent_signals[ticker] = datetime.now(ET)
             
-            # Log signal to analytics database
-            if ANALYTICS_ENABLED:
+            # Log signal to analytics database (NEW Phase 4 integration)
+            if ANALYTICS_ENABLED and signal_tracker:
                 try:
-                    signal_id = log_signal(
+                    signal_id = signal_tracker.record_signal_generated(
                         ticker=ticker,
-                        direction=signal['signal'],
-                        entry=signal['entry'],
-                        stop=signal['stop'],
-                        target=signal['target'],
-                        confidence=signal['confidence'],
-                        volume_multiple=signal.get('volume_multiple'),
-                        atr=signal.get('atr'),
-                        signal_type=signal.get('type', 'BREAKOUT'),
-                        notes=signal.get('notes')
+                        signal_type=signal.get('type', 'CFW6_OR'),
+                        direction='bull' if signal['signal'] == 'BUY' else 'bear',
+                        grade=signal.get('grade', 'A'),
+                        confidence=signal['confidence'] / 100.0,  # Convert to 0.0-1.0
+                        entry_price=signal['entry'],
+                        stop_price=signal['stop'],
+                        t1_price=signal.get('t1', signal['target']),
+                        t2_price=signal.get('t2', signal['target'])
                     )
                     signal['signal_id'] = signal_id  # Store DB ID for outcome tracking
+                    print(f"[ANALYTICS] Signal {signal_id} logged for {ticker}")
                 except Exception as e:
                     print(f"[SIGNALS] Analytics logging error: {e}")
             
@@ -388,17 +390,11 @@ class SignalGenerator:
     
     def _is_in_cooldown(self, ticker: str) -> bool:
         """
-        Check if ticker is in cooldown period.
-        
-        Uses two-tier approach:
-        1. Check in-memory cache first (fast path)
-        2. Query database if not in cache (handles restarts)
-        
-        This ensures cooldown persists even after scanner restarts.
+        Check if ticker is in cooldown period using in-memory cache.
+        Database persistence removed - cooldown is session-based only.
         """
         now_et = datetime.now(ET)
         
-        # Fast path: Check in-memory cache
         if ticker in self.recent_signals:
             last_signal_time = self.recent_signals[ticker]
             last_signal_time = _ensure_timezone_aware(last_signal_time)
@@ -406,35 +402,6 @@ class SignalGenerator:
             elapsed = (now_et - last_signal_time).total_seconds() / 60
             if elapsed < self.cooldown_minutes:
                 return True
-        
-        # Slow path: Query database (handles restarts)
-        if ANALYTICS_ENABLED:
-            try:
-                # Check signals from database within cooldown window
-                # Using hours=1 to cover the 15-minute cooldown window
-                recent = get_recent_signals(hours=1)
-                
-                for sig in recent:
-                    if sig['ticker'] == ticker:
-                        signal_time = sig['signal_time']
-                        
-                        # Handle both datetime objects and ISO strings
-                        if isinstance(signal_time, str):
-                            # Parse ISO string, handle 'Z' suffix for UTC
-                            signal_time = datetime.fromisoformat(signal_time.replace('Z', '+00:00'))
-                        
-                        # Ensure timezone-aware comparison
-                        signal_time = _ensure_timezone_aware(signal_time)
-                        
-                        elapsed = (now_et - signal_time).total_seconds() / 60
-                        
-                        if elapsed < self.cooldown_minutes:
-                            # Update in-memory cache for next check
-                            self.recent_signals[ticker] = signal_time
-                            return True
-            except Exception as e:
-                print(f"[SIGNALS] Cooldown DB check error for {ticker}: {e}")
-                # Continue without database check - don't block signals on DB errors
         
         return False
     
@@ -460,18 +427,6 @@ class SignalGenerator:
         else:  # SELL
             pnl = entry - exit_price
             pnl_pct = (pnl / entry) * 100
-        
-        # Update analytics database
-        if ANALYTICS_ENABLED and 'signal_id' in signal:
-            try:
-                outcome = 'WIN' if status == 'HIT_TARGET' else 'LOSS'
-                update_signal_outcome(
-                    signal_id=signal['signal_id'],
-                    outcome=outcome,
-                    exit_price=exit_price
-                )
-            except Exception as e:
-                print(f"[SIGNALS] Analytics update error: {e}")
         
         # Console output
         emoji = "✅" if status == 'HIT_TARGET' else "❌"
@@ -577,21 +532,6 @@ class SignalGenerator:
             
             if age > max_age_hours:
                 expired.append(ticker)
-                
-                # Mark as EXPIRED in analytics
-                if ANALYTICS_ENABLED and 'signal_id' in signal:
-                    try:
-                        # Get current price for exit
-                        bars = data_manager.get_today_session_bars(ticker)
-                        exit_price = bars[-1]['close'] if bars else signal['entry']
-                        
-                        update_signal_outcome(
-                            signal_id=signal['signal_id'],
-                            outcome='EXPIRED',
-                            exit_price=exit_price
-                        )
-                    except Exception as e:
-                        print(f"[SIGNALS] Analytics expiry error for {ticker}: {e}")
         
         for ticker in expired:
             print(f"[SIGNALS] Clearing stale signal for {ticker}")
@@ -625,6 +565,13 @@ class SignalGenerator:
             'confidence_boosted': 0,
             'confidence_penalized': 0
         }
+        
+        # Clear analytics session cache (EOD reset)
+        if ANALYTICS_ENABLED and signal_tracker:
+            try:
+                signal_tracker.clear_session_cache()
+            except Exception as e:
+                print(f"[SIGNALS] Analytics cache clear error: {e}")
         
         print("[SIGNALS] Daily reset complete")
 
@@ -675,10 +622,13 @@ def print_validation_stats() -> None:
 
 
 def print_performance_report(days: int = 30) -> None:
-    """Print signal performance report."""
-    if ANALYTICS_ENABLED:
-        from signal_analytics import print_performance_report as _print_report
-        _print_report(days)
+    """Print signal performance report from analytics database."""
+    if ANALYTICS_ENABLED and signal_tracker:
+        try:
+            summary = signal_tracker.get_daily_summary()
+            print(summary)
+        except Exception as e:
+            print(f"[SIGNALS] Performance report error: {e}")
     else:
         print("[SIGNALS] ⚠️  Analytics not enabled - cannot generate report")
 
