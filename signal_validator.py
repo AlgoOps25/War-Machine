@@ -21,10 +21,13 @@ Integration:
   - Can boost or filter signals based on confluence
   - Returns enriched metadata for logging and Discord
 
-Fine-Tuning Updates:
-  - Bias confidence threshold: 0.65 (was 0.70) - allows more valid setups [NEW]
-  - ADX threshold: 25 (was 20) - filters choppy markets
-  - Volume ratio: 1.5x (was 1.3x) - stronger institutional confirmation
+Fine-Tuning Updates (Applied):
+  #1. Time-of-Day: Morning/Power Hour +0.05, Dead Zone -0.03
+  #2. RSI Divergence: Detect price/RSI mismatch ±0.05
+  #3. EMA Stack: Full stack +0.07, No stack -0.04
+  #4. Bias Threshold: 0.65 (was 0.70) - allows more valid setups
+  #5. ADX Threshold: 25 (was 20) - filters choppy markets [NEW]
+      Volume Ratio: 1.5x (was 1.3x) - stronger institutional confirmation [NEW]
 """
 from typing import Dict, Optional, Tuple
 from datetime import datetime, time as dtime
@@ -103,8 +106,8 @@ class SignalValidator:
     
     def __init__(
         self,
-        min_adx: float = 20.0,
-        min_volume_ratio: float = 1.3,
+        min_adx: float = 25.0,
+        min_volume_ratio: float = 1.5,
         enable_vpvr: bool = True,
         enable_daily_bias: bool = True,
         enable_time_filter: bool = True,
@@ -117,14 +120,14 @@ class SignalValidator:
         Initialize signal validator.
         
         Args:
-            min_adx: Minimum ADX for trend strength (default 20)
-            min_volume_ratio: Minimum volume vs average (default 1.3x)
+            min_adx: Minimum ADX for trend strength (default 25, was 20)
+            min_volume_ratio: Minimum volume vs average (default 1.5x, was 1.3x)
             enable_vpvr: Use VPVR for signal validation (default True)
             enable_daily_bias: Filter counter-trend signals (default True)
             enable_time_filter: Apply time-of-day quality scoring (default True)
             enable_ema_stack: Check EMA stack alignment (9>20>50) (default True)
             enable_rsi_divergence: Check for RSI divergence warnings (default True)
-            min_bias_confidence: Minimum bias confidence to filter (default 0.65, was 0.70)
+            min_bias_confidence: Minimum bias confidence to filter (default 0.65)
             strict_mode: Require all checks to pass (default False)
         """
         self.min_adx = min_adx
@@ -160,6 +163,9 @@ class SignalValidator:
         
         if self.enable_rsi_divergence:
             print(f"[VALIDATOR] RSI divergence detection enabled (early reversal warnings)")
+        
+        print(f"[VALIDATOR] ADX threshold: {min_adx} (filters choppy/weak trends)")
+        print(f"[VALIDATOR] Volume ratio: {min_volume_ratio}x (institutional confirmation)")
     
     def validate_signal(
         self,
@@ -603,8 +609,8 @@ def get_validator() -> SignalValidator:
     global _validator_instance
     if _validator_instance is None:
         _validator_instance = SignalValidator(
-            min_adx=20.0,
-            min_volume_ratio=1.3,
+            min_adx=25.0,
+            min_volume_ratio=1.5,
             enable_vpvr=True,
             enable_daily_bias=True,
             enable_time_filter=True,
@@ -621,11 +627,11 @@ def get_validator() -> SignalValidator:
 # ══════════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    print("Testing Signal Validator (Bias Threshold: 0.65)...\n")
+    print("Testing Signal Validator (ADX: 25, Volume: 1.5x, Bias: 0.65)...\n")
     
     validator = SignalValidator(
-        min_adx=20.0,
-        min_volume_ratio=1.3,
+        min_adx=25.0,
+        min_volume_ratio=1.5,
         enable_vpvr=True,
         enable_daily_bias=True,
         enable_time_filter=True,
