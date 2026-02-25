@@ -13,8 +13,9 @@ Supported Indicators:
   - MACD - trend following + crossover detection
   - SAR  - Parabolic SAR trailing stops
   - STOCH- Stochastic oscillator + crossover detection
-  - RSI  - Relative Strength Index [NEW] (>70 overbought, <30 oversold)
-  - EMA  - Exponential Moving Average [NEW] (50, 200 period filters)
+  - RSI  - Relative Strength Index (>70 overbought, <30 oversold)
+  - RSI DIVERGENCE - Bearish/Bullish divergence detection [NEW]
+  - EMA  - Exponential Moving Average (50, 200 period filters)
 
 Cache Strategy:
   - Pre-market  (4:00-9:30):  5-minute TTL
@@ -29,6 +30,7 @@ Fine-Tuning Notes:
   - MACD crossover detects momentum shifts vs raw MACD value
   - Stochastic crossover detects precise K/D inflection points
   - RVOL (relative volume) added: today volume vs same time yesterday
+  - RSI divergence warns of exhaustion before reversal
 """
 import requests
 from typing import Dict, List, Optional, Any, Tuple
@@ -429,6 +431,109 @@ def check_rsi_zone(
     return 'NEUTRAL', round(rsi_value, 2)
 
 
+def check_rsi_divergence(
+    ticker: str,
+    signal_direction: str,
+    lookback_bars: int = 10
+) -> Tuple[Optional[str], Optional[Dict]]:
+    """
+    Detect RSI divergence — early warning of trend exhaustion/reversal.
+
+    Divergence occurs when price makes a new high/low but RSI does NOT confirm,
+    indicating weakening momentum before the actual reversal appears in price.
+
+    Types:
+      - Bearish Divergence: Price makes higher high, RSI makes lower high
+        → Warns of uptrend exhaustion, favor SELL signals
+      
+      - Bullish Divergence: Price makes lower low, RSI makes higher low
+        → Warns of downtrend exhaustion, favor BUY signals
+
+    Args:
+        ticker: Stock symbol
+        signal_direction: 'BUY' or 'SELL'
+        lookback_bars: Number of bars to scan for divergence (default 10)
+
+    Returns:
+        (divergence_result, details_dict)
+        divergence_result: 'BEARISH_DIV' | 'BULLISH_DIV' | 'NO_DIV' | None
+        
+        This is a SOFT signal (warning), not a hard filter.
+        Use to BOOST counter-trend signals or WARN on exhausted trends.
+
+    Usage in validation:
+      - BUY signal + BULLISH_DIV  → +confidence (reversal setup)
+      - BUY signal + BEARISH_DIV  → -confidence (buying into exhaustion)
+      - SELL signal + BEARISH_DIV → +confidence (reversal setup)
+      - SELL signal + BULLISH_DIV → -confidence (selling into exhaustion)
+    """
+    try:
+        # Need price data to compare with RSI
+        from data_manager import data_manager
+        bars = data_manager.get_bars_from_memory(ticker, limit=lookback_bars + 1)
+        if not bars or len(bars) < lookback_bars:
+            return None, None
+
+        rsi_data = fetch_rsi(ticker)
+        if not rsi_data or len(rsi_data) < lookback_bars:
+            return None, None
+
+        # Align bars and RSI (both descending, newest first)
+        recent_bars = bars[:lookback_bars]
+        recent_rsi  = rsi_data[:lookback_bars]
+
+        # Extract prices and RSI values
+        prices = [b['close'] for b in recent_bars]
+        rsi_values = [r.get('rsi') for r in recent_rsi if r.get('rsi') is not None]
+
+        if len(prices) != len(rsi_values) or len(prices) < lookback_bars:
+            return None, None
+
+        # Find price highs/lows and RSI highs/lows
+        price_high_idx = prices.index(max(prices))
+        price_low_idx  = prices.index(min(prices))
+        rsi_high_idx   = rsi_values.index(max(rsi_values))
+        rsi_low_idx    = rsi_values.index(min(rsi_values))
+
+        details = {
+            'price_high': round(prices[price_high_idx], 2),
+            'price_low': round(prices[price_low_idx], 2),
+            'rsi_high': round(rsi_values[rsi_high_idx], 2),
+            'rsi_low': round(rsi_values[rsi_low_idx], 2),
+            'lookback_bars': lookback_bars
+        }
+
+        # BEARISH DIVERGENCE: Price higher high, RSI lower high
+        # (Price at peak more recently than RSI peak = momentum weakening)
+        if price_high_idx < rsi_high_idx:
+            # Price made new high more recently
+            if prices[price_high_idx] > prices[rsi_high_idx]:
+                # Confirm RSI didn't make new high
+                if rsi_values[price_high_idx] < rsi_values[rsi_high_idx]:
+                    details['type'] = 'BEARISH_DIV'
+                    details['warning'] = 'Price new high, RSI lower high (uptrend exhaustion)'
+                    return 'BEARISH_DIV', details
+
+        # BULLISH DIVERGENCE: Price lower low, RSI higher low
+        # (Price at trough more recently than RSI trough = momentum strengthening)
+        if price_low_idx < rsi_low_idx:
+            # Price made new low more recently
+            if prices[price_low_idx] < prices[rsi_low_idx]:
+                # Confirm RSI didn't make new low
+                if rsi_values[price_low_idx] > rsi_values[rsi_low_idx]:
+                    details['type'] = 'BULLISH_DIV'
+                    details['warning'] = 'Price new low, RSI higher low (downtrend exhaustion)'
+                    return 'BULLISH_DIV', details
+
+        # No divergence detected
+        details['type'] = 'NO_DIV'
+        return 'NO_DIV', details
+
+    except Exception as e:
+        print(f"[INDICATORS] RSI divergence error for {ticker}: {e}")
+        return None, None
+
+
 def check_ema_position(
     ticker: str,
     current_price: float,
@@ -689,6 +794,12 @@ if __name__ == "__main__":
     # RSI
     rsi_zone, rsi_val = check_rsi_zone(test_ticker, 'BUY')
     print(f"RSI: {rsi_val} | Zone: {rsi_zone}")
+
+    # RSI Divergence
+    div_result, div_details = check_rsi_divergence(test_ticker, 'BUY')
+    print(f"RSI Divergence: {div_result}")
+    if div_details:
+        print(f"  Details: {div_details}")
 
     # EMA 50
     ema_aligned, ema_val = check_ema_position(test_ticker, test_price, 'BUY', period=50)
