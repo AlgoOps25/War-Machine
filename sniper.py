@@ -20,6 +20,7 @@
 # REGIME FILTER: VIX/SPY market condition detection — avoids bad tape
 # CORRELATION CHECK: Sector-aware over-leverage prevention
 # PHASE 4 MONITORING: Live performance dashboard, circuit breaker, risk alerts
+# HOURLY GATE: Time-based confidence adjustment from historical win rates
 import traceback
 import requests
 import json
@@ -57,6 +58,23 @@ _last_dashboard_check = datetime.now()
 _last_alert_check = datetime.now()
 DASHBOARD_UPDATE_INTERVAL_MINUTES = 30
 ALERT_CHECK_INTERVAL_MINUTES = 15
+
+# ════════════════════════════════════════════════════════════════════════════════
+# HOURLY CONFIDENCE GATE - Time-based adjustment from historical performance
+# ════════════════════════════════════════════════════════════════════════════════
+try:
+    from hourly_gate import get_hourly_confidence_multiplier, get_current_hour_context, print_hourly_gate_stats
+    HOURLY_GATE_ENABLED = True
+    print("[SIGNALS] ✅ Hourly confidence gate enabled (time-based WR adjustment)")
+except ImportError:
+    HOURLY_GATE_ENABLED = False
+    print("[SIGNALS] ⚠️  Hourly gate disabled (module not found)")
+    def get_hourly_confidence_multiplier():
+        return 1.0
+    def get_current_hour_context():
+        return {'hour': 0, 'win_rate': None, 'multiplier': 1.0, 'classification': 'no_data'}
+    def print_hourly_gate_stats():
+        pass
 
 # Multi-indicator validator
 try:
@@ -1124,7 +1142,9 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         f"= {final_confidence:.2f}"
     )
 
-    # STEP 11b — CONFIDENCE THRESHOLD GATE (DYNAMIC)
+    # ════════════════════════════════════════════════════════════
+    # STEP 11b — CONFIDENCE THRESHOLD GATE (DYNAMIC + HOURLY)
+    # ════════════════════════════════════════════════════════════
     try:
         from dynamic_thresholds import get_dynamic_threshold
         eff_min = get_dynamic_threshold(signal_type, final_grade)
@@ -1136,6 +1156,27 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         )
         min_grade = config.MIN_CONFIDENCE_BY_GRADE.get(final_grade, min_type)
         eff_min   = max(min_type, min_grade, config.CONFIDENCE_ABSOLUTE_FLOOR)
+
+    # Apply hourly gate multiplier to threshold
+    if HOURLY_GATE_ENABLED:
+        try:
+            hourly_mult = get_hourly_confidence_multiplier()
+            hour_ctx = get_current_hour_context()
+            
+            if hourly_mult != 1.0:
+                original_eff_min = eff_min
+                eff_min *= hourly_mult
+                
+                ctx_label = hour_ctx['classification'].upper()
+                ctx_emoji = "🟢" if ctx_label == "STRONG" else ("🔴" if ctx_label == "WEAK" else "🟡")
+                
+                print(
+                    f"[HOURLY GATE] {ctx_emoji} {hour_ctx['hour']}:00 {ctx_label} "
+                    f"(WR: {hour_ctx['win_rate']:.1f}% / {hour_ctx['trades']} trades) | "
+                    f"Threshold: {original_eff_min:.2f} → {eff_min:.2f} ({hourly_mult:.2f}x)"
+                )
+        except Exception as hourly_err:
+            print(f"[HOURLY GATE] Error (non-fatal): {hourly_err}")
 
     if final_confidence < eff_min:
         print(
@@ -1392,6 +1433,15 @@ def process_ticker(ticker: str):
                         print(performance_monitor.get_daily_performance_report())
                 except Exception as e:
                     print(f"[PHASE 4] EOD report error: {e}")
+            
+            # ════════════════════════════════════════════════════════════
+            # HOURLY GATE EOD STATS
+            # ════════════════════════════════════════════════════════════
+            if HOURLY_GATE_ENABLED:
+                try:
+                    print_hourly_gate_stats()
+                except Exception as e:
+                    print(f"[HOURLY GATE] EOD stats error: {e}")
             
             # EOD regime summary
             if REGIME_FILTER_ENABLED and regime_filter:
