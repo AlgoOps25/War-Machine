@@ -16,6 +16,7 @@
 # PHASE 4 TRACKING: Signal funnel analytics for optimization visibility
 # MTF CONVERGENCE: Multi-timeframe FVG alignment boost (5m + 3m convergence)
 # CANDLE CONFIRMATION: 3-tier Nitro Trades candle quality model (A+/A/A- grading)
+# MTF FVG PRIORITY: Highest timeframe FVG selection (5m > 3m > 2m > 1m)
 import traceback
 import requests
 import json
@@ -84,6 +85,24 @@ except ImportError:
     def enhance_signal_with_mtf(*args, **kwargs):
         return {'enabled': False, 'convergence': False, 'boost': 0.0, 'reason': 'MTF disabled'}
     def print_mtf_stats():
+        pass
+
+# ────────────────────────────────────────────────────────────────────────
+# MTF FVG PRIORITY - Highest timeframe FVG selection
+# Non-fatal import: sniper works normally if priority resolver unavailable.
+# ────────────────────────────────────────────────────────────────────────
+try:
+    from mtf_fvg_priority import get_highest_priority_fvg, get_full_mtf_analysis, print_priority_stats
+    MTF_PRIORITY_ENABLED = True
+    print("[SNIPER] ✅ MTF FVG priority resolver enabled")
+except ImportError:
+    MTF_PRIORITY_ENABLED = False
+    print("[SNIPER] ⚠️  MTF priority resolver not available — single-TF FVG mode")
+    def get_highest_priority_fvg(*args, **kwargs):
+        return None
+    def get_full_mtf_analysis(*args, **kwargs):
+        return {'primary_fvg': None, 'secondary_fvgs': [], 'confluence_count': 0}
+    def print_priority_stats():
         pass
 
 # ── Global State ─────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -1208,6 +1227,9 @@ def process_ticker(ticker: str):
             # Print MTF stats
             print_mtf_stats()
             
+            # Print MTF priority stats
+            print_priority_stats()
+            
             # Print Phase 4 analytics summary
             if PHASE_4_ENABLED and signal_tracker:
                 try:
@@ -1316,7 +1338,7 @@ def process_ticker(ticker: str):
         else:
             print(f"[{ticker}] No OR bars")
 
-        # ── INTRADAY BOS+FVG PATH (scan_bos_fvg from bos_fvg_engine) ─────────────────────
+        # ── INTRADAY BOS+FVG PATH (with MTF priority resolver) ────────────────────────────
         if scan_mode is None:
             if len(bars_session) < 30:
                 return
@@ -1328,19 +1350,65 @@ def process_ticker(ticker: str):
                 return
 
             direction    = bos_signal["direction"]
-            zone_low     = bos_signal["fvg_low"]
-            zone_high    = bos_signal["fvg_high"]
             breakout_idx = bos_signal["bos_idx"]
             
             # Extract 3-tier candle confirmation from bos_signal
             bos_confirmation = bos_signal.get("confirmation")
             bos_candle_type = bos_signal.get("candle_type")
-
+            
+            # ════════════════════════════════════════════════════════════════════════════════
+            # MTF FVG PRIORITY RESOLVER
+            # Scan all timeframes (5m, 3m, 2m, 1m) for FVGs and select highest-TF one
+            # ════════════════════════════════════════════════════════════════════════════════
+            if MTF_PRIORITY_ENABLED:
+                try:
+                    # Get full MTF analysis (primary + secondary FVGs)
+                    mtf_analysis = get_full_mtf_analysis(
+                        ticker=ticker,
+                        direction=direction,
+                        bars_5m=bars_session,
+                        min_pct=fvg_threshold
+                    )
+                    
+                    primary_fvg = mtf_analysis['primary_fvg']
+                    
+                    if primary_fvg is None:
+                        print(f"[{ticker}] — No FVGs found on any timeframe (MTF scan)")
+                        return
+                    
+                    # Use highest-priority FVG as trade zone
+                    zone_low  = primary_fvg['fvg_low']
+                    zone_high = primary_fvg['fvg_high']
+                    
+                    # Log priority resolution
+                    if mtf_analysis['has_conflict']:
+                        print(
+                            f"[{ticker}] 🎯 MTF PRIORITY: {primary_fvg['timeframe']} FVG selected | "
+                            f"Confluence: {mtf_analysis['confluence_count']} timeframe(s) | "
+                            f"Zone: ${zone_low:.2f}-${zone_high:.2f}"
+                        )
+                    else:
+                        print(
+                            f"[{ticker}] 📍 Single FVG on {primary_fvg['timeframe']} | "
+                            f"Zone: ${zone_low:.2f}-${zone_high:.2f}"
+                        )
+                
+                except Exception as priority_err:
+                    print(f"[{ticker}] MTF priority error (falling back to 5m): {priority_err}")
+                    # Fallback to original bos_signal FVG
+                    zone_low  = bos_signal["fvg_low"]
+                    zone_high = bos_signal["fvg_high"]
+            else:
+                # MTF priority disabled - use 5m FVG from bos_signal
+                zone_low  = bos_signal["fvg_low"]
+                zone_high = bos_signal["fvg_high"]
+            
+            # Continue with OR refs (unchanged)
             if direction == "bull":
                 or_high_ref = bos_signal["bos_price"]
-                or_low_ref  = bos_signal["fvg_low"]
+                or_low_ref  = zone_low
             else:
-                or_high_ref = bos_signal["fvg_high"]
+                or_high_ref = zone_high
                 or_low_ref  = bos_signal["bos_price"]
 
             scan_mode = "INTRADAY_BOS"
