@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 #!/usr/bin/env python3
 """
 MTF System Test - Simplified 5m + 3m Strategy
@@ -13,19 +12,12 @@ Usage:
   python test_mtf.py
 """
 
-=======
-# Run this in your Python console or save as test_mtf.py
->>>>>>> 6cd42e5 (file moves)
 from data_manager import data_manager
 from mtf_data_manager import mtf_data_manager
 from mtf_fvg_engine import mtf_fvg_engine
 
 print("\n" + "="*80)
-<<<<<<< HEAD
 print("MTF SYSTEM TEST - Simplified 5m + 3m Strategy")
-=======
-print("MTF SYSTEM TEST - Manual Backfill & Validation")
->>>>>>> 6cd42e5 (file moves)
 print("="*80 + "\n")
 
 # Step 1: Backfill historical data (last 30 days)
@@ -41,11 +33,7 @@ data_manager.startup_intraday_backfill_today(test_tickers)
 
 # Step 3: Test MTF data manager
 print("\n" + "="*80)
-<<<<<<< HEAD
 print("Step 3: Testing MTF Data Manager (5m + 3m from 1m aggregation)")
-=======
-print("Step 3: Testing MTF Data Manager")
->>>>>>> 6cd42e5 (file moves)
 print("="*80 + "\n")
 
 for ticker in test_tickers:
@@ -66,11 +54,8 @@ print("Step 4: Testing MTF FVG Detection Engine")
 print("="*80 + "\n")
 
 signals_found = 0
-<<<<<<< HEAD
 signal_details = []
 
-=======
->>>>>>> 6cd42e5 (file moves)
 for ticker in test_tickers:
     bars_dict = mtf_data_manager.get_all_timeframes(ticker)
     
@@ -81,7 +66,6 @@ for ticker in test_tickers:
     
     if result:
         signals_found += 1
-<<<<<<< HEAD
         
         boost = mtf_fvg_engine.get_mtf_boost_value(result['convergence_score'])
         
@@ -94,21 +78,11 @@ for ticker in test_tickers:
             'zone_high': result['zone_high'],
             'boost': boost
         })
-=======
-        print(f"\n✅ {ticker} MTF {result['direction'].upper()} Signal:")
-        print(f"   Convergence: {result['convergence_score']:.1%}")
-        print(f"   Timeframes: {', '.join(result['timeframes_aligned'])}")
-        print(f"   Zone: ${result['zone_low']:.2f} - ${result['zone_high']:.2f}")
-        
-        boost = mtf_fvg_engine.get_mtf_boost_value(result['convergence_score'])
-        print(f"   Confidence Boost: +{boost:.2%}")
->>>>>>> 6cd42e5 (file moves)
 
 print(f"\n{'='*80}")
 print(f"SUMMARY: Found {signals_found}/{len(test_tickers)} MTF signals")
 print(f"{'='*80}\n")
 
-<<<<<<< HEAD
 # Display signal details
 if signal_details:
     print("MTF SIGNALS DETECTED:")
@@ -133,9 +107,3 @@ else:
     print("⚠️  MTF System functional but no signals detected")
     print("   (Expected if market closed - will work during live trading)")
 print("="*80 + "\n")
-=======
-# Step 5: Cache stats
-mtf_data_manager.print_cache_stats()
-
-print("\n✅ MTF System validated and ready for Phase 3 integration!\n")
->>>>>>> 6cd42e5 (file moves)
