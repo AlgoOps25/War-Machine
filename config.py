@@ -4,6 +4,7 @@ Consolidates: config.py + config_updates.py
 Single source of truth for all system parameters
 
 Phase 1.9: Enhanced with portfolio-level risk management
+Phase 2.1: WebSocket real-time data integration
 """
 import os
 from datetime import time
@@ -232,10 +233,20 @@ DARKPOOL_BOOST_FACTOR    = 0.05         # +5% confidence for dark pool
 # ══════════════════════════════════════════════════════════════════════════════
 
 # ══════════════════════════════════════════════════════════════════════════════
-# WEBSOCKET FEED SETTINGS (moved from ws_feed.py)
+# WEBSOCKET REAL-TIME DATA FEED
+# Connects to EODHD WebSocket for sub-minute price updates.
+# Reduces REST API quota consumption and enables true real-time alerting.
+# Requires EODHD plan with WebSocket access (EOD+Intraday or All-In-One).
 # ══════════════════════════════════════════════════════════════════════════════
-FLUSH_INTERVAL    = 10      # Flush bars to DB every N seconds
-RECONNECT_DELAY   = 5       # Wait N seconds before reconnecting on error
+ENABLE_WEBSOCKET_FEED = True            # Toggle WebSocket feed on/off
+WS_FLUSH_INTERVAL     = 10              # Flush open bars to DB every N seconds
+WS_RECONNECT_DELAY    = 5               # Wait N seconds before reconnecting on error
+WS_SUBSCRIBE_CHUNK    = 50              # Max tickers per subscribe message
+WS_SPIKE_THRESHOLD    = 0.10            # Reject ticks > 10% from current close (bad prints)
+
+# Legacy config names (deprecated, kept for backward compatibility)
+FLUSH_INTERVAL    = WS_FLUSH_INTERVAL
+RECONNECT_DELAY   = WS_RECONNECT_DELAY
 
 # ══════════════════════════════════════════════════════════════════════════════
 # DATABASE & LOGGING
