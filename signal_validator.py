@@ -7,8 +7,8 @@ Reduces false positives by requiring multiple confirmations.
 Validation Layers:
   0. Daily Bias (ICT Top-Down) - Filter counter-trend signals
   1. Time-of-Day Quality - Soft penalty for low-probability time windows
-  2. EMA Stack Confirmation - Boost for full EMA alignment (9>20>50) [NEW]
-  3. RSI Divergence - Early reversal warning (soft signal) [NEW]
+  2. EMA Stack Confirmation - Boost for full EMA alignment (9>20>50)
+  3. RSI Divergence - Early reversal warning (soft signal)
   4. Trend Strength (ADX) - Is there a real trend?
   5. Volume Confirmation (AvgVol) - Is there institutional interest?
   6. Trend Direction (DMI) - Does direction match signal?
@@ -20,6 +20,11 @@ Integration:
   - Called by signal_generator.py AFTER CFW6 pattern detection
   - Can boost or filter signals based on confluence
   - Returns enriched metadata for logging and Discord
+
+Fine-Tuning Updates:
+  - Bias confidence threshold: 0.65 (was 0.70) - allows more valid setups [NEW]
+  - ADX threshold: 25 (was 20) - filters choppy markets
+  - Volume ratio: 1.5x (was 1.3x) - stronger institutional confirmation
 """
 from typing import Dict, Optional, Tuple
 from datetime import datetime, time as dtime
@@ -105,7 +110,7 @@ class SignalValidator:
         enable_time_filter: bool = True,
         enable_ema_stack: bool = True,
         enable_rsi_divergence: bool = True,
-        min_bias_confidence: float = 0.7,
+        min_bias_confidence: float = 0.65,
         strict_mode: bool = False
     ):
         """
@@ -119,7 +124,7 @@ class SignalValidator:
             enable_time_filter: Apply time-of-day quality scoring (default True)
             enable_ema_stack: Check EMA stack alignment (9>20>50) (default True)
             enable_rsi_divergence: Check for RSI divergence warnings (default True)
-            min_bias_confidence: Minimum bias confidence to filter (default 0.7)
+            min_bias_confidence: Minimum bias confidence to filter (default 0.65, was 0.70)
             strict_mode: Require all checks to pass (default False)
         """
         self.min_adx = min_adx
@@ -276,7 +281,7 @@ class SignalValidator:
                 metadata['checks']['time_of_day'] = {'error': str(e)}
         
         # ════════════════════════════════════════════════
-        # CHECK 2: EMA STACK CONFIRMATION [NEW - SOFT BOOST]
+        # CHECK 2: EMA STACK CONFIRMATION [SOFT BOOST]
         # ════════════════════════════════════════════════
         if self.enable_ema_stack:
             try:
@@ -332,7 +337,7 @@ class SignalValidator:
                 print(f"[VALIDATOR] EMA stack error for {ticker}: {e}")
         
         # ════════════════════════════════════════════════
-        # CHECK 3: RSI DIVERGENCE [NEW - SOFT WARNING]
+        # CHECK 3: RSI DIVERGENCE [SOFT WARNING]
         # ════════════════════════════════════════════════
         if self.enable_rsi_divergence:
             try:
@@ -605,7 +610,7 @@ def get_validator() -> SignalValidator:
             enable_time_filter=True,
             enable_ema_stack=True,
             enable_rsi_divergence=True,
-            min_bias_confidence=0.7,
+            min_bias_confidence=0.65,
             strict_mode=False
         )
     return _validator_instance
@@ -616,7 +621,7 @@ def get_validator() -> SignalValidator:
 # ══════════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    print("Testing Signal Validator with EMA Stack & RSI Divergence...\n")
+    print("Testing Signal Validator (Bias Threshold: 0.65)...\n")
     
     validator = SignalValidator(
         min_adx=20.0,
@@ -626,7 +631,7 @@ if __name__ == "__main__":
         enable_time_filter=True,
         enable_ema_stack=True,
         enable_rsi_divergence=True,
-        min_bias_confidence=0.7,
+        min_bias_confidence=0.65,
         strict_mode=False
     )
     
