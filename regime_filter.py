@@ -157,8 +157,8 @@ class RegimeFilter:
             if bars:
                 return bars[-1]["close"]
             
-            # Fallback: fetch from database
-            bars = data_manager.get_intraday_bars("VIX", limit=1)
+            # Fallback: fetch using cache-aware method
+            bars = data_manager.get_bars("VIX", timeframe="1m", limit=1)
             if bars:
                 return bars[-1]["close"]
             
@@ -184,8 +184,8 @@ class RegimeFilter:
             if bars and len(bars) >= 14:
                 return bars
             
-            # Fallback: database
-            bars = data_manager.get_intraday_bars("SPY", limit=limit)
+            # Fallback: cache-aware fetch
+            bars = data_manager.get_bars("SPY", timeframe="1m", limit=limit)
             if bars:
                 return bars
             
