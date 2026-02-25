@@ -8,13 +8,13 @@ Timeline:
   9:25-9:30 AM: Final Top 3 - highest probability plays for opening bell
 
 Integration:
-  - Uses momentum_screener_optimized.py for scoring (80%+ API call reduction)
+  - Uses premarket_scanner_integration.py for professional 3-tier scoring
   - Uses volume_analyzer.py for real-time volume tracking
   - Feeds scanner.py with optimized watchlist based on time of day
 """
 from datetime import datetime, time
 from typing import List, Dict, Optional
-import momentum_screener_optimized as momentum_screener
+import premarket_scanner_integration as momentum_screener  # Professional scanner
 import volume_analyzer
 import dynamic_screener
 import config
@@ -32,34 +32,34 @@ class WatchlistFunnel:
         self.current_stage = "wide"  # 'wide', 'narrow', 'final', 'live'
         self.last_update_time: Optional[datetime] = None
         
-        # Stage definitions
+        # Stage definitions - UPDATED with professional thresholds
         self.stages = {
             "wide": {
                 "time_start": time(8, 0),
                 "time_end": time(9, 15),
                 "max_tickers": 50,
-                "min_score": 40.0,
+                "min_score": 35.0,  # LOWERED - professional scoring is more strict
                 "description": "Wide scan - Gap movers & volume leaders"
             },
             "narrow": {
                 "time_start": time(9, 15),
                 "time_end": time(9, 25),
                 "max_tickers": 10,
-                "min_score": 60.0,
+                "min_score": 50.0,  # LOWERED - professional scoring is more strict
                 "description": "Top 10 - Momentum quality focus"
             },
             "final": {
                 "time_start": time(9, 25),
                 "time_end": time(9, 30),
                 "max_tickers": 3,
-                "min_score": 75.0,
+                "min_score": 65.0,  # LOWERED - professional scoring is more strict
                 "description": "Top 3 - Highest probability setups"
             },
             "live": {
                 "time_start": time(9, 30),
                 "time_end": time(16, 0),
                 "max_tickers": 10,
-                "min_score": 65.0,
+                "min_score": 55.0,  # LOWERED - professional scoring is more strict
                 "description": "Live session - Active movers"
             }
         }
@@ -163,7 +163,7 @@ class WatchlistFunnel:
             if ticker not in candidates:
                 candidates.append(ticker)
         
-        # Score all candidates (optimized with caching)
+        # Score all candidates with professional 3-tier scanner
         self.scored_tickers = momentum_screener.run_momentum_screener(
             candidates,
             min_composite_score=stage_config["min_score"],
@@ -253,7 +253,7 @@ class WatchlistFunnel:
         # Apply final volume filter (must have pre-market activity)
         filtered_tickers = []
         for scored_ticker in self.scored_tickers:
-            # Use standardized 'volume' key from momentum_screener_optimized
+            # Use standardized 'volume' key
             ticker_volume = scored_ticker.get('volume', 0)
             if ticker_volume > 50000:  # Minimum 50K pre-market volume
                 filtered_tickers.append(scored_ticker)
@@ -285,7 +285,7 @@ class WatchlistFunnel:
             force_refresh=False  # Use cache during live session
         )
         
-        # Score candidates (cache heavily used during live session)
+        # Score candidates with professional scanner (cache heavily used)
         self.scored_tickers = momentum_screener.run_momentum_screener(
             candidates,
             min_composite_score=stage_config["min_score"],
@@ -321,7 +321,7 @@ class WatchlistFunnel:
             'last_update': self.last_update_time.isoformat() if self.last_update_time else None,
             'top_3_tickers': self.current_watchlist[:3],
             'scored_tickers_count': len(self.scored_tickers),
-            'cache_hits': cache_stats.get('valid_entries', 0)
+            'cache_hits': cache_stats.get('valid_scans', 0)
         }
     
     def get_volume_summary(self) -> List[Dict]:
