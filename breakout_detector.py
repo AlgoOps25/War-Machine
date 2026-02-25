@@ -7,6 +7,7 @@ Strategy:
   - ATR-based dynamic stops and targets
   - Filters out low-quality breakouts (low volume, choppy price action, weak candles)
   - PDH/PDL awareness: Uses previous day levels as dynamic support/resistance
+  - Split profit targets: T1 (1.5R) and T2 (2.5R) for optimal trade management
 
 Entry Types:
   1. BULL BREAKOUT: Price breaks above resistance + volume spike + strong candle
@@ -19,10 +20,12 @@ Phase 1.8 Optimizations:
   - Price action strength filter (body%, wick rejection)
   - Breakout confirmation counter (reduces false breaks)
   - Cached ATR calculation
+  - T1/T2 split targets (Issue #2 fix - FEB 25, 2026)
 
 Risk Management:
   - Stop: ATR-based dynamic stop (typically 1.5-2x ATR)
-  - Target: Risk-reward based (minimum 1.5:1, optimal 2:1)
+  - T1: 1.5R (take 50% position, secure gains)
+  - T2: 2.5R (let 50% run, maximize winners)
   - Max risk per trade: 1-2% of account
 """
 from typing import Dict, List, Optional, Tuple
@@ -39,6 +42,8 @@ class BreakoutDetector:
                  atr_period: int = 14,
                  atr_stop_multiplier: float = 1.5,
                  risk_reward_ratio: float = 2.0,
+                 t1_reward_ratio: float = 1.5,
+                 t2_reward_ratio: float = 2.5,
                  min_candle_body_pct: float = 0.4,
                  min_bars_since_breakout: int = 1):
         """
@@ -47,7 +52,9 @@ class BreakoutDetector:
             volume_multiplier: Volume must be Nx average for confirmation
             atr_period: Period for ATR calculation
             atr_stop_multiplier: Stop distance = ATR * multiplier
-            risk_reward_ratio: Target distance = Stop distance * ratio
+            risk_reward_ratio: Default target (maintained for backwards compatibility)
+            t1_reward_ratio: T1 target ratio (1.5R = take 50% profit)
+            t2_reward_ratio: T2 target ratio (2.5R = let 50% run)
             min_candle_body_pct: Minimum candle body% for strong price action (0.4 = 40%)
             min_bars_since_breakout: Bars to wait after initial break (false break filter)
         """
@@ -56,6 +63,8 @@ class BreakoutDetector:
         self.atr_period = atr_period
         self.atr_stop_multiplier = atr_stop_multiplier
         self.risk_reward_ratio = risk_reward_ratio
+        self.t1_reward_ratio = t1_reward_ratio
+        self.t2_reward_ratio = t2_reward_ratio
         self.min_candle_body_pct = min_candle_body_pct
         self.min_bars_since_breakout = min_bars_since_breakout
         
@@ -64,6 +73,8 @@ class BreakoutDetector:
         
         # PDH/PDL cache (refreshed daily)
         self._pdh_pdl_cache: Dict[str, Tuple[float, float]] = {}  # ticker -> (pdh, pdl)
+        
+        print(f"[BREAKOUT] Split targets enabled: T1={t1_reward_ratio}R (50%), T2={t2_reward_ratio}R (50%)")
     
     def calculate_atr(self, bars: List[Dict], ticker: str = "unknown") -> float:
         """
@@ -297,6 +308,7 @@ class BreakoutDetector:
           - EMA volume instead of SMA
           - Price action strength filter
           - Breakout confirmation (wait N bars)
+          - T1/T2 split targets (Issue #2 fix)
         
         Args:
             bars: List of OHLCV bars (must have at least lookback_bars)
@@ -344,8 +356,16 @@ class BreakoutDetector:
             entry = latest['close']
             stop = entry - (atr * self.atr_stop_multiplier)
             risk = entry - stop
-            reward = risk * self.risk_reward_ratio
-            target = entry + reward
+            
+            # ⭐ Issue #2 Fix: Calculate T1 and T2 targets
+            t1_reward = risk * self.t1_reward_ratio
+            t2_reward = risk * self.t2_reward_ratio
+            t1_price = entry + t1_reward
+            t2_price = entry + t2_reward
+            
+            # Maintain original 'target' for backwards compatibility (use T2)
+            target = t2_price
+            reward = t2_reward
             
             # Phase 1.8: PDH confluence check
             pdh_confluence = False
@@ -369,10 +389,14 @@ class BreakoutDetector:
                 'signal': 'BUY',
                 'entry': round(entry, 2),
                 'stop': round(stop, 2),
-                'target': round(target, 2),
+                'target': round(target, 2),  # T2 for backwards compatibility
+                't1': round(t1_price, 2),    # ⭐ NEW: T1 target (1.5R)
+                't2': round(t2_price, 2),    # ⭐ NEW: T2 target (2.5R)
+                't1_r': self.t1_reward_ratio,
+                't2_r': self.t2_reward_ratio,
                 'risk': round(risk, 2),
-                'reward': round(reward, 2),
-                'risk_reward': round(reward / risk, 2),
+                'reward': round(reward, 2),  # T2 reward
+                'risk_reward': round(reward / risk, 2),  # T2 R:R
                 'atr': round(atr, 2),
                 'volume_ratio': round(volume_ratio, 2),
                 'volume_multiple': round(volume_ratio, 1),  # For analytics
@@ -403,8 +427,16 @@ class BreakoutDetector:
             entry = latest['close']
             stop = entry + (atr * self.atr_stop_multiplier)
             risk = stop - entry
-            reward = risk * self.risk_reward_ratio
-            target = entry - reward
+            
+            # ⭐ Issue #2 Fix: Calculate T1 and T2 targets
+            t1_reward = risk * self.t1_reward_ratio
+            t2_reward = risk * self.t2_reward_ratio
+            t1_price = entry - t1_reward
+            t2_price = entry - t2_reward
+            
+            # Maintain original 'target' for backwards compatibility
+            target = t2_price
+            reward = t2_reward
             
             # Phase 1.8: PDL confluence check
             pdl_confluence = False
@@ -427,10 +459,14 @@ class BreakoutDetector:
                 'signal': 'SELL',
                 'entry': round(entry, 2),
                 'stop': round(stop, 2),
-                'target': round(target, 2),
+                'target': round(target, 2),  # T2 for backwards compatibility
+                't1': round(t1_price, 2),    # ⭐ NEW: T1 target (1.5R)
+                't2': round(t2_price, 2),    # ⭐ NEW: T2 target (2.5R)
+                't1_r': self.t1_reward_ratio,
+                't2_r': self.t2_reward_ratio,
                 'risk': round(risk, 2),
-                'reward': round(reward, 2),
-                'risk_reward': round(reward / risk, 2),
+                'reward': round(reward, 2),  # T2 reward
+                'risk_reward': round(reward / risk, 2),  # T2 R:R
                 'atr': round(atr, 2),
                 'volume_ratio': round(volume_ratio, 2),
                 'volume_multiple': round(volume_ratio, 1),
@@ -452,6 +488,7 @@ class BreakoutDetector:
         Detect retest of a previous breakout level (higher probability entry).
         
         Phase 1.8: Added price action strength filter for retest entries.
+        Issue #2: Added T1/T2 split targets.
         
         Args:
             bars: List of OHLCV bars
@@ -492,8 +529,14 @@ class BreakoutDetector:
             entry = latest['close']
             stop = breakout_level - (atr * self.atr_stop_multiplier)
             risk = entry - stop
-            reward = risk * self.risk_reward_ratio
-            target = entry + reward
+            
+            # ⭐ Issue #2 Fix: T1/T2 targets
+            t1_reward = risk * self.t1_reward_ratio
+            t2_reward = risk * self.t2_reward_ratio
+            t1_price = entry + t1_reward
+            t2_price = entry + t2_reward
+            target = t2_price
+            reward = t2_reward
             
             confidence = self._calculate_confidence(
                 volume_ratio=volume_ratio,
@@ -509,6 +552,10 @@ class BreakoutDetector:
                 'entry': round(entry, 2),
                 'stop': round(stop, 2),
                 'target': round(target, 2),
+                't1': round(t1_price, 2),
+                't2': round(t2_price, 2),
+                't1_r': self.t1_reward_ratio,
+                't2_r': self.t2_reward_ratio,
                 'risk': round(risk, 2),
                 'reward': round(reward, 2),
                 'risk_reward': round(reward / risk, 2),
@@ -536,8 +583,14 @@ class BreakoutDetector:
             entry = latest['close']
             stop = breakout_level + (atr * self.atr_stop_multiplier)
             risk = stop - entry
-            reward = risk * self.risk_reward_ratio
-            target = entry - reward
+            
+            # ⭐ Issue #2 Fix: T1/T2 targets
+            t1_reward = risk * self.t1_reward_ratio
+            t2_reward = risk * self.t2_reward_ratio
+            t1_price = entry - t1_reward
+            t2_price = entry - t2_reward
+            target = t2_price
+            reward = t2_reward
             
             confidence = self._calculate_confidence(
                 volume_ratio=volume_ratio,
@@ -553,6 +606,10 @@ class BreakoutDetector:
                 'entry': round(entry, 2),
                 'stop': round(stop, 2),
                 'target': round(target, 2),
+                't1': round(t1_price, 2),
+                't2': round(t2_price, 2),
+                't1_r': self.t1_reward_ratio,
+                't2_r': self.t2_reward_ratio,
                 'risk': round(risk, 2),
                 'reward': round(reward, 2),
                 'risk_reward': round(reward / risk, 2),
@@ -663,10 +720,23 @@ def format_signal_message(ticker: str, signal: Dict) -> str:
     """
     emoji = "📈" if signal['signal'] == 'BUY' else "📉"
     
+    # ⭐ Issue #2 Fix: Show T1 and T2 targets
     msg = (
         f"{emoji} **{signal['signal']} {ticker}** @ ${signal['entry']}\n"
-        f"Stop: ${signal['stop']} | Target: ${signal['target']}\n"
-        f"Risk: ${signal['risk']} | Reward: ${signal['reward']} | R:R {signal['risk_reward']}:1\n"
+        f"Stop: ${signal['stop']}\n"
+    )
+    
+    # Show split targets if available
+    if 't1' in signal and 't2' in signal:
+        msg += (
+            f"T1: ${signal['t1']} ({signal.get('t1_r', 1.5)}R - 50%)\n"
+            f"T2: ${signal['t2']} ({signal.get('t2_r', 2.5)}R - 50%)\n"
+        )
+    else:
+        msg += f"Target: ${signal['target']}\n"
+    
+    msg += (
+        f"Risk: ${signal['risk']} | Max Reward: ${signal['reward']} | R:R {signal['risk_reward']}:1\n"
         f"Volume: {signal['volume_ratio']}x avg | ATR: ${signal['atr']}\n"
         f"Confidence: {signal['confidence']}% - {signal['reason']}"
     )
@@ -688,6 +758,8 @@ if __name__ == "__main__":
         volume_multiplier=2.0,
         atr_stop_multiplier=1.5,
         risk_reward_ratio=2.0,
+        t1_reward_ratio=1.5,
+        t2_reward_ratio=2.5,
         min_candle_body_pct=0.4,
         min_bars_since_breakout=1
     )
@@ -728,6 +800,8 @@ if __name__ == "__main__":
         )
         print(f"\nPosition Size: {shares} shares")
         print(f"Total Risk: ${shares * signal['risk']:.2f}")
-        print(f"Potential Profit: ${shares * signal['reward']:.2f}")
+        print(f"T1 Profit (50%): ${shares * 0.5 * (signal['t1'] - signal['entry']):.2f}")
+        print(f"T2 Profit (50%): ${shares * 0.5 * (signal['t2'] - signal['entry']):.2f}")
+        print(f"Max Total Profit: ${shares * signal['reward']:.2f}")
     else:
         print("No breakout signal detected")

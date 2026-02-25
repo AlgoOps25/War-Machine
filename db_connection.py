@@ -5,6 +5,8 @@ falls back to SQLite for local development.
 
 NOTE: Railway provides DATABASE_URL as postgres:// — psycopg2 requires
 postgresql:// — we normalize it automatically here.
+
+FIXED: Added connection timeout to prevent startup hangs.
 """
 import os
 import sqlite3
@@ -17,26 +19,45 @@ if _raw_url.startswith("postgres://"):
 DATABASE_URL = _raw_url
 USE_POSTGRES  = bool(DATABASE_URL and DATABASE_URL.startswith("postgresql://"))
 
-# Test the connection at startup — fall back to SQLite if it fails
+# Test the connection at startup with timeout — fall back to SQLite if it fails
 if USE_POSTGRES:
     try:
         import psycopg2
         import psycopg2.extras
-        _test = psycopg2.connect(DATABASE_URL)
+        
+        print("[DB] Testing PostgreSQL connection...")
+        
+        # Add connection timeout to prevent startup hang
+        _test = psycopg2.connect(DATABASE_URL, connect_timeout=10)
         _test.close()
-        print(f"[DB] PostgreSQL mode active")
+        
+        print("[DB] ✅ PostgreSQL mode active")
+    except psycopg2.OperationalError as e:
+        print(f"[DB] ❌ PostgreSQL connection timeout or refused: {e}")
+        print("[DB] ⚠️  Falling back to SQLite (database may not be ready)")
+        USE_POSTGRES = False
     except Exception as e:
-        print(f"[DB] PostgreSQL connection failed: {e}")
-        print(f"[DB] Falling back to SQLite")
+        print(f"[DB] ❌ PostgreSQL connection failed: {e}")
+        print("[DB] ⚠️  Falling back to SQLite")
         USE_POSTGRES = False
 else:
-    print(f"[DB] SQLite fallback mode")
+    print("[DB] SQLite fallback mode (DATABASE_URL not set)")
 
 
 def get_conn(sqlite_path: str = "war_machine.db"):
-    """Return an open connection for the current environment."""
+    """
+    Return an open connection for the current environment.
+    
+    Args:
+        sqlite_path: Path to SQLite database file (used only if not PostgreSQL)
+    
+    Returns:
+        Database connection object
+    """
     if USE_POSTGRES:
-        return psycopg2.connect(DATABASE_URL)
+        # Add timeout for runtime connections too
+        return psycopg2.connect(DATABASE_URL, connect_timeout=10)
+    
     conn = sqlite3.connect(sqlite_path)
     conn.row_factory = sqlite3.Row
     return conn

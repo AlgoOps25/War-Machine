@@ -5,7 +5,7 @@ Enhances CFW6 signals with additional technical indicator validation.
 Reduces false positives by requiring multiple confirmations.
 
 Validation Layers:
-  0. Daily Bias (ICT Top-Down) - Filter counter-trend signals
+  0. Daily Bias (ICT Top-Down) - HEAVY penalty for counter-trend (was hard filter)
   1. Time-of-Day Quality - Soft penalty for low-probability time windows
   2. EMA Stack Confirmation - Boost for full EMA alignment (9>20>50)
   3. RSI Divergence - Early reversal warning (soft signal)
@@ -14,7 +14,7 @@ Validation Layers:
   6. Trend Direction (DMI) - Does direction match signal?
   7. Momentum (CCI) - Are we entering overbought/oversold?
   8. Volatility Context (Bollinger Bands) - Squeeze or expansion?
-  9. Volume Profile (VPVR) - Support/resistance alignment?
+  9. Volume Profile (VPVR) - Support/resistance alignment? (CAN RESCUE counter-trend)
 
 Integration:
   - Called by signal_generator.py AFTER CFW6 pattern detection
@@ -29,6 +29,7 @@ Fine-Tuning Updates (Applied):
   #5. ADX Threshold: 25 (was 20) - filters choppy markets [NEW]
       Volume Ratio: 1.5x (was 1.3x) - stronger institutional confirmation [NEW]
   #6. VPVR Integration: Entry scoring based on POC/HVN/LVN zones [NEW - FEB 25, 2026]
+  #7. VPVR Rescue Logic: Excellent VPVR scores can override bias penalty [FIX - FEB 25, 2026]
 """
 from typing import Dict, Optional, Tuple
 from datetime import datetime, time as dtime
@@ -41,7 +42,7 @@ ET = ZoneInfo("America/New_York")
 try:
     from daily_bias_engine import bias_engine
     BIAS_ENGINE_ENABLED = True
-    print("[VALIDATOR] ✅ Daily bias filtering enabled (ICT top-down analysis)")
+    print("[VALIDATOR] ✅ Daily bias penalty enabled (ICT top-down analysis)")
 except ImportError:
     BIAS_ENGINE_ENABLED = False
     bias_engine = None
@@ -51,7 +52,7 @@ except ImportError:
 try:
     from vpvr_calculator import vpvr_calculator
     VPVR_ENABLED = True
-    print("[VALIDATOR] ✅ VPVR entry scoring enabled (POC/HVN/LVN analysis)")
+    print("[VALIDATOR] ✅ VPVR entry scoring enabled (POC/HVN/LVN analysis + counter-trend rescue)")
 except ImportError:
     VPVR_ENABLED = False
     vpvr_calculator = None
@@ -133,11 +134,11 @@ class SignalValidator:
             min_adx: Minimum ADX for trend strength (default 25, was 20)
             min_volume_ratio: Minimum volume vs average (default 1.5x, was 1.3x)
             enable_vpvr: Use VPVR for signal validation (default True)
-            enable_daily_bias: Filter counter-trend signals (default True)
+            enable_daily_bias: Penalize counter-trend signals (default True)
             enable_time_filter: Apply time-of-day quality scoring (default True)
             enable_ema_stack: Check EMA stack alignment (9>20>50) (default True)
             enable_rsi_divergence: Check for RSI divergence warnings (default True)
-            min_bias_confidence: Minimum bias confidence to filter (default 0.65)
+            min_bias_confidence: Minimum bias confidence to penalize (default 0.65)
             strict_mode: Require all checks to pass (default False)
         """
         self.min_adx = min_adx
@@ -156,7 +157,8 @@ class SignalValidator:
             'passed': 0,
             'filtered': 0,
             'boosted': 0,
-            'bias_filtered': 0,
+            'bias_penalized': 0,  # Changed from 'bias_filtered'
+            'vpvr_rescued': 0,     # NEW: Counter-trend signals rescued by VPVR
             'vpvr_scored': 0,
             'time_zones': {},
             'ema_stack_aligned': 0,
@@ -164,7 +166,8 @@ class SignalValidator:
         }
         
         if self.enable_daily_bias:
-            print(f"[VALIDATOR] Daily bias filter active (min confidence: {min_bias_confidence*100:.0f}%)")
+            print(f"[VALIDATOR] Daily bias penalty active (min confidence: {min_bias_confidence*100:.0f}%)")
+            print(f"[VALIDATOR] ⭐ Counter-trend signals penalized but can be rescued by VPVR")
         
         if self.enable_time_filter:
             print(f"[VALIDATOR] Time-of-day quality scoring enabled (soft penalty, not hard block)")
@@ -221,8 +224,12 @@ class SignalValidator:
         failed_checks = []
         passed_checks = []
         
+        # Track whether this is a counter-trend signal that might need VPVR rescue
+        counter_trend_penalty = 0.0
+        needs_vpvr_rescue = False
+        
         # ════════════════════════════════════════════════
-        # CHECK 0: DAILY BIAS (ICT Top-Down) [HARD FILTER]
+        # CHECK 0: DAILY BIAS (ICT Top-Down) [HEAVY PENALTY, NOT HARD FILTER]
         # ════════════════════════════════════════════════
         if self.enable_daily_bias and bias_engine:
             try:
@@ -239,25 +246,20 @@ class SignalValidator:
                     'reason': bias_reason
                 }
                 
-                # HARD FILTER: Counter-trend signals with high confidence bias
+                # ⭐ CRITICAL CHANGE: Apply HEAVY PENALTY instead of hard filter
+                # Let VPVR and other checks still run
                 if should_filter and bias_data['confidence'] >= self.min_bias_confidence:
-                    self.validation_stats['filtered'] += 1
-                    self.validation_stats['bias_filtered'] += 1
+                    # Strong counter-trend penalty
+                    counter_trend_penalty = -0.25
+                    confidence_adjustment += counter_trend_penalty
+                    failed_checks.append('BIAS_COUNTER_TREND_STRONG')
+                    needs_vpvr_rescue = True
+                    self.validation_stats['bias_penalized'] += 1
                     
-                    metadata['summary'] = {
-                        'should_pass': False,
-                        'adjusted_confidence': 0.0,
-                        'confidence_adjustment': -base_confidence,
-                        'passed_checks': [],
-                        'failed_checks': ['BIAS_COUNTER_TREND'],
-                        'check_score': '0/1 (bias filtered)',
-                        'filter_reason': f"Counter-trend signal filtered by {bias_data['bias']} bias ({bias_data['confidence']*100:.0f}% conf)"
-                    }
+                    print(f"[VALIDATOR] ⚠️  {ticker} counter-trend to {bias_data['bias']} bias (-25%) - VPVR can rescue")
                     
-                    return False, 0.0, metadata
-                
                 # Signal aligned with bias or neutral - apply boost/penalty
-                if bias_data['bias'] != 'NEUTRAL':
+                elif bias_data['bias'] != 'NEUTRAL':
                     if not should_filter:
                         bias_boost = bias_data['confidence'] * 0.10
                         confidence_adjustment += bias_boost
@@ -518,8 +520,10 @@ class SignalValidator:
             metadata['checks']['bbands'] = {'error': str(e)}
         
         # ════════════════════════════════════════════════
-        # CHECK 9: VPVR ENTRY SCORING [NEW - FEB 25, 2026]
+        # CHECK 9: VPVR ENTRY SCORING [CAN RESCUE COUNTER-TREND]
         # ════════════════════════════════════════════════
+        vpvr_rescue_applied = False
+        
         if self.enable_vpvr and vpvr_calculator:
             try:
                 # Import data_manager to get bars
@@ -544,17 +548,30 @@ class SignalValidator:
                             'val': vpvr['val'],
                             'entry_score': round(entry_score, 2),
                             'entry_reason': entry_reason,
-                            'hvn_zones': vpvr['hvn_zones'][:2] if len(vpvr['hvn_zones']) > 2 else vpvr['hvn_zones'],  # Limit to 2 zones
-                            'lvn_zones': vpvr['lvn_zones'][:2] if len(vpvr['lvn_zones']) > 2 else vpvr['lvn_zones']   # Limit to 2 zones
+                            'hvn_zones': vpvr['hvn_zones'][:2] if len(vpvr['hvn_zones']) > 2 else vpvr['hvn_zones'],
+                            'lvn_zones': vpvr['lvn_zones'][:2] if len(vpvr['lvn_zones']) > 2 else vpvr['lvn_zones']
                         }
                         
                         self.validation_stats['vpvr_scored'] += 1
                         
-                        # Apply confidence adjustments based on VPVR score
+                        # ⭐ VPVR RESCUE LOGIC FOR COUNTER-TREND SIGNALS
+                        if needs_vpvr_rescue and entry_score >= 0.85:
+                            # Excellent VPVR score (at POC/HVN) overrides bias penalty
+                            rescue_boost = abs(counter_trend_penalty) * 0.80  # Recover 80% of penalty
+                            confidence_adjustment += rescue_boost
+                            passed_checks.append('VPVR_RESCUE')
+                            failed_checks.remove('BIAS_COUNTER_TREND_STRONG')
+                            vpvr_rescue_applied = True
+                            self.validation_stats['vpvr_rescued'] += 1
+                            
+                            print(f"[VPVR] ✨ {ticker} RESCUED: Excellent entry at {entry_reason} overrides bias penalty (+{rescue_boost:.2%})")
+                        
+                        # Standard VPVR scoring (for all signals)
                         if entry_score >= 0.85:
                             # Strong entry (POC or HVN)
-                            confidence_adjustment += 0.08
-                            passed_checks.append('VPVR_STRONG')
+                            if not vpvr_rescue_applied:  # Don't double-boost
+                                confidence_adjustment += 0.08
+                                passed_checks.append('VPVR_STRONG')
                             print(f"[VPVR] ✅ {ticker} strong entry: {entry_reason}")
                         elif entry_score >= 0.70:
                             # Good entry (Value Area)
@@ -570,6 +587,10 @@ class SignalValidator:
                             # Neutral entry
                             passed_checks.append('VPVR_NEUTRAL')
                             print(f"[VPVR] 🟡 {ticker} neutral entry: {entry_reason}")
+                        
+                        # Store rescue status in metadata
+                        if vpvr_rescue_applied:
+                            metadata['checks']['vpvr']['rescued'] = True
                     else:
                         metadata['checks']['vpvr'] = {'error': 'Insufficient VPVR data'}
                 else:
@@ -609,7 +630,8 @@ class SignalValidator:
             'confidence_adjustment': round(confidence_adjustment, 3),
             'passed_checks': passed_checks,
             'failed_checks': failed_checks,
-            'check_score': f"{len(passed_checks)}/{len(passed_checks) + len(failed_checks)}"
+            'check_score': f"{len(passed_checks)}/{len(passed_checks) + len(failed_checks)}",
+            'vpvr_rescued': vpvr_rescue_applied
         }
         
         return should_pass, adjusted_confidence, metadata
@@ -625,7 +647,8 @@ class SignalValidator:
             'pass_rate': round(self.validation_stats['passed'] / total, 3),
             'filter_rate': round(self.validation_stats['filtered'] / total, 3),
             'boost_rate': round(self.validation_stats['boosted'] / total, 3),
-            'bias_filter_rate': round(self.validation_stats['bias_filtered'] / total, 3),
+            'bias_penalty_rate': round(self.validation_stats['bias_penalized'] / total, 3),
+            'vpvr_rescue_rate': round(self.validation_stats['vpvr_rescued'] / total, 3),
             'ema_stack_rate': round(self.validation_stats['ema_stack_aligned'] / total, 3),
             'rsi_div_rate': round(self.validation_stats['rsi_divergence_detected'] / total, 3),
             'vpvr_scored_rate': round(self.validation_stats['vpvr_scored'] / total, 3)
@@ -644,7 +667,8 @@ class SignalValidator:
             'passed': 0,
             'filtered': 0,
             'boosted': 0,
-            'bias_filtered': 0,
+            'bias_penalized': 0,
+            'vpvr_rescued': 0,
             'vpvr_scored': 0,
             'time_zones': {},
             'ema_stack_aligned': 0,
@@ -682,7 +706,7 @@ def get_validator() -> SignalValidator:
 # ══════════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    print("Testing Signal Validator (ADX: 25, Volume: 1.5x, Bias: 0.65, VPVR: ON)...\n")
+    print("Testing Signal Validator (ADX: 25, Volume: 1.5x, Bias: 0.65, VPVR: ON + RESCUE)...\n")
     
     validator = SignalValidator(
         min_adx=25.0,
@@ -722,6 +746,10 @@ if __name__ == "__main__":
     summary = metadata['summary']
     print(f"\nDecision: {'✅ PASS' if should_pass else '❌ FILTERED'}")
     print(f"Adjusted Confidence: {adjusted_conf*100:.1f}% ({summary['confidence_adjustment']:+.1%})")
+    
+    if summary.get('vpvr_rescued'):
+        print(f"\n✨ VPVR RESCUE: Counter-trend signal saved by excellent volume profile entry")
+    
     print(f"\nChecks Passed: {', '.join(summary['passed_checks']) if summary['passed_checks'] else 'None'}")
     print(f"Checks Failed: {', '.join(summary['failed_checks']) if summary['failed_checks'] else 'None'}")
     print(f"Score: {summary['check_score']}")
@@ -748,7 +776,8 @@ if __name__ == "__main__":
     print(f"Total Validated: {stats['total_validated']}")
     print(f"Pass Rate: {stats.get('pass_rate', 0)*100:.1f}%")
     print(f"Filter Rate: {stats.get('filter_rate', 0)*100:.1f}%")
-    print(f"Bias Filter Rate: {stats.get('bias_filter_rate', 0)*100:.1f}%")
+    print(f"Bias Penalty Rate: {stats.get('bias_penalty_rate', 0)*100:.1f}%")
+    print(f"VPVR Rescue Rate: {stats.get('vpvr_rescue_rate', 0)*100:.1f}%")
     print(f"Boost Rate: {stats.get('boost_rate', 0)*100:.1f}%")
     print(f"EMA Stack Aligned Rate: {stats.get('ema_stack_rate', 0)*100:.1f}%")
     print(f"RSI Divergence Rate: {stats.get('rsi_div_rate', 0)*100:.1f}%")
