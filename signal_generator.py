@@ -9,6 +9,7 @@ Responsibilities:
   - Manage signal state (pending, filled, stopped, hit target)
   - [NEW] Multi-indicator validation (Test Mode - no filtering yet)
   - [Phase 1.8] PDH/PDL-aware breakout detection via ticker parameter
+  - [FIX] Cooldown only triggers AFTER validation passes (Issue #3)
 """
 from typing import Dict, List, Optional
 from datetime import datetime, timedelta
@@ -119,12 +120,15 @@ class SignalGenerator:
         
         if ANALYTICS_ENABLED:
             print("[SIGNALS] ✅ Performance tracking enabled with database-backed cooldown")
+        
+        print("[SIGNALS] ✅ Cooldown only triggers after validation passes (Issue #3 fix)")
     
     def check_ticker(self, ticker: str, use_5m: bool = True) -> Optional[Dict]:
         """
         Check if ticker has a breakout signal.
         
         Phase 1.8: Now passes ticker to detector for PDH/PDL-aware analysis.
+        Issue #3 Fix: Cooldown check moved AFTER validation - only validated signals trigger cooldown.
         
         Args:
             ticker: Stock ticker to check
@@ -133,10 +137,6 @@ class SignalGenerator:
         Returns:
             Signal dict if detected, None otherwise
         """
-        # Check cooldown
-        if self._is_in_cooldown(ticker):
-            return None
-        
         # Get bars from database
         if use_5m:
             bars = data_manager.get_today_5m_bars(ticker)
@@ -149,104 +149,112 @@ class SignalGenerator:
         # Phase 1.8: Pass ticker to detector for PDH/PDL integration
         signal = self.detector.detect_breakout(bars, ticker=ticker)
         
-        if signal and signal['confidence'] >= self.min_confidence:
-            # Add ticker to signal
-            signal['ticker'] = ticker
-            
-            # === MULTI-INDICATOR VALIDATION (TEST MODE) ===
-            if self.validator and bars:
-                try:
-                    latest_bar = bars[-1]
-                    
-                    # Run validation
-                    should_pass, adjusted_conf, metadata = self.validator.validate_signal(
-                        ticker=ticker,
-                        signal_direction=signal['signal'],
-                        current_price=signal['entry'],
-                        current_volume=latest_bar['volume'],
-                        base_confidence=signal['confidence'] / 100.0  # Convert to 0.0-1.0
-                    )
-                    
-                    # Update statistics
-                    self.validation_stats['total_signals'] += 1
-                    if should_pass:
-                        self.validation_stats['would_pass'] += 1
-                    else:
-                        self.validation_stats['would_filter'] += 1
-                    
-                    if adjusted_conf > (signal['confidence'] / 100.0):
-                        self.validation_stats['confidence_boosted'] += 1
-                    elif adjusted_conf < (signal['confidence'] / 100.0):
-                        self.validation_stats['confidence_penalized'] += 1
-                    
-                    # Store validation results in signal (for analysis)
-                    signal['validation_test'] = {
-                        'should_pass': should_pass,
-                        'original_confidence': signal['confidence'],
-                        'adjusted_confidence': round(adjusted_conf * 100, 1),
-                        'confidence_delta': round((adjusted_conf - signal['confidence'] / 100.0) * 100, 1),
-                        'checks_passed': metadata['summary']['passed_checks'],
-                        'checks_failed': metadata['summary']['failed_checks'],
-                        'check_score': metadata['summary']['check_score']
-                    }
-                    
-                    # Log validation result
-                    status_emoji = "✅" if should_pass else "❌"
-                    conf_change = signal['validation_test']['confidence_delta']
-                    conf_emoji = "📈" if conf_change > 0 else "📉" if conf_change < 0 else "➡️"
-                    
-                    print(f"[VALIDATOR TEST] {ticker} {status_emoji} | "
-                          f"Conf: {signal['confidence']:.0f}% → {adjusted_conf*100:.0f}% "
-                          f"{conf_emoji} ({conf_change:+.0f}%) | "
-                          f"Score: {metadata['summary']['check_score']}")
-                    
-                    if not should_pass:
-                        print(f"[VALIDATOR TEST]   Would filter: {', '.join(metadata['summary']['failed_checks'])}")
-                    
-                    # TEST MODE: Continue with original signal (don't filter)
-                    if VALIDATOR_TEST_MODE:
-                        pass  # Keep going with original signal
-                    else:
-                        # FULL MODE: Apply validation filter
-                        if not should_pass:
-                            print(f"[VALIDATOR] {ticker} FILTERED - weak confirmation")
-                            return None
-                        
-                        # Update signal with boosted confidence
-                        signal['confidence'] = round(adjusted_conf * 100, 1)
-                
-                except Exception as e:
-                    print(f"[VALIDATOR] Error validating {ticker}: {e}")
-                    # Continue without validation on error
-            
-            # Update cooldown
-            self.recent_signals[ticker] = datetime.now(ET)
-            
-            # Log signal to analytics database (NEW Phase 4 integration)
-            if ANALYTICS_ENABLED and signal_tracker:
-                try:
-                    signal_id = signal_tracker.record_signal_generated(
-                        ticker=ticker,
-                        signal_type=signal.get('type', 'CFW6_OR'),
-                        direction='bull' if signal['signal'] == 'BUY' else 'bear',
-                        grade=signal.get('grade', 'A'),
-                        confidence=signal['confidence'] / 100.0,  # Convert to 0.0-1.0
-                        entry_price=signal['entry'],
-                        stop_price=signal['stop'],
-                        t1_price=signal.get('t1', signal['target']),
-                        t2_price=signal.get('t2', signal['target'])
-                    )
-                    signal['signal_id'] = signal_id  # Store DB ID for outcome tracking
-                    print(f"[ANALYTICS] Signal {signal_id} logged for {ticker}")
-                except Exception as e:
-                    print(f"[SIGNALS] Analytics logging error: {e}")
-            
-            # Store active signal
-            self.active_signals[ticker] = signal
-            
-            return signal
+        if not signal or signal['confidence'] < self.min_confidence:
+            return None
         
-        return None
+        # Add ticker to signal
+        signal['ticker'] = ticker
+        
+        # === MULTI-INDICATOR VALIDATION (TEST MODE) ===
+        if self.validator and bars:
+            try:
+                latest_bar = bars[-1]
+                
+                # Run validation
+                should_pass, adjusted_conf, metadata = self.validator.validate_signal(
+                    ticker=ticker,
+                    signal_direction=signal['signal'],
+                    current_price=signal['entry'],
+                    current_volume=latest_bar['volume'],
+                    base_confidence=signal['confidence'] / 100.0  # Convert to 0.0-1.0
+                )
+                
+                # Update statistics
+                self.validation_stats['total_signals'] += 1
+                if should_pass:
+                    self.validation_stats['would_pass'] += 1
+                else:
+                    self.validation_stats['would_filter'] += 1
+                
+                if adjusted_conf > (signal['confidence'] / 100.0):
+                    self.validation_stats['confidence_boosted'] += 1
+                elif adjusted_conf < (signal['confidence'] / 100.0):
+                    self.validation_stats['confidence_penalized'] += 1
+                
+                # Store validation results in signal (for analysis)
+                signal['validation_test'] = {
+                    'should_pass': should_pass,
+                    'original_confidence': signal['confidence'],
+                    'adjusted_confidence': round(adjusted_conf * 100, 1),
+                    'confidence_delta': round((adjusted_conf - signal['confidence'] / 100.0) * 100, 1),
+                    'checks_passed': metadata['summary']['passed_checks'],
+                    'checks_failed': metadata['summary']['failed_checks'],
+                    'check_score': metadata['summary']['check_score']
+                }
+                
+                # Log validation result
+                status_emoji = "✅" if should_pass else "❌"
+                conf_change = signal['validation_test']['confidence_delta']
+                conf_emoji = "📈" if conf_change > 0 else "📉" if conf_change < 0 else "➡️"
+                
+                print(f"[VALIDATOR TEST] {ticker} {status_emoji} | "
+                      f"Conf: {signal['confidence']:.0f}% → {adjusted_conf*100:.0f}% "
+                      f"{conf_emoji} ({conf_change:+.0f}%) | "
+                      f"Score: {metadata['summary']['check_score']}")
+                
+                if not should_pass:
+                    print(f"[VALIDATOR TEST]   Would filter: {', '.join(metadata['summary']['failed_checks'])}")
+                
+                # TEST MODE: Continue with original signal (don't filter)
+                if VALIDATOR_TEST_MODE:
+                    pass  # Keep going with original signal
+                else:
+                    # FULL MODE: Apply validation filter
+                    if not should_pass:
+                        print(f"[VALIDATOR] {ticker} FILTERED - weak confirmation")
+                        # ⭐ CRITICAL FIX: Do NOT update cooldown for filtered signals
+                        return None
+                    
+                    # Update signal with boosted confidence
+                    signal['confidence'] = round(adjusted_conf * 100, 1)
+            
+            except Exception as e:
+                print(f"[VALIDATOR] Error validating {ticker}: {e}")
+                # Continue without validation on error
+        
+        # ⭐ CRITICAL FIX: Cooldown check AFTER validation passes
+        # Only signals that pass validation trigger cooldown
+        if self._is_in_cooldown(ticker):
+            print(f"[SIGNALS] {ticker} in cooldown (validated signal already exists)")
+            return None
+        
+        # Update cooldown (only for validated signals)
+        self.recent_signals[ticker] = datetime.now(ET)
+        print(f"[SIGNALS] {ticker} cooldown started ({self.cooldown_minutes}m)")
+        
+        # Log signal to analytics database (NEW Phase 4 integration)
+        if ANALYTICS_ENABLED and signal_tracker:
+            try:
+                signal_id = signal_tracker.record_signal_generated(
+                    ticker=ticker,
+                    signal_type=signal.get('type', 'CFW6_OR'),
+                    direction='bull' if signal['signal'] == 'BUY' else 'bear',
+                    grade=signal.get('grade', 'A'),
+                    confidence=signal['confidence'] / 100.0,  # Convert to 0.0-1.0
+                    entry_price=signal['entry'],
+                    stop_price=signal['stop'],
+                    t1_price=signal.get('t1', signal['target']),
+                    t2_price=signal.get('t2', signal['target'])
+                )
+                signal['signal_id'] = signal_id  # Store DB ID for outcome tracking
+                print(f"[ANALYTICS] Signal {signal_id} logged for {ticker}")
+            except Exception as e:
+                print(f"[SIGNALS] Analytics logging error: {e}")
+        
+        # Store active signal
+        self.active_signals[ticker] = signal
+        
+        return signal
     
     def scan_watchlist(self, watchlist: List[str], use_5m: bool = True) -> List[Dict]:
         """
