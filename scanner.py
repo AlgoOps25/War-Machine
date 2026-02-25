@@ -3,6 +3,7 @@ Scanner Module - Intelligent Watchlist Builder & Scanner Loop
 INTEGRATED: Adaptive Watchlist Funnel, Pre-Market Scanner, Position Monitoring, Database Cleanup
 OPTIONS LAYER: Cache-based watchlist scoring, background prefetch, per-cycle context logging
 PHASE 2A: Signal Analytics & PnL Digest EOD integration
+PHASE 2B: Daily Bias Engine - ICT top-down analysis pre-market
 """
 import os
 import time
@@ -13,8 +14,6 @@ import config
 
 # ════════════════════════════════════════════════════════════════════════════════════
 # CRITICAL: DATABASE SCHEMA MIGRATION MUST RUN FIRST
-# This MUST happen before importing ANY module that depends on positions table schema
-# (sniper → performance_alerts → performance_monitor needs realized_pnl column)
 # ════════════════════════════════════════════════════════════════════════════════════
 print("\n[STARTUP] ⚙️  Checking database schema...")
 try:
@@ -47,7 +46,7 @@ from signal_generator import (
     signal_generator
 )
 
-# Adaptive watchlist funnel (replaces premarket_scanner)
+# Adaptive watchlist funnel
 from watchlist_funnel import (
     get_current_watchlist,
     get_watchlist_with_metadata,
@@ -56,7 +55,6 @@ from watchlist_funnel import (
 
 # ────────────────────────────────────────────────────────────────────────────────────
 # PHASE 2A: ANALYTICS & EOD REPORTING
-# Non-fatal imports: scanner works normally if these modules are missing
 # ────────────────────────────────────────────────────────────────────────────────────
 try:
     from signal_analytics import signal_tracker
@@ -76,8 +74,20 @@ except ImportError:
     print("[SCANNER] ⚠️  pnl_digest not available — using basic EOD report")
 
 # ────────────────────────────────────────────────────────────────────────────────────
+# PHASE 2B: DAILY BIAS ENGINE (ICT Top-Down Analysis)
+# ────────────────────────────────────────────────────────────────────────────────────
+try:
+    from daily_bias_engine import bias_engine, reset_bias as _reset_bias_engine
+    BIAS_ENGINE_ENABLED = True
+    print("[SCANNER] ✅ Daily bias engine enabled (ICT top-down analysis)")
+except ImportError:
+    BIAS_ENGINE_ENABLED = False
+    bias_engine = None
+    _reset_bias_engine = None
+    print("[SCANNER] ⚠️  daily_bias_engine not available — bias filtering disabled")
+
+# ────────────────────────────────────────────────────────────────────────────────────
 # OPTIONS INTELLIGENCE LAYER
-# Non-fatal import: scanner works normally if options_data_manager is missing
 # ────────────────────────────────────────────────────────────────────────────────────
 try:
     from options_data_manager import options_dm
@@ -92,6 +102,9 @@ API_KEY = os.getenv("EODHD_API_KEY", "")
 
 # Minimal fallback (only used if funnel completely fails)
 EMERGENCY_FALLBACK = ["SPY", "QQQ", "AAPL", "MSFT", "NVDA", "TSLA", "META", "AMD"]
+
+# Key market proxies always included in bias analysis
+BIAS_TICKERS = ["SPY", "QQQ"]  # Market-wide bias anchors
 
 
 def _now_et():
@@ -111,6 +124,107 @@ def is_market_hours():
 
 
 # ────────────────────────────────────────────────────────────────────────────────────
+# PHASE 2B: PRE-MARKET BIAS ANALYSIS
+# ────────────────────────────────────────────────────────────────────────────────────
+
+def _run_premarket_bias_analysis(watchlist: list) -> None:
+    """
+    Run ICT top-down bias analysis before market open.
+    Calculates BULL/BEAR/NEUTRAL bias for SPY, QQQ, and top watchlist tickers.
+    Broadcasts results to console and Discord.
+
+    Called once per session during pre-market watchlist build.
+    """
+    if not BIAS_ENGINE_ENABLED or bias_engine is None:
+        return
+
+    from discord_helpers import send_simple_message
+
+    # Always analyze market proxies first, then top watchlist tickers
+    key_tickers = list(dict.fromkeys(
+        BIAS_TICKERS + [t for t in watchlist if t not in BIAS_TICKERS][:3]
+    ))
+
+    bias_lines    = []  # For Discord
+    console_lines = []  # For terminal
+
+    for ticker in key_tickers:
+        try:
+            bias_data  = bias_engine.calculate_daily_bias(ticker, force_refresh=True)
+            bias       = bias_data['bias']
+            confidence = bias_data['confidence']
+            levels     = bias_data.get('key_levels', {}).get(ticker, {})
+
+            # Emoji encoding
+            emoji = {'BULL': '🟢', 'BEAR': '🔴', 'NEUTRAL': '⚪'}.get(bias, '⚪')
+
+            level_str = ""
+            if levels:
+                level_str = f" | PDH: ${levels['PDH']:.2f}  PDL: ${levels['PDL']:.2f}"
+
+            bias_lines.append(
+                f"{emoji} **{ticker}**: {bias} ({confidence*100:.0f}% conf){level_str}"
+            )
+            console_lines.append(
+                f"  [{bias:<7}] {ticker:<6} {confidence*100:.0f}% conf{level_str}"
+            )
+
+        except Exception as e:
+            print(f"[BIAS] Error calculating bias for {ticker}: {e}")
+
+    if not bias_lines:
+        return
+
+    # ── Console output ────────────────────────────────────────────────────────
+    print("\n" + "=" * 70)
+    print("📊  PRE-MARKET DAILY BIAS ANALYSIS  (ICT Top-Down)")
+    print("=" * 70)
+    for line in console_lines:
+        print(line)
+
+    # Print SPY reasons
+    spy_data = bias_engine._get_bias_dict()
+    if spy_data.get('reasons'):
+        print("\nSPY Analysis:")
+        for reason in spy_data['reasons']:
+            print(f"  • {reason}")
+    print("=" * 70 + "\n")
+
+    # ── Discord alert ─────────────────────────────────────────────────────────
+    now_str = _now_et().strftime('%I:%M %p ET')
+    discord_msg = (
+        f"📊 **PRE-MARKET BIAS ANALYSIS** — {now_str}\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    )
+    for line in bias_lines:
+        discord_msg += f"{line}\n"
+
+    # Add SPY structural reasons
+    if spy_data.get('reasons'):
+        discord_msg += "\n📋 **SPY Structure:**\n"
+        for reason in spy_data['reasons'][:3]:
+            discord_msg += f"  • {reason}\n"
+
+    # Add filter warning if strong directional bias
+    spy_bias       = spy_data.get('bias', 'NEUTRAL')
+    spy_confidence = spy_data.get('confidence', 0.0)
+    if spy_confidence >= 0.7 and spy_bias != 'NEUTRAL':
+        counter = 'SELL' if spy_bias == 'BULL' else 'BUY'
+        discord_msg += (
+            f"\n⚠️ **Filter Active:** {counter} signals suppressed "
+            f"(counter-trend to {spy_bias} bias)\n"
+        )
+
+    discord_msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+    try:
+        send_simple_message(discord_msg)
+        print("[BIAS] Pre-market bias alert sent to Discord ✅")
+    except Exception as e:
+        print(f"[BIAS] Discord error: {e}")
+
+
+# ────────────────────────────────────────────────────────────────────────────────────
 # OPTIONS INTELLIGENCE HELPERS
 # ────────────────────────────────────────────────────────────────────────────────────
 
@@ -118,52 +232,34 @@ def enhance_watchlist_with_options(watchlist: list) -> list:
     """
     Sort watchlist by options quality using CACHED scores only.
     Makes ZERO new API calls — safe to call every scan cycle.
-
-    Strategy:
-      - Tickers with cached scores are sorted best-first (highest options score)
-      - Tickers with no cached data stay in their original relative order at the end
-      - Hard options filtering is deferred to sniper.py (validate_for_trading)
-      - Non-fatal: returns original list unchanged if options layer is disabled
-
-    Args:
-        watchlist: List of tickers from funnel
-
-    Returns:
-        Sorted list: high-options-score tickers first, uncached tickers appended
     """
     if not OPTIONS_LAYER_ENABLED or options_dm is None:
         return watchlist
 
     try:
-        scored   = []   # (ticker, score) for tickers with cached data
-        unscored = []   # tickers with no cached options data yet
+        scored   = []
+        unscored = []
 
         with options_dm._lock:
             for ticker in watchlist:
                 cached = options_dm._score_cache.get(ticker)
                 if cached:
-                    score = cached['data'].get('score', 0)
+                    score     = cached['data'].get('score', 0)
                     tradeable = cached['data'].get('tradeable', True)
                     scored.append((ticker, score, tradeable))
                 else:
                     unscored.append(ticker)
 
-        # Sort scored tickers: tradeable first, then by score descending
         scored.sort(key=lambda x: (x[2], x[1]), reverse=True)
-
         enhanced = [t for t, _, _ in scored] + unscored
 
-        # Log summary
         if scored:
-            tradeable_count  = sum(1 for _, _, t in scored if t)
-            top3 = ', '.join(
-                f"{t}({s:.0f})" for t, s, _ in scored[:3]
-            )
+            tradeable_count = sum(1 for _, _, t in scored if t)
+            top3 = ', '.join(f"{t}({s:.0f})" for t, s, _ in scored[:3])
             print(
                 f"[OPTIONS] Watchlist enhanced — "
-                f"{tradeable_count}/{len(scored)} cached tickers tradeable | "
-                f"Top: {top3} | "
-                f"{len(unscored)} uncached (appended)"
+                f"{tradeable_count}/{len(scored)} cached tradeable | "
+                f"Top: {top3} | {len(unscored)} uncached"
             )
 
         return enhanced
@@ -174,17 +270,7 @@ def enhance_watchlist_with_options(watchlist: list) -> list:
 
 
 def prefetch_options_scores(watchlist: list, top_n: int = 20) -> None:
-    """
-    Background async prefetch of options scores for the top N tickers.
-    Runs in a daemon thread — never blocks the scan cycle.
-
-    Results are stored in options_dm._score_cache and will be used
-    by enhance_watchlist_with_options() on the NEXT scan cycle.
-
-    Args:
-        watchlist: Full list of tickers to prefetch
-        top_n:    Only prefetch for the first N tickers (API rate limit friendly)
-    """
+    """Background async prefetch of options scores for the top N tickers."""
     if not OPTIONS_LAYER_ENABLED or options_dm is None:
         return
 
@@ -195,51 +281,40 @@ def prefetch_options_scores(watchlist: list, top_n: int = 20) -> None:
         errors  = 0
         for ticker in tickers_to_fetch:
             try:
-                # Skip if already cached and fresh
                 import time as _time
                 with options_dm._lock:
                     cached = options_dm._score_cache.get(ticker)
                 if cached:
                     age = _time.time() - cached['timestamp']
                     if age < options_dm.cache_ttl:
-                        continue  # Already fresh
-
+                        continue
                 options_dm.get_options_score(ticker)
                 fetched += 1
-
             except Exception:
                 errors += 1
                 continue
 
         if fetched > 0:
-            print(
-                f"[OPTIONS] Background prefetch complete — "
-                f"{fetched} fetched, {errors} errors"
-            )
+            print(f"[OPTIONS] Background prefetch — {fetched} fetched, {errors} errors")
 
-    thread = threading.Thread(target=_do_prefetch, daemon=True)
+    thread      = threading.Thread(target=_do_prefetch, daemon=True)
     thread.name = "options-prefetch"
     thread.start()
 
 
 def _log_options_context(watchlist: list) -> None:
-    """
-    Print a one-line options environment summary for the current cycle.
-    Shows how many tickers have cached options data and their score distribution.
-    Non-fatal: silent if options layer is disabled.
-    """
+    """Print one-line options environment summary for the current cycle."""
     if not OPTIONS_LAYER_ENABLED or options_dm is None:
         return
 
     try:
-        stats = options_dm.get_cache_stats()
+        stats        = options_dm.get_cache_stats()
         cached_count = stats['scores_cached']
 
         if cached_count == 0:
             print("[OPTIONS] No cached scores yet — prefetch in progress")
             return
 
-        # Score distribution for this watchlist
         scores = []
         with options_dm._lock:
             for ticker in watchlist:
@@ -257,24 +332,19 @@ def _log_options_context(watchlist: list) -> None:
         print(
             f"[OPTIONS] Context — "
             f"{len(scores)}/{len(watchlist)} scored | "
-            f"Avg: {avg_score:.0f} | "
-            f"High(≥60): {high_env} | "
-            f"Weak(<30): {low_env}"
+            f"Avg: {avg_score:.0f} | High(≥60): {high_env} | Weak(<30): {low_env}"
         )
 
     except Exception:
-        pass  # Never block the scan cycle
+        pass
 
 
 # ────────────────────────────────────────────────────────────────────────────────────
-# EXISTING SCANNER FUNCTIONS (unchanged)
+# EXISTING SCANNER FUNCTIONS
 # ────────────────────────────────────────────────────────────────────────────────────
 
 def build_watchlist(force_refresh: bool = False) -> list:
-    """
-    Build adaptive watchlist using funnel system.
-    Automatically adjusts size and quality based on time of day.
-    """
+    """Build adaptive watchlist using funnel system."""
     try:
         watchlist = get_current_watchlist(force_refresh=force_refresh)
         if watchlist:
@@ -282,7 +352,6 @@ def build_watchlist(force_refresh: bool = False) -> list:
     except Exception as e:
         print(f"[WATCHLIST] Funnel error: {e}")
 
-    # Emergency fallback
     print(f"[WATCHLIST] Using emergency fallback: {len(EMERGENCY_FALLBACK)} tickers")
     return list(EMERGENCY_FALLBACK)
 
@@ -297,7 +366,6 @@ def monitor_open_positions():
     current_prices = {}
     for pos in open_positions:
         ticker = pos["ticker"]
-        # Prefer live WS bar (sub-10s latency) over DB-stored bar
         bar = get_current_bar(ticker) if is_connected() else None
         if bar is None:
             bars = data_manager.get_bars_from_memory(ticker, limit=1)
@@ -320,9 +388,11 @@ def start_scanner_loop():
     if OPTIONS_LAYER_ENABLED:
         print(f"Options layer: ✅ ENABLED (cache-sort + background prefetch)")
     if ANALYTICS_ENABLED:
-        print(f"Analytics: ✅ ENABLED (quality scoring, Sharpe, expectancy)")
+        print(f"Analytics:     ✅ ENABLED (quality scoring, Sharpe, expectancy)")
     if PNL_DIGEST_ENABLED:
-        print(f"PnL Digest: ✅ ENABLED (rich EOD Discord embeds)")
+        print(f"PnL Digest:    ✅ ENABLED (rich EOD Discord embeds)")
+    if BIAS_ENGINE_ENABLED:
+        print(f"Daily Bias:    ✅ ENABLED (ICT top-down, pivot+sweep analysis)")
     print(f"{'='*60}\n")
 
     try:
@@ -332,12 +402,12 @@ def start_scanner_loop():
 
     premarket_watchlist = []
     premarket_built     = False
+    bias_calculated     = False   # New: track if bias has been run today
     cycle_count         = 0
     last_report_day     = None
     loss_streak_alerted = False
 
-    # ── STARTUP SEQUENCE ──────────────────────────────────────────────────────────────
-    # Start with emergency fallback for initial WS subscription
+    # ── STARTUP SEQUENCE ──────────────────────────────────────────────────────
     startup_watchlist = list(EMERGENCY_FALLBACK)
     try:
         start_ws_feed(startup_watchlist)
@@ -345,15 +415,12 @@ def start_scanner_loop():
     except Exception as e:
         print(f"[WS] ERROR starting WebSocket feed: {e}")
 
-    # Historical backfill
     data_manager.startup_backfill_today(startup_watchlist)
     data_manager.startup_intraday_backfill_today(startup_watchlist)
     set_backfill_complete()
-    # Earnings filter removed - no longer needed
 
-    # Kick off options prefetch for startup tickers in background
     prefetch_options_scores(startup_watchlist, top_n=len(startup_watchlist))
-    # ──────────────────────────────────────────────────────────────────────────────────
+    # ──────────────────────────────────────────────────────────────────────────
 
     while True:
         try:
@@ -365,7 +432,6 @@ def start_scanner_loop():
                 if not premarket_built:
                     print(f"\n[PRE-MARKET] {current_time_str} - Building Watchlist\n")
                     try:
-                        # Use funnel system for pre-market watchlist
                         watchlist_data      = get_watchlist_with_metadata(force_refresh=True)
                         premarket_watchlist = watchlist_data['watchlist']
                         metadata            = watchlist_data['metadata']
@@ -379,15 +445,17 @@ def start_scanner_loop():
                             f"({len(premarket_watchlist)} tickers) to WS feed"
                         )
 
-                        # ── OPTIONS: kick off background prefetch for premarket list ──
                         prefetch_options_scores(premarket_watchlist, top_n=20)
 
-                        # Enhanced Discord message with funnel metadata
+                        # ── BIAS: Run pre-market top-down analysis ────────────
+                        if not bias_calculated:
+                            _run_premarket_bias_analysis(premarket_watchlist)
+                            bias_calculated = True
+                        # ─────────────────────────────────────────────────────
+
                         stage_emoji = {
-                            'wide': '📡',
-                            'narrow': '🎯',
-                            'final': '🔥',
-                            'live': '⚡'
+                            'wide': '📡', 'narrow': '🎯',
+                            'final': '🔥', 'live': '⚡'
                         }
                         emoji = stage_emoji.get(metadata['stage'], '📊')
 
@@ -403,16 +471,13 @@ def start_scanner_loop():
 
                         send_simple_message(msg)
 
-                        # Scan pre-market watchlist for breakouts
                         print(
                             f"\n[SIGNALS] Pre-market breakout scan on "
                             f"{len(premarket_watchlist)} tickers..."
                         )
-                        # ── OPTIONS: enhance pre-market watchlist order ──
                         enhanced_pm = enhance_watchlist_with_options(premarket_watchlist)
                         check_and_alert(enhanced_pm)
 
-                        # Show any active signals from pre-market
                         if signal_generator.active_signals:
                             print_active_signals()
 
@@ -423,7 +488,6 @@ def start_scanner_loop():
                         premarket_watchlist = list(EMERGENCY_FALLBACK)
                         premarket_built     = True
                 else:
-                    # Refresh watchlist periodically during pre-market
                     funnel = get_funnel()
                     if funnel.should_update():
                         print(f"[PRE-MARKET] {current_time_str} - Refreshing Watchlist\n")
@@ -432,7 +496,6 @@ def start_scanner_loop():
                             premarket_watchlist = watchlist_data['watchlist']
                             subscribe_tickers(premarket_watchlist)
 
-                            # Check for stage transition
                             metadata = watchlist_data['metadata']
                             print(
                                 f"[FUNNEL] Stage: {metadata['stage'].upper()} - "
@@ -440,18 +503,14 @@ def start_scanner_loop():
                             )
                             print(f"[FUNNEL] Top 3: {', '.join(metadata['top_3_tickers'])}\n")
 
-                            # ── OPTIONS: prefetch + enhance refreshed premarket list ──
                             prefetch_options_scores(premarket_watchlist, top_n=20)
                             enhanced_pm = enhance_watchlist_with_options(premarket_watchlist)
 
-                            # Scan for new breakouts after refresh
                             print(
                                 f"[SIGNALS] Pre-market breakout scan on "
                                 f"{len(enhanced_pm)} tickers..."
                             )
                             check_and_alert(enhanced_pm)
-
-                            # Monitor existing signals
                             monitor_signals()
 
                             if signal_generator.active_signals:
@@ -462,7 +521,7 @@ def start_scanner_loop():
                     else:
                         print(f"[PRE-MARKET] {current_time_str} - Waiting for 9:30 AM ET...")
 
-                    time.sleep(60)  # Check every minute during pre-market
+                    time.sleep(60)
                 continue
 
             elif is_market_hours():
@@ -493,7 +552,6 @@ def start_scanner_loop():
                 print(f"[SCANNER] CYCLE #{cycle_count} - {current_time_str}")
                 print(f"{'='*60}")
 
-                # Build watchlist with fallbacks
                 try:
                     watchlist = get_current_watchlist(force_refresh=False)
                     if not watchlist:
@@ -511,39 +569,24 @@ def start_scanner_loop():
                 optimal_size = calculate_optimal_watchlist_size()
                 watchlist    = watchlist[:optimal_size]
 
-                # ── OPTIONS LAYER ───────────────────────────────────────────────────────────
-                # Step 1: Fire background prefetch for this cycle's watchlist.
-                #         Results populate options_dm cache for NEXT cycle sort.
                 prefetch_options_scores(watchlist, top_n=20)
-
-                # Step 2: Sort watchlist using CACHED scores (no new API calls).
-                #         High-quality options environment tickers scan first.
                 watchlist = enhance_watchlist_with_options(watchlist)
-
-                # Step 3: Log per-cycle options environment summary.
                 _log_options_context(watchlist)
-                # ───────────────────────────────────────────────────────────────────────
 
                 print(
                     f"[SCANNER] {len(watchlist)} tickers | "
                     f"{', '.join(watchlist[:10])}...\n"
                 )
 
-                # Scan for breakout signals
                 print(f"[SIGNALS] Scanning {len(watchlist)} tickers for breakouts...")
                 check_and_alert(watchlist)
-
-                # Monitor active signals (check for stop/target hits)
                 monitor_signals()
 
-                # Show active signals summary
                 if signal_generator.active_signals:
                     print_active_signals()
 
-                # Monitor open positions
                 monitor_open_positions()
 
-                # Daily stats
                 daily_stats = position_manager.get_daily_stats()
                 print(
                     f"[TODAY] Trades: {daily_stats['trades']} "
@@ -552,7 +595,6 @@ def start_scanner_loop():
                     f"P&L: ${daily_stats['total_pnl']:+.2f}\n"
                 )
 
-                # Process tickers with CFW6
                 for idx, ticker in enumerate(watchlist, 1):
                     try:
                         print(f"\n--- [{idx}/{len(watchlist)}] {ticker} ---")
@@ -578,21 +620,16 @@ def start_scanner_loop():
                     if open_positions:
                         print(f"[EOD] {len(open_positions)} positions still open")
 
-                    # ──────────────────────────────────────────────────────────────
-                    # PHASE 2A: ENHANCED EOD REPORTING
-                    # ──────────────────────────────────────────────────────────────
-                    
-                    # 1. SIGNAL ANALYTICS (console output)
+                    # 1. SIGNAL ANALYTICS
                     if ANALYTICS_ENABLED and signal_tracker:
                         try:
                             print("\n[ANALYTICS] Generating signal performance report...\n")
                             summary = signal_tracker.get_daily_summary()
                             print(summary)
-                            
-                            # Get funnel and multiplier stats
+
                             funnel_stats = signal_tracker.get_funnel_stats()
-                            mult_stats = signal_tracker.get_multiplier_impact()
-                            
+                            mult_stats   = signal_tracker.get_multiplier_impact()
+
                             print("\n" + "="*80)
                             print("SIGNAL FUNNEL ANALYSIS")
                             print("="*80)
@@ -603,19 +640,16 @@ def start_scanner_loop():
                             print("\n" + "="*80)
                             print("MULTIPLIER IMPACT")
                             print("="*80)
-                            print(f"IVR Multiplier:  {mult_stats['ivr_avg']:.3f}x")
-                            print(f"UOA Multiplier:  {mult_stats['uoa_avg']:.3f}x")
-                            print(f"GEX Multiplier:  {mult_stats['gex_avg']:.3f}x")
-                            print(f"MTF Boost:       +{mult_stats['mtf_avg']:.3f}")
-                            print(f"Total Impact:    {mult_stats['total_boost_pct']:+.1f}%")
+                            print(f"IVR Mult: {mult_stats['ivr_avg']:.3f}x | UOA Mult: {mult_stats['uoa_avg']:.3f}x")
+                            print(f"GEX Mult: {mult_stats['gex_avg']:.3f}x | MTF Boost: +{mult_stats['mtf_avg']:.3f}")
+                            print(f"Total Impact: {mult_stats['total_boost_pct']:+.1f}%")
                             print("="*80 + "\n")
-                            
                         except Exception as e:
                             print(f"[ANALYTICS] Error generating report: {e}")
                             import traceback
                             traceback.print_exc()
-                    
-                    # 2. PNL DIGEST (Discord embed)
+
+                    # 2. PNL DIGEST
                     if PNL_DIGEST_ENABLED:
                         try:
                             print("[EOD] Generating PnL digest for Discord...")
@@ -623,45 +657,39 @@ def start_scanner_loop():
                             if digest_success:
                                 print("[EOD] ✅ PnL digest sent to Discord")
                             else:
-                                print("[EOD] ⚠️  PnL digest generation returned False (check logs)")
+                                print("[EOD] ⚠️  PnL digest generation returned False")
                         except Exception as e:
                             print(f"[EOD] PnL digest error: {e}")
                             import traceback
                             traceback.print_exc()
-                            # Fallback to basic report
                             try:
                                 daily_stats = position_manager.get_daily_stats()
-                                eod_report = (
+                                send_simple_message(
                                     f"📊 **EOD Report {current_day}**\n"
                                     f"Trades: {daily_stats['trades']} | "
                                     f"WR: {daily_stats['win_rate']:.1f}% | "
                                     f"P&L: ${daily_stats['total_pnl']:+.2f}"
                                 )
-                                send_simple_message(eod_report)
                             except Exception as e2:
-                                print(f"[EOD] Basic report fallback also failed: {e2}")
+                                print(f"[EOD] Basic report fallback failed: {e2}")
                     else:
-                        # Use legacy basic EOD report if pnl_digest unavailable
                         try:
                             daily_stats = position_manager.get_daily_stats()
-                            eod_report = (
+                            eod_report  = (
                                 f"📊 **EOD Report {current_day}**\n"
                                 f"Trades: {daily_stats['trades']} | "
                                 f"WR: {daily_stats['win_rate']:.1f}% | "
                                 f"P&L: ${daily_stats['total_pnl']:+.2f}"
                             )
-
                             try:
-                                win_rate_report  = position_manager.generate_report()
-                                eod_report      += f"\n{win_rate_report}"
-                            except Exception as e:
-                                print(f"[EOD] Win rate report error: {e}")
-
+                                eod_report += f"\n{position_manager.generate_report()}"
+                            except Exception:
+                                pass
                             send_simple_message(eod_report)
                         except Exception as e:
                             print(f"[EOD] Basic EOD report error: {e}")
 
-                    # 3. AI LEARNING ENGINE OPTIMIZATION
+                    # 3. AI LEARNING
                     try:
                         learning_engine.optimize_confirmation_weights()
                         learning_engine.optimize_fvg_threshold()
@@ -675,11 +703,18 @@ def start_scanner_loop():
                     except Exception as e:
                         print(f"[CLEANUP] Error: {e}")
 
-                    # 5. DAILY RESET
+                    # 5. DAILY RESET — signals
                     signal_generator.reset_daily()
                     print("[SIGNALS] Daily reset complete")
 
-                    # 6. OPTIONS CACHE CLEAR
+                    # 6. DAILY RESET — bias engine
+                    if BIAS_ENGINE_ENABLED and _reset_bias_engine:
+                        try:
+                            _reset_bias_engine()
+                        except Exception as e:
+                            print(f"[BIAS] Reset error: {e}")
+
+                    # 7. OPTIONS CACHE CLEAR
                     if OPTIONS_LAYER_ENABLED and options_dm is not None:
                         try:
                             options_dm.clear_cache()
@@ -687,18 +722,18 @@ def start_scanner_loop():
                         except Exception as e:
                             print(f"[OPTIONS] Cache clear error: {e}")
 
-                    # 7. STATE RESET
+                    # 8. STATE RESET
                     last_report_day     = current_day
                     premarket_watchlist = []
                     premarket_built     = False
+                    bias_calculated     = False   # Allow new bias calc tomorrow
                     cycle_count         = 0
                     loss_streak_alerted = False
 
                     clear_armed_signals()
                     clear_watching_signals()
-                    # Earnings cache removed
-                    
-                    # 8. PDH/PDL CACHE CLEAR
+
+                    # 9. PDH/PDL CACHE CLEAR
                     try:
                         data_manager.clear_prev_day_cache()
                     except Exception as e:
@@ -759,6 +794,6 @@ def get_screener_tickers(min_market_cap: int = 1_000_000_000, limit: int = 50) -
         return []
 
 
-# ── Entry point ──────────────────────────────────────────────────────────────────────
+# ── Entry point ──────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     start_scanner_loop()
