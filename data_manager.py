@@ -17,6 +17,7 @@ Design principles:
   - get_today_session_bars() queries strictly by today's ET date. It NEVER falls
     back to a prior date. If today has no bars, it returns [] and the scanner skips.
   - Historical data accumulates over time for future backtesting.
+  - WEBSOCKET-FIRST OPTIMIZATION: Live data queries check WebSocket feed before DB/API.
 
 EODHD endpoint rules:
   - /api/intraday/ : primary bar source — prior-day data is always available;
@@ -55,6 +56,41 @@ class DataManager:
         self.db_path = db_path
         self.api_key = config.EODHD_API_KEY
         self.initialize_database()
+
+    # =============================================================
+    # WEBSOCKET INTEGRATION HELPERS
+    # =============================================================
+
+    def _get_ws_bar(self, ticker: str) -> Optional[Dict]:
+        """
+        Get current bar from WebSocket feed if connected and available.
+        Returns None if WS not connected or no data for ticker.
+        """
+        if not config.ENABLE_WEBSOCKET_FEED:
+            return None
+        
+        try:
+            from ws_feed import is_connected, get_current_bar
+            if is_connected():
+                return get_current_bar(ticker)
+        except ImportError:
+            pass
+        except Exception as e:
+            # Silently fail - WS is optional optimization
+            pass
+        
+        return None
+
+    def _is_ws_connected(self) -> bool:
+        """Check if WebSocket feed is active."""
+        if not config.ENABLE_WEBSOCKET_FEED:
+            return False
+        
+        try:
+            from ws_feed import is_connected
+            return is_connected()
+        except (ImportError, Exception):
+            return False
 
     # =============================================================
     # DATABASE SETUP
@@ -296,12 +332,8 @@ class DataManager:
         
         # CRITICAL OPTIMIZATION: Skip during market hours if WebSocket is connected
         if config.MARKET_OPEN <= now_et.time() <= config.MARKET_CLOSE:
-            try:
-                from ws_feed import is_connected as _ws_connected
-                if _ws_connected():
-                    return  # WebSocket owns today - no API calls needed
-            except ImportError:
-                pass
+            if self._is_ws_connected():
+                return  # WebSocket owns today - no API calls needed
         
         last_bar = self._get_last_bar_ts(ticker)
         
@@ -450,7 +482,7 @@ class DataManager:
                     pass
 
     # =============================================================
-    # SESSION QUERIES
+    # SESSION QUERIES (WEBSOCKET-OPTIMIZED)
     # =============================================================
 
     def _parse_bar_rows(self, rows) -> List[Dict]:
@@ -516,6 +548,55 @@ class DataManager:
         conn.close()
         return self._parse_bar_rows(rows)
 
+    def get_latest_bar(self, ticker: str) -> Optional[Dict]:
+        """
+        Get the most recent bar for a ticker.
+        
+        WEBSOCKET-OPTIMIZED: Checks WebSocket feed FIRST if connected,
+        falls back to database query only if WS unavailable.
+        
+        This reduces API quota consumption and provides fresher data.
+        
+        Returns:
+            Bar dict with datetime, open, high, low, close, volume or None
+        """
+        # OPTIMIZATION: Try WebSocket first
+        ws_bar = self._get_ws_bar(ticker)
+        if ws_bar:
+            return ws_bar
+        
+        # Fallback: Query database for latest bar
+        p = ph()
+        conn = get_conn(self.db_path)
+        cursor = dict_cursor(conn)
+        cursor.execute(f"""
+            SELECT datetime, open, high, low, close, volume
+            FROM intraday_bars
+            WHERE ticker = {p}
+            ORDER BY datetime DESC
+            LIMIT 1
+        """, (ticker,))
+        row = cursor.fetchone()
+        conn.close()
+        
+        if not row:
+            return None
+        
+        bars = self._parse_bar_rows([row])
+        return bars[0] if bars else None
+
+    def get_latest_price(self, ticker: str) -> Optional[float]:
+        """
+        Get the most recent close price for a ticker.
+        
+        WEBSOCKET-OPTIMIZED: Checks WebSocket feed FIRST.
+        
+        Returns:
+            Close price as float or None
+        """
+        bar = self.get_latest_bar(ticker)
+        return bar["close"] if bar else None
+
     # =============================================================
     # DAILY OHLC (EODHD /eod/ endpoint)
     # =============================================================
@@ -574,12 +655,35 @@ class DataManager:
     # =============================================================
 
     def bulk_fetch_live_snapshots(self, tickers: List[str]) -> Dict[str, Dict]:
-        """Fetch real-time price snapshots for up to 50 tickers in one call."""
+        """
+        Fetch real-time price snapshots for up to 50 tickers in one call.
+        
+        WEBSOCKET-OPTIMIZED: For tickers with WS data, returns WS bars immediately.
+        Only fetches REST API snapshots for tickers without WS coverage.
+        """
         if not tickers:
             return {}
 
-        primary = f"{tickers[0]}.US"
-        extras  = ",".join(f"{t}.US" for t in tickers[1:])
+        result = {}
+        tickers_needing_api = []
+        
+        # First pass: Try to get data from WebSocket
+        if self._is_ws_connected():
+            for ticker in tickers:
+                ws_bar = self._get_ws_bar(ticker)
+                if ws_bar:
+                    result[ticker] = ws_bar
+                else:
+                    tickers_needing_api.append(ticker)
+        else:
+            tickers_needing_api = tickers
+        
+        # Second pass: Fetch remaining tickers via REST API
+        if not tickers_needing_api:
+            return result
+
+        primary = f"{tickers_needing_api[0]}.US"
+        extras  = ",".join(f"{t}.US" for t in tickers_needing_api[1:])
         url     = f"https://eodhd.com/api/real-time/{primary}"
         params  = {"api_token": self.api_key, "fmt": "json"}
         if extras:
@@ -592,7 +696,6 @@ class DataManager:
             if isinstance(data, dict):
                 data = [data]
 
-            result = {}
             for d in data:
                 code  = d.get("code", "").replace(".US", "")
                 ts    = d.get("timestamp")
@@ -607,12 +710,15 @@ class DataManager:
                         "volume":   int(d.get("volume", 0))
                     }
 
-            print(f"[LIVE] Bulk snapshot: {len(result)}/{len(tickers)} tickers")
+            ws_count = len(result) - len([t for t in tickers_needing_api if t in result])
+            api_count = len([t for t in tickers_needing_api if t in result])
+            print(f"[LIVE] Bulk snapshot: {len(result)}/{len(tickers)} tickers "
+                  f"(WS: {ws_count}, API: {api_count})")
             return result
 
         except Exception as e:
             print(f"[LIVE] Bulk snapshot error: {e}")
-            return {}
+            return result
 
     # =============================================================
     # CACHE MANAGEMENT
@@ -651,7 +757,18 @@ class DataManager:
         print(f"[CLEANUP] Removed bars older than {days_to_keep} days")
 
     def get_bars_from_memory(self, ticker: str, limit: int = 390) -> List[Dict]:
-        """Return N most recent bars. Prefer get_today_session_bars() for live scanning."""
+        """
+        Return N most recent bars. Prefer get_today_session_bars() for live scanning.
+        
+        WEBSOCKET-OPTIMIZED: If requesting only 1 bar and WS is connected,
+        returns WS bar immediately.
+        """
+        # Optimization: Single bar request during live session
+        if limit == 1:
+            ws_bar = self._get_ws_bar(ticker)
+            if ws_bar:
+                return [ws_bar]
+        
         p = ph()
         conn = get_conn(self.db_path)
         cursor = dict_cursor(conn)
