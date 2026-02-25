@@ -15,6 +15,7 @@
 #                   before CPU-heavy confirmation runs (Step 6.5, SOFT/HARD modes).
 # PHASE 4 TRACKING: Signal funnel analytics for optimization visibility
 # MTF CONVERGENCE: Multi-timeframe FVG alignment boost (5m + 3m convergence)
+# CANDLE CONFIRMATION: 3-tier Nitro Trades candle quality model (A+/A/A- grading)
 import traceback
 import requests
 import json
@@ -756,7 +757,8 @@ def detect_fvg_after_break(bars, breakout_idx, direction):
 
 def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
                           or_high_ref, or_low_ref, signal_type,
-                          bars_session, breakout_idx):
+                          bars_session, breakout_idx,
+                          bos_confirmation=None, bos_candle_type=None):
 
     # ════════════════════════════════════════════════════════════
     # STEP 6.5 — OPTIONS PRE-VALIDATION GATE  (★ NEW)
@@ -1069,14 +1071,16 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         except Exception as e:
             print(f"[PHASE 4] Armed tracking error: {e}")
     
-    # STEP 12 — ARM (with validation result attached)
+    # STEP 12 — ARM (with validation result + candle confirmation attached)
     arm_ticker(
         ticker, direction, zone_low, zone_high,
         or_low_ref, or_high_ref,
         entry_price, stop_price, t1, t2,
         final_confidence, final_grade, options_rec,
         signal_type=signal_type,
-        validation_result=validation_result
+        validation_result=validation_result,
+        bos_confirmation=bos_confirmation,
+        bos_candle_type=bos_candle_type
     )
     return True
 
@@ -1087,7 +1091,8 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
 
 def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high,
                entry_price, stop_price, t1, t2, confidence, grade,
-               options_rec=None, signal_type="CFW6_OR", validation_result=None):
+               options_rec=None, signal_type="CFW6_OR", validation_result=None,
+               bos_confirmation=None, bos_candle_type=None):
     # LOWERED: Minimum risk threshold from 0.2% to 0.1%
     # Allows tighter stops on low volatility setups while
     # wider ATR multipliers (2.0x-3.0x) ensure reasonable risk
@@ -1111,7 +1116,8 @@ def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high,
     send_options_signal_alert(
         ticker=ticker, direction=direction,
         entry=entry_price, stop=stop_price, t1=t1, t2=t2,
-        confidence=confidence, timeframe="5m", grade=grade, options_data=options_rec
+        confidence=confidence, timeframe="5m", grade=grade, options_data=options_rec,
+        confirmation=bos_confirmation, candle_type=bos_candle_type
     )
     position_id = position_manager.open_position(
         ticker=ticker, direction=direction,
@@ -1266,6 +1272,7 @@ def process_ticker(ticker: str):
         # ── FRESH SCAN ────────────────────────────────────────────────────────────────────
         direction = breakout_idx = zone_low = zone_high = None
         or_high_ref = or_low_ref = scan_mode = None
+        bos_confirmation = bos_candle_type = None
 
         or_high, or_low = compute_opening_range_from_bars(bars_session)
         if or_high is not None:
@@ -1324,6 +1331,10 @@ def process_ticker(ticker: str):
             zone_low     = bos_signal["fvg_low"]
             zone_high    = bos_signal["fvg_high"]
             breakout_idx = bos_signal["bos_idx"]
+            
+            # Extract 3-tier candle confirmation from bos_signal
+            bos_confirmation = bos_signal.get("confirmation")
+            bos_candle_type = bos_signal.get("candle_type")
 
             if direction == "bull":
                 or_high_ref = bos_signal["bos_price"]
@@ -1339,7 +1350,9 @@ def process_ticker(ticker: str):
         _run_signal_pipeline(
             ticker, direction, zone_low, zone_high,
             or_high_ref, or_low_ref, signal_type,
-            bars_session, breakout_idx
+            bars_session, breakout_idx,
+            bos_confirmation=bos_confirmation,
+            bos_candle_type=bos_candle_type
         )
 
     except Exception as e:
