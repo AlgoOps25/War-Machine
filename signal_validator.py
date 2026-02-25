@@ -5,13 +5,14 @@ Enhances CFW6 signals with additional technical indicator validation.
 Reduces false positives by requiring multiple confirmations.
 
 Validation Layers:
-  0. Daily Bias (ICT Top-Down) - Filter counter-trend signals [NEW]
-  1. Trend Strength (ADX) - Is there a real trend?
-  2. Volume Confirmation (AvgVol) - Is there institutional interest?
-  3. Trend Direction (DMI) - Does direction match signal?
-  4. Momentum (CCI) - Are we entering overbought/oversold?
-  5. Volatility Context (Bollinger Bands) - Squeeze or expansion?
-  6. Volume Profile (VPVR) - Support/resistance alignment?
+  0. Daily Bias (ICT Top-Down) - Filter counter-trend signals
+  1. Time-of-Day Quality - Soft penalty for low-probability time windows [NEW]
+  2. Trend Strength (ADX) - Is there a real trend?
+  3. Volume Confirmation (AvgVol) - Is there institutional interest?
+  4. Trend Direction (DMI) - Does direction match signal?
+  5. Momentum (CCI) - Are we entering overbought/oversold?
+  6. Volatility Context (Bollinger Bands) - Squeeze or expansion?
+  7. Volume Profile (VPVR) - Support/resistance alignment?
 
 Integration:
   - Called by signal_generator.py AFTER CFW6 pattern detection
@@ -19,9 +20,12 @@ Integration:
   - Returns enriched metadata for logging and Discord
 """
 from typing import Dict, Optional, Tuple
-from datetime import datetime
+from datetime import datetime, time as dtime
+from zoneinfo import ZoneInfo
 import technical_indicators as ti
 import vpvr_calculator as vpvr
+
+ET = ZoneInfo("America/New_York")
 
 # Import daily bias engine for top-down analysis
 try:
@@ -34,6 +38,59 @@ except ImportError:
     print("[VALIDATOR] ⚠️  daily_bias_engine not available - bias filtering disabled")
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# TIME-OF-DAY QUALITY SCORING
+# ══════════════════════════════════════════════════════════════════════════════
+
+def get_time_of_day_quality(signal_time: datetime) -> Tuple[str, float]:
+    """
+    Assess signal quality based on time of day.
+    
+    Historical edge analysis shows:
+      - Morning session (9:30-10:30): Highest momentum, best follow-through
+      - Power hour (15:00-16:00): Strong institutional positioning
+      - Dead zone (11:30-13:00): Choppy, low follow-through
+    
+    Returns:
+        (zone_label, confidence_adjustment)
+        
+        confidence_adjustment:
+          +0.05 = Prime time (morning session, power hour)
+          +0.02 = Good time (early afternoon)
+           0.00 = Neutral time (late morning, mid-afternoon)
+          -0.03 = Weak time (dead zone 11:30-13:00)
+    
+    Note: This is a SOFT penalty, not a hard filter. Signals in weak zones
+    still pass validation but receive lower confidence scores.
+    """
+    current_time = signal_time.time()
+    
+    # Prime Time Windows
+    if dtime(9, 30) <= current_time < dtime(10, 30):
+        return 'MORNING_SESSION', 0.05  # Opening hour - strongest moves
+    
+    if dtime(15, 0) <= current_time < dtime(16, 0):
+        return 'POWER_HOUR', 0.05  # Closing hour - institutional positioning
+    
+    # Good Time Windows
+    if dtime(10, 30) <= current_time < dtime(11, 30):
+        return 'LATE_MORNING', 0.02  # Still decent momentum
+    
+    if dtime(13, 30) <= current_time < dtime(15, 0):
+        return 'EARLY_AFTERNOON', 0.02  # Post-lunch recovery
+    
+    # Dead Zone (highest chop risk)
+    if dtime(11, 30) <= current_time < dtime(13, 0):
+        return 'DEAD_ZONE', -0.03  # Lunch hour chop
+    
+    # Neutral (edge uncertain)
+    if dtime(13, 0) <= current_time < dtime(13, 30):
+        return 'LUNCH_RECOVERY', 0.0  # Transitional period
+    
+    # After hours / pre-market (shouldn't reach here in normal flow)
+    return 'OFF_HOURS', 0.0
+
+
 class SignalValidator:
     """Multi-indicator signal validation engine."""
     
@@ -43,6 +100,7 @@ class SignalValidator:
         min_volume_ratio: float = 1.3,
         enable_vpvr: bool = True,
         enable_daily_bias: bool = True,
+        enable_time_filter: bool = True,
         min_bias_confidence: float = 0.7,
         strict_mode: bool = False
     ):
@@ -54,6 +112,7 @@ class SignalValidator:
             min_volume_ratio: Minimum volume vs average (default 1.3x)
             enable_vpvr: Use VPVR for signal validation (default True)
             enable_daily_bias: Filter counter-trend signals (default True)
+            enable_time_filter: Apply time-of-day quality scoring (default True)
             min_bias_confidence: Minimum bias confidence to filter (default 0.7)
             strict_mode: Require all checks to pass (default False)
         """
@@ -61,6 +120,7 @@ class SignalValidator:
         self.min_volume_ratio = min_volume_ratio
         self.enable_vpvr = enable_vpvr
         self.enable_daily_bias = enable_daily_bias and BIAS_ENGINE_ENABLED
+        self.enable_time_filter = enable_time_filter
         self.min_bias_confidence = min_bias_confidence
         self.strict_mode = strict_mode
         
@@ -70,11 +130,15 @@ class SignalValidator:
             'passed': 0,
             'filtered': 0,
             'boosted': 0,
-            'bias_filtered': 0  # NEW: Track bias-based filtering
+            'bias_filtered': 0,
+            'time_zones': {}  # Track signals per time zone
         }
         
         if self.enable_daily_bias:
             print(f"[VALIDATOR] Daily bias filter active (min confidence: {min_bias_confidence*100:.0f}%)")
+        
+        if self.enable_time_filter:
+            print(f"[VALIDATOR] Time-of-day quality scoring enabled (soft penalty, not hard block)")
     
     def validate_signal(
         self,
@@ -102,9 +166,10 @@ class SignalValidator:
             metadata: Dict with validation details for logging
         """
         self.validation_stats['total_validated'] += 1
+        signal_time = datetime.now(ET)
         
         metadata = {
-            'timestamp': datetime.now().isoformat(),
+            'timestamp': signal_time.isoformat(),
             'ticker': ticker,
             'direction': signal_direction,
             'base_confidence': base_confidence,
@@ -116,16 +181,14 @@ class SignalValidator:
         passed_checks = []
         
         # ════════════════════════════════════════════════
-        # CHECK 0: DAILY BIAS (ICT Top-Down) [NEW - FIRST FILTER]
+        # CHECK 0: DAILY BIAS (ICT Top-Down) [HARD FILTER]
         # ════════════════════════════════════════════════
         if self.enable_daily_bias and bias_engine:
             try:
-                # Check if signal aligns with daily bias
                 should_filter, bias_reason = bias_engine.should_filter_signal(
                     ticker, signal_direction
                 )
                 
-                # Get bias details
                 bias_data = bias_engine._get_bias_dict()
                 
                 metadata['checks']['daily_bias'] = {
@@ -137,7 +200,6 @@ class SignalValidator:
                 
                 # HARD FILTER: Counter-trend signals with high confidence bias
                 if should_filter and bias_data['confidence'] >= self.min_bias_confidence:
-                    # This is a counter-trend signal - reject immediately
                     self.validation_stats['filtered'] += 1
                     self.validation_stats['bias_filtered'] += 1
                     
@@ -156,12 +218,10 @@ class SignalValidator:
                 # Signal aligned with bias or neutral - apply boost/penalty
                 if bias_data['bias'] != 'NEUTRAL':
                     if not should_filter:
-                        # Signal aligned with bias
-                        bias_boost = bias_data['confidence'] * 0.10  # Up to +10% for strong bias
+                        bias_boost = bias_data['confidence'] * 0.10
                         confidence_adjustment += bias_boost
                         passed_checks.append(f"BIAS_ALIGNED_{bias_data['bias']}")
                     else:
-                        # Bias exists but confidence too low to filter
                         passed_checks.append('BIAS_WEAK')
                 
             except Exception as e:
@@ -169,7 +229,38 @@ class SignalValidator:
                 print(f"[VALIDATOR] Bias check error for {ticker}: {e}")
         
         # ════════════════════════════════════════════════
-        # CHECK 1: Trend Strength (ADX)
+        # CHECK 1: TIME-OF-DAY QUALITY [NEW - SOFT PENALTY]
+        # ════════════════════════════════════════════════
+        if self.enable_time_filter:
+            try:
+                time_zone, time_adjustment = get_time_of_day_quality(signal_time)
+                
+                metadata['checks']['time_of_day'] = {
+                    'zone': time_zone,
+                    'time': signal_time.strftime('%H:%M:%S'),
+                    'adjustment': time_adjustment
+                }
+                
+                confidence_adjustment += time_adjustment
+                
+                # Track time zone statistics
+                if time_zone not in self.validation_stats['time_zones']:
+                    self.validation_stats['time_zones'][time_zone] = 0
+                self.validation_stats['time_zones'][time_zone] += 1
+                
+                # Label the result
+                if time_adjustment > 0:
+                    passed_checks.append(f'TIME_{time_zone}')
+                elif time_adjustment < 0:
+                    failed_checks.append(f'TIME_{time_zone}')
+                else:
+                    passed_checks.append(f'TIME_NEUTRAL')
+                
+            except Exception as e:
+                metadata['checks']['time_of_day'] = {'error': str(e)}
+        
+        # ════════════════════════════════════════════════
+        # CHECK 2: Trend Strength (ADX)
         # ════════════════════════════════════════════════
         try:
             is_trending, adx_value = ti.check_trend_strength(ticker, self.min_adx)
@@ -182,21 +273,18 @@ class SignalValidator:
             
             if adx_value:
                 if adx_value >= 40:
-                    # Very strong trend
                     confidence_adjustment += 0.05
                     passed_checks.append('ADX_STRONG')
                 elif adx_value >= self.min_adx:
-                    # Sufficient trend
                     passed_checks.append('ADX_OK')
                 else:
-                    # Weak trend
                     confidence_adjustment -= 0.05
                     failed_checks.append('ADX_WEAK')
         except Exception as e:
             metadata['checks']['adx'] = {'error': str(e)}
         
         # ════════════════════════════════════════════════
-        # CHECK 2: Volume Confirmation
+        # CHECK 3: Volume Confirmation
         # ════════════════════════════════════════════════
         try:
             is_confirmed, volume_ratio = ti.check_volume_confirmation(
@@ -211,22 +299,19 @@ class SignalValidator:
             
             if volume_ratio:
                 if volume_ratio >= 2.0:
-                    # Exceptional volume
                     confidence_adjustment += 0.10
                     passed_checks.append('VOLUME_STRONG')
                 elif volume_ratio >= self.min_volume_ratio:
-                    # Good volume
                     confidence_adjustment += 0.03
                     passed_checks.append('VOLUME_OK')
                 else:
-                    # Weak volume
                     confidence_adjustment -= 0.08
                     failed_checks.append('VOLUME_WEAK')
         except Exception as e:
             metadata['checks']['volume'] = {'error': str(e)}
         
         # ════════════════════════════════════════════════
-        # CHECK 3: Trend Direction (DMI)
+        # CHECK 4: Trend Direction (DMI)
         # ════════════════════════════════════════════════
         try:
             trend_direction = ti.get_trend_direction(ticker)
@@ -239,18 +324,16 @@ class SignalValidator:
                 expected_direction = 'BULLISH' if signal_direction == 'BUY' else 'BEARISH'
                 
                 if trend_direction == expected_direction:
-                    # Trend aligns with signal
                     confidence_adjustment += 0.05
                     passed_checks.append('DMI_ALIGNED')
                 else:
-                    # Trend opposes signal
                     confidence_adjustment -= 0.10
                     failed_checks.append('DMI_CONFLICT')
         except Exception as e:
             metadata['checks']['dmi'] = {'error': str(e)}
         
         # ════════════════════════════════════════════════
-        # CHECK 4: Momentum (CCI)
+        # CHECK 5: Momentum (CCI)
         # ════════════════════════════════════════════════
         try:
             cci_data = ti.fetch_cci(ticker)
@@ -263,28 +346,24 @@ class SignalValidator:
                 
                 if cci_value is not None:
                     if signal_direction == 'BUY':
-                        # Check for oversold conditions (good for BUY)
                         if cci_value < -100:
                             confidence_adjustment += 0.05
                             passed_checks.append('CCI_OVERSOLD')
                         elif cci_value > 100:
-                            # Overbought - bad for BUY
                             confidence_adjustment -= 0.05
                             failed_checks.append('CCI_OVERBOUGHT')
                     else:  # SELL
-                        # Check for overbought conditions (good for SELL)
                         if cci_value > 100:
                             confidence_adjustment += 0.05
                             passed_checks.append('CCI_OVERBOUGHT')
                         elif cci_value < -100:
-                            # Oversold - bad for SELL
                             confidence_adjustment -= 0.05
                             failed_checks.append('CCI_OVERSOLD')
         except Exception as e:
             metadata['checks']['cci'] = {'error': str(e)}
         
         # ════════════════════════════════════════════════
-        # CHECK 5: Bollinger Bands Squeeze
+        # CHECK 6: Bollinger Bands Squeeze
         # ════════════════════════════════════════════════
         try:
             is_squeezed, band_width = ti.check_bollinger_squeeze(ticker)
@@ -295,14 +374,13 @@ class SignalValidator:
             }
             
             if is_squeezed:
-                # Squeeze = potential breakout setup
                 confidence_adjustment += 0.05
                 passed_checks.append('BB_SQUEEZE')
         except Exception as e:
             metadata['checks']['bbands'] = {'error': str(e)}
         
         # ════════════════════════════════════════════════
-        # CHECK 6: VPVR Context (Optional)
+        # CHECK 7: VPVR Context (Optional)
         # ════════════════════════════════════════════════
         if self.enable_vpvr:
             try:
@@ -328,12 +406,9 @@ class SignalValidator:
         # FINAL DECISION
         # ════════════════════════════════════════════════
         
-        # Calculate adjusted confidence
         adjusted_confidence = max(0.0, min(1.0, base_confidence + confidence_adjustment))
         
-        # Determine if signal should pass
         if self.strict_mode:
-            # Strict mode: Must have no critical failures
             critical_failures = [
                 'VOLUME_WEAK', 'DMI_CONFLICT', 'ADX_WEAK'
             ]
@@ -368,13 +443,19 @@ class SignalValidator:
         if total == 0:
             return self.validation_stats
         
-        return {
+        stats = {
             **self.validation_stats,
             'pass_rate': round(self.validation_stats['passed'] / total, 3),
             'filter_rate': round(self.validation_stats['filtered'] / total, 3),
             'boost_rate': round(self.validation_stats['boosted'] / total, 3),
             'bias_filter_rate': round(self.validation_stats['bias_filtered'] / total, 3)
         }
+        
+        # Add time zone distribution
+        if self.validation_stats['time_zones']:
+            stats['time_zone_distribution'] = self.validation_stats['time_zones']
+        
+        return stats
     
     def reset_stats(self):
         """Reset validation statistics."""
@@ -383,7 +464,8 @@ class SignalValidator:
             'passed': 0,
             'filtered': 0,
             'boosted': 0,
-            'bias_filtered': 0
+            'bias_filtered': 0,
+            'time_zones': {}
         }
 
 
@@ -403,6 +485,7 @@ def get_validator() -> SignalValidator:
             min_volume_ratio=1.3,
             enable_vpvr=True,
             enable_daily_bias=True,
+            enable_time_filter=True,
             min_bias_confidence=0.7,
             strict_mode=False
         )
@@ -414,19 +497,18 @@ def get_validator() -> SignalValidator:
 # ══════════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    # Test signal validator
-    print("Testing Signal Validator with Daily Bias Integration...\n")
+    print("Testing Signal Validator with Time-of-Day Filter...\n")
     
     validator = SignalValidator(
         min_adx=20.0,
         min_volume_ratio=1.3,
         enable_vpvr=True,
         enable_daily_bias=True,
+        enable_time_filter=True,
         min_bias_confidence=0.7,
         strict_mode=False
     )
     
-    # Test signal
     test_ticker = "AAPL"
     test_direction = "BUY"
     test_price = 175.50
@@ -481,4 +563,10 @@ if __name__ == "__main__":
     print(f"Filter Rate: {stats.get('filter_rate', 0)*100:.1f}%")
     print(f"Bias Filter Rate: {stats.get('bias_filter_rate', 0)*100:.1f}%")
     print(f"Boost Rate: {stats.get('boost_rate', 0)*100:.1f}%")
+    
+    if 'time_zone_distribution' in stats:
+        print(f"\nTime Zone Distribution:")
+        for zone, count in stats['time_zone_distribution'].items():
+            print(f"  {zone}: {count}")
+    
     print("="*80)
