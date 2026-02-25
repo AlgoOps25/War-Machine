@@ -1,4 +1,4 @@
-﻿# Create the fixed regime_filter.py
+# Create the fixed regime_filter.py
 """
 Regime Filter - VIX/SPY Market Condition Detection
 
@@ -358,12 +358,12 @@ class RegimeFilter:
         state = self.get_regime_state()
         
         emoji = {
-            "TRENDING": "ðŸ“ˆ" if state.favorable else "ðŸ“‰",
-            "CHOPPY": "ã€°ï¸",
-            "VOLATILE": "âš¡"
+            "TRENDING": "📈" if state.favorable else "📉",
+            "CHOPPY": "〰️",
+            "VOLATILE": "⚡"
         }[state.regime]
         
-        status = "âœ… FAVORABLE" if state.favorable else "ðŸš« UNFAVORABLE"
+        status = "✅ FAVORABLE" if state.favorable else "🚫 UNFAVORABLE"
         
         print("\n" + "=" * 70)
         print(f"{emoji}  MARKET REGIME: {state.regime}  {status}")

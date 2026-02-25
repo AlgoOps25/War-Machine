@@ -1,4 +1,3 @@
-﻿# Create the fixed regime_filter.py
 """
 Regime Filter - VIX/SPY Market Condition Detection
 
@@ -153,23 +152,15 @@ class RegimeFilter:
         try:
             from data_manager import data_manager
             
-            # Method 1: Try dedicated VIX getter
-            try:
-                vix_level = data_manager.get_vix_level()
-                if vix_level and vix_level > 0:
-                    return vix_level
-            except:
-                pass
-            
-            # Method 2: Try to get VIX from memory first (fastest)
+            # Try to get VIX from memory first (fastest)
             bars = data_manager.get_bars_from_memory("VIX", limit=1)
-            if bars and len(bars) > 0:
+            if bars:
                 return bars[-1]["close"]
             
-            # Method 3: Try latest bar
-            latest_bar = data_manager.get_latest_bar("VIX")
-            if latest_bar:
-                return latest_bar["close"]
+            # Fallback: fetch using cache-aware method
+            bars = data_manager.get_bars("VIX", timeframe="1m", limit=1)
+            if bars:
+                return bars[-1]["close"]
             
             # Default to neutral VIX if unavailable
             return 20.0
@@ -188,20 +179,15 @@ class RegimeFilter:
         try:
             from data_manager import data_manager
             
-            # Method 1: Try memory first
+            # Try memory first
             bars = data_manager.get_bars_from_memory("SPY", limit=limit)
             if bars and len(bars) >= 14:
                 return bars
             
-            # Method 2: Try today's session bars
-            bars = data_manager.get_today_session_bars("SPY")
-            if bars and len(bars) >= 14:
-                return bars[-limit:] if len(bars) > limit else bars
-            
-            # Method 3: Try 5m bars
-            bars = data_manager.get_today_5m_bars("SPY")
-            if bars and len(bars) >= 14:
-                return bars[-limit:] if len(bars) > limit else bars
+            # Fallback: cache-aware fetch
+            bars = data_manager.get_bars("SPY", timeframe="1m", limit=limit)
+            if bars:
+                return bars
             
             return []
             
@@ -358,12 +344,12 @@ class RegimeFilter:
         state = self.get_regime_state()
         
         emoji = {
-            "TRENDING": "ðŸ“ˆ" if state.favorable else "ðŸ“‰",
-            "CHOPPY": "ã€°ï¸",
-            "VOLATILE": "âš¡"
+            "TRENDING": "📈" if state.favorable else "📉",
+            "CHOPPY": "〰️",
+            "VOLATILE": "⚡"
         }[state.regime]
         
-        status = "âœ… FAVORABLE" if state.favorable else "ðŸš« UNFAVORABLE"
+        status = "✅ FAVORABLE" if state.favorable else "🚫 UNFAVORABLE"
         
         print("\n" + "=" * 70)
         print(f"{emoji}  MARKET REGIME: {state.regime}  {status}")
@@ -377,4 +363,21 @@ class RegimeFilter:
     
     def reset_cache(self) -> None:
         """Clear cached regime state (force fresh calculation next check)."""
-        self._cache
+        self._cache = None
+        self._last_check = 0
+        print("[REGIME] Cache cleared")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GLOBAL INSTANCE
+# ══════════════════════════════════════════════════════════════════════════════
+regime_filter = RegimeFilter()
+
+
+if __name__ == "__main__":
+    # Test regime filter
+    print("Testing Regime Filter...\n")
+    regime_filter.print_regime_summary()
+    
+    state = regime_filter.get_regime_state()
+    print(f"\nFavorable for trading: {state.favorable}")
