@@ -38,10 +38,19 @@ def backup_validator():
         return False
 
 def read_validator():
-    """Read current signal_validator.py content."""
+    """Read current signal_validator.py content with UTF-8 encoding."""
     try:
-        with open("signal_validator.py", "r") as f:
+        # Try UTF-8 first (standard)
+        with open("signal_validator.py", "r", encoding="utf-8") as f:
             return f.read()
+    except UnicodeDecodeError:
+        try:
+            # Fallback to latin-1 if UTF-8 fails
+            with open("signal_validator.py", "r", encoding="latin-1") as f:
+                return f.read()
+        except Exception as e:
+            print(f"❌ Error reading signal_validator.py with latin-1: {e}")
+            return None
     except Exception as e:
         print(f"❌ Error reading signal_validator.py: {e}")
         return None
@@ -66,9 +75,9 @@ except ImportError:
 
 def generate_regime_check() -> str:
     """Generate regime filter validation check code."""
-    return '''        # ════════════════════════════════════════════════
+    return '''        # ====================================================
         # CHECK 0A: REGIME FILTER (Market Condition) [HEAVY PENALTY]
-        # ════════════════════════════════════════════════
+        # ====================================================
         if REGIME_FILTER_ENABLED and regime_filter:
             try:
                 regime_state = regime_filter.get_regime_state()
@@ -89,7 +98,7 @@ def generate_regime_check() -> str:
                     confidence_adjustment += regime_penalty
                     failed_checks.append(f'REGIME_{regime_state.regime}')
                     
-                    print(f"[VALIDATOR] ⚠️  {ticker} in {regime_state.regime} regime (-30%): {regime_state.reason}")
+                    print(f"[VALIDATOR] WARNING {ticker} in {regime_state.regime} regime (-30%): {regime_state.reason}")
                     
                 elif regime_state.regime == 'TRENDING':
                     # Favorable trending market
@@ -97,7 +106,7 @@ def generate_regime_check() -> str:
                     confidence_adjustment += regime_boost
                     passed_checks.append('REGIME_TRENDING')
                     
-                    print(f"[VALIDATOR] ✅ {ticker} in TRENDING regime (+5%): {regime_state.reason}")
+                    print(f"[VALIDATOR] OK {ticker} in TRENDING regime (+5%): {regime_state.reason}")
                 else:
                     # Neutral
                     passed_checks.append('REGIME_NEUTRAL')
@@ -136,35 +145,67 @@ def integrate_regime_filter():
     # Step 4: Add imports
     print("[4/5] Adding regime filter import...")
     
-    # Find the VPVR import section (we'll add after it)
-    vpvr_import_marker = 'print("[VALIDATOR] ⚠️  vpvr_calculator not available - volume profile disabled")'
+    # Find a safe place to insert (after VPVR import or after imports section)
+    # Look for the end of imports section
+    import_markers = [
+        'print("[VALIDATOR] \u26a0\ufe0f  vpvr_calculator not available - volume profile disabled")',
+        'VPVR_ENABLED = False',
+        'from daily_bias_engine import bias_engine'
+    ]
     
-    if vpvr_import_marker in content:
-        # Insert regime import after VPVR import
-        content = content.replace(
-            vpvr_import_marker,
-            vpvr_import_marker + generate_regime_import()
-        )
+    inserted = False
+    for marker in import_markers:
+        if marker in content:
+            # Insert after this line
+            lines = content.split('\n')
+            for i, line in enumerate(lines):
+                if marker in line:
+                    # Insert import block after this line
+                    lines.insert(i + 1, generate_regime_import())
+                    content = '\n'.join(lines)
+                    inserted = True
+                    break
+            if inserted:
+                break
+    
+    if inserted:
         print("✅ Import added")
     else:
         print("❌ Could not find import location marker")
+        print("    Try manual integration")
         return False
     
     # Step 5: Add regime check
     print("[5/5] Adding CHECK 0A (Regime Filter)...")
     
-    # Find the daily bias check section (we'll add after it)
-    bias_check_end = '''            except Exception as e:
-                metadata['checks']['daily_bias'] = {'error': str(e)}
-                print(f"[VALIDATOR] Bias check error for {ticker}: {e}")
-        '''
+    # Find the daily bias check section end
+    # Look for the end of CHECK 0 (daily bias)
+    bias_markers = [
+        '            except Exception as e:\n                metadata[\'checks\'][\'daily_bias\'] = {\'error\': str(e)}',
+        'metadata[\'checks\'][\'daily_bias\'] = {\'error\': str(e)}',
+        'print(f"[VALIDATOR] Bias check error for {ticker}: {e}")',
+    ]
     
-    if bias_check_end in content:
-        # Insert regime check after daily bias check
-        content = content.replace(
-            bias_check_end,
-            bias_check_end + "\n" + generate_regime_check()
-        )
+    inserted = False
+    for marker in bias_markers:
+        if marker in content:
+            # Find the end of the bias exception handling
+            lines = content.split('\n')
+            for i, line in enumerate(lines):
+                if 'Bias check error' in line or ('daily_bias' in line and 'error' in line):
+                    # Insert regime check after the bias error handling
+                    # Skip ahead to find the blank line or next check
+                    j = i + 1
+                    while j < len(lines) and (lines[j].strip() == '' or 'except' in lines[j]):
+                        j += 1
+                    lines.insert(j, generate_regime_check())
+                    content = '\n'.join(lines)
+                    inserted = True
+                    break
+            if inserted:
+                break
+    
+    if inserted:
         print("✅ CHECK 0A added")
     else:
         print("❌ Could not find CHECK 0 (daily bias) end marker")
@@ -174,7 +215,7 @@ def integrate_regime_filter():
     # Step 6: Write updated content
     print("\n[6/6] Writing updated signal_validator.py...")
     try:
-        with open("signal_validator.py", "w") as f:
+        with open("signal_validator.py", "w", encoding="utf-8") as f:
             f.write(content)
         print("✅ File updated successfully")
     except Exception as e:
