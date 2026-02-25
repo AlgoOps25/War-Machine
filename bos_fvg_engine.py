@@ -124,7 +124,6 @@ def find_fvg_after_bos(bars: List[Dict], bos_idx: int,
                                 or candle[0].low  > candle[2].high (bear)
 
     The FVG zone is the gap between candle[0] and candle[2].
-    Entry is triggered when price RETRACES INTO the FVG zone.
 
     min_pct: minimum gap size as a fraction of price.
              Pass the adaptive threshold from trade_calculator
@@ -169,45 +168,167 @@ def find_fvg_after_bos(bars: List[Dict], bos_idx: int,
 
 
 # ─────────────────────────────────────────────────────────────
-# ENTRY TRIGGER — Price Retrace Into FVG
+# 3-TIER CANDLE CONFIRMATION — Nitro Trades Quality Model
 # ─────────────────────────────────────────────────────────────
 
-def check_fvg_entry(current_bar: Dict, fvg: Dict) -> Optional[Dict]:
+def classify_confirmation_candle(bar: Dict, fvg: Dict) -> Dict:
     """
-    Entry fires when the current bar trades INTO the FVG zone.
-    Entry price = FVG midpoint (50% of the gap).
+    Classify the FVG retest candle into 3 quality tiers based on
+    Nitro Trades confirmation logic:
+
+    A+ (Grade 1): Strong directional candle with minimal/no wicks
+                  - Bull: green candle, small lower wick (<20% of body)
+                  - Bear: red candle, small upper wick (<20% of body)
+
+    A  (Grade 2): Candle opens counter-trend, then flips back
+                  - Bull: red initially → closes green with strong lower wick
+                  - Bear: green initially → closes red with strong upper wick
+
+    A- (Grade 3): Large rejection wick but doesn't fully flip
+                  - Bull: red candle but large lower wick (>50% of range)
+                  - Bear: red candle but large upper wick (>50% of range)
+
+    Returns: {
+        "grade":       "A+", "A", "A-", or None,
+        "score":       100, 85, 70, or 0,
+        "candle_type": description string
+    }
+    """
+    direction = fvg["direction"]
+    o = bar["open"]
+    h = bar["high"]
+    l = bar["low"]
+    c = bar["close"]
+
+    body = abs(c - o)
+    total_range = h - l
+    
+    # Avoid division by zero
+    if total_range == 0:
+        return {"grade": None, "score": 0, "candle_type": "Doji (no range)"}
+
+    if direction == "bull":
+        lower_wick = o - l if c >= o else c - l
+        upper_wick = h - c if c >= o else h - o
+        is_green = c > o
+        is_red = c < o
+
+        # A+ : Strong green candle with minimal lower wick
+        if is_green and (lower_wick / total_range) < 0.20:
+            return {
+                "grade": "A+",
+                "score": 100,
+                "candle_type": "Strong bull push (no wick)"
+            }
+
+        # A : Opens red initially, flips to green (strong lower wick)
+        if is_green and (lower_wick / total_range) >= 0.30:
+            return {
+                "grade": "A",
+                "score": 85,
+                "candle_type": "Bull flip (red→green with wick)"
+            }
+
+        # A- : Red candle but large lower wick rejection
+        if is_red and (lower_wick / total_range) >= 0.50:
+            return {
+                "grade": "A-",
+                "score": 70,
+                "candle_type": "Bull rejection wick (stayed red)"
+            }
+
+    elif direction == "bear":
+        upper_wick = h - o if c <= o else h - c
+        lower_wick = c - l if c <= o else o - l
+        is_red = c < o
+        is_green = c > o
+
+        # A+ : Strong red candle with minimal upper wick
+        if is_red and (upper_wick / total_range) < 0.20:
+            return {
+                "grade": "A+",
+                "score": 100,
+                "candle_type": "Strong bear push (no wick)"
+            }
+
+        # A : Opens green initially, flips to red (strong upper wick)
+        if is_red and (upper_wick / total_range) >= 0.30:
+            return {
+                "grade": "A",
+                "score": 85,
+                "candle_type": "Bear flip (green→red with wick)"
+            }
+
+        # A- : Green candle but large upper wick rejection
+        if is_green and (upper_wick / total_range) >= 0.50:
+            return {
+                "grade": "A-",
+                "score": 70,
+                "candle_type": "Bear rejection wick (stayed green)"
+            }
+
+    # No valid confirmation pattern
+    return {
+        "grade": None,
+        "score": 0,
+        "candle_type": "No confirmation"
+    }
+
+
+# ─────────────────────────────────────────────────────────────
+# ENTRY TRIGGER — Price Retrace Into FVG + Confirmation
+# ─────────────────────────────────────────────────────────────
+
+def check_fvg_entry(current_bar: Dict, fvg: Dict,
+                   require_confirmation: bool = True) -> Optional[Dict]:
+    """
+    Entry fires when the current bar trades INTO the FVG zone
+    AND shows proper candle confirmation.
 
     Bull: price dips into [fvg_low, fvg_high] → buy the dip into gap
     Bear: price rallies into [fvg_low, fvg_high] → sell the rip into gap
+
+    If require_confirmation=True (default), only A+, A, or A- candles
+    trigger entries. Set to False to allow all FVG touches (not recommended).
     """
     direction = fvg["direction"]
     fvg_low   = fvg["fvg_low"]
     fvg_high  = fvg["fvg_high"]
     fvg_mid   = fvg["fvg_mid"]
 
+    # Check if price is IN the FVG zone
+    price_in_fvg = False
+
     if direction == "bull":
         # Price must touch or enter the FVG from above
         if current_bar["low"] <= fvg_high and current_bar["close"] >= fvg_low:
-            return {
-                "entry_price": fvg_mid,
-                "entry_type":  "FVG_FILL",
-                "entry_bar":   current_bar,
-                "fvg_low":     fvg_low,
-                "fvg_high":    fvg_high,
-            }
+            price_in_fvg = True
 
     elif direction == "bear":
         # Price must touch or enter the FVG from below
         if current_bar["high"] >= fvg_low and current_bar["close"] <= fvg_high:
-            return {
-                "entry_price": fvg_mid,
-                "entry_type":  "FVG_FILL",
-                "entry_bar":   current_bar,
-                "fvg_low":     fvg_low,
-                "fvg_high":    fvg_high,
-            }
+            price_in_fvg = True
 
-    return None
+    if not price_in_fvg:
+        return None
+
+    # Classify the confirmation candle
+    confirmation = classify_confirmation_candle(current_bar, fvg)
+
+    # Require valid confirmation grade (A+, A, or A-)
+    if require_confirmation and confirmation["grade"] is None:
+        return None
+
+    return {
+        "entry_price":     fvg_mid,
+        "entry_type":      "FVG_FILL",
+        "entry_bar":       current_bar,
+        "fvg_low":         fvg_low,
+        "fvg_high":        fvg_high,
+        "confirmation":    confirmation["grade"],
+        "conf_score":      confirmation["score"],
+        "candle_type":     confirmation["candle_type"]
+    }
 
 
 # ─────────────────────────────────────────────────────────────
@@ -280,15 +401,19 @@ def is_force_close_time(bar: Dict) -> bool:
 # ─────────────────────────────────────────────────────────────
 
 def scan_bos_fvg(ticker: str, bars: List[Dict],
-                fvg_min_pct: float = FVG_MIN_PCT) -> Optional[Dict]:
+                fvg_min_pct: float = FVG_MIN_PCT,
+                require_confirmation: bool = True) -> Optional[Dict]:
     """
-    Full BOS+FVG scan on latest bars.
+    Full BOS+FVG scan on latest bars with 3-tier confirmation grading.
     Returns a complete signal dict or None.
 
     fvg_min_pct: minimum FVG gap size as a fraction of price.
                  Pass the adaptive threshold from trade_calculator
                  .get_adaptive_fvg_threshold() for volatility-adjusted
                  filtering. Defaults to FVG_MIN_PCT (0.1%).
+
+    require_confirmation: If True (default), only A+, A, or A- candles
+                         trigger entries. Set False to allow all FVG touches.
 
     Called every scan cycle from sniper.py process_ticker().
     """
@@ -312,8 +437,9 @@ def scan_bos_fvg(ticker: str, bars: List[Dict],
     if not fvg:
         return None
 
-    # ── Step 3: Check if current bar is entering the FVG ─────────
-    entry_trigger = check_fvg_entry(latest_bar, fvg)
+    # ── Step 3: Check if current bar is entering FVG + confirm ────
+    entry_trigger = check_fvg_entry(latest_bar, fvg,
+                                    require_confirmation=require_confirmation)
     if not entry_trigger:
         return None
 
@@ -323,19 +449,22 @@ def scan_bos_fvg(ticker: str, bars: List[Dict],
     )
 
     return {
-        "ticker":       ticker,
-        "direction":    bos["direction"],
-        "entry":        entry_trigger["entry_price"],
-        "stop":         levels["stop"],
-        "t1":           levels["t1"],
-        "t2":           levels["t2"],
-        "risk":         levels["risk"],
-        "fvg_low":      fvg["fvg_low"],
-        "fvg_high":     fvg["fvg_high"],
-        "fvg_size_pct": fvg["fvg_size_pct"],
-        "bos_price":    bos["bos_price"],
-        "bos_strength": round(bos["strength"] * 100, 3),
-        "entry_type":   "BOS+FVG",
-        "signal_time":  latest_bar["datetime"],
-        "dte":          0
+        "ticker":        ticker,
+        "direction":     bos["direction"],
+        "entry":         entry_trigger["entry_price"],
+        "stop":          levels["stop"],
+        "t1":            levels["t1"],
+        "t2":            levels["t2"],
+        "risk":          levels["risk"],
+        "fvg_low":       fvg["fvg_low"],
+        "fvg_high":      fvg["fvg_high"],
+        "fvg_size_pct":  fvg["fvg_size_pct"],
+        "bos_price":     bos["bos_price"],
+        "bos_strength":  round(bos["strength"] * 100, 3),
+        "entry_type":    "BOS+FVG",
+        "signal_time":   latest_bar["datetime"],
+        "dte":           0,
+        "confirmation":  entry_trigger["confirmation"],
+        "conf_score":    entry_trigger["conf_score"],
+        "candle_type":   entry_trigger["candle_type"]
     }
