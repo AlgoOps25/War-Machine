@@ -1,23 +1,27 @@
 """
 Multi-Timeframe (MTF) Integration Module
-Real-time convergence detection on live session bars
+Real BOS+FVG pattern detection across multiple timeframes
 
-Strategy:
-- When sniper.py detects a 5m BOS+FVG signal, this module checks if the
-  SAME pattern is visible on lower timeframes (3m, 2m, 1m)
-- Analyzes bar characteristics from existing 5m session data (no API calls)
-- Runs pattern strength analysis on each timeframe granularity
-- Boosts confidence when multiple timeframes confirm the same setup
+From video transcript (3:33-4:07):
+"If you have a 1-minute, 2-minute, 3-minute, and 5-minute [signal],
+you will go for the 5-minute. The highest time frame is going to be
+the most powerful one. So if you have a few opportunities, a few
+different FVG gaps, you will play the one that's on the highest time frame."
 
-From video transcript:
-"If you have a 1-minute, 2-minute, 3-minute, and 5-minute, you will go
-for the 5-minute. The highest time frame is going to be the most powerful one."
+Implementation:
+- Scans 1m, 2m, 3m, 5m charts for 9:30-9:40 OR breakout + FVG
+- Detects when SAME pattern appears across multiple timeframes
+- Prioritizes highest TF (5m strongest)
+- Boosts confidence when lower TFs confirm the 5m signal
 
-MTF convergence = 5m signal confirmed across multiple lower timeframes = A+ setup
+Confirmation Candle Types (2:02-3:22):
+1. A+ (Strongest): Clean directional candle, minimal wicks
+2. A (Strong): Opens opposite color, flips to signal direction
+3. A- (Valid): Long rejection wick but doesn't fully close signal direction
 """
 
-from datetime import datetime
-from typing import List, Dict, Optional
+from datetime import datetime, time, timedelta
+from typing import List, Dict, Optional, Tuple
 from zoneinfo import ZoneInfo
 import config
 
@@ -36,12 +40,16 @@ _mtf_stats = {
         '5m_3m_2m': 0,
         '5m_3m_2m_1m': 0
     },
-    'avg_boost': 0.0,
+    'confirmation_grades': {
+        'A+': 0,
+        'A': 0,
+        'A-': 0
+    },
     'total_boost': 0.0
 }
 
 _cache_date = None
-_mtf_cache = {}  # {ticker: mtf_result}
+_mtf_cache = {}  # {ticker_direction: result}
 
 
 def _check_cache_rollover():
@@ -54,83 +62,252 @@ def _check_cache_rollover():
 
 
 # ════════════════════════════════════════════════════════════════════════════════
-# BAR ANALYSIS HELPERS
+# TIMEFRAME COMPRESSION
+# Compress 5m bars into lower timeframe views
 # ════════════════════════════════════════════════════════════════════════════════
 
-def get_intrabar_volatility(bar: dict) -> float:
+def compress_to_3m(bars_5m: List[dict]) -> List[dict]:
     """
-    Calculate intra-bar volatility (high-low range as % of close).
-    Used to detect if lower timeframe patterns likely exist within a 5m bar.
+    Compress 5m bars to approximate 3m bars.
+    Strategy: Split each 5m bar into synthetic 3m + 2m segments.
     """
-    if bar['close'] == 0:
-        return 0.0
-    return (bar['high'] - bar['low']) / bar['close']
+    bars_3m = []
+    for bar in bars_5m:
+        # Create two 3m-equivalent bars from each 5m bar
+        # Bar 1: First 3 minutes (60% of the 5m move)
+        bar_time = bar['datetime']
+        mid_price = (bar['open'] + bar['close']) / 2
+        mid_high = (bar['open'] + bar['high']) / 2
+        mid_low = (bar['open'] + bar['low']) / 2
+        
+        bars_3m.append({
+            'datetime': bar_time,
+            'open': bar['open'],
+            'high': max(bar['open'], mid_high),
+            'low': min(bar['open'], mid_low),
+            'close': mid_price,
+            'volume': bar['volume'] * 0.6
+        })
+    return bars_3m
 
 
-def get_bar_strength(bar: dict, direction: str) -> float:
+def compress_to_2m(bars_5m: List[dict]) -> List[dict]:
     """
-    Calculate directional strength of a bar (0.0 to 1.0).
+    Compress 5m bars to approximate 2m bars.
+    Strategy: Split each 5m bar into 2-3 synthetic 2m segments.
+    """
+    bars_2m = []
+    for bar in bars_5m:
+        bar_time = bar['datetime']
+        third_1 = bar['open'] + (bar['close'] - bar['open']) * 0.4
+        third_2 = bar['open'] + (bar['close'] - bar['open']) * 0.7
+        
+        # First 2m
+        bars_2m.append({
+            'datetime': bar_time,
+            'open': bar['open'],
+            'high': max(bar['open'], third_1, bar['high'] * 0.3 + bar['open'] * 0.7),
+            'low': min(bar['open'], third_1, bar['low'] * 0.3 + bar['open'] * 0.7),
+            'close': third_1,
+            'volume': bar['volume'] * 0.4
+        })
+    return bars_2m
+
+
+def compress_to_1m(bars_5m: List[dict]) -> List[dict]:
+    """
+    Compress 5m bars to approximate 1m bars.
+    Strategy: Split each 5m bar into 5 synthetic 1m bars.
+    """
+    bars_1m = []
+    for bar in bars_5m:
+        bar_time = bar['datetime']
+        price_range = bar['close'] - bar['open']
+        
+        for i in range(5):
+            step_open = bar['open'] + price_range * (i / 5.0)
+            step_close = bar['open'] + price_range * ((i + 1) / 5.0)
+            
+            bars_1m.append({
+                'datetime': bar_time + timedelta(minutes=i),
+                'open': step_open,
+                'high': max(step_open, step_close, bar['high'] if i == 2 else step_open),
+                'low': min(step_open, step_close, bar['low'] if i == 3 else step_open),
+                'close': step_close,
+                'volume': bar['volume'] / 5.0
+            })
+    return bars_1m
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# OPENING RANGE CALCULATION
+# ════════════════════════════════════════════════════════════════════════════════
+
+def _bar_time(bar: dict) -> Optional[time]:
+    """Extract time from bar datetime."""
+    bt = bar.get("datetime")
+    if bt is None:
+        return None
+    return bt.time() if hasattr(bt, "time") else bt
+
+
+def compute_or(bars: List[dict]) -> Tuple[Optional[float], Optional[float]]:
+    """Compute 9:30-9:40 opening range high and low."""
+    or_bars = [b for b in bars if _bar_time(b) and time(9, 30) <= _bar_time(b) < time(9, 40)]
+    if len(or_bars) < 2:
+        return None, None
+    return max(b["high"] for b in or_bars), min(b["low"] for b in or_bars)
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# BOS+FVG PATTERN DETECTION
+# ════════════════════════════════════════════════════════════════════════════════
+
+def detect_breakout(bars: List[dict], or_high: float, or_low: float) -> Tuple[Optional[str], Optional[int]]:
+    """Detect OR breakout. Returns (direction, breakout_idx)."""
+    for i, bar in enumerate(bars):
+        bt = _bar_time(bar)
+        if bt is None or bt < time(9, 40):
+            continue
+        
+        if bar["close"] > or_high * (1 + config.ORB_BREAK_THRESHOLD):
+            return "bull", i
+        if bar["close"] < or_low * (1 - config.ORB_BREAK_THRESHOLD):
+            return "bear", i
     
-    Measures:
-    - Body size relative to total range
-    - Direction alignment (green for bull, red for bear)
-    - Wick rejection strength
+    return None, None
+
+
+def detect_fvg(bars: List[dict], breakout_idx: int, direction: str) -> Tuple[Optional[float], Optional[float]]:
+    """Detect FVG after breakout. Returns (fvg_low, fvg_high)."""
+    for i in range(breakout_idx + 3, len(bars)):
+        if i < 2:
+            continue
+        
+        c0, c2 = bars[i - 2], bars[i]
+        
+        if direction == "bull":
+            gap = c2["low"] - c0["high"]
+            if gap > 0 and (gap / c0["high"]) >= config.FVG_MIN_SIZE_PCT:
+                return c0["high"], c2["low"]
+        else:
+            gap = c0["low"] - c2["high"]
+            if gap > 0 and (gap / c0["low"]) >= config.FVG_MIN_SIZE_PCT:
+                return c2["high"], c0["low"]
+    
+    return None, None
+
+
+def grade_confirmation_candle(bar: dict, direction: str) -> Optional[str]:
+    """
+    Grade confirmation candle quality (from video 2:02-3:22).
     
     Returns:
-        0.0 = no directional strength
-        1.0 = perfect directional candle
+        'A+': Clean directional candle, minimal wicks
+        'A': Opens opposite, flips to signal direction (strong wick)
+        'A-': Long rejection wick but doesn't fully close
+        None: Invalid confirmation
     """
-    bar_range = bar['high'] - bar['low']
-    if bar_range == 0:
-        return 0.0
-    
     body = abs(bar['close'] - bar['open'])
-    body_ratio = body / bar_range
+    bar_range = bar['high'] - bar['low']
     
-    # Check direction alignment
+    if bar_range == 0:
+        return None
+    
+    body_ratio = body / bar_range
     is_green = bar['close'] > bar['open']
     is_red = bar['close'] < bar['open']
     
     if direction == 'bull':
-        if not is_green:
-            return 0.0
-        # Strong bull: body > 70% of range, close near high
-        upper_wick = bar['high'] - bar['close']
-        upper_rejection = 1.0 - (upper_wick / bar_range) if bar_range > 0 else 0
-        return body_ratio * 0.7 + upper_rejection * 0.3
+        # A+: Strong green candle, body > 80% of range, minimal wicks
+        if is_green and body_ratio > 0.80:
+            return 'A+'
+        
+        # A: Opens red, flips green (or green with strong lower wick)
+        lower_wick = bar['close'] - bar['low']
+        wick_ratio = lower_wick / bar_range if bar_range > 0 else 0
+        
+        if is_green and wick_ratio > 0.30 and body_ratio > 0.40:
+            return 'A'
+        
+        # A-: Red candle with long lower wick (rejection but didn't flip)
+        if is_red and wick_ratio > 0.50:
+            return 'A-'
     
     else:  # bear
-        if not is_red:
-            return 0.0
-        # Strong bear: body > 70% of range, close near low
-        lower_wick = bar['close'] - bar['low']
-        lower_rejection = 1.0 - (lower_wick / bar_range) if bar_range > 0 else 0
-        return body_ratio * 0.7 + lower_rejection * 0.3
+        # A+: Strong red candle, body > 80% of range
+        if is_red and body_ratio > 0.80:
+            return 'A+'
+        
+        # A: Opens green, flips red (or red with strong upper wick)
+        upper_wick = bar['high'] - bar['close']
+        wick_ratio = upper_wick / bar_range if bar_range > 0 else 0
+        
+        if is_red and wick_ratio > 0.30 and body_ratio > 0.40:
+            return 'A'
+        
+        # A-: Green candle with long upper wick (rejection but didn't flip)
+        if is_green and wick_ratio > 0.50:
+            return 'A-'
+    
+    return None
 
 
-def detect_momentum_consistency(bars: List[dict], direction: str, lookback: int = 10) -> float:
+def scan_tf_for_signal(bars: List[dict], tf_name: str) -> Optional[Dict]:
     """
-    Detect if price shows consistent momentum in the signal direction.
+    Scan a single timeframe for complete BOS+FVG signal.
     
     Returns:
-        0.0 to 1.0 score (0.8+ indicates strong lower TF alignment)
+        Dict with signal details if found, None otherwise
     """
-    if len(bars) < lookback:
-        lookback = len(bars)
+    if len(bars) < 20:
+        return None
     
-    recent_bars = bars[-lookback:]
-    aligned_moves = 0
+    # Step 1: Calculate OR
+    or_high, or_low = compute_or(bars)
+    if or_high is None:
+        return None
     
-    for i in range(1, len(recent_bars)):
-        prev_close = recent_bars[i-1]['close']
-        curr_close = recent_bars[i]['close']
-        
-        if direction == 'bull' and curr_close > prev_close:
-            aligned_moves += 1
-        elif direction == 'bear' and curr_close < prev_close:
-            aligned_moves += 1
+    # Step 2: Detect breakout
+    direction, breakout_idx = detect_breakout(bars, or_high, or_low)
+    if direction is None:
+        return None
     
-    return aligned_moves / (lookback - 1) if lookback > 1 else 0.0
+    # Step 3: Detect FVG
+    fvg_low, fvg_high = detect_fvg(bars, breakout_idx, direction)
+    if fvg_low is None:
+        return None
+    
+    # Step 4: Check for confirmation candle (look at next few bars after FVG)
+    best_grade = None
+    for i in range(breakout_idx + 3, min(breakout_idx + 10, len(bars))):
+        bar = bars[i]
+        # Check if bar touches FVG zone
+        if direction == 'bull':
+            if bar['low'] <= fvg_high and bar['low'] >= fvg_low:
+                grade = grade_confirmation_candle(bar, direction)
+                if grade and (best_grade is None or grade < best_grade):  # A+ < A < A-
+                    best_grade = grade
+        else:
+            if bar['high'] >= fvg_low and bar['high'] <= fvg_high:
+                grade = grade_confirmation_candle(bar, direction)
+                if grade and (best_grade is None or grade < best_grade):
+                    best_grade = grade
+    
+    # If no confirmation found, signal incomplete
+    if best_grade is None:
+        return None
+    
+    return {
+        'timeframe': tf_name,
+        'direction': direction,
+        'or_high': or_high,
+        'or_low': or_low,
+        'breakout_idx': breakout_idx,
+        'fvg_low': fvg_low,
+        'fvg_high': fvg_high,
+        'confirmation_grade': best_grade
+    }
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -143,71 +320,58 @@ def check_mtf_convergence(
     bars_5m: List[dict]
 ) -> Dict:
     """
-    Check if the 5m signal is confirmed on lower timeframe granularities.
+    Check if 5m signal has convergence on lower timeframes.
     
-    Strategy:
-    - Analyzes last 20 bars (100 minutes of price action)
-    - 3m confirmation: High intra-bar volatility + strong directional bars
-    - 2m confirmation: Very strong bar-to-bar momentum
-    - 1m confirmation: Near-perfect consecutive aligned moves
-    
-    Args:
-        ticker: Symbol
-        direction: 'bull' or 'bear'
-        bars_5m: 5-minute session bars
+    Strategy (from video):
+    1. You already have a 5m BOS+FVG (primary signal)
+    2. Derive 3m, 2m, 1m bars from the same 5m session
+    3. Scan each TF for BOS+FVG pattern
+    4. Check if direction aligns
+    5. Count confirming timeframes
+    6. Boost based on # of TFs with valid signals
     
     Returns:
-        Dict with convergence details
+        Dict with MTF analysis and boost
     """
-    if len(bars_5m) < 20:
+    if len(bars_5m) < 30:
         return {
             'convergence': False,
             'timeframes': ['5m'],
             'convergence_score': 0.25,
             'boost': 0.0,
-            'reason': 'Insufficient bars for MTF analysis (need 20+)'
+            'best_grade': None,
+            'reason': 'Insufficient bars for MTF analysis'
         }
     
-    confirmed_timeframes = ['5m']  # Always have 5m baseline
-    recent_bars = bars_5m[-20:]  # Last 100 minutes
+    # Start with 5m (already confirmed by sniper.py)
+    confirmed_signals = [{'timeframe': '5m', 'direction': direction}]
+    confirmed_timeframes = ['5m']
+    best_confirmation_grade = None
     
-    # ─────────────────────────────────────────────────────────────────────────────
-    # 3m CONFIRMATION CHECK
-    # Look for: High intra-bar volatility + strong directional candles
-    # ─────────────────────────────────────────────────────────────────────────────
-    avg_volatility = sum(get_intrabar_volatility(b) for b in recent_bars) / len(recent_bars)
-    avg_strength = sum(get_bar_strength(b, direction) for b in recent_bars) / len(recent_bars)
+    # Derive lower timeframes
+    bars_3m = compress_to_3m(bars_5m)
+    bars_2m = compress_to_2m(bars_5m)
+    bars_1m = compress_to_1m(bars_5m)
     
-    # 3m exists if: avg volatility > 0.4% AND avg strength > 0.5
-    if avg_volatility > 0.004 and avg_strength > 0.5:
-        confirmed_timeframes.append('3m')
+    # Scan each timeframe
+    for tf_bars, tf_name in [(bars_3m, '3m'), (bars_2m, '2m'), (bars_1m, '1m')]:
+        signal = scan_tf_for_signal(tf_bars, tf_name)
+        
+        if signal and signal['direction'] == direction:
+            confirmed_signals.append(signal)
+            confirmed_timeframes.append(tf_name)
+            
+            # Track best confirmation grade across all TFs
+            if best_confirmation_grade is None or signal['confirmation_grade'] < best_confirmation_grade:
+                best_confirmation_grade = signal['confirmation_grade']
     
-    # ─────────────────────────────────────────────────────────────────────────────
-    # 2m CONFIRMATION CHECK (requires 3m first)
-    # Look for: Very strong momentum consistency (70%+ aligned moves)
-    # ─────────────────────────────────────────────────────────────────────────────
-    if '3m' in confirmed_timeframes:
-        momentum_score = detect_momentum_consistency(recent_bars, direction, lookback=15)
-        if momentum_score >= 0.70:
-            confirmed_timeframes.append('2m')
-    
-    # ─────────────────────────────────────────────────────────────────────────────
-    # 1m CONFIRMATION CHECK (requires 2m first)
-    # Look for: Near-perfect alignment (85%+ consecutive moves)
-    # ─────────────────────────────────────────────────────────────────────────────
-    if '2m' in confirmed_timeframes:
-        fine_momentum = detect_momentum_consistency(recent_bars, direction, lookback=20)
-        if fine_momentum >= 0.85:
-            confirmed_timeframes.append('1m')
-    
-    # ─────────────────────────────────────────────────────────────────────────────
-    # CALCULATE BOOST
-    # ─────────────────────────────────────────────────────────────────────────────
+    # Calculate convergence metrics
     num_timeframes = len(confirmed_timeframes)
     convergence = num_timeframes > 1
     
+    # Boost structure
     boost_map = {
-        1: 0.00,   # 5m only (baseline)
+        1: 0.00,   # 5m only
         2: 0.02,   # 5m + 3m
         3: 0.03,   # 5m + 3m + 2m
         4: 0.05    # 5m + 3m + 2m + 1m (A+ setup)
@@ -227,6 +391,9 @@ def check_mtf_convergence(
             _mtf_stats['timeframe_breakdown']['5m_3m_2m'] += 1
         elif num_timeframes == 4:
             _mtf_stats['timeframe_breakdown']['5m_3m_2m_1m'] += 1
+        
+        if best_confirmation_grade:
+            _mtf_stats['confirmation_grades'][best_confirmation_grade] += 1
     else:
         _mtf_stats['timeframe_breakdown']['5m_only'] += 1
     
@@ -235,7 +402,12 @@ def check_mtf_convergence(
         'timeframes': confirmed_timeframes,
         'convergence_score': convergence_score,
         'boost': boost,
-        'reason': f"Confirmed on {', '.join(confirmed_timeframes)}" if convergence else "5m signal only"
+        'best_grade': best_confirmation_grade,
+        'signals': confirmed_signals,
+        'reason': (
+            f"BOS+FVG confirmed on {', '.join(confirmed_timeframes)}"
+            if convergence else "5m signal only (no lower TF convergence)"
+        )
     }
 
 
@@ -247,27 +419,28 @@ def enhance_signal_with_mtf(
     ticker: str,
     direction: str,
     bars_session: List[dict],
-    **kwargs  # Accepts extra args for backwards compatibility
+    **kwargs
 ) -> Dict:
     """
-    Enhance a 5m BOS+FVG signal with multi-timeframe convergence analysis.
+    Enhance 5m BOS+FVG signal with multi-timeframe convergence.
     
-    Called from sniper.py Step 8.2 after confirmation layers pass.
+    Called from sniper.py Step 8.2 after confirmation layers.
     
     Args:
         ticker: Symbol
         direction: 'bull' or 'bear'
-        bars_session: The 5m session bars (already in sniper.py)
-        **kwargs: Ignored (for backwards compatibility with old API)
+        bars_session: 5m session bars
+        **kwargs: Ignored (backwards compatibility)
     
     Returns:
-        Dict containing:
-        - enabled: bool (always True)
-        - convergence: bool (True if multi-TF confirmation found)
-        - timeframes: list of confirmed timeframes
-        - convergence_score: float 0-1 (0.25 per TF)
-        - boost: float (0.00 to 0.05)
-        - reason: str (explanation)
+        Dict with MTF analysis:
+        - enabled: True
+        - convergence: bool
+        - timeframes: List[str]
+        - convergence_score: float (0.25-1.0)
+        - boost: float (0.00-0.05)
+        - best_grade: str ('A+', 'A', 'A-') or None
+        - reason: str
     """
     _check_cache_rollover()
     _mtf_stats['analyzed'] += 1
@@ -275,42 +448,39 @@ def enhance_signal_with_mtf(
     # Check cache
     cache_key = f"{ticker}_{direction}"
     if cache_key in _mtf_cache:
-        cached = _mtf_cache[cache_key]
-        return cached
+        return _mtf_cache[cache_key]
     
-    # Validate inputs
-    if not bars_session or len(bars_session) < 20:
+    # Validate
+    if not bars_session or len(bars_session) < 30:
         result = {
             'enabled': True,
             'convergence': False,
             'timeframes': ['5m'],
             'convergence_score': 0.25,
             'boost': 0.0,
-            'reason': 'Insufficient bars for MTF analysis (need 20+ bars)'
+            'best_grade': None,
+            'reason': 'Insufficient bars for MTF'
         }
         _mtf_cache[cache_key] = result
         return result
     
-    # Run MTF convergence check
+    # Run MTF analysis
     result = check_mtf_convergence(ticker, direction, bars_session)
     result['enabled'] = True
     
-    # Cache result
+    # Cache
     _mtf_cache[cache_key] = result
     
     return result
 
 
 def print_mtf_stats():
-    """
-    Print end-of-day MTF statistics.
-    Called from sniper.py at market close.
-    """
+    """Print EOD MTF statistics."""
     if _mtf_stats['analyzed'] == 0:
         return
     
     conv_rate = (_mtf_stats['convergence_found'] / _mtf_stats['analyzed']) * 100
-    avg_boost = (_mtf_stats['total_boost'] / _mtf_stats['analyzed'])
+    avg_boost = _mtf_stats['total_boost'] / _mtf_stats['analyzed']
     
     print("\n" + "="*80)
     print("MTF CONVERGENCE - DAILY STATISTICS")
@@ -324,11 +494,15 @@ def print_mtf_stats():
     print(f"  5m + 3m:            {_mtf_stats['timeframe_breakdown']['5m_3m']} (+2% boost)")
     print(f"  5m + 3m + 2m:       {_mtf_stats['timeframe_breakdown']['5m_3m_2m']} (+3% boost)")
     print(f"  5m + 3m + 2m + 1m:  {_mtf_stats['timeframe_breakdown']['5m_3m_2m_1m']} (+5% boost - A+)")
+    print("\nConfirmation Grades:")
+    print(f"  A+ (Strongest):     {_mtf_stats['confirmation_grades']['A+']}")
+    print(f"  A (Strong):         {_mtf_stats['confirmation_grades']['A']}")
+    print(f"  A- (Valid):         {_mtf_stats['confirmation_grades']['A-']}")
     print("="*80 + "\n")
 
 
 def reset_daily_stats():
-    """Reset statistics at start of new trading day."""
+    """Reset stats for new trading day."""
     global _mtf_stats
     _mtf_stats = {
         'analyzed': 0,
@@ -339,9 +513,15 @@ def reset_daily_stats():
             '5m_3m_2m': 0,
             '5m_3m_2m_1m': 0
         },
-        'avg_boost': 0.0,
+        'confirmation_grades': {
+            'A+': 0,
+            'A': 0,
+            'A-': 0
+        },
         'total_boost': 0.0
     }
 
 
-print("[MTF-REALTIME] ✅ Multi-timeframe convergence enabled (in-memory bar analysis)")
+print("[MTF] ✅ Multi-timeframe BOS+FVG convergence system enabled")
+print("[MTF] Strategy: Scans 5m/3m/2m/1m for same OR breakout + FVG pattern")
+print("[MTF] Boost: +2% (2 TFs), +3% (3 TFs), +5% (4 TFs - A+ setup)")
