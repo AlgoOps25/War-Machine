@@ -58,17 +58,6 @@ except ImportError:
     vpvr_calculator = None
     print("[VALIDATOR] ⚠️  vpvr_calculator not available - volume profile disabled")
 
-# Import regime filter for market condition validation
-try:
-    from regime_filter import regime_filter
-    REGIME_FILTER_ENABLED = True
-    print("[VALIDATOR] ✅ Regime filter enabled (TRENDING/CHOPPY/VOLATILE)")
-except ImportError:
-    REGIME_FILTER_ENABLED = False
-    regime_filter = None
-    print("[VALIDATOR] ⚠️  regime_filter not available - regime filtering disabled")
-
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TIME-OF-DAY QUALITY SCORING
@@ -280,47 +269,6 @@ class SignalValidator:
                 
             except Exception as e:
                 metadata['checks']['daily_bias'] = {'error': str(e)}
-        # ====================================================
-        # CHECK 0A: REGIME FILTER (Market Condition) [HEAVY PENALTY]
-        # ====================================================
-        if REGIME_FILTER_ENABLED and regime_filter:
-            try:
-                regime_state = regime_filter.get_regime_state()
-                
-                metadata['checks']['regime_filter'] = {
-                    'regime': regime_state.regime,
-                    'vix': regime_state.vix,
-                    'spy_trend': regime_state.spy_trend,
-                    'adx': regime_state.adx,
-                    'favorable': regime_state.favorable,
-                    'reason': regime_state.reason
-                }
-                
-                # Apply regime-based confidence adjustment
-                if not regime_state.favorable:
-                    # Unfavorable regime (CHOPPY or VOLATILE)
-                    regime_penalty = -0.30  # Heavy penalty for bad tape
-                    confidence_adjustment += regime_penalty
-                    failed_checks.append(f'REGIME_{regime_state.regime}')
-                    
-                    print(f"[VALIDATOR] WARNING {ticker} in {regime_state.regime} regime (-30%): {regime_state.reason}")
-                    
-                elif regime_state.regime == 'TRENDING':
-                    # Favorable trending market
-                    regime_boost = 0.05  # Small boost for good tape
-                    confidence_adjustment += regime_boost
-                    passed_checks.append('REGIME_TRENDING')
-                    
-                    print(f"[VALIDATOR] OK {ticker} in TRENDING regime (+5%): {regime_state.reason}")
-                else:
-                    # Neutral
-                    passed_checks.append('REGIME_NEUTRAL')
-                
-            except Exception as e:
-                metadata['checks']['regime_filter'] = {'error': str(e)}
-                print(f"[VALIDATOR] Regime check error for {ticker}: {e}")
-        
-
                 print(f"[VALIDATOR] Bias check error for {ticker}: {e}")
         
         # ════════════════════════════════════════════════
