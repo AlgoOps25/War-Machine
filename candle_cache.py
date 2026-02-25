@@ -185,6 +185,7 @@ class CandleCache:
             first_bar = min(b["datetime"] for b in bars)
             last_bar = max(b["datetime"] for b in bars)
             
+            # FIX: Explicitly qualify bar_count with table name to avoid ambiguity in PostgreSQL
             meta_sql = f"""
                 INSERT INTO cache_metadata 
                 (ticker, timeframe, first_bar_time, last_bar_time, bar_count, last_cache_time)
@@ -201,7 +202,7 @@ class CandleCache:
                         THEN {p}
                         ELSE cache_metadata.last_bar_time
                     END,
-                    bar_count = bar_count + {p},
+                    bar_count = cache_metadata.bar_count + {p},
                     last_cache_time = CURRENT_TIMESTAMP
             """
             
