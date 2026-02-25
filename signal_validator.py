@@ -28,12 +28,12 @@ Fine-Tuning Updates (Applied):
   #4. Bias Threshold: 0.65 (was 0.70) - allows more valid setups
   #5. ADX Threshold: 25 (was 20) - filters choppy markets [NEW]
       Volume Ratio: 1.5x (was 1.3x) - stronger institutional confirmation [NEW]
+  #6. VPVR Integration: Entry scoring based on POC/HVN/LVN zones [NEW - FEB 25, 2026]
 """
 from typing import Dict, Optional, Tuple
 from datetime import datetime, time as dtime
 from zoneinfo import ZoneInfo
 import technical_indicators as ti
-import vpvr_calculator as vpvr
 
 ET = ZoneInfo("America/New_York")
 
@@ -46,6 +46,16 @@ except ImportError:
     BIAS_ENGINE_ENABLED = False
     bias_engine = None
     print("[VALIDATOR] ⚠️  daily_bias_engine not available - bias filtering disabled")
+
+# Import VPVR calculator for volume profile analysis
+try:
+    from vpvr_calculator import vpvr_calculator
+    VPVR_ENABLED = True
+    print("[VALIDATOR] ✅ VPVR entry scoring enabled (POC/HVN/LVN analysis)")
+except ImportError:
+    VPVR_ENABLED = False
+    vpvr_calculator = None
+    print("[VALIDATOR] ⚠️  vpvr_calculator not available - volume profile disabled")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -132,7 +142,7 @@ class SignalValidator:
         """
         self.min_adx = min_adx
         self.min_volume_ratio = min_volume_ratio
-        self.enable_vpvr = enable_vpvr
+        self.enable_vpvr = enable_vpvr and VPVR_ENABLED
         self.enable_daily_bias = enable_daily_bias and BIAS_ENGINE_ENABLED
         self.enable_time_filter = enable_time_filter
         self.enable_ema_stack = enable_ema_stack
@@ -147,6 +157,7 @@ class SignalValidator:
             'filtered': 0,
             'boosted': 0,
             'bias_filtered': 0,
+            'vpvr_scored': 0,
             'time_zones': {},
             'ema_stack_aligned': 0,
             'rsi_divergence_detected': 0
@@ -163,6 +174,9 @@ class SignalValidator:
         
         if self.enable_rsi_divergence:
             print(f"[VALIDATOR] RSI divergence detection enabled (early reversal warnings)")
+        
+        if self.enable_vpvr:
+            print(f"[VALIDATOR] VPVR entry scoring enabled (POC/HVN/LVN context)")
         
         print(f"[VALIDATOR] ADX threshold: {min_adx} (filters choppy/weak trends)")
         print(f"[VALIDATOR] Volume ratio: {min_volume_ratio}x (institutional confirmation)")
@@ -504,27 +518,66 @@ class SignalValidator:
             metadata['checks']['bbands'] = {'error': str(e)}
         
         # ════════════════════════════════════════════════
-        # CHECK 9: VPVR Context (Optional)
+        # CHECK 9: VPVR ENTRY SCORING [NEW - FEB 25, 2026]
         # ════════════════════════════════════════════════
-        if self.enable_vpvr:
+        if self.enable_vpvr and vpvr_calculator:
             try:
-                vpvr_context = vpvr.get_vpvr_signal_context(
-                    ticker, current_price, signal_direction
-                )
+                # Import data_manager to get bars
+                from data_manager import data_manager
                 
-                if vpvr_context:
-                    metadata['checks']['vpvr'] = vpvr_context
+                # Get recent bars for VPVR calculation
+                bars = data_manager.get_today_session_bars(ticker)
+                
+                if bars and len(bars) >= 78:
+                    # Calculate VPVR from last 78 bars (~1.3 hours of 1m data)
+                    vpvr = vpvr_calculator.calculate_vpvr(bars, lookback_bars=78)
                     
-                    recommendation = vpvr_context['recommendation']
+                    if vpvr and vpvr['poc'] is not None:
+                        # Score the entry price
+                        entry_score, entry_reason = vpvr_calculator.get_entry_score(
+                            current_price, vpvr
+                        )
+                        
+                        metadata['checks']['vpvr'] = {
+                            'poc': vpvr['poc'],
+                            'vah': vpvr['vah'],
+                            'val': vpvr['val'],
+                            'entry_score': round(entry_score, 2),
+                            'entry_reason': entry_reason,
+                            'hvn_zones': vpvr['hvn_zones'][:2] if len(vpvr['hvn_zones']) > 2 else vpvr['hvn_zones'],  # Limit to 2 zones
+                            'lvn_zones': vpvr['lvn_zones'][:2] if len(vpvr['lvn_zones']) > 2 else vpvr['lvn_zones']   # Limit to 2 zones
+                        }
+                        
+                        self.validation_stats['vpvr_scored'] += 1
+                        
+                        # Apply confidence adjustments based on VPVR score
+                        if entry_score >= 0.85:
+                            # Strong entry (POC or HVN)
+                            confidence_adjustment += 0.08
+                            passed_checks.append('VPVR_STRONG')
+                            print(f"[VPVR] ✅ {ticker} strong entry: {entry_reason}")
+                        elif entry_score >= 0.70:
+                            # Good entry (Value Area)
+                            confidence_adjustment += 0.03
+                            passed_checks.append('VPVR_GOOD')
+                            print(f"[VPVR] 🟢 {ticker} good entry: {entry_reason}")
+                        elif entry_score < 0.50:
+                            # Weak entry (LVN or far from value)
+                            confidence_adjustment -= 0.05
+                            failed_checks.append('VPVR_WEAK')
+                            print(f"[VPVR] ⚠️  {ticker} weak entry: {entry_reason}")
+                        else:
+                            # Neutral entry
+                            passed_checks.append('VPVR_NEUTRAL')
+                            print(f"[VPVR] 🟡 {ticker} neutral entry: {entry_reason}")
+                    else:
+                        metadata['checks']['vpvr'] = {'error': 'Insufficient VPVR data'}
+                else:
+                    metadata['checks']['vpvr'] = {'error': f'Need 78+ bars, got {len(bars) if bars else 0}'}
                     
-                    if recommendation == 'STRONG':
-                        confidence_adjustment += 0.08
-                        passed_checks.append('VPVR_STRONG')
-                    elif recommendation == 'WEAK':
-                        confidence_adjustment -= 0.05
-                        failed_checks.append('VPVR_WEAK')
             except Exception as e:
                 metadata['checks']['vpvr'] = {'error': str(e)}
+                print(f"[VALIDATOR] VPVR error for {ticker}: {e}")
         
         # ════════════════════════════════════════════════
         # FINAL DECISION
@@ -574,7 +627,8 @@ class SignalValidator:
             'boost_rate': round(self.validation_stats['boosted'] / total, 3),
             'bias_filter_rate': round(self.validation_stats['bias_filtered'] / total, 3),
             'ema_stack_rate': round(self.validation_stats['ema_stack_aligned'] / total, 3),
-            'rsi_div_rate': round(self.validation_stats['rsi_divergence_detected'] / total, 3)
+            'rsi_div_rate': round(self.validation_stats['rsi_divergence_detected'] / total, 3),
+            'vpvr_scored_rate': round(self.validation_stats['vpvr_scored'] / total, 3)
         }
         
         # Add time zone distribution
@@ -591,6 +645,7 @@ class SignalValidator:
             'filtered': 0,
             'boosted': 0,
             'bias_filtered': 0,
+            'vpvr_scored': 0,
             'time_zones': {},
             'ema_stack_aligned': 0,
             'rsi_divergence_detected': 0
@@ -627,7 +682,7 @@ def get_validator() -> SignalValidator:
 # ══════════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    print("Testing Signal Validator (ADX: 25, Volume: 1.5x, Bias: 0.65)...\n")
+    print("Testing Signal Validator (ADX: 25, Volume: 1.5x, Bias: 0.65, VPVR: ON)...\n")
     
     validator = SignalValidator(
         min_adx=25.0,
@@ -697,6 +752,7 @@ if __name__ == "__main__":
     print(f"Boost Rate: {stats.get('boost_rate', 0)*100:.1f}%")
     print(f"EMA Stack Aligned Rate: {stats.get('ema_stack_rate', 0)*100:.1f}%")
     print(f"RSI Divergence Rate: {stats.get('rsi_div_rate', 0)*100:.1f}%")
+    print(f"VPVR Scored Rate: {stats.get('vpvr_scored_rate', 0)*100:.1f}%")
     
     if 'time_zone_distribution' in stats:
         print(f"\nTime Zone Distribution:")
