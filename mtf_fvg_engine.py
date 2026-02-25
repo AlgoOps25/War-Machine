@@ -1,19 +1,20 @@
 """
-Multi-Timeframe FVG Detection Engine
+Multi-Timeframe FVG Detection Engine - Simplified Version
 
-Simultaneously scans for CFW6 BOS+FVG patterns across multiple timeframes
+Detects CFW6 BOS+FVG patterns across 5m (primary) and 3m (secondary) timeframes
 and calculates convergence scores based on zone alignment.
 
-Key Concepts:
-  - FVG Alignment: Multiple timeframes show FVG in same price zone
-  - Convergence Score: Weighted measure of MTF agreement (0.0 - 1.0)
-  - Timeframe Weights: 5m (40%) > 3m (30%) > 2m (20%) > 1m (10%)
+Simplified Strategy:
+  - 5m: Primary timeframe (70% weight) - from existing data_manager
+  - 3m: Secondary timeframe (30% weight) - aggregated from 1m
+  - Requires both timeframes to show FVG in aligned zones
+  - Convergence score based on zone overlap quality
 
 Usage:
   from mtf_fvg_engine import mtf_fvg_engine
   from mtf_data_manager import mtf_data_manager
   
-  # Get all timeframes
+  # Get both timeframes
   bars_dict = mtf_data_manager.get_all_timeframes('SPY')
   
   # Detect MTF signal
@@ -21,7 +22,6 @@ Usage:
   
   if result:
       print(f"MTF Signal: {result['direction']} with {result['convergence_score']:.2f} convergence")
-      print(f"Timeframes: {result['timeframes_aligned']}")
       print(f"Zone: ${result['zone_low']:.2f} - ${result['zone_high']:.2f}")
 """
 
@@ -35,38 +35,36 @@ from trade_calculator import get_adaptive_fvg_threshold
 
 
 class MTFFVGEngine:
-    """Multi-timeframe FVG detection and convergence analysis."""
+    """Simplified multi-timeframe FVG detection (5m + 3m convergence)."""
     
     def __init__(self):
         # Timeframe priority weights (must sum to 1.0)
         self.timeframe_weights = {
-            '5m': 0.40,  # Primary timeframe
-            '3m': 0.30,  # High confidence
-            '2m': 0.20,  # Medium confidence
-            '1m': 0.10   # Low confidence (noisy)
+            '5m': 0.70,  # Primary timeframe
+            '3m': 0.30   # Secondary timeframe (derived from 1m)
         }
         
-        # Convergence requirements
-        self.min_convergence_score = 0.60  # Require 60% weighted agreement
-        self.min_timeframes_required = 2    # At least 2 TFs must show FVG
-        self.min_zone_overlap_pct = 0.30    # Zones must overlap by 30%+
+        # Convergence requirements (adjusted for 2-TF strategy)
+        self.min_convergence_score = 0.50  # Lower threshold (only 2 TFs)
+        self.min_timeframes_required = 2   # Both timeframes must show FVG
+        self.min_zone_overlap_pct = 0.25   # Zones must overlap by 25%+
         
-        # 5m must always be present for signal
+        # Always require 5m (primary)
         self.require_5m = True
         
-        print("[MTF-FVG] Engine initialized")
+        print("[MTF-FVG] Engine initialized (Simplified Mode)")
+        print(f"[MTF-FVG] Strategy: 5m (primary) + 3m (secondary)")
         print(f"[MTF-FVG] Min convergence: {self.min_convergence_score:.1%}")
-        print(f"[MTF-FVG] Min timeframes: {self.min_timeframes_required}")
         print(f"[MTF-FVG] Min overlap: {self.min_zone_overlap_pct:.1%}")
     
     def detect_mtf_signal(self, ticker: str, bars_dict: Dict[str, List[dict]]) -> Optional[Dict]:
         """
-        Detect CFW6 signal with multi-timeframe convergence.
+        Detect CFW6 signal with 5m + 3m convergence.
         
         Args:
             ticker: Stock symbol
             bars_dict: Dict mapping timeframe -> bars
-                      Example: {'5m': [...], '3m': [...], ...}
+                      Example: {'5m': [...], '3m': [...]}
         
         Returns:
             Dict with MTF signal details or None if no convergence
@@ -78,7 +76,7 @@ class MTFFVGEngine:
                 'convergence_score': float (0.0 - 1.0),
                 'timeframes_aligned': List[str],
                 'signals_by_tf': Dict[str, Dict],
-                'bos_idx': int,  # From primary timeframe (5m)
+                'bos_idx': int,
                 'bos_price': float
             }
         """
@@ -93,7 +91,7 @@ class MTFFVGEngine:
         
         # Detect FVG on each available timeframe
         signals_by_tf = {}
-        for tf in self.timeframe_weights.keys():
+        for tf in ['5m', '3m']:
             if tf not in bars_dict:
                 continue
             
@@ -106,7 +104,7 @@ class MTFFVGEngine:
             if signal:
                 signals_by_tf[tf] = signal
         
-        # Check if we have enough timeframes
+        # Check if we have both timeframes
         if len(signals_by_tf) < self.min_timeframes_required:
             return None
         
@@ -121,8 +119,7 @@ class MTFFVGEngine:
             return None
         
         # Build MTF signal result
-        primary_tf = '5m' if '5m' in signals_by_tf else list(signals_by_tf.keys())[0]
-        primary_signal = signals_by_tf[primary_tf]
+        primary_signal = signals_by_tf['5m']
         
         result = {
             'ticker': ticker,
@@ -134,7 +131,7 @@ class MTFFVGEngine:
             'signals_by_tf': signals_by_tf,
             'bos_idx': primary_signal['bos_idx'],
             'bos_price': primary_signal['bos_price'],
-            'primary_timeframe': primary_tf
+            'primary_timeframe': '5m'
         }
         
         print(f"[MTF-FVG] ✅ {ticker} MTF {convergence['direction'].upper()} signal")
@@ -150,7 +147,7 @@ class MTFFVGEngine:
         Args:
             ticker: Stock symbol
             bars: List of bars for this timeframe
-            timeframe: Timeframe string ('5m', '3m', etc.)
+            timeframe: Timeframe string ('5m' or '3m')
         
         Returns:
             Dict with signal details or None
@@ -180,7 +177,7 @@ class MTFFVGEngine:
     
     def _analyze_convergence(self, ticker: str, signals_by_tf: Dict[str, Dict]) -> Optional[Dict]:
         """
-        Analyze FVG convergence across multiple timeframes.
+        Analyze FVG convergence across 5m and 3m timeframes.
         
         Args:
             ticker: Stock symbol
@@ -193,7 +190,7 @@ class MTFFVGEngine:
         bull_signals = {tf: sig for tf, sig in signals_by_tf.items() if sig['direction'] == 'bull'}
         bear_signals = {tf: sig for tf, sig in signals_by_tf.items() if sig['direction'] == 'bear'}
         
-        # Determine dominant direction (by weighted score)
+        # Determine dominant direction
         bull_weight = sum(self.timeframe_weights.get(tf, 0) for tf in bull_signals.keys())
         bear_weight = sum(self.timeframe_weights.get(tf, 0) for tf in bear_signals.keys())
         
@@ -207,7 +204,7 @@ class MTFFVGEngine:
             # Tie - no clear direction
             return None
         
-        # Check if we have minimum timeframes in aligned direction
+        # Check if we have both timeframes in aligned direction
         if len(aligned_signals) < self.min_timeframes_required:
             return None
         
@@ -225,7 +222,7 @@ class MTFFVGEngine:
         )
         
         # Bonus for zone overlap quality
-        convergence_score *= (0.8 + (overlap_score * 0.2))  # Up to +20% bonus for perfect overlap
+        convergence_score *= (0.7 + (overlap_score * 0.3))  # Up to +30% bonus for perfect overlap
         
         return {
             'direction': direction,
@@ -238,16 +235,13 @@ class MTFFVGEngine:
     
     def _calculate_zone_overlap(self, signals: Dict[str, Dict]) -> Tuple[float, float, float]:
         """
-        Calculate overlapping FVG zone across multiple timeframes.
+        Calculate overlapping FVG zone across timeframes.
         
         Args:
             signals: Dict mapping timeframe -> signal details
         
         Returns:
             (zone_low, zone_high, overlap_score)
-            
-            zone_low/high: Overlapping zone boundaries
-            overlap_score: Quality of overlap (0.0 - 1.0)
         """
         # Get all FVG zones
         zones = [(sig['fvg_low'], sig['fvg_high']) for sig in signals.values()]
@@ -259,7 +253,7 @@ class MTFFVGEngine:
         zone_low = max(low for low, _ in zones)
         zone_high = min(high for _, high in zones)
         
-        # If zones don't overlap at all
+        # If zones don't overlap
         if zone_low >= zone_high:
             # Fallback: use average zone
             all_lows = [low for low, _ in zones]
@@ -283,14 +277,14 @@ class MTFFVGEngine:
             convergence_score: Convergence score from detect_mtf_signal()
         
         Returns:
-            Confidence boost value (0.00 - 0.15)
+            Confidence boost value (0.00 - 0.10)
         """
-        # Linear scale: 60% convergence = 0.00, 100% convergence = 0.15
+        # Linear scale: 50% convergence = 0.00, 100% convergence = 0.10
         if convergence_score < self.min_convergence_score:
             return 0.0
         
         normalized = (convergence_score - self.min_convergence_score) / (1.0 - self.min_convergence_score)
-        boost = normalized * 0.15  # Max +15% confidence boost
+        boost = normalized * 0.10  # Max +10% confidence boost
         
         return round(boost, 3)
     
@@ -300,7 +294,7 @@ class MTFFVGEngine:
         
         Args:
             min_convergence_score: float (0.0 - 1.0)
-            min_timeframes_required: int (1-4)
+            min_timeframes_required: int (1-2)
             min_zone_overlap_pct: float (0.0 - 1.0)
             require_5m: bool
         """
@@ -344,7 +338,7 @@ if __name__ == "__main__":
     print(f"MTF FVG DETECTION TEST: {ticker}")
     print(f"{'='*80}\n")
     
-    # Get all timeframes
+    # Get both timeframes
     print(f"Fetching {ticker} data across all timeframes...\n")
     bars_dict = mtf_data_manager.get_all_timeframes(ticker)
     
@@ -365,7 +359,6 @@ if __name__ == "__main__":
         print(f"Timeframes:       {', '.join(result['timeframes_aligned'])}")
         print(f"Zone:             ${result['zone_low']:.2f} - ${result['zone_high']:.2f}")
         print(f"BOS Price:        ${result['bos_price']:.2f}")
-        print(f"Primary TF:       {result['primary_timeframe']}")
         
         # Show per-timeframe details
         print(f"\n{'-'*80}")
@@ -382,5 +375,5 @@ if __name__ == "__main__":
         print(f"\n{'='*80}")
         print("NO MTF SIGNAL")
         print(f"{'='*80}")
-        print("Reasons: Insufficient convergence, timeframes, or zone overlap")
+        print("Reasons: Insufficient convergence or zone overlap")
         print(f"{'='*80}\n")
