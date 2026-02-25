@@ -21,6 +21,11 @@ Liquidity Sweep:
   - Price briefly exceeds pivot level (3-5 ticks)
   - Followed by rapid rejection (close back inside range)
   - Confirms liquidity grab before directional move
+
+Staleness Protection (Issue #6 fix - FEB 25, 2026):
+  - Bias expires after MAX_BIAS_AGE_MINUTES
+  - Automatic refresh when accessing stale bias
+  - Prevents filtering on outdated market conditions
 """
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime, time, timedelta
@@ -34,6 +39,9 @@ ET = ZoneInfo("America/New_York")
 
 class DailyBiasEngine:
     """ICT-style daily bias determination from higher timeframe analysis."""
+    
+    # ⭐ Issue #6 Fix: Maximum bias age before refresh required
+    MAX_BIAS_AGE_MINUTES = 120  # 2 hours
     
     def __init__(self,
                  pivot_lookback: int = 2,
@@ -63,6 +71,43 @@ class DailyBiasEngine:
         print(f"[BIAS] Pivot lookback: {pivot_lookback} bars")
         print(f"[BIAS] Sweep tolerance: {sweep_tolerance_pct*100:.2f}%")
         print(f"[BIAS] Min rejection: {min_rejection_pct*100:.2f}%")
+        print(f"[BIAS] ⏰ Max bias age: {self.MAX_BIAS_AGE_MINUTES} minutes (auto-refresh when stale)")
+    
+    def _is_bias_stale(self) -> bool:
+        """
+        Check if current bias is stale (too old).
+        
+        Returns:
+            True if bias should be refreshed
+        """
+        if not self.bias_timestamp:
+            return True
+        
+        now = datetime.now(ET)
+        age_minutes = (now - self.bias_timestamp).total_seconds() / 60
+        
+        # Check if same trading day
+        if self.bias_timestamp.date() != now.date():
+            return True
+        
+        # Check age threshold
+        if age_minutes > self.MAX_BIAS_AGE_MINUTES:
+            return True
+        
+        return False
+    
+    def _get_bias_age_minutes(self) -> Optional[float]:
+        """
+        Get age of current bias in minutes.
+        
+        Returns:
+            Age in minutes or None if no bias
+        """
+        if not self.bias_timestamp:
+            return None
+        
+        now = datetime.now(ET)
+        return (now - self.bias_timestamp).total_seconds() / 60
     
     def calculate_daily_bias(self, ticker: str, force_refresh: bool = False) -> Dict:
         """
@@ -80,14 +125,20 @@ class DailyBiasEngine:
             force_refresh: Force recalculation even if cached
         
         Returns:
-            Dict with bias, confidence, reasons, and key levels
+            Dict with bias, confidence, reasons, key levels, and age
         """
         now = datetime.now(ET)
         
-        # Return cached bias if still valid (same session)
+        # ⭐ Issue #6 Fix: Check staleness before returning cached bias
         if not force_refresh and self.current_bias and self.bias_timestamp:
-            if self.bias_timestamp.date() == now.date():
-                return self._get_bias_dict()
+            if not self._is_bias_stale():
+                age_minutes = self._get_bias_age_minutes()
+                result = self._get_bias_dict()
+                result['age_minutes'] = round(age_minutes, 1) if age_minutes else None
+                return result
+            else:
+                age_minutes = self._get_bias_age_minutes()
+                print(f"[BIAS] ⚠️  Bias is stale (age: {age_minutes:.1f} min > {self.MAX_BIAS_AGE_MINUTES} min) - refreshing...")
         
         # Step 1: Get yesterday's 1H bars for pivot analysis
         yesterday = now - timedelta(days=1)
@@ -393,6 +444,7 @@ class DailyBiasEngine:
         print(f"\n[BIAS] {ticker} DAILY BIAS: {bias} ({confidence*100:.0f}% confidence)")
         for reason in reasons:
             print(f"[BIAS]   • {reason}")
+        print(f"[BIAS] ⏰ Bias calculated at {self.bias_timestamp.strftime('%H:%M:%S')}")
         print()
         
         return self._get_bias_dict()
@@ -407,11 +459,15 @@ class DailyBiasEngine:
     
     def _get_bias_dict(self) -> Dict:
         """Get current bias as dict."""
+        age_minutes = self._get_bias_age_minutes()
+        
         return {
             'bias': self.current_bias,
             'confidence': self.bias_confidence,
             'reasons': self.bias_reasons,
             'timestamp': self.bias_timestamp,
+            'age_minutes': round(age_minutes, 1) if age_minutes is not None else None,
+            'is_stale': self._is_bias_stale(),
             'key_levels': self.key_levels
         }
     
@@ -426,11 +482,17 @@ class DailyBiasEngine:
         Returns:
             (should_filter, reason)
         """
-        # Get or calculate bias
-        if not self.current_bias or not self.bias_timestamp:
+        # ⭐ Issue #6 Fix: Check staleness and auto-refresh if needed
+        if not self.current_bias or not self.bias_timestamp or self._is_bias_stale():
+            age_minutes = self._get_bias_age_minutes()
+            if age_minutes is not None:
+                print(f"[BIAS] ⏰ Bias age: {age_minutes:.1f} min - refreshing for {ticker}...")
             bias_data = self.calculate_daily_bias(ticker)
         else:
             bias_data = self._get_bias_dict()
+            age_minutes = bias_data.get('age_minutes')
+            if age_minutes and age_minutes > 60:
+                print(f"[BIAS] ⚠️  Using bias from {age_minutes:.0f} min ago (still fresh)")
         
         bias = bias_data['bias']
         confidence = bias_data['confidence']
@@ -460,9 +522,16 @@ class DailyBiasEngine:
             'NEUTRAL': '⚪'
         }.get(self.current_bias, '⚪')
         
+        age_minutes = self._get_bias_age_minutes()
+        is_stale = self._is_bias_stale()
+        
         summary = f"\n{'='*70}\n"
         summary += f"DAILY BIAS: {emoji} {self.current_bias}\n"
         summary += f"Confidence: {self.bias_confidence*100:.0f}%\n"
+        
+        if age_minutes is not None:
+            summary += f"Age: {age_minutes:.0f} min {'⚠️ STALE' if is_stale else '✅ FRESH'}\n"
+        
         summary += f"{'='*70}\n"
         
         if ticker in self.key_levels:
