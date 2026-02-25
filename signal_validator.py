@@ -5,6 +5,7 @@ Enhances CFW6 signals with additional technical indicator validation.
 Reduces false positives by requiring multiple confirmations.
 
 Validation Layers:
+  0. Daily Bias (ICT Top-Down) - Filter counter-trend signals [NEW]
   1. Trend Strength (ADX) - Is there a real trend?
   2. Volume Confirmation (AvgVol) - Is there institutional interest?
   3. Trend Direction (DMI) - Does direction match signal?
@@ -22,6 +23,16 @@ from datetime import datetime
 import technical_indicators as ti
 import vpvr_calculator as vpvr
 
+# Import daily bias engine for top-down analysis
+try:
+    from daily_bias_engine import bias_engine
+    BIAS_ENGINE_ENABLED = True
+    print("[VALIDATOR] ✅ Daily bias filtering enabled (ICT top-down analysis)")
+except ImportError:
+    BIAS_ENGINE_ENABLED = False
+    bias_engine = None
+    print("[VALIDATOR] ⚠️  daily_bias_engine not available - bias filtering disabled")
+
 
 class SignalValidator:
     """Multi-indicator signal validation engine."""
@@ -31,6 +42,8 @@ class SignalValidator:
         min_adx: float = 20.0,
         min_volume_ratio: float = 1.3,
         enable_vpvr: bool = True,
+        enable_daily_bias: bool = True,
+        min_bias_confidence: float = 0.7,
         strict_mode: bool = False
     ):
         """
@@ -40,11 +53,15 @@ class SignalValidator:
             min_adx: Minimum ADX for trend strength (default 20)
             min_volume_ratio: Minimum volume vs average (default 1.3x)
             enable_vpvr: Use VPVR for signal validation (default True)
+            enable_daily_bias: Filter counter-trend signals (default True)
+            min_bias_confidence: Minimum bias confidence to filter (default 0.7)
             strict_mode: Require all checks to pass (default False)
         """
         self.min_adx = min_adx
         self.min_volume_ratio = min_volume_ratio
         self.enable_vpvr = enable_vpvr
+        self.enable_daily_bias = enable_daily_bias and BIAS_ENGINE_ENABLED
+        self.min_bias_confidence = min_bias_confidence
         self.strict_mode = strict_mode
         
         # Statistics tracking
@@ -52,8 +69,12 @@ class SignalValidator:
             'total_validated': 0,
             'passed': 0,
             'filtered': 0,
-            'boosted': 0
+            'boosted': 0,
+            'bias_filtered': 0  # NEW: Track bias-based filtering
         }
+        
+        if self.enable_daily_bias:
+            print(f"[VALIDATOR] Daily bias filter active (min confidence: {min_bias_confidence*100:.0f}%)")
     
     def validate_signal(
         self,
@@ -93,6 +114,59 @@ class SignalValidator:
         confidence_adjustment = 0.0
         failed_checks = []
         passed_checks = []
+        
+        # ════════════════════════════════════════════════
+        # CHECK 0: DAILY BIAS (ICT Top-Down) [NEW - FIRST FILTER]
+        # ════════════════════════════════════════════════
+        if self.enable_daily_bias and bias_engine:
+            try:
+                # Check if signal aligns with daily bias
+                should_filter, bias_reason = bias_engine.should_filter_signal(
+                    ticker, signal_direction
+                )
+                
+                # Get bias details
+                bias_data = bias_engine._get_bias_dict()
+                
+                metadata['checks']['daily_bias'] = {
+                    'bias': bias_data['bias'],
+                    'confidence': bias_data['confidence'],
+                    'should_filter': should_filter,
+                    'reason': bias_reason
+                }
+                
+                # HARD FILTER: Counter-trend signals with high confidence bias
+                if should_filter and bias_data['confidence'] >= self.min_bias_confidence:
+                    # This is a counter-trend signal - reject immediately
+                    self.validation_stats['filtered'] += 1
+                    self.validation_stats['bias_filtered'] += 1
+                    
+                    metadata['summary'] = {
+                        'should_pass': False,
+                        'adjusted_confidence': 0.0,
+                        'confidence_adjustment': -base_confidence,
+                        'passed_checks': [],
+                        'failed_checks': ['BIAS_COUNTER_TREND'],
+                        'check_score': '0/1 (bias filtered)',
+                        'filter_reason': f"Counter-trend signal filtered by {bias_data['bias']} bias ({bias_data['confidence']*100:.0f}% conf)"
+                    }
+                    
+                    return False, 0.0, metadata
+                
+                # Signal aligned with bias or neutral - apply boost/penalty
+                if bias_data['bias'] != 'NEUTRAL':
+                    if not should_filter:
+                        # Signal aligned with bias
+                        bias_boost = bias_data['confidence'] * 0.10  # Up to +10% for strong bias
+                        confidence_adjustment += bias_boost
+                        passed_checks.append(f"BIAS_ALIGNED_{bias_data['bias']}")
+                    else:
+                        # Bias exists but confidence too low to filter
+                        passed_checks.append('BIAS_WEAK')
+                
+            except Exception as e:
+                metadata['checks']['daily_bias'] = {'error': str(e)}
+                print(f"[VALIDATOR] Bias check error for {ticker}: {e}")
         
         # ════════════════════════════════════════════════
         # CHECK 1: Trend Strength (ADX)
@@ -298,7 +372,8 @@ class SignalValidator:
             **self.validation_stats,
             'pass_rate': round(self.validation_stats['passed'] / total, 3),
             'filter_rate': round(self.validation_stats['filtered'] / total, 3),
-            'boost_rate': round(self.validation_stats['boosted'] / total, 3)
+            'boost_rate': round(self.validation_stats['boosted'] / total, 3),
+            'bias_filter_rate': round(self.validation_stats['bias_filtered'] / total, 3)
         }
     
     def reset_stats(self):
@@ -307,7 +382,8 @@ class SignalValidator:
             'total_validated': 0,
             'passed': 0,
             'filtered': 0,
-            'boosted': 0
+            'boosted': 0,
+            'bias_filtered': 0
         }
 
 
@@ -326,6 +402,8 @@ def get_validator() -> SignalValidator:
             min_adx=20.0,
             min_volume_ratio=1.3,
             enable_vpvr=True,
+            enable_daily_bias=True,
+            min_bias_confidence=0.7,
             strict_mode=False
         )
     return _validator_instance
@@ -337,12 +415,14 @@ def get_validator() -> SignalValidator:
 
 if __name__ == "__main__":
     # Test signal validator
-    print("Testing Signal Validator...\n")
+    print("Testing Signal Validator with Daily Bias Integration...\n")
     
     validator = SignalValidator(
         min_adx=20.0,
         min_volume_ratio=1.3,
         enable_vpvr=True,
+        enable_daily_bias=True,
+        min_bias_confidence=0.7,
         strict_mode=False
     )
     
@@ -377,6 +457,9 @@ if __name__ == "__main__":
     print(f"Checks Failed: {', '.join(summary['failed_checks']) if summary['failed_checks'] else 'None'}")
     print(f"Score: {summary['check_score']}")
     
+    if 'filter_reason' in summary:
+        print(f"\n⚠️  Filter Reason: {summary['filter_reason']}")
+    
     print("\n" + "="*80)
     print("CHECK DETAILS")
     print("="*80)
@@ -396,5 +479,6 @@ if __name__ == "__main__":
     print(f"Total Validated: {stats['total_validated']}")
     print(f"Pass Rate: {stats.get('pass_rate', 0)*100:.1f}%")
     print(f"Filter Rate: {stats.get('filter_rate', 0)*100:.1f}%")
+    print(f"Bias Filter Rate: {stats.get('bias_filter_rate', 0)*100:.1f}%")
     print(f"Boost Rate: {stats.get('boost_rate', 0)*100:.1f}%")
     print("="*80)
