@@ -18,7 +18,9 @@ def send_options_signal_alert(
     confidence: float,
     timeframe: str,
     grade: str = "A",
-    options_data: Optional[Dict] = None
+    options_data: Optional[Dict] = None,
+    confirmation: Optional[str] = None,
+    candle_type: Optional[str] = None
 ):
     """Send enhanced Discord alert with CFW6 signal and options recommendation."""
     direction_emoji = "🐂" if direction == "bull" else "🐻"
@@ -40,6 +42,20 @@ def send_options_signal_alert(
         {"name": "🏅 Grade",           "value": grade,                               "inline": True},
     ]
 
+    # Add candle confirmation if present (from Nitro 3-tier model)
+    if confirmation:
+        conf_emoji = {
+            "A+": "🟢",  # Strongest
+            "A":  "🟡",  # Strong
+            "A-": "🟠"   # Acceptable
+        }.get(confirmation, "⚪")
+        
+        fields.append({
+            "name": f"{conf_emoji} Confirmation",
+            "value": f"**{confirmation}** — {candle_type or 'FVG retest'}",
+            "inline": False
+        })
+
     if options_data:
         # ── Contract summary ─────────────────────────────────────────────
         contract_label = (
@@ -56,8 +72,8 @@ def send_options_signal_alert(
             "name": "📋 Recommended Option",
             "value": (
                 f"`{contract_label}`\n"
-                f"DTE: **{dte}**  |  \u0394 {delta:+.2f}  |  "
-                f"\u03b8 {theta:.3f}  |  IV: {iv*100:.0f}%"
+                f"DTE: **{dte}**  |  Δ {delta:+.2f}  |  "
+                f"θ {theta:.3f}  |  IV: {iv*100:.0f}%"
             ),
             "inline": False
         })
@@ -71,11 +87,11 @@ def send_options_signal_alert(
         spread_pct  = options_data.get("spread_pct", 0)
 
         if ask > 0 and bid > 0:
-            spread_emoji = "\u2705" if spread_pct < 5 else ("\u26a0\ufe0f" if spread_pct < 10 else "\ud83d\udea8")
+            spread_emoji = "✅" if spread_pct < 5 else ("⚠️" if spread_pct < 10 else "🚨")
             fields.append({
                 "name": "💲 Limit Entry",
                 "value": (
-                    f"**Place: ${limit_entry:.2f}**  \u2192  Max: **${max_entry:.2f}**\n"
+                    f"**Place: ${limit_entry:.2f}**  →  Max: **${max_entry:.2f}**\n"
                     f"Bid: ${bid:.2f}  |  Ask: ${ask:.2f}  |  "
                     f"Spread: {spread_pct:.1f}% {spread_emoji}"
                 ),
@@ -104,16 +120,16 @@ def send_scaling_alert(
 ):
     """Alert when T1 is hit and 50% of position is scaled out."""
     embed = {
-        "title": f"\u2702\ufe0f SCALING OUT: {ticker}",
+        "title": f"✂️ SCALING OUT: {ticker}",
         "color": 0xFFA500,  # Orange
         "description": (
             f"**Target 1** hit at **${price:.2f}**\n"
-            f"Sold **{contracts_closed} contract(s)** \u2014 "
+            f"Sold **{contracts_closed} contract(s)** — "
             f"**{contracts_remaining} contract(s)** still running for T2."
         ),
         "fields": [
             {"name": "💰 Partial P&L",   "value": f"${partial_pnl:+.2f}",          "inline": True},
-            {"name": "🛡\ufe0f New Stop",      "value": f"${breakeven_price:.2f} (BE)",   "inline": True},
+            {"name": "🛡️ New Stop",      "value": f"${breakeven_price:.2f} (BE)",   "inline": True},
             {"name": "🎯 Next Target",   "value": "Target 2 (3.5R)",               "inline": True},
         ],
         "footer": {
@@ -129,9 +145,9 @@ def send_exit_alert(
     reason: str,
     total_pnl: float
 ):
-    """Alert for full position close \u2014 stop, T2, or EOD."""
+    """Alert for full position close — stop, T2, or EOD."""
     win = total_pnl > 0
-    emoji = "\u2705" if win else "\u274c"
+    emoji = "✅" if win else "❌"
     color = 0x00FF00 if win else 0xFF0000
 
     embed = {
@@ -154,12 +170,12 @@ def send_premarket_watchlist(tickers: list, scores: Optional[Dict] = None):
     ticker_lines = []
     for t in tickers:
         score = scores.get(t, {}) if scores else {}
-        pmis = score.get("pmis", "\u2014")
+        pmis = score.get("pmis", "—")
         gap = score.get("gap_pct", None)
         line = f"**{t}**"
         if gap is not None:
             line += f"  {gap:+.1f}%"
-        if pmis != "\u2014":
+        if pmis != "—":
             line += f"  PMIS: {pmis}"
         ticker_lines.append(line)
 
@@ -168,7 +184,7 @@ def send_premarket_watchlist(tickers: list, scores: Optional[Dict] = None):
 
     for idx, chunk in enumerate(chunks):
         embed = {
-            "title": f"📋 Pre-Market Watchlist ({len(tickers)} tickers)" + (f" \u2014 Part {idx+1}" if len(chunks) > 1 else ""),
+            "title": f"📋 Pre-Market Watchlist ({len(tickers)} tickers)" + (f" — Part {idx+1}" if len(chunks) > 1 else ""),
             "color": 0x1E90FF,  # Blue
             "description": "\n".join(chunk),
             "footer": {
@@ -187,15 +203,15 @@ def send_daily_summary(stats: Dict):
     losses = stats.get("losses", 0)
 
     color = 0x00FF00 if total_pnl >= 0 else 0xFF0000
-    emoji = "\U0001f7e2" if total_pnl >= 0 else "\U0001f534"
+    emoji = "🟢" if total_pnl >= 0 else "🔴"
 
     embed = {
-        "title": f"{emoji} Daily Summary \u2014 {datetime.now().strftime('%B %d, %Y')}",
+        "title": f"{emoji} Daily Summary — {datetime.now().strftime('%B %d, %Y')}",
         "color": color,
         "fields": [
             {"name": "📊 Total Trades", "value": str(trades),              "inline": True},
-            {"name": "\u2705 Wins",          "value": str(wins),                "inline": True},
-            {"name": "\u274c Losses",        "value": str(losses),              "inline": True},
+            {"name": "✅ Wins",          "value": str(wins),                "inline": True},
+            {"name": "❌ Losses",        "value": str(losses),              "inline": True},
             {"name": "🎯 Win Rate",      "value": f"{win_rate:.1f}%",       "inline": True},
             {"name": "💰 Net P&L",       "value": f"${total_pnl:+.2f}",    "inline": True},
         ],
@@ -212,12 +228,12 @@ def send_simple_message(message: str):
 
 
 def _send_to_discord(payload: Dict):
-    """Shared HTTP helper \u2014 all functions route through here."""
+    """Shared HTTP helper — all functions route through here."""
     # Strip any invisible whitespace/newlines from URL (Railway injection bug)
     webhook_url = (config.DISCORD_WEBHOOK_URL or "").strip().rstrip("\n").rstrip("\r")
 
     if not webhook_url:
-        print("[DISCORD] \u274c No webhook URL configured.")
+        print("[DISCORD] ❌ No webhook URL configured.")
         return
 
     print(f"[DISCORD] Sending to: {webhook_url[:60]}...")
@@ -239,7 +255,7 @@ def test_webhook():
     """Call once at startup to verify Discord is working."""
     webhook_url = (config.DISCORD_WEBHOOK_URL or "").strip()
     if not webhook_url:
-        print("[DISCORD] \u274c DISCORD_WEBHOOK_URL is empty!")
+        print("[DISCORD] ❌ DISCORD_WEBHOOK_URL is empty!")
         return False
 
     # Show exactly what URL we have (check for hidden characters)
@@ -247,7 +263,7 @@ def test_webhook():
     print(f"[DISCORD] URL ends with: {repr(webhook_url[-10:])}")  # Shows hidden chars
 
     try:
-        r = requests.post(webhook_url, json={"content": "\U0001f680 War Machine Online!"}, timeout=10)
+        r = requests.post(webhook_url, json={"content": "🚀 War Machine Online!"}, timeout=10)
         print(f"[DISCORD] Test result: {r.status_code}")
         return r.status_code in (200, 204)
     except Exception as e:
