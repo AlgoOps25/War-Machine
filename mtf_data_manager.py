@@ -51,7 +51,10 @@ class MTFDataManager:
         self.current_session_date = datetime.now(ET).date()
         
         # API endpoint (using existing EODHD from config)
-        self.api_token = getattr(config, 'EODHD_API_TOKEN', '')
+        # CORRECTED: Use EODHD_API_KEY not EODHD_API_TOKEN
+        self.api_token = getattr(config, 'EODHD_API_KEY', '')
+        if not self.api_token:
+            print("[MTF] WARNING: EODHD_API_KEY not found in config - 3m/2m/1m data unavailable")
         self.base_url = 'https://eodhd.com/api/intraday'
         
         print("[MTF] Multi-Timeframe Data Manager initialized")
@@ -120,9 +123,8 @@ class MTFDataManager:
             List of 5m bars
         """
         try:
-            # Leverage existing data_manager for 5m data
-            data_manager.update_ticker(ticker)
-            bars = data_manager.get_today_session_bars(ticker)
+            # CORRECTED: Use get_today_5m_bars() instead of update_ticker()
+            bars = data_manager.get_today_5m_bars(ticker)
             
             if bars:
                 print(f"[MTF] {ticker} 5m: {len(bars)} bars (from data_manager)")
@@ -143,6 +145,9 @@ class MTFDataManager:
         Returns:
             List of bars
         """
+        if not self.api_token:
+            return []  # Silent skip if no API key
+        
         try:
             # Convert timeframe format for API
             interval_map = {
@@ -354,16 +359,16 @@ class MTFDataManager:
         print("="*60 + "\n")
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════
 # GLOBAL INSTANCE
-# ═══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════
 
 mtf_data_manager = MTFDataManager()
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════
 # TESTING / CLI USAGE
-# ═══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
     import sys
