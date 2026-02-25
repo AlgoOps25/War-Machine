@@ -6,10 +6,11 @@ Works with all EODHD plans that support standard 1m/5m intervals.
 
 Key Features:
   - 5m bars from data_manager (primary timeframe)
-  - 1m bars from EODHD API
+  - 1m bars from EODHD API or database
   - 3m bars aggregated from 1m (higher accuracy than API 3m)
   - Smart caching to minimize API calls
   - Session-based cache management
+  - Testing mode for after-hours/historical data
 
 Timeframe Strategy:
   - 5m: Primary (70% weight) - from existing data_manager
@@ -19,16 +20,19 @@ Timeframe Strategy:
 Usage:
   from mtf_data_manager import mtf_data_manager
   
-  # Get both timeframes
+  # Get both timeframes (live mode - today only)
   bars_dict = mtf_data_manager.get_all_timeframes('SPY')
   # Returns: {'5m': [...], '3m': [...]}
+  
+  # Testing mode - use latest available data
+  bars_dict = mtf_data_manager.get_latest_available_bars('SPY')
   
   # Clear cache at EOD
   mtf_data_manager.clear_cache()
 """
 
 from typing import Dict, List, Optional
-from datetime import datetime, time, timedelta
+from datetime import datetime, time, timedelta, date as date_type
 from zoneinfo import ZoneInfo
 import requests
 from collections import defaultdict
@@ -76,7 +80,7 @@ class MTFDataManager:
     
     def get_bars(self, ticker: str, timeframe: str, force_refresh: bool = False) -> List[dict]:
         """
-        Get bars for a specific ticker and timeframe.
+        Get bars for a specific ticker and timeframe (today only).
         
         Args:
             ticker: Stock symbol
@@ -115,9 +119,109 @@ class MTFDataManager:
         
         return bars
     
+    def get_latest_available_bars(self, ticker: str, lookback_days: int = 2) -> Dict[str, List[dict]]:
+        """
+        Get latest available bars for testing/after-hours mode.
+        Falls back to most recent data if today's bars aren't available.
+        
+        Args:
+            ticker: Stock symbol
+            lookback_days: How many days back to search (default: 2)
+        
+        Returns:
+            Dict mapping timeframe -> bars (same format as get_all_timeframes)
+        """
+        # Try today first
+        result = self.get_all_timeframes(ticker)
+        if result:
+            return result
+        
+        # Try recent days
+        now_et = datetime.now(ET)
+        for days_back in range(1, lookback_days + 1):
+            target_date = (now_et - timedelta(days=days_back)).date()
+            
+            # Get 1m bars from that date
+            bars_1m = self._get_historical_1m_bars(ticker, target_date)
+            if not bars_1m:
+                continue
+            
+            # Aggregate to 5m and 3m
+            bars_5m = self._aggregate_to_5m(bars_1m)
+            bars_3m = self._aggregate_to_3m(bars_1m)
+            
+            if bars_5m or bars_3m:
+                result = {}
+                if bars_5m:
+                    result['5m'] = bars_5m
+                    print(f"[MTF] {ticker} 5m: {len(bars_5m)} bars (from {target_date})")
+                if bars_3m:
+                    result['3m'] = bars_3m
+                    print(f"[MTF] {ticker} 3m: {len(bars_3m)} bars (from {target_date})")
+                
+                print(f"[MTF] {ticker} using data from {target_date} (latest available)")
+                return result
+        
+        print(f"[MTF] {ticker} no data available (checked last {lookback_days} days)")
+        return {}
+    
+    def _get_historical_1m_bars(self, ticker: str, target_date: date_type) -> List[dict]:
+        """
+        Get 1m bars for a specific historical date from database.
+        
+        Args:
+            ticker: Stock symbol
+            target_date: Date to fetch
+        
+        Returns:
+            List of 1m bars
+        """
+        try:
+            from db_connection import get_conn, dict_cursor, ph
+            
+            day_start = datetime.combine(target_date, time(4, 0, 0))
+            day_end = datetime.combine(target_date, time(20, 0, 0))
+            
+            p = ph()
+            conn = get_conn(data_manager.db_path)
+            cursor = dict_cursor(conn)
+            cursor.execute(f"""
+                SELECT datetime, open, high, low, close, volume
+                FROM intraday_bars
+                WHERE ticker = {p}
+                  AND datetime >= {p}
+                  AND datetime <= {p}
+                ORDER BY datetime ASC
+            """, (ticker, day_start, day_end))
+            rows = cursor.fetchall()
+            conn.close()
+            
+            bars = []
+            for row in rows:
+                dt = row['datetime']
+                if isinstance(dt, str):
+                    dt = datetime.fromisoformat(dt)
+                if hasattr(dt, 'tzinfo') and dt.tzinfo is not None:
+                    dt = dt.replace(tzinfo=None)
+                
+                bars.append({
+                    'datetime': dt,
+                    'open': float(row['open']),
+                    'high': float(row['high']),
+                    'low': float(row['low']),
+                    'close': float(row['close']),
+                    'volume': int(row['volume'])
+                })
+            
+            return bars
+        
+        except Exception as e:
+            print(f"[MTF] Error fetching historical 1m bars for {ticker} on {target_date}: {e}")
+            return []
+    
     def _get_5m_bars(self, ticker: str) -> List[dict]:
         """
-        Get 5m bars using existing data_manager.
+        Get 5m bars using existing data_manager (today only).
         
         Args:
             ticker: Stock symbol
@@ -145,7 +249,7 @@ class MTFDataManager:
     
     def _get_3m_bars(self, ticker: str) -> List[dict]:
         """
-        Get 3m bars by aggregating 1m bars.
+        Get 3m bars by aggregating 1m bars (today only).
         
         Args:
             ticker: Stock symbol
@@ -154,7 +258,7 @@ class MTFDataManager:
             List of 3m bars
         """
         try:
-            # First try to get 1m from data_manager
+            # Get 1m from data_manager
             bars_1m = data_manager.get_today_session_bars(ticker)
             
             # If not in DB, try API
@@ -353,7 +457,7 @@ class MTFDataManager:
     
     def get_all_timeframes(self, ticker: str) -> Dict[str, List[dict]]:
         """
-        Get bars for both 5m and 3m timeframes.
+        Get bars for both 5m and 3m timeframes (today only).
         
         Args:
             ticker: Stock symbol
@@ -435,16 +539,16 @@ class MTFDataManager:
         print("="*60 + "\n")
 
 
-# ════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 # GLOBAL INSTANCE
-# ════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 
 mtf_data_manager = MTFDataManager()
 
 
-# ════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 # TESTING / CLI USAGE
-# ════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
     import sys
@@ -457,7 +561,12 @@ if __name__ == "__main__":
     ticker = sys.argv[1].upper()
     
     print(f"\nFetching {ticker} across all timeframes...\n")
+    
+    # Try live data first, then fall back to latest available
     all_bars = mtf_data_manager.get_all_timeframes(ticker)
+    if not all_bars:
+        print(f"\nNo today's data - trying latest available...\n")
+        all_bars = mtf_data_manager.get_latest_available_bars(ticker)
     
     print("\n" + "="*60)
     print("RESULTS")
@@ -465,7 +574,7 @@ if __name__ == "__main__":
     for tf, bars in all_bars.items():
         if bars:
             print(f"{tf:>3}: {len(bars):>3} bars | "
-                  f"Latest: ${bars[-1]['close']:>7.2f} @ {bars[-1]['datetime'].strftime('%I:%M %p')}")
+                  f"Latest: ${bars[-1]['close']:>7.2f} @ {bars[-1]['datetime'].strftime('%m/%d %I:%M %p')}")
     print("="*60)
     
     # Show cache stats
