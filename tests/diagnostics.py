@@ -1,4 +1,12 @@
 # Quick diagnostic - run this
+import sys
+from pathlib import Path
+
+# Add parent directory to path so we can import from root
+root_dir = Path(__file__).parent.parent
+sys.path.insert(0, str(root_dir))
+
+
 from data_manager import data_manager
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
