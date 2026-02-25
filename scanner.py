@@ -10,6 +10,26 @@ import threading
 from datetime import datetime, time as dtime
 from zoneinfo import ZoneInfo
 import config
+
+# ════════════════════════════════════════════════════════════════════════════════════
+# CRITICAL: DATABASE SCHEMA MIGRATION MUST RUN FIRST
+# This MUST happen before importing ANY module that depends on positions table schema
+# (sniper → performance_alerts → performance_monitor needs realized_pnl column)
+# ════════════════════════════════════════════════════════════════════════════════════
+print("\n[STARTUP] ⚙️  Checking database schema...")
+try:
+    from apply_schema_migration import apply_positions_pnl_migration
+    apply_positions_pnl_migration()
+    print("[STARTUP] ✅ Schema migration complete\n")
+except ImportError:
+    print("[STARTUP] ⚠️  apply_schema_migration.py not found - skipping migration")
+except Exception as e:
+    print(f"[STARTUP] ⚠️  Schema migration failed (non-fatal): {e}")
+    print("[STARTUP] System will continue but performance_monitor may fail\n")
+
+# ────────────────────────────────────────────────────────────────────────────────────
+# NOW SAFE TO IMPORT MODULES THAT DEPEND ON SCHEMA
+# ────────────────────────────────────────────────────────────────────────────────────
 from data_manager import data_manager, cleanup_old_bars
 from position_manager import position_manager
 from ws_feed import start_ws_feed, subscribe_tickers, set_backfill_complete
@@ -34,21 +54,10 @@ from watchlist_funnel import (
     get_funnel
 )
 
-# ────────────────────────────────────────────────────────────────────
-# AUTO-MIGRATION: Positions Table Schema
-# Runs on startup to add missing P&L columns if needed
-# ────────────────────────────────────────────────────────────────────
-try:
-    from apply_schema_migration import apply_positions_pnl_migration
-    MIGRATION_AVAILABLE = True
-except ImportError:
-    MIGRATION_AVAILABLE = False
-    print("[MIGRATION] ⚠️  apply_schema_migration not available")
-
-# ────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────────────
 # PHASE 2A: ANALYTICS & EOD REPORTING
 # Non-fatal imports: scanner works normally if these modules are missing
-# ────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────────────
 try:
     from signal_analytics import (
         print_performance_report,
@@ -68,10 +77,10 @@ except ImportError:
     PNL_DIGEST_ENABLED = False
     print("[SCANNER] ⚠️  pnl_digest not available — using basic EOD report")
 
-# ────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────────────
 # OPTIONS INTELLIGENCE LAYER
 # Non-fatal import: scanner works normally if options_data_manager is missing
-# ────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────────────
 try:
     from options_data_manager import options_dm
     OPTIONS_LAYER_ENABLED = True
@@ -103,9 +112,9 @@ def is_market_hours():
     return config.MARKET_OPEN <= now.time() <= config.MARKET_CLOSE
 
 
-# ────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────────────
 # OPTIONS INTELLIGENCE HELPERS
-# ────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────────────
 
 def enhance_watchlist_with_options(watchlist: list) -> list:
     """
@@ -259,9 +268,9 @@ def _log_options_context(watchlist: list) -> None:
         pass  # Never block the scan cycle
 
 
-# ────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────────────
 # EXISTING SCANNER FUNCTIONS (unchanged)
-# ────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────────────
 
 def build_watchlist(force_refresh: bool = False) -> list:
     """
@@ -305,19 +314,6 @@ def start_scanner_loop():
     from discord_helpers import send_simple_message
     from ai_learning import learning_engine
 
-    # ══════════════════════════════════════════════════════════════════════════════
-    # AUTO-MIGRATION: Apply schema changes before imports that depend on them
-    # ══════════════════════════════════════════════════════════════════════════════
-    if MIGRATION_AVAILABLE:
-        print("\n[STARTUP] Applying database schema migrations...")
-        try:
-            apply_positions_pnl_migration()
-        except Exception as e:
-            print(f"[MIGRATION] ⚠️  Migration failed (non-fatal): {e}")
-            print("[MIGRATION] System will continue but performance_monitor may fail")
-    else:
-        print("[STARTUP] ⚠️  Schema migration unavailable - skipping")
-
     print(f"\n{'='*60}")
     print("WAR MACHINE - CFW6 SCANNER + BREAKOUT DETECTOR")
     print(f"{'='*60}")
@@ -342,7 +338,7 @@ def start_scanner_loop():
     last_report_day     = None
     loss_streak_alerted = False
 
-    # ── STARTUP SEQUENCE ──────────────────────────────────────────────────────────
+    # ── STARTUP SEQUENCE ──────────────────────────────────────────────────────────────
     # Start with emergency fallback for initial WS subscription
     startup_watchlist = list(EMERGENCY_FALLBACK)
     try:
@@ -359,7 +355,7 @@ def start_scanner_loop():
 
     # Kick off options prefetch for startup tickers in background
     prefetch_options_scores(startup_watchlist, top_n=len(startup_watchlist))
-    # ─────────────────────────────────────────────────────────────────────────────
+    # ──────────────────────────────────────────────────────────────────────────────────
 
     while True:
         try:
@@ -752,6 +748,6 @@ def get_screener_tickers(min_market_cap: int = 1_000_000_000, limit: int = 50) -
         return []
 
 
-# ── Entry point ──────────────────────────────────────────────────────────────────
+# ── Entry point ──────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     start_scanner_loop()
