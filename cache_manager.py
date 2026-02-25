@@ -11,6 +11,9 @@ from candle_cache import candle_cache
 from data_manager import data_manager
 import config
 
+# Default ticker list for warmup
+DEFAULT_TICKERS = ["SPY", "QQQ", "AAPL", "MSFT", "NVDA", "TSLA", "META", "AMD"]
+
 def cmd_stats():
     """Show cache statistics."""
     print("=" * 60)
@@ -38,7 +41,7 @@ def cmd_warmup(tickers: str, days: int):
     """Warmup cache with historical data."""
     from data_manager_cache_integration import warmup_cache
     
-    ticker_list = tickers.split(',') if tickers else config.SEED_TICKERS
+    ticker_list = tickers.split(',') if tickers else DEFAULT_TICKERS
     warmup_cache(data_manager, ticker_list, days)
 
 def cmd_cleanup(days: int):
