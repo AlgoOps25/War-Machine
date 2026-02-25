@@ -35,6 +35,17 @@ from watchlist_funnel import (
 )
 
 # ────────────────────────────────────────────────────────────────────
+# AUTO-MIGRATION: Positions Table Schema
+# Runs on startup to add missing P&L columns if needed
+# ────────────────────────────────────────────────────────────────────
+try:
+    from apply_schema_migration import apply_positions_pnl_migration
+    MIGRATION_AVAILABLE = True
+except ImportError:
+    MIGRATION_AVAILABLE = False
+    print("[MIGRATION] ⚠️  apply_schema_migration not available")
+
+# ────────────────────────────────────────────────────────────────────
 # PHASE 2A: ANALYTICS & EOD REPORTING
 # Non-fatal imports: scanner works normally if these modules are missing
 # ────────────────────────────────────────────────────────────────────
@@ -294,6 +305,19 @@ def start_scanner_loop():
     from discord_helpers import send_simple_message
     from ai_learning import learning_engine
 
+    # ══════════════════════════════════════════════════════════════════════════════
+    # AUTO-MIGRATION: Apply schema changes before imports that depend on them
+    # ══════════════════════════════════════════════════════════════════════════════
+    if MIGRATION_AVAILABLE:
+        print("\n[STARTUP] Applying database schema migrations...")
+        try:
+            apply_positions_pnl_migration()
+        except Exception as e:
+            print(f"[MIGRATION] ⚠️  Migration failed (non-fatal): {e}")
+            print("[MIGRATION] System will continue but performance_monitor may fail")
+    else:
+        print("[STARTUP] ⚠️  Schema migration unavailable - skipping")
+
     print(f"\n{'='*60}")
     print("WAR MACHINE - CFW6 SCANNER + BREAKOUT DETECTOR")
     print(f"{'='*60}")
@@ -335,7 +359,7 @@ def start_scanner_loop():
 
     # Kick off options prefetch for startup tickers in background
     prefetch_options_scores(startup_watchlist, top_n=len(startup_watchlist))
-    # ─────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────────────
 
     while True:
         try:
