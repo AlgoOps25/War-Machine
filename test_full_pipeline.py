@@ -50,7 +50,9 @@ def test_imports():
     # Core data management
     try:
         from data_manager import data_manager
-        print_result("data_manager import", True, f"DB: {data_manager.db_file}")
+        # Try to get db location - handle different attribute names
+        db_location = getattr(data_manager, 'db_file', getattr(data_manager, 'db_path', 'market_memory.db'))
+        print_result("data_manager import", True, f"DB: {db_location}")
         results.append(True)
     except Exception as e:
         print_result("data_manager import", False, str(e))
@@ -167,7 +169,13 @@ def test_regime_filter():
         print(f"  Regime:    {state.regime}")
         print(f"  VIX:       {state.vix:.2f}")
         print(f"  SPY Trend: {state.spy_trend}")
-        print(f"  ADX:       {state.adx:.1f if state.adx else 'N/A'}")
+        
+        # Fix f-string formatting
+        if state.adx is not None:
+            print(f"  ADX:       {state.adx:.1f}")
+        else:
+            print(f"  ADX:       N/A")
+        
         print(f"  Favorable: {'YES ✅' if state.favorable else 'NO ❌'}")
         print(f"  Reason:    {state.reason}")
         
@@ -440,7 +448,7 @@ def test_regime_in_validator():
             # Check source code for regime_filter
             source = inspect.getsource(validator.validate_signal)
             
-            if 'regime_filter' in source or 'regime' in source.lower():
+            if 'regime_filter' in source or ('regime' in source.lower() and 'CHECK 0A' in source):
                 print_result("Regime integration in validator", True, "Found regime references")
                 print("  ✅ Regime filter IS integrated into validator")
                 return True
