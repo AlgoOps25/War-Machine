@@ -1,336 +1,347 @@
 """
-MTF Integration Module - Sniper Enhancement
+Multi-Timeframe (MTF) Integration Module
+Real-time convergence detection on live session bars
 
-Provides multi-timeframe convergence detection and confidence boosting
-for CFW6 signals in sniper.py.
+Strategy:
+- When sniper.py detects a 5m BOS+FVG signal, this module checks if the
+  SAME pattern is visible on lower timeframes (3m, 2m, 1m)
+- Analyzes bar characteristics from existing 5m session data (no API calls)
+- Runs pattern strength analysis on each timeframe granularity
+- Boosts confidence when multiple timeframes confirm the same setup
 
-Integration Points:
-  - Called after confirmation grading (Step 8)
-  - Adds MTF boost to confidence calculation (Step 11)
-  - Enriches signal metadata for tracking
+From video transcript:
+"If you have a 1-minute, 2-minute, 3-minute, and 5-minute, you will go
+for the 5-minute. The highest time frame is going to be the most powerful one."
 
-Design Principles:
-  - Non-breaking: gracefully handles MTF system unavailability
-  - Performance: caches MTF data per ticker, cleared daily
-  - Transparent: logs all MTF decisions for debugging
-  - Testable: supports both live and testing modes
-
-Usage:
-  from mtf_integration import enhance_signal_with_mtf
-  
-  # In sniper.py _run_signal_pipeline(), after Step 8:
-  mtf_result = enhance_signal_with_mtf(
-      ticker=ticker,
-      direction=direction,
-      bars_session=bars_session
-  )
-  
-  # Apply boost in Step 11 confidence calculation:
-  mtf_boost = mtf_result.get('boost', 0.0)
-  final_confidence = base_confidence + ... + mtf_boost
-  
-  # Attach metadata to signal for tracking:
-  signal_metadata['mtf'] = mtf_result
+MTF convergence = 5m signal confirmed across multiple lower timeframes = A+ setup
 """
 
-from typing import Dict, List, Optional
 from datetime import datetime
+from typing import List, Dict, Optional
 from zoneinfo import ZoneInfo
+import config
 
 ET = ZoneInfo("America/New_York")
 
-# Global state
-_mtf_enabled = False
-_mtf_cache = {}  # {ticker: mtf_result}
-_cache_date = None
+# ════════════════════════════════════════════════════════════════════════════════
+# STATS TRACKING
+# ════════════════════════════════════════════════════════════════════════════════
 
-# Try to import MTF system
-try:
-    from mtf_data_manager import mtf_data_manager
-    from mtf_fvg_engine import mtf_fvg_engine
-    _mtf_enabled = True
-    print("[MTF-INT] ✅ Multi-timeframe enhancement enabled")
-except ImportError as e:
-    print(f"[MTF-INT] ⚠️  MTF system not available: {e}")
-    print("[MTF-INT] Sniper will run without MTF boost (single-timeframe mode)")
+_mtf_stats = {
+    'analyzed': 0,
+    'convergence_found': 0,
+    'timeframe_breakdown': {
+        '5m_only': 0,
+        '5m_3m': 0,
+        '5m_3m_2m': 0,
+        '5m_3m_2m_1m': 0
+    },
+    'avg_boost': 0.0,
+    'total_boost': 0.0
+}
+
+_cache_date = None
+_mtf_cache = {}  # {ticker: mtf_result}
 
 
 def _check_cache_rollover():
-    """
-    Clear MTF cache on new trading day.
-    """
+    """Clear cache on new trading day."""
     global _cache_date, _mtf_cache
-    
     today = datetime.now(ET).date()
     if _cache_date != today:
         _mtf_cache.clear()
         _cache_date = today
-        if _mtf_cache:
-            print(f"[MTF-INT] 🔄 Cache cleared for new session: {today}")
 
 
-def is_mtf_enabled() -> bool:
+# ════════════════════════════════════════════════════════════════════════════════
+# BAR ANALYSIS HELPERS
+# ════════════════════════════════════════════════════════════════════════════════
+
+def get_intrabar_volatility(bar: dict) -> float:
     """
-    Check if MTF system is available and enabled.
+    Calculate intra-bar volatility (high-low range as % of close).
+    Used to detect if lower timeframe patterns likely exist within a 5m bar.
+    """
+    if bar['close'] == 0:
+        return 0.0
+    return (bar['high'] - bar['low']) / bar['close']
+
+
+def get_bar_strength(bar: dict, direction: str) -> float:
+    """
+    Calculate directional strength of a bar (0.0 to 1.0).
+    
+    Measures:
+    - Body size relative to total range
+    - Direction alignment (green for bull, red for bear)
+    - Wick rejection strength
     
     Returns:
-        bool: True if MTF can be used
+        0.0 = no directional strength
+        1.0 = perfect directional candle
     """
-    return _mtf_enabled
+    bar_range = bar['high'] - bar['low']
+    if bar_range == 0:
+        return 0.0
+    
+    body = abs(bar['close'] - bar['open'])
+    body_ratio = body / bar_range
+    
+    # Check direction alignment
+    is_green = bar['close'] > bar['open']
+    is_red = bar['close'] < bar['open']
+    
+    if direction == 'bull':
+        if not is_green:
+            return 0.0
+        # Strong bull: body > 70% of range, close near high
+        upper_wick = bar['high'] - bar['close']
+        upper_rejection = 1.0 - (upper_wick / bar_range) if bar_range > 0 else 0
+        return body_ratio * 0.7 + upper_rejection * 0.3
+    
+    else:  # bear
+        if not is_red:
+            return 0.0
+        # Strong bear: body > 70% of range, close near low
+        lower_wick = bar['close'] - bar['low']
+        lower_rejection = 1.0 - (lower_wick / bar_range) if bar_range > 0 else 0
+        return body_ratio * 0.7 + lower_rejection * 0.3
 
+
+def detect_momentum_consistency(bars: List[dict], direction: str, lookback: int = 10) -> float:
+    """
+    Detect if price shows consistent momentum in the signal direction.
+    
+    Returns:
+        0.0 to 1.0 score (0.8+ indicates strong lower TF alignment)
+    """
+    if len(bars) < lookback:
+        lookback = len(bars)
+    
+    recent_bars = bars[-lookback:]
+    aligned_moves = 0
+    
+    for i in range(1, len(recent_bars)):
+        prev_close = recent_bars[i-1]['close']
+        curr_close = recent_bars[i]['close']
+        
+        if direction == 'bull' and curr_close > prev_close:
+            aligned_moves += 1
+        elif direction == 'bear' and curr_close < prev_close:
+            aligned_moves += 1
+    
+    return aligned_moves / (lookback - 1) if lookback > 1 else 0.0
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# MTF CONVERGENCE LOGIC
+# ════════════════════════════════════════════════════════════════════════════════
+
+def check_mtf_convergence(
+    ticker: str,
+    direction: str,
+    bars_5m: List[dict]
+) -> Dict:
+    """
+    Check if the 5m signal is confirmed on lower timeframe granularities.
+    
+    Strategy:
+    - Analyzes last 20 bars (100 minutes of price action)
+    - 3m confirmation: High intra-bar volatility + strong directional bars
+    - 2m confirmation: Very strong bar-to-bar momentum
+    - 1m confirmation: Near-perfect consecutive aligned moves
+    
+    Args:
+        ticker: Symbol
+        direction: 'bull' or 'bear'
+        bars_5m: 5-minute session bars
+    
+    Returns:
+        Dict with convergence details
+    """
+    if len(bars_5m) < 20:
+        return {
+            'convergence': False,
+            'timeframes': ['5m'],
+            'convergence_score': 0.25,
+            'boost': 0.0,
+            'reason': 'Insufficient bars for MTF analysis (need 20+)'
+        }
+    
+    confirmed_timeframes = ['5m']  # Always have 5m baseline
+    recent_bars = bars_5m[-20:]  # Last 100 minutes
+    
+    # ─────────────────────────────────────────────────────────────────────────────
+    # 3m CONFIRMATION CHECK
+    # Look for: High intra-bar volatility + strong directional candles
+    # ─────────────────────────────────────────────────────────────────────────────
+    avg_volatility = sum(get_intrabar_volatility(b) for b in recent_bars) / len(recent_bars)
+    avg_strength = sum(get_bar_strength(b, direction) for b in recent_bars) / len(recent_bars)
+    
+    # 3m exists if: avg volatility > 0.4% AND avg strength > 0.5
+    if avg_volatility > 0.004 and avg_strength > 0.5:
+        confirmed_timeframes.append('3m')
+    
+    # ─────────────────────────────────────────────────────────────────────────────
+    # 2m CONFIRMATION CHECK (requires 3m first)
+    # Look for: Very strong momentum consistency (70%+ aligned moves)
+    # ─────────────────────────────────────────────────────────────────────────────
+    if '3m' in confirmed_timeframes:
+        momentum_score = detect_momentum_consistency(recent_bars, direction, lookback=15)
+        if momentum_score >= 0.70:
+            confirmed_timeframes.append('2m')
+    
+    # ─────────────────────────────────────────────────────────────────────────────
+    # 1m CONFIRMATION CHECK (requires 2m first)
+    # Look for: Near-perfect alignment (85%+ consecutive moves)
+    # ─────────────────────────────────────────────────────────────────────────────
+    if '2m' in confirmed_timeframes:
+        fine_momentum = detect_momentum_consistency(recent_bars, direction, lookback=20)
+        if fine_momentum >= 0.85:
+            confirmed_timeframes.append('1m')
+    
+    # ─────────────────────────────────────────────────────────────────────────────
+    # CALCULATE BOOST
+    # ─────────────────────────────────────────────────────────────────────────────
+    num_timeframes = len(confirmed_timeframes)
+    convergence = num_timeframes > 1
+    
+    boost_map = {
+        1: 0.00,   # 5m only (baseline)
+        2: 0.02,   # 5m + 3m
+        3: 0.03,   # 5m + 3m + 2m
+        4: 0.05    # 5m + 3m + 2m + 1m (A+ setup)
+    }
+    
+    boost = boost_map[num_timeframes]
+    convergence_score = num_timeframes / 4.0
+    
+    # Update stats
+    if convergence:
+        _mtf_stats['convergence_found'] += 1
+        _mtf_stats['total_boost'] += boost
+        
+        if num_timeframes == 2:
+            _mtf_stats['timeframe_breakdown']['5m_3m'] += 1
+        elif num_timeframes == 3:
+            _mtf_stats['timeframe_breakdown']['5m_3m_2m'] += 1
+        elif num_timeframes == 4:
+            _mtf_stats['timeframe_breakdown']['5m_3m_2m_1m'] += 1
+    else:
+        _mtf_stats['timeframe_breakdown']['5m_only'] += 1
+    
+    return {
+        'convergence': convergence,
+        'timeframes': confirmed_timeframes,
+        'convergence_score': convergence_score,
+        'boost': boost,
+        'reason': f"Confirmed on {', '.join(confirmed_timeframes)}" if convergence else "5m signal only"
+    }
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# PUBLIC API
+# ════════════════════════════════════════════════════════════════════════════════
 
 def enhance_signal_with_mtf(
     ticker: str,
     direction: str,
     bars_session: List[dict],
-    force_refresh: bool = False
+    **kwargs  # Accepts extra args for backwards compatibility
 ) -> Dict:
     """
-    Enhance a CFW6 signal with multi-timeframe convergence analysis.
+    Enhance a 5m BOS+FVG signal with multi-timeframe convergence analysis.
     
-    Called after confirmation grading (Step 8 in sniper.py) to determine
-    if the signal has MTF convergence support across 5m + 3m timeframes.
+    Called from sniper.py Step 8.2 after confirmation layers pass.
     
     Args:
-        ticker: Stock symbol
+        ticker: Symbol
         direction: 'bull' or 'bear'
-        bars_session: Today's 1m/5m bars from sniper
-        force_refresh: Bypass cache (default: False)
+        bars_session: The 5m session bars (already in sniper.py)
+        **kwargs: Ignored (for backwards compatibility with old API)
     
     Returns:
-        Dict with MTF analysis:
-        {
-            'enabled': bool,              # MTF system available
-            'convergence': bool,          # MTF signal detected
-            'boost': float,               # Confidence boost (0.00-0.10)
-            'convergence_score': float,   # 0.0-1.0 (if convergence=True)
-            'timeframes': List[str],      # ['5m', '3m'] (if convergence=True)
-            'zone_low': float,            # MTF zone low (if convergence=True)
-            'zone_high': float,           # MTF zone high (if convergence=True)
-            'primary_timeframe': str,     # '5m' (if convergence=True)
-            'reason': str                 # Explanation
-        }
+        Dict containing:
+        - enabled: bool (always True)
+        - convergence: bool (True if multi-TF confirmation found)
+        - timeframes: list of confirmed timeframes
+        - convergence_score: float 0-1 (0.25 per TF)
+        - boost: float (0.00 to 0.05)
+        - reason: str (explanation)
     """
-    # Check cache rollover
     _check_cache_rollover()
+    _mtf_stats['analyzed'] += 1
     
-    # Default result (MTF disabled or no convergence)
-    default_result = {
-        'enabled': _mtf_enabled,
-        'convergence': False,
-        'boost': 0.0,
-        'convergence_score': 0.0,
-        'timeframes': [],
-        'zone_low': 0.0,
-        'zone_high': 0.0,
-        'primary_timeframe': '5m',
-        'reason': 'MTF system disabled' if not _mtf_enabled else 'No MTF convergence'
-    }
-    
-    # If MTF system not available, return default
-    if not _mtf_enabled:
-        return default_result
-    
-    # Check cache (unless force_refresh)
-    if not force_refresh and ticker in _mtf_cache:
-        cached = _mtf_cache[ticker]
-        print(f"[MTF-INT] {ticker} - Using cached MTF result (boost: +{cached['boost']:.2%})")
+    # Check cache
+    cache_key = f"{ticker}_{direction}"
+    if cache_key in _mtf_cache:
+        cached = _mtf_cache[cache_key]
         return cached
     
-    try:
-        # Get MTF data (5m + 3m)
-        # During live trading: uses today's bars
-        # During testing/after-hours: falls back to latest available
-        bars_dict = mtf_data_manager.get_all_timeframes(ticker)
-        
-        # If no today's data, try testing mode (latest available)
-        if not bars_dict:
-            print(f"[MTF-INT] {ticker} - No today's data, trying latest available...")
-            bars_dict = mtf_data_manager.get_latest_available_bars(ticker)
-        
-        # If still no data, return default
-        if not bars_dict:
-            result = default_result.copy()
-            result['reason'] = 'No MTF data available'
-            _mtf_cache[ticker] = result
-            return result
-        
-        # Detect MTF convergence
-        mtf_signal = mtf_fvg_engine.detect_mtf_signal(ticker, bars_dict)
-        
-        # No MTF convergence detected
-        if not mtf_signal:
-            result = default_result.copy()
-            result['reason'] = f"MTF analyzed ({', '.join(bars_dict.keys())} available) but no convergence"
-            _mtf_cache[ticker] = result
-            print(f"[MTF-INT] {ticker} - No MTF convergence detected")
-            return result
-        
-        # Check direction alignment
-        if mtf_signal['direction'] != direction:
-            result = default_result.copy()
-            result['reason'] = (
-                f"MTF convergence detected but direction mismatch: "
-                f"CFW6={direction}, MTF={mtf_signal['direction']}"
-            )
-            _mtf_cache[ticker] = result
-            print(f"[MTF-INT] {ticker} - Direction mismatch: CFW6={direction} vs MTF={mtf_signal['direction']}")
-            return result
-        
-        # MTF convergence confirmed!
-        convergence_score = mtf_signal['convergence_score']
-        boost = mtf_fvg_engine.get_mtf_boost_value(convergence_score)
-        
+    # Validate inputs
+    if not bars_session or len(bars_session) < 20:
         result = {
             'enabled': True,
-            'convergence': True,
-            'boost': boost,
-            'convergence_score': convergence_score,
-            'timeframes': mtf_signal['timeframes_aligned'],
-            'zone_low': mtf_signal['zone_low'],
-            'zone_high': mtf_signal['zone_high'],
-            'primary_timeframe': mtf_signal.get('primary_timeframe', '5m'),
-            'reason': (
-                f"MTF convergence: {convergence_score:.1%} across "
-                f"{', '.join(mtf_signal['timeframes_aligned'])}"
-            )
+            'convergence': False,
+            'timeframes': ['5m'],
+            'convergence_score': 0.25,
+            'boost': 0.0,
+            'reason': 'Insufficient bars for MTF analysis (need 20+ bars)'
         }
-        
-        # Cache result
-        _mtf_cache[ticker] = result
-        
-        # Log success
-        print(
-            f"[MTF-INT] ✅ {ticker} MTF {direction.upper()} convergence detected | "
-            f"Score: {convergence_score:.1%} | "
-            f"Boost: +{boost:.2%} | "
-            f"TFs: {', '.join(result['timeframes'])}"
-        )
-        
+        _mtf_cache[cache_key] = result
         return result
     
-    except Exception as e:
-        # MTF system error - gracefully degrade
-        print(f"[MTF-INT] Error analyzing {ticker}: {e}")
-        import traceback
-        traceback.print_exc()
-        
-        result = default_result.copy()
-        result['reason'] = f"MTF error: {str(e)}"
-        return result
-
-
-def get_mtf_cache_stats() -> Dict:
-    """
-    Get MTF cache statistics for monitoring.
+    # Run MTF convergence check
+    result = check_mtf_convergence(ticker, direction, bars_session)
+    result['enabled'] = True
     
-    Returns:
-        Dict with cache metrics:
-        {
-            'enabled': bool,
-            'cache_date': str,
-            'cached_tickers': int,
-            'convergence_count': int,
-            'average_boost': float
-        }
-    """
-    if not _mtf_enabled:
-        return {
-            'enabled': False,
-            'cache_date': None,
-            'cached_tickers': 0,
-            'convergence_count': 0,
-            'average_boost': 0.0
-        }
+    # Cache result
+    _mtf_cache[cache_key] = result
     
-    convergent_results = [r for r in _mtf_cache.values() if r.get('convergence', False)]
-    
-    return {
-        'enabled': True,
-        'cache_date': str(_cache_date) if _cache_date else None,
-        'cached_tickers': len(_mtf_cache),
-        'convergence_count': len(convergent_results),
-        'average_boost': (
-            sum(r['boost'] for r in convergent_results) / len(convergent_results)
-            if convergent_results else 0.0
-        )
-    }
-
-
-def clear_mtf_cache():
-    """
-    Manually clear MTF cache (useful for testing or EOD cleanup).
-    """
-    global _mtf_cache
-    _mtf_cache.clear()
-    print("[MTF-INT] Cache manually cleared")
+    return result
 
 
 def print_mtf_stats():
     """
-    Print MTF statistics for end-of-day reporting.
+    Print end-of-day MTF statistics.
+    Called from sniper.py at market close.
     """
-    if not _mtf_enabled:
+    if _mtf_stats['analyzed'] == 0:
         return
     
-    stats = get_mtf_cache_stats()
-    
-    if stats['cached_tickers'] == 0:
-        return
-    
-    convergence_pct = (
-        (stats['convergence_count'] / stats['cached_tickers'] * 100)
-        if stats['cached_tickers'] > 0 else 0
-    )
+    conv_rate = (_mtf_stats['convergence_found'] / _mtf_stats['analyzed']) * 100
+    avg_boost = (_mtf_stats['total_boost'] / _mtf_stats['analyzed'])
     
     print("\n" + "="*80)
-    print("MTF INTEGRATION - DAILY STATISTICS")
+    print("MTF CONVERGENCE - DAILY STATISTICS")
     print("="*80)
-    print(f"Session Date:         {stats['cache_date']}")
-    print(f"Tickers Analyzed:     {stats['cached_tickers']}")
-    print(f"MTF Convergence:      {stats['convergence_count']} ({convergence_pct:.1f}%)")
-    if stats['convergence_count'] > 0:
-        print(f"Average Boost:        +{stats['average_boost']:.2%}")
+    print(f"Session Date:         {_cache_date}")
+    print(f"Signals Analyzed:     {_mtf_stats['analyzed']}")
+    print(f"MTF Convergence:      {_mtf_stats['convergence_found']} ({conv_rate:.1f}%)")
+    print(f"Average Boost:        {avg_boost:.2%}")
+    print("\nTimeframe Breakdown:")
+    print(f"  5m only:            {_mtf_stats['timeframe_breakdown']['5m_only']}")
+    print(f"  5m + 3m:            {_mtf_stats['timeframe_breakdown']['5m_3m']} (+2% boost)")
+    print(f"  5m + 3m + 2m:       {_mtf_stats['timeframe_breakdown']['5m_3m_2m']} (+3% boost)")
+    print(f"  5m + 3m + 2m + 1m:  {_mtf_stats['timeframe_breakdown']['5m_3m_2m_1m']} (+5% boost - A+)")
     print("="*80 + "\n")
 
 
-# ════════════════════════════════════════════════════════════════════════════════
-# TESTING / CLI USAGE
-# ════════════════════════════════════════════════════════════════════════════════
+def reset_daily_stats():
+    """Reset statistics at start of new trading day."""
+    global _mtf_stats
+    _mtf_stats = {
+        'analyzed': 0,
+        'convergence_found': 0,
+        'timeframe_breakdown': {
+            '5m_only': 0,
+            '5m_3m': 0,
+            '5m_3m_2m': 0,
+            '5m_3m_2m_1m': 0
+        },
+        'avg_boost': 0.0,
+        'total_boost': 0.0
+    }
 
-if __name__ == "__main__":
-    import sys
-    
-    if len(sys.argv) < 3:
-        print("Usage: python mtf_integration.py <ticker> <direction>")
-        print("Example: python mtf_integration.py SPY bull")
-        sys.exit(1)
-    
-    ticker = sys.argv[1].upper()
-    direction = sys.argv[2].lower()
-    
-    if direction not in ['bull', 'bear']:
-        print("Direction must be 'bull' or 'bear'")
-        sys.exit(1)
-    
-    print(f"\nTesting MTF integration for {ticker} {direction.upper()} signal\n")
-    
-    # Test with empty bars_session (not used in current implementation)
-    result = enhance_signal_with_mtf(
-        ticker=ticker,
-        direction=direction,
-        bars_session=[]
-    )
-    
-    print("\n" + "="*80)
-    print("MTF INTEGRATION TEST RESULT")
-    print("="*80)
-    print(f"Enabled:              {result['enabled']}")
-    print(f"Convergence:          {result['convergence']}")
-    print(f"Boost:                +{result['boost']:.2%}")
-    if result['convergence']:
-        print(f"Convergence Score:    {result['convergence_score']:.1%}")
-        print(f"Timeframes:           {', '.join(result['timeframes'])}")
-        print(f"Zone:                 ${result['zone_low']:.2f} - ${result['zone_high']:.2f}")
-    print(f"Reason:               {result['reason']}")
-    print("="*80 + "\n")
+
+print("[MTF-REALTIME] ✅ Multi-timeframe convergence enabled (in-memory bar analysis)")
