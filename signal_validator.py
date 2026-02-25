@@ -6,13 +6,15 @@ Reduces false positives by requiring multiple confirmations.
 
 Validation Layers:
   0. Daily Bias (ICT Top-Down) - Filter counter-trend signals
-  1. Time-of-Day Quality - Soft penalty for low-probability time windows [NEW]
-  2. Trend Strength (ADX) - Is there a real trend?
-  3. Volume Confirmation (AvgVol) - Is there institutional interest?
-  4. Trend Direction (DMI) - Does direction match signal?
-  5. Momentum (CCI) - Are we entering overbought/oversold?
-  6. Volatility Context (Bollinger Bands) - Squeeze or expansion?
-  7. Volume Profile (VPVR) - Support/resistance alignment?
+  1. Time-of-Day Quality - Soft penalty for low-probability time windows
+  2. EMA Stack Confirmation - Boost for full EMA alignment (9>20>50) [NEW]
+  3. RSI Divergence - Early reversal warning (soft signal) [NEW]
+  4. Trend Strength (ADX) - Is there a real trend?
+  5. Volume Confirmation (AvgVol) - Is there institutional interest?
+  6. Trend Direction (DMI) - Does direction match signal?
+  7. Momentum (CCI) - Are we entering overbought/oversold?
+  8. Volatility Context (Bollinger Bands) - Squeeze or expansion?
+  9. Volume Profile (VPVR) - Support/resistance alignment?
 
 Integration:
   - Called by signal_generator.py AFTER CFW6 pattern detection
@@ -101,6 +103,8 @@ class SignalValidator:
         enable_vpvr: bool = True,
         enable_daily_bias: bool = True,
         enable_time_filter: bool = True,
+        enable_ema_stack: bool = True,
+        enable_rsi_divergence: bool = True,
         min_bias_confidence: float = 0.7,
         strict_mode: bool = False
     ):
@@ -113,6 +117,8 @@ class SignalValidator:
             enable_vpvr: Use VPVR for signal validation (default True)
             enable_daily_bias: Filter counter-trend signals (default True)
             enable_time_filter: Apply time-of-day quality scoring (default True)
+            enable_ema_stack: Check EMA stack alignment (9>20>50) (default True)
+            enable_rsi_divergence: Check for RSI divergence warnings (default True)
             min_bias_confidence: Minimum bias confidence to filter (default 0.7)
             strict_mode: Require all checks to pass (default False)
         """
@@ -121,6 +127,8 @@ class SignalValidator:
         self.enable_vpvr = enable_vpvr
         self.enable_daily_bias = enable_daily_bias and BIAS_ENGINE_ENABLED
         self.enable_time_filter = enable_time_filter
+        self.enable_ema_stack = enable_ema_stack
+        self.enable_rsi_divergence = enable_rsi_divergence
         self.min_bias_confidence = min_bias_confidence
         self.strict_mode = strict_mode
         
@@ -131,7 +139,9 @@ class SignalValidator:
             'filtered': 0,
             'boosted': 0,
             'bias_filtered': 0,
-            'time_zones': {}  # Track signals per time zone
+            'time_zones': {},
+            'ema_stack_aligned': 0,
+            'rsi_divergence_detected': 0
         }
         
         if self.enable_daily_bias:
@@ -139,6 +149,12 @@ class SignalValidator:
         
         if self.enable_time_filter:
             print(f"[VALIDATOR] Time-of-day quality scoring enabled (soft penalty, not hard block)")
+        
+        if self.enable_ema_stack:
+            print(f"[VALIDATOR] EMA stack confirmation enabled (9>20>50 alignment check)")
+        
+        if self.enable_rsi_divergence:
+            print(f"[VALIDATOR] RSI divergence detection enabled (early reversal warnings)")
     
     def validate_signal(
         self,
@@ -229,7 +245,7 @@ class SignalValidator:
                 print(f"[VALIDATOR] Bias check error for {ticker}: {e}")
         
         # ════════════════════════════════════════════════
-        # CHECK 1: TIME-OF-DAY QUALITY [NEW - SOFT PENALTY]
+        # CHECK 1: TIME-OF-DAY QUALITY [SOFT PENALTY]
         # ════════════════════════════════════════════════
         if self.enable_time_filter:
             try:
@@ -260,7 +276,104 @@ class SignalValidator:
                 metadata['checks']['time_of_day'] = {'error': str(e)}
         
         # ════════════════════════════════════════════════
-        # CHECK 2: Trend Strength (ADX)
+        # CHECK 2: EMA STACK CONFIRMATION [NEW - SOFT BOOST]
+        # ════════════════════════════════════════════════
+        if self.enable_ema_stack:
+            try:
+                # Fetch 9, 20, 50 EMAs
+                ema9_data = ti.fetch_ema(ticker, period=9)
+                ema20_data = ti.fetch_ema(ticker, period=20)
+                ema50_data = ti.fetch_ema(ticker, period=50)
+                
+                if all([ema9_data, ema20_data, ema50_data]):
+                    ema9 = ti.get_latest_value(ema9_data, 'ema')
+                    ema20 = ti.get_latest_value(ema20_data, 'ema')
+                    ema50 = ti.get_latest_value(ema50_data, 'ema')
+                    
+                    if all([ema9, ema20, ema50]):
+                        # Check for proper stack alignment
+                        if signal_direction == 'BUY':
+                            # Bullish stack: 9 > 20 > 50 (and price > 9)
+                            full_stack = (current_price > ema9 > ema20 > ema50)
+                            partial_stack = (current_price > ema9 and ema9 > ema20)  # At least 2-layer
+                        else:  # SELL
+                            # Bearish stack: 9 < 20 < 50 (and price < 9)
+                            full_stack = (current_price < ema9 < ema20 < ema50)
+                            partial_stack = (current_price < ema9 and ema9 < ema20)  # At least 2-layer
+                        
+                        metadata['checks']['ema_stack'] = {
+                            'ema9': round(ema9, 2),
+                            'ema20': round(ema20, 2),
+                            'ema50': round(ema50, 2),
+                            'full_stack': full_stack,
+                            'partial_stack': partial_stack
+                        }
+                        
+                        if full_stack:
+                            # Perfect EMA alignment = strong trend
+                            confidence_adjustment += 0.07
+                            passed_checks.append('EMA_FULL_STACK')
+                            self.validation_stats['ema_stack_aligned'] += 1
+                        elif partial_stack:
+                            # Partial alignment = decent trend
+                            confidence_adjustment += 0.03
+                            passed_checks.append('EMA_PARTIAL_STACK')
+                        else:
+                            # No alignment = choppy / counter-trend
+                            confidence_adjustment -= 0.04
+                            failed_checks.append('EMA_NO_STACK')
+                    else:
+                        metadata['checks']['ema_stack'] = {'error': 'Missing EMA values'}
+                else:
+                    metadata['checks']['ema_stack'] = {'error': 'Failed to fetch EMA data'}
+                    
+            except Exception as e:
+                metadata['checks']['ema_stack'] = {'error': str(e)}
+                print(f"[VALIDATOR] EMA stack error for {ticker}: {e}")
+        
+        # ════════════════════════════════════════════════
+        # CHECK 3: RSI DIVERGENCE [NEW - SOFT WARNING]
+        # ════════════════════════════════════════════════
+        if self.enable_rsi_divergence:
+            try:
+                div_result, div_details = ti.check_rsi_divergence(
+                    ticker, signal_direction, lookback_bars=10
+                )
+                
+                if div_result and div_details:
+                    metadata['checks']['rsi_divergence'] = div_details
+                    
+                    if div_result == 'BEARISH_DIV':
+                        # Price new high, RSI lower high = uptrend exhaustion
+                        if signal_direction == 'SELL':
+                            # Divergence favors SELL signals
+                            confidence_adjustment += 0.05
+                            passed_checks.append('RSI_DIV_FAVORABLE')
+                        else:
+                            # Divergence warns against BUY signals
+                            confidence_adjustment -= 0.05
+                            failed_checks.append('RSI_DIV_WARNING')
+                        self.validation_stats['rsi_divergence_detected'] += 1
+                    
+                    elif div_result == 'BULLISH_DIV':
+                        # Price new low, RSI higher low = downtrend exhaustion
+                        if signal_direction == 'BUY':
+                            # Divergence favors BUY signals
+                            confidence_adjustment += 0.05
+                            passed_checks.append('RSI_DIV_FAVORABLE')
+                        else:
+                            # Divergence warns against SELL signals
+                            confidence_adjustment -= 0.05
+                            failed_checks.append('RSI_DIV_WARNING')
+                        self.validation_stats['rsi_divergence_detected'] += 1
+                    
+                    # NO_DIV = neutral (no adjustment)
+                    
+            except Exception as e:
+                metadata['checks']['rsi_divergence'] = {'error': str(e)}
+        
+        # ════════════════════════════════════════════════
+        # CHECK 4: Trend Strength (ADX)
         # ════════════════════════════════════════════════
         try:
             is_trending, adx_value = ti.check_trend_strength(ticker, self.min_adx)
@@ -284,7 +397,7 @@ class SignalValidator:
             metadata['checks']['adx'] = {'error': str(e)}
         
         # ════════════════════════════════════════════════
-        # CHECK 3: Volume Confirmation
+        # CHECK 5: Volume Confirmation
         # ════════════════════════════════════════════════
         try:
             is_confirmed, volume_ratio = ti.check_volume_confirmation(
@@ -311,7 +424,7 @@ class SignalValidator:
             metadata['checks']['volume'] = {'error': str(e)}
         
         # ════════════════════════════════════════════════
-        # CHECK 4: Trend Direction (DMI)
+        # CHECK 6: Trend Direction (DMI)
         # ════════════════════════════════════════════════
         try:
             trend_direction = ti.get_trend_direction(ticker)
@@ -333,7 +446,7 @@ class SignalValidator:
             metadata['checks']['dmi'] = {'error': str(e)}
         
         # ════════════════════════════════════════════════
-        # CHECK 5: Momentum (CCI)
+        # CHECK 7: Momentum (CCI)
         # ════════════════════════════════════════════════
         try:
             cci_data = ti.fetch_cci(ticker)
@@ -363,7 +476,7 @@ class SignalValidator:
             metadata['checks']['cci'] = {'error': str(e)}
         
         # ════════════════════════════════════════════════
-        # CHECK 6: Bollinger Bands Squeeze
+        # CHECK 8: Bollinger Bands Squeeze
         # ════════════════════════════════════════════════
         try:
             is_squeezed, band_width = ti.check_bollinger_squeeze(ticker)
@@ -380,7 +493,7 @@ class SignalValidator:
             metadata['checks']['bbands'] = {'error': str(e)}
         
         # ════════════════════════════════════════════════
-        # CHECK 7: VPVR Context (Optional)
+        # CHECK 9: VPVR Context (Optional)
         # ════════════════════════════════════════════════
         if self.enable_vpvr:
             try:
@@ -448,7 +561,9 @@ class SignalValidator:
             'pass_rate': round(self.validation_stats['passed'] / total, 3),
             'filter_rate': round(self.validation_stats['filtered'] / total, 3),
             'boost_rate': round(self.validation_stats['boosted'] / total, 3),
-            'bias_filter_rate': round(self.validation_stats['bias_filtered'] / total, 3)
+            'bias_filter_rate': round(self.validation_stats['bias_filtered'] / total, 3),
+            'ema_stack_rate': round(self.validation_stats['ema_stack_aligned'] / total, 3),
+            'rsi_div_rate': round(self.validation_stats['rsi_divergence_detected'] / total, 3)
         }
         
         # Add time zone distribution
@@ -465,7 +580,9 @@ class SignalValidator:
             'filtered': 0,
             'boosted': 0,
             'bias_filtered': 0,
-            'time_zones': {}
+            'time_zones': {},
+            'ema_stack_aligned': 0,
+            'rsi_divergence_detected': 0
         }
 
 
@@ -486,6 +603,8 @@ def get_validator() -> SignalValidator:
             enable_vpvr=True,
             enable_daily_bias=True,
             enable_time_filter=True,
+            enable_ema_stack=True,
+            enable_rsi_divergence=True,
             min_bias_confidence=0.7,
             strict_mode=False
         )
@@ -497,7 +616,7 @@ def get_validator() -> SignalValidator:
 # ══════════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    print("Testing Signal Validator with Time-of-Day Filter...\n")
+    print("Testing Signal Validator with EMA Stack & RSI Divergence...\n")
     
     validator = SignalValidator(
         min_adx=20.0,
@@ -505,6 +624,8 @@ if __name__ == "__main__":
         enable_vpvr=True,
         enable_daily_bias=True,
         enable_time_filter=True,
+        enable_ema_stack=True,
+        enable_rsi_divergence=True,
         min_bias_confidence=0.7,
         strict_mode=False
     )
@@ -563,6 +684,8 @@ if __name__ == "__main__":
     print(f"Filter Rate: {stats.get('filter_rate', 0)*100:.1f}%")
     print(f"Bias Filter Rate: {stats.get('bias_filter_rate', 0)*100:.1f}%")
     print(f"Boost Rate: {stats.get('boost_rate', 0)*100:.1f}%")
+    print(f"EMA Stack Aligned Rate: {stats.get('ema_stack_rate', 0)*100:.1f}%")
+    print(f"RSI Divergence Rate: {stats.get('rsi_div_rate', 0)*100:.1f}%")
     
     if 'time_zone_distribution' in stats:
         print(f"\nTime Zone Distribution:")
