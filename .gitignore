@@ -103,21 +103,52 @@ dmypy.json
 *.swo
 *~
 
-# Project-specific - War Machine
+# === WAR MACHINE SPECIFIC ===
+
+# Database files
 *.db
 *.db-shm
 *.db-wal
+*.db-journal
 *.sqlite
 *.sqlite3
-market_memory.db
-war_machine_trades.db
-policy.json
-*.json.bak
-*.log
-.DS_Store
-learning_data.json
-Notes.txt
+market_memory.db*
+war_machine_trades.db*
+trades.db*
 
-# Backup files
+# Backup files (IMPORTANT - prevents cluttering repo)
+*.backup
+*.backup_*
+*.bak
+*.old
+*_backup.*
 *-backup/
 War-Machine-backup/
+archive/backups/
+
+# Configuration backups
+policy.json
+*.json.bak
+learning_data.json
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+temp/
+tmp/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Notes and scratch files
+Notes.txt
+SCRATCH.md
+TODO.txt
+
+# Local test outputs
+test_output/
+backtests/
