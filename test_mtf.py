@@ -38,7 +38,8 @@ print("="*80 + "\n")
 
 for ticker in test_tickers:
     print(f"\n--- {ticker} ---")
-    bars_dict = mtf_data_manager.get_all_timeframes(ticker)
+    # Use testing mode - falls back to latest available data
+    bars_dict = mtf_data_manager.get_latest_available_bars(ticker)
     
     if bars_dict:
         for tf, bars in bars_dict.items():
@@ -57,7 +58,8 @@ signals_found = 0
 signal_details = []
 
 for ticker in test_tickers:
-    bars_dict = mtf_data_manager.get_all_timeframes(ticker)
+    # Use testing mode - falls back to latest available data
+    bars_dict = mtf_data_manager.get_latest_available_bars(ticker)
     
     if not bars_dict:
         continue
@@ -95,7 +97,7 @@ if signal_details:
         print(f"       Timeframes: {', '.join(sig['timeframes'])}")
     print(f"{'-'*80}\n")
 else:
-    print("No MTF signals found (normal if market closed or no patterns present)\n")
+    print("No MTF signals found (normal if no patterns present in data)\n")
 
 # Step 5: Cache stats
 mtf_data_manager.print_cache_stats()
@@ -105,5 +107,5 @@ if signals_found > 0:
     print("✅ MTF System validated and ready for Phase 3 integration!")
 else:
     print("⚠️  MTF System functional but no signals detected")
-    print("   (Expected if market closed - will work during live trading)")
+    print("   (Will work during live trading when patterns form)")
 print("="*80 + "\n")
