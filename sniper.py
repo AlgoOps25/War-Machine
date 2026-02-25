@@ -19,6 +19,7 @@
 # MTF FVG PRIORITY: Highest timeframe FVG selection (5m > 3m > 2m > 1m)
 # REGIME FILTER: VIX/SPY market condition detection — avoids bad tape
 # CORRELATION CHECK: Sector-aware over-leverage prevention
+# PHASE 4 MONITORING: Live performance dashboard, circuit breaker, risk alerts
 import traceback
 import requests
 import json
@@ -40,14 +41,22 @@ from bos_fvg_engine import scan_bos_fvg, is_force_close_time
 # ════════════════════════════════════════════════════════════════════════════════
 try:
     from signal_analytics import signal_tracker
+    from performance_monitor import performance_monitor
     from performance_alerts import alert_manager
     PHASE_4_ENABLED = True
-    print("[SIGNALS] ✅ Phase 4 tracking enabled (signal_analytics + performance_alerts)")
-except ImportError:
+    print("[SIGNALS] ✅ Phase 4 monitoring enabled (analytics + performance + alerts)")
+except ImportError as import_err:
     signal_tracker = None
+    performance_monitor = None
     alert_manager = None
     PHASE_4_ENABLED = False
-    print("[SIGNALS] ⚠️  Phase 4 tracking disabled (modules not available)")
+    print(f"[SIGNALS] ⚠️  Phase 4 monitoring disabled: {import_err}")
+
+# Phase 4 tracking state
+_last_dashboard_check = datetime.now()
+_last_alert_check = datetime.now()
+DASHBOARD_UPDATE_INTERVAL_MINUTES = 30
+ALERT_CHECK_INTERVAL_MINUTES = 15
 
 # Multi-indicator validator
 try:
@@ -655,6 +664,60 @@ def _maybe_load_watches():
 
 
 # ─────────────────────────────────────────────────────────────
+# PHASE 4 PERIODIC CHECKS
+# ─────────────────────────────────────────────────────────────
+
+def _check_performance_dashboard():
+    """
+    Check if it's time to print live performance dashboard.
+    Called periodically in process_ticker().
+    """
+    global _last_dashboard_check
+    
+    if not PHASE_4_ENABLED or performance_monitor is None:
+        return
+    
+    now = datetime.now()
+    minutes_since_last = (now - _last_dashboard_check).total_seconds() / 60
+    
+    if minutes_since_last >= DASHBOARD_UPDATE_INTERVAL_MINUTES:
+        try:
+            print(performance_monitor.get_live_dashboard())
+            _last_dashboard_check = now
+        except Exception as e:
+            print(f"[PHASE 4] Dashboard error: {e}")
+
+
+def _check_performance_alerts():
+    """
+    Check for performance alerts (win streaks, loss streaks, drawdown warnings).
+    Called periodically in process_ticker().
+    """
+    global _last_alert_check
+    
+    if not PHASE_4_ENABLED or alert_manager is None:
+        return
+    
+    now = datetime.now()
+    minutes_since_last = (now - _last_alert_check).total_seconds() / 60
+    
+    if minutes_since_last >= ALERT_CHECK_INTERVAL_MINUTES:
+        try:
+            alerts = alert_manager.check_all_conditions()
+            for alert in alerts:
+                print(f"[ALERT] {alert['emoji']} {alert['title']}")
+                print(f"        {alert['message']}")
+                # Optionally send to Discord
+                try:
+                    send_simple_message(f"{alert['emoji']} **{alert['title']}**\n{alert['message']}")
+                except:
+                    pass
+            _last_alert_check = now
+        except Exception as e:
+            print(f"[PHASE 4] Alert check error: {e}")
+
+
+# ─────────────────────────────────────────────────────────────
 # CORRELATION HELPERS (legacy Pearson — kept for fallback)
 # ─────────────────────────────────────────────────────────────
 
@@ -965,6 +1028,34 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
                 ]
                 if failed:
                     print(f"[VALIDATOR TEST]   Would filter: {', '.join(failed)}")
+            
+            # ════════════════════════════════════════════════════════════
+            # PHASE 4 INTEGRATION POINT #3 - Track Validation Result
+            # ════════════════════════════════════════════════════════════
+            if PHASE_4_ENABLED and signal_tracker:
+                try:
+                    # Extract multiplier data from validation metadata
+                    ivr_mult = 1.0  # Default if not available
+                    uoa_mult = 1.0
+                    gex_mult = 1.0
+                    
+                    signal_tracker.record_validation_result(
+                        ticker=ticker,
+                        passed=validation_result['should_take'],
+                        confidence_after=adjusted_conf,
+                        ivr_multiplier=ivr_mult,
+                        uoa_multiplier=uoa_mult,
+                        gex_multiplier=gex_mult,
+                        mtf_boost=mtf_result.get('boost', 0.0),
+                        ticker_multiplier=1.0,
+                        checks_passed=[k for k, v in validation_result['checks'].items() 
+                                     if isinstance(v, dict) and v.get('passed', True)],
+                        rejection_reason=", ".join(validation_result['failed_checks']) if not validation_result['should_take'] else ""
+                    )
+                    status = "VALIDATED" if validation_result['should_take'] else "REJECTED"
+                    print(f"[PHASE 4] ✅ {ticker} signal {status}")
+                except Exception as e:
+                    print(f"[PHASE 4] Validation tracking error: {e}")
 
             if VALIDATOR_TEST_MODE:
                 base_confidence = adjusted_conf
@@ -1057,7 +1148,7 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
     print(f"[{ticker}] ✅ GATE PASSED: {final_confidence:.2f} >= {eff_min:.2f} (dynamic)")
     
     # ════════════════════════════════════════════════════════════
-    # PHASE 4 INTEGRATION POINT #3 - Track Signal Armed
+    # PHASE 4 INTEGRATION POINT #4 - Track Signal Armed
     # ════════════════════════════════════════════════════════════
     if PHASE_4_ENABLED and signal_tracker:
         try:
@@ -1098,6 +1189,29 @@ def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high,
     if abs(entry_price - stop_price) < entry_price * 0.001:
         print(f"[ARM] ⚠️ {ticker} stop too tight — skipping")
         return
+
+    # ════════════════════════════════════════════════════════════
+    # PHASE 4 INTEGRATION POINT #5 - Circuit Breaker Check
+    # ════════════════════════════════════════════════════════════
+    if PHASE_4_ENABLED and performance_monitor:
+        try:
+            cb_status = performance_monitor.get_circuit_breaker_status()
+            if cb_status['triggered']:
+                print(
+                    f"[ARM] 🛑 CIRCUIT BREAKER TRIGGERED: {ticker} signal blocked\n"
+                    f"      Daily loss: {cb_status['current_loss_pct']:.2f}% / "
+                    f"trigger at {cb_status['trigger_threshold_pct']:.2f}%"
+                )
+                return  # Block this signal
+            
+            # Warn if approaching trigger
+            if cb_status['warning_level'] in ['WARNING', 'CRITICAL']:
+                print(
+                    f"[ARM] ⚠️  CIRCUIT BREAKER {cb_status['warning_level']}: "
+                    f"{cb_status['distance_to_trigger_pct']:.2f}% from trigger"
+                )
+        except Exception as e:
+            print(f"[PHASE 4] Circuit breaker check error: {e}")
 
     open_positions = position_manager.get_open_positions()
 
@@ -1161,6 +1275,22 @@ def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high,
     _persist_armed_signal(ticker, armed_signal_data)
 
     print(f"[ARMED] {ticker} ID:{position_id}")
+    
+    # ════════════════════════════════════════════════════════════
+    # PHASE 4 INTEGRATION POINT #6 - Check Alerts After Position Opens
+    # ════════════════════════════════════════════════════════════
+    if PHASE_4_ENABLED and alert_manager:
+        try:
+            alerts = alert_manager.check_all_conditions()
+            for alert in alerts:
+                print(f"[ALERT] {alert['emoji']} {alert['title']}")
+                # Optionally send to Discord
+                try:
+                    send_simple_message(f"{alert['emoji']} **{alert['title']}**\n{alert['message']}")
+                except:
+                    pass
+        except Exception as e:
+            print(f"[PHASE 4] Alert check error: {e}")
 
 
 def clear_armed_signals():
@@ -1207,6 +1337,12 @@ def process_ticker(ticker: str):
         # watch and armed signal state from the DB.
         _maybe_load_watches()
         _maybe_load_armed_signals()
+        
+        # ════════════════════════════════════════════════════════════
+        # PHASE 4 PERIODIC CHECKS - Dashboard & Alerts
+        # ════════════════════════════════════════════════════════════
+        _check_performance_dashboard()
+        _check_performance_alerts()
 
         # ════════════════════════════════════════════════════════════
         # REGIME FILTER — skip ALL new signals in unfavorable tape
@@ -1242,6 +1378,21 @@ def process_ticker(ticker: str):
             print_mtf_stats()
             print_priority_stats()
             
+            # ════════════════════════════════════════════════════════════
+            # PHASE 4 EOD REPORTS
+            # ════════════════════════════════════════════════════════════
+            if PHASE_4_ENABLED:
+                try:
+                    # Signal funnel analytics
+                    if signal_tracker:
+                        print(signal_tracker.get_daily_summary())
+                    
+                    # Performance dashboard
+                    if performance_monitor:
+                        print(performance_monitor.get_daily_performance_report())
+                except Exception as e:
+                    print(f"[PHASE 4] EOD report error: {e}")
+            
             # EOD regime summary
             if REGIME_FILTER_ENABLED and regime_filter:
                 try:
@@ -1258,12 +1409,6 @@ def process_ticker(ticker: str):
                 except Exception as e:
                     print(f"[EOD] Correlation matrix error: {e}")
             
-            if PHASE_4_ENABLED and signal_tracker:
-                try:
-                    summary = signal_tracker.get_daily_summary()
-                    print(summary)
-                except Exception as e:
-                    print(f"[PHASE 4] Summary error: {e}")
             return
 
         # ── WATCHING STATE ────────────────────────────────────────────────────────
