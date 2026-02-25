@@ -1402,7 +1402,6 @@ def process_ticker(ticker: str):
         if ticker in armed_signals:
             return
 
-        data_manager.update_ticker(ticker)
         bars_session = data_manager.get_today_session_bars(ticker)
         if not bars_session:
             print(f"[{ticker}] No session bars")
