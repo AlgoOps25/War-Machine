@@ -17,6 +17,8 @@
 # MTF CONVERGENCE: Multi-timeframe FVG alignment boost (5m + 3m convergence)
 # CANDLE CONFIRMATION: 3-tier Nitro Trades candle quality model (A+/A/A- grading)
 # MTF FVG PRIORITY: Highest timeframe FVG selection (5m > 3m > 2m > 1m)
+# REGIME FILTER: VIX/SPY market condition detection — avoids bad tape
+# CORRELATION CHECK: Sector-aware over-leverage prevention
 import traceback
 import requests
 import json
@@ -105,6 +107,28 @@ except ImportError:
     def print_priority_stats():
         pass
 
+# ────────────────────────────────────────────────────────────────────────
+# CAPITAL PROTECTION SYSTEMS
+# Non-fatal imports: sniper works normally if modules are missing.
+# ────────────────────────────────────────────────────────────────────────
+try:
+    from regime_filter import regime_filter
+    REGIME_FILTER_ENABLED = True
+    print("[SNIPER] ✅ Regime filter enabled (VIX/SPY market condition detection)")
+except ImportError:
+    regime_filter = None
+    REGIME_FILTER_ENABLED = False
+    print("[SNIPER] ⚠️  Regime filter not available")
+
+try:
+    from correlation_check import correlation_checker
+    CORRELATION_CHECK_ENABLED = True
+    print("[SNIPER] ✅ Correlation check enabled (prevents over-leverage)")
+except ImportError:
+    correlation_checker = None
+    CORRELATION_CHECK_ENABLED = False
+    print("[SNIPER] ⚠️  Correlation check not available")
+
 # ── Global State ─────────────────────────────────────────────────────────────────────────────────────────────────────────
 armed_signals    = {}
 watching_signals   = {}
@@ -184,7 +208,6 @@ def print_validation_stats():
     print(f"Confidence Penalized: {stats['penalized']}")
     print("="*80)
     print("⚠️  TEST MODE ACTIVE - Signals NOT being filtered")
-
     print("="*80 + "\n")
 
 
@@ -632,7 +655,7 @@ def _maybe_load_watches():
 
 
 # ─────────────────────────────────────────────────────────────
-# CORRELATION HELPERS
+# CORRELATION HELPERS (legacy Pearson — kept for fallback)
 # ─────────────────────────────────────────────────────────────
 
 def _pearson_corr(xs, ys) -> float:
@@ -780,18 +803,7 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
                           bos_confirmation=None, bos_candle_type=None):
 
     # ════════════════════════════════════════════════════════════
-    # STEP 6.5 — OPTIONS PRE-VALIDATION GATE  (★ NEW)
-    # Runs BEFORE confirmation (Step 7) to avoid wasting time on bad setups.
-    # Uses the current bar close as a proxy entry price (actual entry is
-    # determined in Step 7; we only need a ballpark for GEX headwind check).
-    #
-    # SOFT mode (default): logs tradability result, never drops signals.
-    #   → Use this to collect data on how often the gate would fire.
-    # HARD mode: drops signals that fail tradability or have GEX headwinds.
-    #   → Switch OPTIONS_PRE_GATE_MODE to "HARD" after validating gate logic.
-    #
-    # _pre_options_data is carried forward to Step 10 so the GEX/IVR data
-    # fetched here does not need to be re-fetched from the API.
+    # STEP 6.5 — OPTIONS PRE-VALIDATION GATE
     # ════════════════════════════════════════════════════════════
     _pre_options_data = None
     if OPTIONS_PRE_GATE_ENABLED and options_dm is not None:
@@ -800,7 +812,7 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
             _opts_check  = options_dm.validate_for_trading(ticker, direction, _proxy_entry)
             _tradeable   = _opts_check.get("tradeable", True)
             _reason      = _opts_check.get("reason", "")
-            _pre_options_data = _opts_check  # carry gex_data + ivr_data forward to Step 10/11
+            _pre_options_data = _opts_check
 
             if OPTIONS_PRE_GATE_MODE == "HARD":
                 if not _tradeable:
@@ -852,7 +864,6 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
 
     # ════════════════════════════════════════════════════════════
     # STEP 8.2 — MTF CONVERGENCE DETECTION
-    # Check if signal has multi-timeframe convergence (5m + 3m FVG alignment)
     # ════════════════════════════════════════════════════════════
     mtf_result = enhance_signal_with_mtf(
         ticker=ticker,
@@ -860,7 +871,6 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         bars_session=bars_session
     )
     
-    # Log MTF result
     if mtf_result['convergence']:
         print(
             f"[{ticker}] ✅ MTF CONVERGENCE: "
@@ -873,16 +883,12 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
 
     # ════════════════════════════════════════════════════════════
     # PHASE 4 INTEGRATION POINT #2 - Track Signal Generated
-    # Record after grade assignment (GENERATED stage)
     # ════════════════════════════════════════════════════════════
-    
-    # Calculate preliminary stop/targets for tracking
     _prelim_stop, _prelim_t1, _prelim_t2 = compute_stop_and_targets(
         bars_session, direction, or_high_ref, or_low_ref, entry_price,
         grade=final_grade
     )
     
-    # Track signal generation
     if PHASE_4_ENABLED and signal_tracker:
         try:
             signal_tracker.record_signal_generated(
@@ -903,15 +909,10 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
     # STEP 8.5 — MULTI-INDICATOR VALIDATION
     latest_bar     = bars_session[-1]
     current_volume = latest_bar.get("volume", 0)
-
-    # Convert direction to signal_direction for validator
     signal_direction = "LONG" if direction == "bull" else "SHORT"
-
-    # Store original confidence for comparison
     base_confidence    = compute_confidence(final_grade, "5m", ticker)
     original_confidence = base_confidence
 
-    # Run validation if enabled
     validation_result = None
     if VALIDATOR_ENABLED:
         try:
@@ -978,16 +979,13 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
             import traceback
             traceback.print_exc()
 
-    # STEP 9 — STOPS & TARGETS (recalculate with actual values)
+    # STEP 9 — STOPS & TARGETS
     stop_price, t1, t2 = compute_stop_and_targets(
         bars_session, direction, or_high_ref, or_low_ref, entry_price,
         grade=final_grade
     )
 
     # STEP 10 — OPTIONS
-    # get_options_recommendation() fetches chain internally; if _pre_options_data
-    # was captured in Step 6.5 the chain is already cached in options_dm and
-    # this call returns instantly without a new API round-trip.
     options_rec = get_options_recommendation(
         ticker=ticker, direction=direction,
         entry_price=entry_price, target_price=t1,
@@ -996,15 +994,11 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
     if _pre_options_data and _pre_options_data.get("gex_data"):
         print(f"[{ticker}] [OPTIONS] GEX data reused from Step 6.5 cache")
 
-    # STEP 11 — CONFIDENCE (uses validator-adjusted base_confidence)
+    # STEP 11 — CONFIDENCE
     ticker_multiplier = learning_engine.get_ticker_confidence_multiplier(ticker)
-    
-    # MTF boost from Step 8.2 (already calculated)
     mtf_boost = mtf_result.get('boost', 0.0)
-
     mode_decay = 0.95 if signal_type == "CFW6_INTRADAY" else 1.0
 
-    # Options data multipliers
     ivr_multiplier = options_rec.get("ivr_multiplier", 1.0) if options_rec else 1.0
     ivr_label      = options_rec.get("ivr_label",      "IVR-N/A") if options_rec else "IVR-N/A"
     uoa_multiplier = options_rec.get("uoa_multiplier", 1.0) if options_rec else 1.0
@@ -1012,28 +1006,20 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
     gex_multiplier = options_rec.get("gex_multiplier", 1.0) if options_rec else 1.0
     gex_label      = options_rec.get("gex_label",      "GEX-N/A") if options_rec else "GEX-N/A"
     
-    # Convert multipliers to bounded adjustments
     def mult_to_adjustment(multiplier, base_conf):
         """Convert multiplier to bounded additive adjustment."""
         if multiplier >= 1.0:
-            # Boost: capped at +15% of base confidence
             return min((multiplier - 1.0) * base_conf * 0.75, base_conf * 0.15)
         else:
-            # Penalty: capped at -20% of base confidence
             return max((multiplier - 1.0) * base_conf * 1.00, base_conf * -0.20)
     
-    # Calculate individual adjustments
     ticker_adj = mult_to_adjustment(ticker_multiplier, base_confidence)
     mode_adj   = mult_to_adjustment(mode_decay, base_confidence)
     ivr_adj    = mult_to_adjustment(ivr_multiplier, base_confidence)
     uoa_adj    = mult_to_adjustment(uoa_multiplier, base_confidence)
     gex_adj    = mult_to_adjustment(gex_multiplier, base_confidence)
     
-    # Apply adjustments additively
     final_confidence = base_confidence + ticker_adj + mode_adj + ivr_adj + uoa_adj + gex_adj + mtf_boost
-    
-    # Hard floor: never drop below 40% after adjustments
-    # Hard ceiling: cap at 95% (100% = overconfidence)
     final_confidence = max(0.40, min(final_confidence, 0.95))
     
     print(
@@ -1047,14 +1033,11 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         f"= {final_confidence:.2f}"
     )
 
-# STEP 11b — CONFIDENCE THRESHOLD GATE (DYNAMIC - OPT #3)
-    # Use dynamic threshold calculation that adapts to:
-    # - Time of day, VIX level, recent win rate, signal quality
+    # STEP 11b — CONFIDENCE THRESHOLD GATE (DYNAMIC)
     try:
         from dynamic_thresholds import get_dynamic_threshold
         eff_min = get_dynamic_threshold(signal_type, final_grade)
     except ImportError:
-        # Fallback to static thresholds if dynamic_thresholds unavailable
         min_type  = (
             config.MIN_CONFIDENCE_INTRADAY
             if signal_type == "CFW6_INTRADAY"
@@ -1075,7 +1058,6 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
     
     # ════════════════════════════════════════════════════════════
     # PHASE 4 INTEGRATION POINT #3 - Track Signal Armed
-    # Record after confirmation passes (ARMED stage)
     # ════════════════════════════════════════════════════════════
     if PHASE_4_ENABLED and signal_tracker:
         try:
@@ -1090,7 +1072,7 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         except Exception as e:
             print(f"[PHASE 4] Armed tracking error: {e}")
     
-    # STEP 12 — ARM (with validation result + candle confirmation attached)
+    # STEP 12 — ARM
     arm_ticker(
         ticker, direction, zone_low, zone_high,
         or_low_ref, or_high_ref,
@@ -1112,17 +1094,39 @@ def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high,
                entry_price, stop_price, t1, t2, confidence, grade,
                options_rec=None, signal_type="CFW6_OR", validation_result=None,
                bos_confirmation=None, bos_candle_type=None):
-    # LOWERED: Minimum risk threshold from 0.2% to 0.1%
-    # Allows tighter stops on low volatility setups while
-    # wider ATR multipliers (2.0x-3.0x) ensure reasonable risk
-    if abs(entry_price - stop_price) < entry_price * 0.001:  # Was 0.002 (0.2%), now 0.001 (0.1%)
+    # Minimum risk threshold check
+    if abs(entry_price - stop_price) < entry_price * 0.001:
         print(f"[ARM] ⚠️ {ticker} stop too tight — skipping")
         return
 
     open_positions = position_manager.get_open_positions()
-    if _is_highly_correlated(ticker, open_positions, window_bars=60, threshold=0.9):
-        print(f"[CORR] Skipping {ticker} — highly correlated with open book")
-        return
+
+    # ════════════════════════════════════════════════════════════
+    # CORRELATION CHECK — sector-aware over-leverage prevention
+    # Replaces legacy _is_highly_correlated() with sector + ETF overlap detection
+    # ════════════════════════════════════════════════════════════
+    if CORRELATION_CHECK_ENABLED and correlation_checker:
+        safe, warning = correlation_checker.is_safe_to_add_position(
+            ticker=ticker,
+            open_positions=open_positions
+        )
+        if not safe:
+            print(
+                f"[ARM] 🚫 CORRELATION FILTER: {ticker} — {warning.reason}"
+            )
+            if warning.correlated_tickers:
+                print(
+                    f"[ARM]   Correlated open positions: {', '.join(warning.correlated_tickers)}"
+                )
+            return  # Block this signal
+        if warning:
+            # Safe but worth flagging (e.g. QQQ constituent overlap)
+            print(f"[ARM] ⚠️  CORRELATION WARNING: {ticker} — {warning.reason}")
+    else:
+        # Fallback to legacy Pearson correlation check
+        if _is_highly_correlated(ticker, open_positions, window_bars=60, threshold=0.9):
+            print(f"[CORR] Skipping {ticker} — highly correlated with open book")
+            return
 
     mode_label = " [INTRADAY]" if signal_type == "CFW6_INTRADAY" else " [OR]"
     print(
@@ -1146,7 +1150,6 @@ def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high,
         t1=t1, t2=t2, confidence=confidence, grade=grade, options_rec=options_rec
     )
 
-    # Store armed signal in memory AND DB
     armed_signal_data = {
         "position_id": position_id, "direction": direction,
         "entry_price": entry_price, "stop_price": stop_price,
@@ -1181,7 +1184,7 @@ def clear_watching_signals():
     """Clear in-memory watch state AND the DB persistence table."""
     global _watches_loaded
     watching_signals.clear()
-    _watches_loaded = False  # reset so next day reloads fresh
+    _watches_loaded = False
     try:
         from db_connection import get_conn
         conn = get_conn()
@@ -1205,6 +1208,20 @@ def process_ticker(ticker: str):
         _maybe_load_watches()
         _maybe_load_armed_signals()
 
+        # ════════════════════════════════════════════════════════════
+        # REGIME FILTER — skip ALL new signals in unfavorable tape
+        # Checks VIX level, ADX trend strength, and whipsaw frequency.
+        # 5-minute cache: evaluates once per cycle, not once per ticker.
+        # ════════════════════════════════════════════════════════════
+        if REGIME_FILTER_ENABLED and regime_filter:
+            if not regime_filter.is_favorable_regime():
+                state = regime_filter.get_regime_state()
+                print(
+                    f"[{ticker}] 🚫 REGIME FILTER: {state.regime} "
+                    f"(VIX:{state.vix:.1f}) — {state.reason}"
+                )
+                return  # Skip this ticker entirely
+
         if ticker in armed_signals:
             return
 
@@ -1221,28 +1238,35 @@ def process_ticker(ticker: str):
 
         if is_force_close_time(bars_session[-1]):
             position_manager.close_all_eod({ticker: bars_session[-1]["close"]})
-            # Print validation stats before market close
             print_validation_stats()
-            
-            # Print MTF stats
             print_mtf_stats()
-            
-            # Print MTF priority stats
             print_priority_stats()
             
-            # Print Phase 4 analytics summary
+            # EOD regime summary
+            if REGIME_FILTER_ENABLED and regime_filter:
+                try:
+                    regime_filter.print_regime_summary()
+                except Exception as e:
+                    print(f"[EOD] Regime summary error: {e}")
+            
+            # EOD correlation matrix
+            if CORRELATION_CHECK_ENABLED and correlation_checker:
+                try:
+                    eod_positions = position_manager.get_open_positions()
+                    if eod_positions:
+                        correlation_checker.print_correlation_matrix(eod_positions)
+                except Exception as e:
+                    print(f"[EOD] Correlation matrix error: {e}")
+            
             if PHASE_4_ENABLED and signal_tracker:
                 try:
                     summary = signal_tracker.get_daily_summary()
                     print(summary)
                 except Exception as e:
                     print(f"[PHASE 4] Summary error: {e}")
-            
             return
 
-        
-
-        # ── WATCHING STATE ────────────────────────────────────────────────────────────────────────
+        # ── WATCHING STATE ────────────────────────────────────────────────────────
         if ticker in watching_signals:
             w = watching_signals[ticker]
 
@@ -1262,7 +1286,6 @@ def process_ticker(ticker: str):
                     )
                     del watching_signals[ticker]
                     _remove_watch_from_db(ticker)
-                    # fall through to fresh scan
                 else:
                     w["breakout_idx"] = resolved_idx
                     print(
@@ -1270,7 +1293,7 @@ def process_ticker(ticker: str):
                         f"breakout_idx={resolved_idx} ({bar_dt_target})"
                     )
 
-        if ticker in watching_signals:   # may have been removed in resolution block above
+        if ticker in watching_signals:
             w          = watching_signals[ticker]
             bars_since = len(bars_session) - w["breakout_idx"]
             if bars_since > MAX_WATCH_BARS:
@@ -1291,7 +1314,7 @@ def process_ticker(ticker: str):
                 _remove_watch_from_db(ticker)
                 return
 
-        # ── FRESH SCAN ────────────────────────────────────────────────────────────────────
+        # ── FRESH SCAN ────────────────────────────────────────────────────────────
         direction = breakout_idx = zone_low = zone_high = None
         or_high_ref = or_low_ref = scan_mode = None
         bos_confirmation = bos_candle_type = None
@@ -1338,7 +1361,7 @@ def process_ticker(ticker: str):
         else:
             print(f"[{ticker}] No OR bars")
 
-        # ── INTRADAY BOS+FVG PATH (with MTF priority resolver) ────────────────────────────
+        # ── INTRADAY BOS+FVG PATH (with MTF priority resolver) ───────────────────
         if scan_mode is None:
             if len(bars_session) < 30:
                 return
@@ -1351,36 +1374,23 @@ def process_ticker(ticker: str):
 
             direction    = bos_signal["direction"]
             breakout_idx = bos_signal["bos_idx"]
-            
-            # Extract 3-tier candle confirmation from bos_signal
             bos_confirmation = bos_signal.get("confirmation")
             bos_candle_type = bos_signal.get("candle_type")
             
-            # ════════════════════════════════════════════════════════════════════════════════
-            # MTF FVG PRIORITY RESOLVER
-            # Scan all timeframes (5m, 3m, 2m, 1m) for FVGs and select highest-TF one
-            # ════════════════════════════════════════════════════════════════════════════════
             if MTF_PRIORITY_ENABLED:
                 try:
-                    # Get full MTF analysis (primary + secondary FVGs)
                     mtf_analysis = get_full_mtf_analysis(
                         ticker=ticker,
                         direction=direction,
                         bars_5m=bars_session,
                         min_pct=fvg_threshold
                     )
-                    
                     primary_fvg = mtf_analysis['primary_fvg']
-                    
                     if primary_fvg is None:
                         print(f"[{ticker}] — No FVGs found on any timeframe (MTF scan)")
                         return
-                    
-                    # Use highest-priority FVG as trade zone
                     zone_low  = primary_fvg['fvg_low']
                     zone_high = primary_fvg['fvg_high']
-                    
-                    # Log priority resolution
                     if mtf_analysis['has_conflict']:
                         print(
                             f"[{ticker}] 🎯 MTF PRIORITY: {primary_fvg['timeframe']} FVG selected | "
@@ -1392,18 +1402,14 @@ def process_ticker(ticker: str):
                             f"[{ticker}] 📍 Single FVG on {primary_fvg['timeframe']} | "
                             f"Zone: ${zone_low:.2f}-${zone_high:.2f}"
                         )
-                
                 except Exception as priority_err:
                     print(f"[{ticker}] MTF priority error (falling back to 5m): {priority_err}")
-                    # Fallback to original bos_signal FVG
                     zone_low  = bos_signal["fvg_low"]
                     zone_high = bos_signal["fvg_high"]
             else:
-                # MTF priority disabled - use 5m FVG from bos_signal
                 zone_low  = bos_signal["fvg_low"]
                 zone_high = bos_signal["fvg_high"]
             
-            # Continue with OR refs (unchanged)
             if direction == "bull":
                 or_high_ref = bos_signal["bos_price"]
                 or_low_ref  = zone_low
