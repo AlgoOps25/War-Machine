@@ -1,6 +1,8 @@
 """
 AI Learning Module - Improves Entry Quality Over Time
 Analyzes win/loss patterns and adjusts strategy parameters
+
+CONSOLIDATED: Now includes learning_policy functions (compute_confidence, grade_to_label)
 """
 
 import json
@@ -9,7 +11,79 @@ from datetime import datetime, timedelta
 from typing import Dict, List
 import numpy as np
 import db_connection
+import config
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONFIDENCE SCORING (formerly learning_policy.py)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Grade baseline confidence map (CFW6 video rules)
+_GRADE_BASE = {
+    "A+": 0.85,
+    "A":  0.70,
+    "A-": 0.55,
+}
+
+# Timeframe multiplier: higher timeframe = higher weight
+_TF_MULTIPLIER = {
+    "5m": 1.05,
+    "3m": 1.02,
+    "2m": 1.00,
+    "1m": 0.97,
+}
+
+# Minimum threshold - signals below this are dropped upstream
+MIN_CONFIDENCE = 0.50
+
+
+def compute_confidence(
+    grade: str,
+    timeframe: str = "1m",
+    ticker: str = ""
+) -> float:
+    """
+    Compute base confidence score for a CFW6 signal.
+
+    Args:
+        grade:     Signal grade string - "A+", "A", "A-"
+        timeframe: Bar timeframe - "1m", "2m", "3m", "5m"
+        ticker:    Ticker symbol (reserved for future per-ticker tuning)
+
+    Returns:
+        Float in [0.0, 1.0] representing signal confidence.
+    """
+    # Base score from grade
+    base = _GRADE_BASE.get(grade, 0.50)
+
+    # Timeframe multiplier
+    tf_mult = _TF_MULTIPLIER.get(timeframe, 1.00)
+
+    # Compute raw score
+    score = base * tf_mult
+
+    # Clamp to valid range
+    return round(min(max(score, 0.0), 1.0), 4)
+
+
+def grade_to_label(confidence: float) -> str:
+    """
+    Convert a numeric confidence back to a readable label.
+    Used for logging and Discord alerts.
+    """
+    if confidence >= 0.80:
+        return "A+"
+    elif confidence >= 0.65:
+        return "A"
+    elif confidence >= 0.50:
+        return "A-"
+    else:
+        return "reject"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# AI LEARNING ENGINE
+# ═══════════════════════════════════════════════════════════════════════════════
 
 class AILearningEngine:
     def __init__(self, db_path: str = "learning_data.json"):
@@ -266,7 +340,7 @@ class AILearningEngine:
         """
         Get options flow confidence weight from options_data_manager.
         Returns a multiplier in range [0.7, 1.3] based on options score.
-        
+
         Returns:
             1.0 if options_data_manager unavailable (neutral, no penalty)
             0.7-1.3 based on options score (0-100 scale)
