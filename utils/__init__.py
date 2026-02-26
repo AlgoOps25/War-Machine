@@ -10,7 +10,7 @@ Or import specific module:
     from utils.db_connection import get_conn
 """
 
-from utils.db_connection import (
+from db_connection import (
     get_conn,
     ph,
     dict_cursor,
