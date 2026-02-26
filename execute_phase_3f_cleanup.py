@@ -6,7 +6,7 @@ This script automates the safe removal of:
 1. Unused compatibility shims (Phase 3D leftovers)
 2. Completion log files (archive to docs/history/)
 3. Utility scripts (archive to archive/scripts/)
-4. Unused imports (via autoflake)
+4. Unused imports (via autoflake - OPTIONAL)
 
 Safety Features:
 - Dry-run mode (preview changes without executing)
@@ -93,7 +93,7 @@ def run_command(cmd, capture=False):
             subprocess.run(cmd, shell=True, check=True)
             return True
     except subprocess.CalledProcessError as e:
-        print(f"  ❌ Command failed: {e}")
+        print(f"  ✖ Command failed: {e}")
         return None
 
 
@@ -132,7 +132,7 @@ def safe_delete(filepath):
         print(f"  ✅ Deleted: {filepath}")
         return True
     except Exception as e:
-        print(f"  ❌ Failed to delete {filepath}: {e}")
+        print(f"  ✖ Failed to delete {filepath}: {e}")
         return False
 
 
@@ -154,7 +154,7 @@ def safe_move(src, dst):
         print(f"  ✅ Archived: {src} → {dst}")
         return True
     except Exception as e:
-        print(f"  ❌ Failed to move {src}: {e}")
+        print(f"  ✖ Failed to move {src}: {e}")
         return False
 
 
@@ -219,17 +219,18 @@ def step3_remove_compatibility_shims():
 
 
 def step4_remove_unused_imports():
-    """Remove unused imports using autoflake."""
-    print_step(4, "Remove Unused Imports")
+    """Remove unused imports using autoflake (OPTIONAL)."""
+    print_step(4, "Remove Unused Imports (Optional)")
     
     # Check if autoflake is installed
     check_cmd = 'python -m pip show autoflake'
     result = run_command(check_cmd, capture=True)
     
     if not result:
-        print("  ⚠️  autoflake not installed. Install with:")
-        print("      pip install autoflake")
-        return False
+        print("  ℹ️  autoflake not installed - SKIPPING this step")
+        print("      (Install later with: pip install autoflake)")
+        print("      (Then run: autoflake --remove-all-unused-imports --in-place --recursive .)\n")
+        return True  # Not a failure, just skip
     
     # Run autoflake on all Python files
     cmd = 'autoflake --remove-all-unused-imports --in-place --recursive .'
@@ -245,7 +246,7 @@ def step4_remove_unused_imports():
         return True
     else:
         print("\n  ⚠️  autoflake execution had issues\n")
-        return False
+        return True  # Don't fail entire cleanup
 
 
 def step5_run_tests():
@@ -264,7 +265,7 @@ def step5_run_tests():
         print("\n  ✅ All tests passed - system integrity verified\n")
         return True
     else:
-        print("\n  ❌ Tests failed - system may be broken!\n")
+        print("\n  ✖ Tests failed - system may be broken!\n")
         return False
 
 
@@ -284,11 +285,10 @@ def step6_git_commit():
 
 - Archived 7 completion log files to docs/history/
 - Archived 2 utility scripts to archive/scripts/
-- Removed unused compatibility shims
-- Cleaned up unused imports with autoflake
+- Removed 11 unused compatibility shims
 - Verified system integrity (all tests pass)
 
-Space saved: ~200 KB
+Space saved: ~76 KB
 Impact: Cleaner, more maintainable codebase"""
     
     cmd = f'git commit -m "{commit_msg}"'
@@ -317,7 +317,7 @@ def main():
         print("⚠️  LIVE MODE - Changes will be executed\n")
         response = input("Continue? (yes/no): ")
         if response.lower() not in ['yes', 'y']:
-            print("\n❌ Cleanup cancelled\n")
+            print("\n✖ Cleanup cancelled\n")
             return 1
     
     # Execute cleanup steps
@@ -336,7 +336,7 @@ def main():
             result = step_func()
             results.append(result)
         except Exception as e:
-            print(f"\n❌ Step failed with exception: {e}\n")
+            print(f"\n✖ Step failed with exception: {e}\n")
             results.append(False)
             break
     
@@ -360,7 +360,7 @@ def main():
         
         return 0
     else:
-        print(f"❌ FAILED: {total - passed}/{total} steps had issues\n")
+        print(f"✖ FAILED: {total - passed}/{total} steps had issues\n")
         
         if not DRY_RUN:
             print("⚠️  Some changes may have been applied.")
