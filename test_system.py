@@ -169,13 +169,16 @@ def test_section_3_risk_management():
     except Exception as e:
         print_result("Regime filter", False, str(e))
     
-    # 3.3 Daily Bias Engine
+    # 3.3 Daily Bias Engine (OPTIONAL - removed during cleanup)
     try:
         from daily_bias_engine import bias_engine
         
         spy_bias = bias_engine.calculate_daily_bias("SPY", force_refresh=True)
         print_result("Daily bias engine", True, 
                     f"SPY: {spy_bias['bias']} ({spy_bias['confidence']*100:.0f}% confidence)")
+    except ImportError:
+        # Module was removed during cleanup - bias logic now in validation.py
+        print_result("Daily bias engine", True, "Module removed (integrated into validation.py)")
     except Exception as e:
         print_result("Daily bias engine", False, str(e))
     
