@@ -27,7 +27,7 @@ import json
 from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 from discord_helpers import send_options_signal_alert, send_simple_message
-from options_filter import get_options_recommendation
+from validation import get_options_recommendation, get_validator, get_regime_filter
 from ai_learning import learning_engine
 from cfw6_confirmation import wait_for_confirmation, grade_signal_with_confirmations
 from trade_calculator import compute_stop_and_targets, get_adaptive_fvg_threshold
@@ -86,28 +86,16 @@ except ImportError:
         pass
 
 # Multi-indicator validator
-try:
-    from signal_validator import get_validator
-    VALIDATOR_ENABLED = True
-    VALIDATOR_TEST_MODE = False  # Set to False to enable filtering
-    _validator_stats = {'tested': 0, 'passed': 0, 'filtered': 0, 'boosted': 0, 'penalized': 0}
-    print("[SIGNALS] ✅ Multi-indicator validator ACTIVE (filtering enabled)")
-except ImportError:
-    VALIDATOR_ENABLED = False
-    print("[SIGNALS] ⚠️  signal_validator not available - validation disabled")
+VALIDATOR_ENABLED = True
+VALIDATOR_TEST_MODE = False  # Set to False to enable filtering
+_validator_stats = {'tested': 0, 'passed': 0, 'filtered': 0, 'boosted': 0, 'penalized': 0}
+print("[SIGNALS] ✅ Multi-indicator validator ACTIVE (filtering enabled)")
 
 # ────────────────────────────────────────────────────────────────────────
-# OPTIONS PRE-VALIDATION GATE
-# Non-fatal import: sniper works normally if options_data_manager is missing.
+# OPTIONS PRE-VALIDATION GATE - Now integrated into validation.py
 # ────────────────────────────────────────────────────────────────────────
-try:
-    from options_data_manager import options_dm
-    OPTIONS_PRE_GATE_ENABLED = True
-    print("[SNIPER] ✅ Options pre-validation gate enabled")
-except ImportError:
-    options_dm = None
-    OPTIONS_PRE_GATE_ENABLED = False
-    print("[SNIPER] ⚠️  options_data_manager not available — options gate disabled")
+OPTIONS_PRE_GATE_ENABLED = True
+print("[SNIPER] ✅ Options pre-validation gate enabled (via validation.py)")
 
 # ────────────────────────────────────────────────────────────────────────
 # MTF INTEGRATION - Multi-timeframe FVG convergence
@@ -144,17 +132,10 @@ except ImportError:
         pass
 
 # ────────────────────────────────────────────────────────────────────────
-# CAPITAL PROTECTION SYSTEMS
-# Non-fatal imports: sniper works normally if modules are missing.
+# CAPITAL PROTECTION SYSTEMS - Now using validation.py
 # ────────────────────────────────────────────────────────────────────────
-try:
-    from regime_filter import regime_filter
-    REGIME_FILTER_ENABLED = True
-    print("[SNIPER] ✅ Regime filter enabled (VIX/SPY market condition detection)")
-except ImportError:
-    regime_filter = None
-    REGIME_FILTER_ENABLED = False
-    print("[SNIPER] ⚠️  Regime filter not available")
+REGIME_FILTER_ENABLED = True
+print("[SNIPER] ✅ Regime filter enabled (VIX/SPY market condition detection - via validation.py)")
 
 try:
     from correlation_check import correlation_checker
@@ -202,7 +183,7 @@ def _strip_tz(dt):
 
 def log_proposed_trade(ticker, signal_type, direction, price, confidence, grade):
     try:
-        from db_connection import get_conn, ph, serial_pk
+        from db_manager import get_conn, ph, serial_pk
         conn = get_conn()
         cursor = conn.cursor()
         p = ph()
@@ -243,7 +224,8 @@ def print_validation_stats():
     print(f"Confidence Boosted: {stats['boosted']} ({boost_pct:.1f}%)")
     print(f"Confidence Penalized: {stats['penalized']}")
     print("="*80)
-    print("⚠️  TEST MODE ACTIVE - Signals NOT being filtered")
+    if VALIDATOR_TEST_MODE:
+        print("⚠️  TEST MODE ACTIVE - Signals NOT being filtered")
     print("="*80 + "\n")
 
 
@@ -256,7 +238,7 @@ def print_validation_stats():
 def _ensure_armed_db():
     """Create armed_signals_persist table if it doesn't exist."""
     try:
-        from db_connection import get_conn
+        from db_manager import get_conn
         conn = get_conn()
         cursor = conn.cursor()
         cursor.execute("""
@@ -287,7 +269,7 @@ def _persist_armed_signal(ticker: str, data: dict):
     Serializes validation_result as JSON if present.
     """
     try:
-        from db_connection import get_conn, ph as _ph
+        from db_manager import get_conn, ph as _ph
         conn = get_conn()
         cursor = conn.cursor()
         p = _ph()
@@ -342,7 +324,7 @@ def _persist_armed_signal(ticker: str, data: dict):
 def _remove_armed_from_db(ticker: str):
     """Delete an armed signal entry from the DB."""
     try:
-        from db_connection import get_conn, ph as _ph
+        from db_manager import get_conn, ph as _ph
         conn = get_conn()
         cursor = conn.cursor()
         p = _ph()
@@ -361,7 +343,7 @@ def _cleanup_stale_armed_signals():
     This syncs the armed_signals table with position_manager state.
     """
     try:
-        from db_connection import get_conn
+        from db_manager import get_conn
         
         # Get list of open position IDs from position_manager
         open_positions = position_manager.get_open_positions()
@@ -406,7 +388,7 @@ def _load_armed_signals_from_db() -> dict:
     Stale signals (closed positions) are auto-cleaned before loading.
     """
     try:
-        from db_connection import get_conn, dict_cursor as _dc, ph as _ph, USE_POSTGRES as _USE_PG
+        from db_manager import get_conn, dict_cursor as _dc, ph as _ph, USE_POSTGRES as _USE_PG
         
         # First, clean up stale armed signals
         _cleanup_stale_armed_signals()
@@ -506,7 +488,7 @@ def _maybe_load_armed_signals():
 def _ensure_watch_db():
     """Create watching_signals_persist table if it doesn't exist."""
     try:
-        from db_connection import get_conn
+        from db_manager import get_conn
         conn = get_conn()
         cursor = conn.cursor()
         cursor.execute("""
@@ -532,7 +514,7 @@ def _persist_watch(ticker: str, data: dict):
     'data' must contain: direction, breakout_bar_dt, or_high, or_low, signal_type.
     """
     try:
-        from db_connection import get_conn, ph as _ph
+        from db_manager import get_conn, ph as _ph
         conn = get_conn()
         cursor = conn.cursor()
         p = _ph()
@@ -567,7 +549,7 @@ def _persist_watch(ticker: str, data: dict):
 def _remove_watch_from_db(ticker: str):
     """Delete a single watch entry from the DB."""
     try:
-        from db_connection import get_conn, ph as _ph
+        from db_manager import get_conn, ph as _ph
         conn = get_conn()
         cursor = conn.cursor()
         p = _ph()
@@ -587,7 +569,7 @@ def _cleanup_stale_watches():
     This runs on startup to clean up watches that expired during downtime/restarts.
     """
     try:
-        from db_connection import get_conn, ph as _ph
+        from db_manager import get_conn, ph as _ph
         
         # Calculate expiration cutoff: current time - (MAX_WATCH_BARS * 5 minutes)
         watch_window_minutes = MAX_WATCH_BARS * 5
@@ -622,7 +604,7 @@ def _load_watches_from_db() -> dict:
     Stale watches (older than MAX_WATCH_BARS window) are auto-cleaned before loading.
     """
     try:
-        from db_connection import get_conn, dict_cursor as _dc, ph as _ph, USE_POSTGRES as _USE_PG
+        from db_manager import get_conn, dict_cursor as _dc, ph as _ph, USE_POSTGRES as _USE_PG
         
         # First, clean up any stale watches
         _cleanup_stale_watches()
@@ -893,16 +875,18 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
                           bos_confirmation=None, bos_candle_type=None):
 
     # ════════════════════════════════════════════════════════════
-    # STEP 6.5 — OPTIONS PRE-VALIDATION GATE
+    # STEP 6.5 — OPTIONS PRE-VALIDATION GATE (via validation.py)
     # ════════════════════════════════════════════════════════════
     _pre_options_data = None
-    if OPTIONS_PRE_GATE_ENABLED and options_dm is not None:
+    if OPTIONS_PRE_GATE_ENABLED:
         try:
+            from validation import get_options_filter
+            options_filter = get_options_filter()
             _proxy_entry = bars_session[-1]["close"]
-            _opts_check  = options_dm.validate_for_trading(ticker, direction, _proxy_entry)
-            _tradeable   = _opts_check.get("tradeable", True)
-            _reason      = _opts_check.get("reason", "")
-            _pre_options_data = _opts_check
+            _tradeable, _opts_data, _reason = options_filter.validate_signal_for_options(
+                ticker, direction, _proxy_entry, _proxy_entry * 1.05  # Temp target for validation
+            )
+            _pre_options_data = _opts_data
 
             if OPTIONS_PRE_GATE_MODE == "HARD":
                 if not _tradeable:
@@ -918,13 +902,6 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
                     f"[{ticker}] {_gate_emoji} OPTIONS GATE [SOFT]: "
                     f"tradeable={_tradeable} | {_reason}"
                 )
-                if _opts_check.get("gex_data") and _opts_check["gex_data"].get("has_data"):
-                    _gd = _opts_check["gex_data"]
-                    print(
-                        f"[{ticker}]   GEX zone={('NEG' if _gd.get('neg_gex_zone') else 'POS')} "
-                        f"pin=${_gd.get('gamma_pin', 'N/A')} "
-                        f"flip=${_gd.get('gamma_flip', 'N/A')}"
-                    )
         except Exception as _gate_err:
             print(f"[{ticker}] OPTIONS GATE error (non-fatal): {_gate_err}")
             _pre_options_data = None
@@ -1365,7 +1342,7 @@ def clear_armed_signals():
     armed_signals.clear()
     _armed_loaded = False
     try:
-        from db_connection import get_conn
+        from db_manager import get_conn
         conn = get_conn()
         cursor = conn.cursor()
         cursor.execute("DELETE FROM armed_signals_persist")
@@ -1382,7 +1359,7 @@ def clear_watching_signals():
     watching_signals.clear()
     _watches_loaded = False
     try:
-        from db_connection import get_conn
+        from db_manager import get_conn
         conn = get_conn()
         cursor = conn.cursor()
         cursor.execute("DELETE FROM watching_signals_persist")
@@ -1415,7 +1392,8 @@ def process_ticker(ticker: str):
         # Checks VIX level, ADX trend strength, and whipsaw frequency.
         # 5-minute cache: evaluates once per cycle, not once per ticker.
         # ════════════════════════════════════════════════════════════
-        if REGIME_FILTER_ENABLED and regime_filter:
+        if REGIME_FILTER_ENABLED:
+            regime_filter = get_regime_filter()
             if not regime_filter.is_favorable_regime():
                 state = regime_filter.get_regime_state()
                 print(
@@ -1482,8 +1460,9 @@ def process_ticker(ticker: str):
                     print(f"[HOURLY GATE] EOD stats error: {e}")
             
             # EOD regime summary
-            if REGIME_FILTER_ENABLED and regime_filter:
+            if REGIME_FILTER_ENABLED:
                 try:
+                    regime_filter = get_regime_filter()
                     regime_filter.print_regime_summary()
                 except Exception as e:
                     print(f"[EOD] Regime summary error: {e}")
