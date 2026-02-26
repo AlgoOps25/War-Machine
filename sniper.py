@@ -37,9 +37,9 @@ from ai_learning import compute_confidence
 import config
 from bos_fvg_engine import scan_bos_fvg, is_force_close_time
 
-# ════════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 # PHASE 4 INTEGRATION - Signal Analytics & Performance Monitoring
-# ════════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 try:
     from signal_analytics import signal_tracker
     from performance_monitor import performance_monitor
@@ -68,9 +68,9 @@ _last_alert_check = datetime.now()
 DASHBOARD_UPDATE_INTERVAL_MINUTES = 30
 ALERT_CHECK_INTERVAL_MINUTES = 15
 
-# ════════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 # HOURLY CONFIDENCE GATE - Time-based adjustment from historical performance
-# ════════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 try:
     from hourly_gate import get_hourly_confidence_multiplier, get_current_hour_context, print_hourly_gate_stats
     HOURLY_GATE_ENABLED = True
@@ -91,16 +91,16 @@ VALIDATOR_TEST_MODE = False  # Set to False to enable filtering
 _validator_stats = {'tested': 0, 'passed': 0, 'filtered': 0, 'boosted': 0, 'penalized': 0}
 print("[SIGNALS] ✅ Multi-indicator validator ACTIVE (filtering enabled)")
 
-# ────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────
 # OPTIONS PRE-VALIDATION GATE - Now integrated into validation.py
-# ────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────
 OPTIONS_PRE_GATE_ENABLED = True
 print("[SNIPER] ✅ Options pre-validation gate enabled (via validation.py)")
 
-# ────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────
 # MTF INTEGRATION - Multi-timeframe FVG convergence
 # Non-fatal import: sniper works normally if MTF system unavailable.
-# ────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────
 try:
     from mtf_integration import enhance_signal_with_mtf, print_mtf_stats
     MTF_ENABLED = True
@@ -113,10 +113,10 @@ except ImportError:
     def print_mtf_stats():
         pass
 
-# ────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────
 # MTF FVG PRIORITY - Highest timeframe FVG selection
 # Non-fatal import: sniper works normally if priority resolver unavailable.
-# ────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────
 try:
     from mtf_fvg_priority import get_highest_priority_fvg, get_full_mtf_analysis, print_priority_stats
     MTF_PRIORITY_ENABLED = True
@@ -131,9 +131,9 @@ except ImportError:
     def print_priority_stats():
         pass
 
-# ────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────
 # CAPITAL PROTECTION SYSTEMS - Now using validation.py
-# ────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────
 REGIME_FILTER_ENABLED = True
 print("[SNIPER] ✅ Regime filter enabled (VIX/SPY market condition detection - via validation.py)")
 
@@ -146,7 +146,7 @@ except ImportError:
     CORRELATION_CHECK_ENABLED = False
     print("[SNIPER] ⚠️  Correlation check not available")
 
-# ── Global State ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+# ── Global State ──────────────────────────────────────────────────────────────────────────────────────────────────────
 armed_signals    = {}
 watching_signals   = {}
 _watches_loaded    = False   # True after first DB load attempt this session
@@ -162,9 +162,9 @@ INTRADAY_MIN_GRADES = {"A+", "A"}
 OPTIONS_PRE_GATE_MODE = "HARD"
 
 
-# ─────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────
 # HELPERS
-# ─────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────
 
 def _now_et():
     return datetime.now(ZoneInfo("America/New_York"))
@@ -183,7 +183,7 @@ def _strip_tz(dt):
 
 def log_proposed_trade(ticker, signal_type, direction, price, confidence, grade):
     try:
-        from db_manager import get_conn, ph, serial_pk
+        from db_connection import get_conn, ph, serial_pk
         conn = get_conn()
         cursor = conn.cursor()
         p = ph()
@@ -229,16 +229,16 @@ def print_validation_stats():
     print("="*80 + "\n")
 
 
-# ─────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────
 # ARMED SIGNALS DB PERSISTENCE
 # Survives Railway redeploys: armed signals survive restarts and prevent
 # duplicate Discord alerts for the same signal.
-# ─────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────
 
 def _ensure_armed_db():
     """Create armed_signals_persist table if it doesn't exist."""
     try:
-        from db_manager import get_conn
+        from db_connection import get_conn
         conn = get_conn()
         cursor = conn.cursor()
         cursor.execute("""
@@ -269,7 +269,7 @@ def _persist_armed_signal(ticker: str, data: dict):
     Serializes validation_result as JSON if present.
     """
     try:
-        from db_manager import get_conn, ph as _ph
+        from db_connection import get_conn, ph as _ph
         conn = get_conn()
         cursor = conn.cursor()
         p = _ph()
@@ -324,7 +324,7 @@ def _persist_armed_signal(ticker: str, data: dict):
 def _remove_armed_from_db(ticker: str):
     """Delete an armed signal entry from the DB."""
     try:
-        from db_manager import get_conn, ph as _ph
+        from db_connection import get_conn, ph as _ph
         conn = get_conn()
         cursor = conn.cursor()
         p = _ph()
@@ -343,7 +343,7 @@ def _cleanup_stale_armed_signals():
     This syncs the armed_signals table with position_manager state.
     """
     try:
-        from db_manager import get_conn
+        from db_connection import get_conn
         
         # Get list of open position IDs from position_manager
         open_positions = position_manager.get_open_positions()
@@ -388,7 +388,7 @@ def _load_armed_signals_from_db() -> dict:
     Stale signals (closed positions) are auto-cleaned before loading.
     """
     try:
-        from db_manager import get_conn, dict_cursor as _dc, ph as _ph, USE_POSTGRES as _USE_PG
+        from db_connection import get_conn, dict_cursor as _dc, ph as _ph, USE_POSTGRES as _USE_PG
         
         # First, clean up stale armed signals
         _cleanup_stale_armed_signals()
@@ -472,7 +472,7 @@ def _maybe_load_armed_signals():
         armed_signals.update(loaded)
 
 
-# ─────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────
 # WATCH STATE DB PERSISTENCE
 # Survives Railway redeploys: watches are written to the DB as they are set,
 # and reloaded on the first process_ticker() call after a restart.
@@ -483,12 +483,12 @@ def _maybe_load_armed_signals():
 # SMART EXPIRATION: On load, watches older than MAX_WATCH_BARS * 5min are
 # automatically removed from DB. This handles Railway restarts gracefully
 # without manual intervention.
-# ─────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────
 
 def _ensure_watch_db():
     """Create watching_signals_persist table if it doesn't exist."""
     try:
-        from db_manager import get_conn
+        from db_connection import get_conn
         conn = get_conn()
         cursor = conn.cursor()
         cursor.execute("""
@@ -514,7 +514,7 @@ def _persist_watch(ticker: str, data: dict):
     'data' must contain: direction, breakout_bar_dt, or_high, or_low, signal_type.
     """
     try:
-        from db_manager import get_conn, ph as _ph
+        from db_connection import get_conn, ph as _ph
         conn = get_conn()
         cursor = conn.cursor()
         p = _ph()
@@ -549,7 +549,7 @@ def _persist_watch(ticker: str, data: dict):
 def _remove_watch_from_db(ticker: str):
     """Delete a single watch entry from the DB."""
     try:
-        from db_manager import get_conn, ph as _ph
+        from db_connection import get_conn, ph as _ph
         conn = get_conn()
         cursor = conn.cursor()
         p = _ph()
@@ -569,7 +569,7 @@ def _cleanup_stale_watches():
     This runs on startup to clean up watches that expired during downtime/restarts.
     """
     try:
-        from db_manager import get_conn, ph as _ph
+        from db_connection import get_conn, ph as _ph
         
         # Calculate expiration cutoff: current time - (MAX_WATCH_BARS * 5 minutes)
         watch_window_minutes = MAX_WATCH_BARS * 5
@@ -604,7 +604,7 @@ def _load_watches_from_db() -> dict:
     Stale watches (older than MAX_WATCH_BARS window) are auto-cleaned before loading.
     """
     try:
-        from db_manager import get_conn, dict_cursor as _dc, ph as _ph, USE_POSTGRES as _USE_PG
+        from db_connection import get_conn, dict_cursor as _dc, ph as _ph, USE_POSTGRES as _USE_PG
         
         # First, clean up any stale watches
         _cleanup_stale_watches()
@@ -672,9 +672,9 @@ def _maybe_load_watches():
         watching_signals.update(loaded)
 
 
-# ─────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────
 # PHASE 4 PERIODIC CHECKS
-# ─────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────
 
 def _check_performance_dashboard():
     """
@@ -726,9 +726,9 @@ def _check_performance_alerts():
             print(f"[PHASE 4] Alert check error: {e}")
 
 
-# ─────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────
 # CORRELATION HELPERS (legacy Pearson — kept for fallback)
-# ─────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────
 
 def _pearson_corr(xs, ys) -> float:
     n = len(xs)
@@ -791,9 +791,9 @@ def _is_highly_correlated(ticker: str, open_positions: list,
     return False
 
 
-# ─────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────
 # PHASE 1 — WATCH ALERT
-# ─────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────
 
 def send_bos_watch_alert(ticker, direction, bos_price, struct_high, struct_low,
                           signal_type="CFW6_INTRADAY"):
@@ -813,9 +813,9 @@ def send_bos_watch_alert(ticker, direction, bos_price, struct_high, struct_low,
         print(f"[WATCH] Alert error: {e}")
 
 
-# ─────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────
 # OPENING RANGE
-# ─────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────
 
 def compute_opening_range_from_bars(bars):
     or_bars = [b for b in bars if _bar_time(b) and time(9,30) <= _bar_time(b) < time(9,40)]
@@ -830,9 +830,9 @@ def compute_premarket_range(bars):
     return max(b["high"] for b in pm_bars), min(b["low"] for b in pm_bars)
 
 
-# ─────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────
 # BREAKOUT & FVG (OR path)
-# ─────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────
 
 def detect_breakout_after_or(bars, or_high, or_low):
     for i, bar in enumerate(bars):
@@ -865,18 +865,18 @@ def detect_fvg_after_break(bars, breakout_idx, direction):
     return None, None
 
 
-# ─────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────
 # PHASE 2 — SIGNAL PIPELINE (Steps 6.5–12)
-# ─────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────
 
 def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
                           or_high_ref, or_low_ref, signal_type,
                           bars_session, breakout_idx,
                           bos_confirmation=None, bos_candle_type=None):
 
-    # ════════════════════════════════════════════════════════════
+    # ══════════════════════════════════════════════════════════════════════════════
     # STEP 6.5 — OPTIONS PRE-VALIDATION GATE (via validation.py)
-    # ════════════════════════════════════════════════════════════
+    # ══════════════════════════════════════════════════════════════════════════════
     _pre_options_data = None
     if OPTIONS_PRE_GATE_ENABLED:
         try:
@@ -929,9 +929,9 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         return False
     final_grade = conf_result["final_grade"]
 
-    # ════════════════════════════════════════════════════════════
+    # ══════════════════════════════════════════════════════════════════════════════
     # STEP 8.2 — MTF CONVERGENCE DETECTION
-    # ════════════════════════════════════════════════════════════
+    # ══════════════════════════════════════════════════════════════════════════════
     mtf_result = enhance_signal_with_mtf(
         ticker=ticker,
         direction=direction,
@@ -948,9 +948,9 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
     else:
         print(f"[{ticker}] MTF: {mtf_result['reason']}")
 
-    # ════════════════════════════════════════════════════════════
+    # ══════════════════════════════════════════════════════════════════════════════
     # PHASE 4 INTEGRATION POINT #2 - Track Signal Generated
-    # ════════════════════════════════════════════════════════════
+    # ══════════════════════════════════════════════════════════════════════════════
     _prelim_stop, _prelim_t1, _prelim_t2 = compute_stop_and_targets(
         bars_session, direction, or_high_ref, or_low_ref, entry_price,
         grade=final_grade
@@ -1033,9 +1033,9 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
                 if failed:
                     print(f"[VALIDATOR TEST]   Would filter: {', '.join(failed)}")
             
-            # ════════════════════════════════════════════════════════════
+            # ══════════════════════════════════════════════════════════════════════════════
             # PHASE 4 INTEGRATION POINT #3 - Track Validation Result
-            # ════════════════════════════════════════════════════════════
+            # ══════════════════════════════════════════════════════════════════════════════
             if PHASE_4_ENABLED and signal_tracker:
                 try:
                     # Extract multiplier data from validation metadata
@@ -1128,9 +1128,9 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         f"= {final_confidence:.2f}"
     )
 
-    # ════════════════════════════════════════════════════════════
+    # ══════════════════════════════════════════════════════════════════════════════
     # STEP 11b — CONFIDENCE THRESHOLD GATE (DYNAMIC + HOURLY)
-    # ════════════════════════════════════════════════════════════
+    # ══════════════════════════════════════════════════════════════════════════════
     try:
         from dynamic_thresholds import get_dynamic_threshold
         eff_min = get_dynamic_threshold(signal_type, final_grade)
@@ -1174,9 +1174,9 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
 
     print(f"[{ticker}] ✅ GATE PASSED: {final_confidence:.2f} >= {eff_min:.2f} (dynamic)")
     
-    # ════════════════════════════════════════════════════════════
+    # ══════════════════════════════════════════════════════════════════════════════
     # PHASE 4 INTEGRATION POINT #4 - Track Signal Armed
-    # ════════════════════════════════════════════════════════════
+    # ══════════════════════════════════════════════════════════════════════════════
     if PHASE_4_ENABLED and signal_tracker:
         try:
             bars_to_confirmation = len(bars_session) - confirm_idx if confirm_idx else 0
@@ -1204,9 +1204,9 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
     return True
 
 
-# ─────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────
 # ARM
-# ─────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────
 
 def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high,
                entry_price, stop_price, t1, t2, confidence, grade,
@@ -1217,9 +1217,9 @@ def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high,
         print(f"[ARM] ⚠️ {ticker} stop too tight — skipping")
         return
 
-    # ════════════════════════════════════════════════════════════
+    # ══════════════════════════════════════════════════════════════════════════════
     # PHASE 4 INTEGRATION POINT #5 - Circuit Breaker Check
-    # ════════════════════════════════════════════════════════════
+    # ══════════════════════════════════════════════════════════════════════════════
     if PHASE_4_ENABLED and performance_monitor:
         try:
             cb_status = performance_monitor.get_circuit_breaker_status()
@@ -1242,10 +1242,10 @@ def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high,
 
     open_positions = position_manager.get_open_positions()
 
-    # ════════════════════════════════════════════════════════════
+    # ══════════════════════════════════════════════════════════════════════════════
     # CORRELATION CHECK — sector-aware over-leverage prevention
     # Replaces legacy _is_highly_correlated() with sector + ETF overlap detection
-    # ════════════════════════════════════════════════════════════
+    # ══════════════════════════════════════════════════════════════════════════════
     if CORRELATION_CHECK_ENABLED and correlation_checker:
         safe, warning = correlation_checker.is_safe_to_add_position(
             ticker=ticker,
@@ -1319,9 +1319,9 @@ def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high,
 
     print(f"[ARMED] {ticker} ID:{position_id}")
     
-    # ════════════════════════════════════════════════════════════
+    # ══════════════════════════════════════════════════════════════════════════════
     # PHASE 4 INTEGRATION POINT #6 - Check Alerts After Position Opens
-    # ════════════════════════════════════════════════════════════
+    # ══════════════════════════════════════════════════════════════════════════════
     if PHASE_4_ENABLED and alert_manager:
         try:
             alerts = alert_manager.check_all_conditions()
@@ -1342,7 +1342,7 @@ def clear_armed_signals():
     armed_signals.clear()
     _armed_loaded = False
     try:
-        from db_manager import get_conn
+        from db_connection import get_conn
         conn = get_conn()
         cursor = conn.cursor()
         cursor.execute("DELETE FROM armed_signals_persist")
@@ -1359,7 +1359,7 @@ def clear_watching_signals():
     watching_signals.clear()
     _watches_loaded = False
     try:
-        from db_manager import get_conn
+        from db_connection import get_conn
         conn = get_conn()
         cursor = conn.cursor()
         cursor.execute("DELETE FROM watching_signals_persist")
@@ -1370,9 +1370,9 @@ def clear_watching_signals():
     print("[WATCHING] Cleared")
 
 
-# ─────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────
 # MAIN PROCESS TICKER
-# ─────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────
 
 def process_ticker(ticker: str):
     try:
@@ -1381,17 +1381,17 @@ def process_ticker(ticker: str):
         _maybe_load_watches()
         _maybe_load_armed_signals()
         
-        # ════════════════════════════════════════════════════════════
+        # ══════════════════════════════════════════════════════════════════════════════
         # PHASE 4 PERIODIC CHECKS - Dashboard & Alerts
-        # ════════════════════════════════════════════════════════════
+        # ══════════════════════════════════════════════════════════════════════════════
         _check_performance_dashboard()
         _check_performance_alerts()
 
-        # ════════════════════════════════════════════════════════════
+        # ══════════════════════════════════════════════════════════════════════════════
         # REGIME FILTER — skip ALL new signals in unfavorable tape
         # Checks VIX level, ADX trend strength, and whipsaw frequency.
         # 5-minute cache: evaluates once per cycle, not once per ticker.
-        # ════════════════════════════════════════════════════════════
+        # ══════════════════════════════════════════════════════════════════════════════
         if REGIME_FILTER_ENABLED:
             regime_filter = get_regime_filter()
             if not regime_filter.is_favorable_regime():
@@ -1435,9 +1435,9 @@ def process_ticker(ticker: str):
             print_mtf_stats()
             print_priority_stats()
             
-            # ════════════════════════════════════════════════════════════
+            # ══════════════════════════════════════════════════════════════════════════════
             # PHASE 4 EOD REPORTS
-            # ════════════════════════════════════════════════════════════
+            # ══════════════════════════════════════════════════════════════════════════════
             if PHASE_4_ENABLED:
                 try:
                     # Signal funnel analytics
@@ -1450,9 +1450,9 @@ def process_ticker(ticker: str):
                 except Exception as e:
                     print(f"[PHASE 4] EOD report error: {e}")
             
-            # ════════════════════════════════════════════════════════════
+            # ══════════════════════════════════════════════════════════════════════════════
             # HOURLY GATE EOD STATS
-            # ════════════════════════════════════════════════════════════
+            # ══════════════════════════════════════════════════════════════════════════════
             if HOURLY_GATE_ENABLED:
                 try:
                     print_hourly_gate_stats()
@@ -1478,7 +1478,7 @@ def process_ticker(ticker: str):
             
             return
 
-        # ── WATCHING STATE ────────────────────────────────────────────────────────
+        # ── WATCHING STATE ────────────────────────────────────────────────────────────
         if ticker in watching_signals:
             w = watching_signals[ticker]
 
@@ -1526,7 +1526,7 @@ def process_ticker(ticker: str):
                 _remove_watch_from_db(ticker)
                 return
 
-        # ── FRESH SCAN ────────────────────────────────────────────────────────────
+        # ── FRESH SCAN ────────────────────────────────────────────────────────────────
         direction = breakout_idx = zone_low = zone_high = None
         or_high_ref = or_low_ref = scan_mode = None
         bos_confirmation = bos_candle_type = None
@@ -1573,7 +1573,7 @@ def process_ticker(ticker: str):
         else:
             print(f"[{ticker}] No OR bars")
 
-        # ── INTRADAY BOS+FVG PATH (with MTF priority resolver) ───────────────────
+        # ── INTRADAY BOS+FVG PATH (with MTF priority resolver) ────────────────────────
         if scan_mode is None:
             if len(bars_session) < 30:
                 return
