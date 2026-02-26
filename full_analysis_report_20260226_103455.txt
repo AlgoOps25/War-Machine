@@ -1,0 +1,68 @@
+================================================================================
+CONFIRMATION PATTERN ANALYSIS - DATA-DRIVEN INSIGHTS
+================================================================================
+
+[1] SIGNAL GRADE PERFORMANCE
+--------------------------------------------------------------------------------
+Empty DataFrame
+Columns: [grade, total_signals, wins, losses, avg_win_pct, avg_loss_pct, avg_return_pct, avg_confidence, win_rate]
+Index: []
+
+[2] LOSING SIGNAL TIMING ANALYSIS
+--------------------------------------------------------------------------------
+No losing signals found
+
+[3] WINNING SIGNAL HOLD TIME ANALYSIS
+--------------------------------------------------------------------------------
+No winning signals found
+
+[4] POST-BREAKOUT PRICE ACTION ANALYSIS
+--------------------------------------------------------------------------------
+No signals with fill data
+
+================================================================================
+RECOMMENDED CONFIRMATION CRITERIA (DATA-DRIVEN)
+================================================================================
+
+Based on analysis above, recommendations will be generated...
+(To be implemented based on actual data patterns found)
+
+
+================================================================================
+DATA-DRIVEN CONFIRMATION RECOMMENDATIONS
+================================================================================
+
+[STRATEGY] 🎯 Entry Placement Optimization
+  Current Issue: Entering AT resistance = buying at top
+
+  RECOMMENDATION #4: Entry Above Breakout
+  - Entry Price = Resistance * 1.0015 (0.15% above)
+  - Confirms breakout is holding before entry
+  - Avoids false breakouts at exact level
+
+[RISK] 🛡️ Stop Loss Optimization
+  Current: 1.5 ATR stop (too tight for intraday volatility)
+
+  RECOMMENDATION #5: Wider Stops
+  - ATR Multiplier: 2.0 (was 1.5)
+  - Gives breakout room to breathe
+  - Reduces stop-outs from normal noise
+
+================================================================================
+IMPLEMENTATION PRIORITY (High to Low Impact)
+================================================================================
+
+Priority 1 (Quick Wins - Deploy Today):
+  ✅ Entry 0.15% above breakout
+  ✅ 2-bar holding period requirement
+  ✅ Widen stops to 2.0 ATR
+
+Priority 2 (Data-Driven - Deploy This Week):
+  🔧 Hold rate filter (data-backed threshold)
+  🔧 Volume confirmation adjustment (if needed)
+  🔧 Confidence penalty for weak confirmation
+
+Priority 3 (Advanced - Phase 2.0):
+  🚀 ML-based confirmation (train on enriched features)
+  🚀 Retest/pullback entry mode
+  🚀 Multi-timeframe convergence filter

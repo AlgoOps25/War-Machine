@@ -217,7 +217,7 @@ def main():
         # Save to CSV
         timestamp = datetime.now(ET).strftime("%Y%m%d_%H%M%S")
         features_filename = f"ml_features_{timestamp}.csv"
-        features_df.to_csv(features_filename, index=False)
+        features_df.to_csv(features_filename, index=False, encoding='utf-8')
         print(f"\n✅ ML features saved to: {features_filename}\n")
         
     except Exception as e:
@@ -240,10 +240,11 @@ def main():
     timestamp = datetime.now(ET).strftime("%Y%m%d_%H%M%S")
     report_filename = f"full_analysis_report_{timestamp}.txt"
     
-    with open(report_filename, 'w') as f:
+    with open(report_filename, 'w', encoding='utf-8') as f:
         f.write(basic_report)
         f.write("\n\n")
         f.write(recommendations)
+
     
     print(f"\n✅ Full report saved to: {report_filename}\n")
     print("="*80)
