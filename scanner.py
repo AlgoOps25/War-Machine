@@ -10,7 +10,7 @@ from datetime import datetime, time as dtime
 from zoneinfo import ZoneInfo
 import config
 
-from data_manager import data_manager, cleanup_old_bars
+from data_manager import data_manager
 from position_manager import position_manager
 from ws_feed import start_ws_feed, subscribe_tickers, set_backfill_complete
 from scanner_optimizer import (
@@ -373,7 +373,7 @@ def start_scanner_loop():
 
                     # 4. DATABASE CLEANUP
                     try:
-                        cleanup_old_bars(days_to_keep=60)
+                        data_manager.cleanup_old_bars(days_to_keep=60)
                     except Exception as e:
                         print(f"[CLEANUP] Error: {e}")
 
