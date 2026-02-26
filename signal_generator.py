@@ -10,6 +10,7 @@ Responsibilities:
   - [NEW] Multi-indicator validation (Test Mode - no filtering yet)
   - [Phase 1.8] PDH/PDL-aware breakout detection via ticker parameter
   - [FIX] Cooldown only triggers AFTER validation passes (Issue #3)
+  - [Phase 1.9] Data-driven DTE selection with EODHD options intelligence
 """
 from typing import Dict, List, Optional
 from datetime import datetime, timedelta
@@ -38,6 +39,16 @@ try:
 except ImportError:
     VALIDATOR_ENABLED = False
     print("[SIGNALS] ⚠️  signal_validator not available - multi-indicator validation disabled")
+
+# Import DTE selector for data-driven options expiration logic
+try:
+    from options_dte_selector import dte_selector, get_optimal_dte
+    DTE_SELECTOR_ENABLED = True
+    print("[SIGNALS] ✅ Options DTE selector enabled (data-driven expiration logic)")
+except ImportError:
+    DTE_SELECTOR_ENABLED = False
+    dte_selector = None
+    print("[SIGNALS] ⚠️  options_dte_selector not available - using time-based fallback")
 
 ET = ZoneInfo("America/New_York")
 
@@ -129,6 +140,7 @@ class SignalGenerator:
         
         Phase 1.8: Now passes ticker to detector for PDH/PDL-aware analysis.
         Issue #3 Fix: Cooldown check moved AFTER validation - only validated signals trigger cooldown.
+        Phase 1.9: Adds data-driven DTE selection for options recommendations.
         
         Args:
             ticker: Stock ticker to check
@@ -232,6 +244,25 @@ class SignalGenerator:
         self.recent_signals[ticker] = datetime.now(ET)
         print(f"[SIGNALS] {ticker} cooldown started ({self.cooldown_minutes}m)")
         
+        # === Phase 1.9: DATA-DRIVEN DTE SELECTION ===
+        if DTE_SELECTOR_ENABLED and dte_selector:
+            try:
+                dte_recommendation = get_optimal_dte(
+                    ticker=ticker,
+                    entry_price=signal['entry'],
+                    direction=signal['signal'],
+                    confidence=signal['confidence']
+                )
+                
+                if dte_recommendation:
+                    signal['options_dte'] = dte_recommendation
+                    print(f"[OPTIONS-DTE] {ticker} DTE: {dte_recommendation.get('dte', 'N/A')} "
+                          f"(Score: {dte_recommendation.get('confidence_pct', 0)}%)")
+                else:
+                    print(f"[OPTIONS-DTE] {ticker} - No DTE recommendation available")
+            except Exception as e:
+                print(f"[OPTIONS-DTE] Error calculating DTE for {ticker}: {e}")
+        
         # Log signal to analytics database (NEW Phase 4 integration)
         if ANALYTICS_ENABLED and signal_tracker:
             try:
@@ -282,7 +313,9 @@ class SignalGenerator:
     
     def send_signal_alert(self, signal: Dict, send_discord: bool = True) -> None:
         """
-        Send alert for detected signal.
+        Send alert for detected signal with enhanced Discord formatting.
+        
+        Phase 1.9: Now includes options DTE recommendation in Discord alert.
         
         Args:
             signal: Signal dict from detector
@@ -308,24 +341,133 @@ class SignalGenerator:
         
         if 'signal_id' in signal:
             print(f"Signal ID: {signal['signal_id']} (tracked in analytics DB)")
+        
+        # Add DTE recommendation
+        if 'options_dte' in signal:
+            dte_info = signal['options_dte']
+            print(f"\nOptions DTE Recommendation:")
+            print(f"  Selected: {dte_info.get('dte', 'N/A')}DTE")
+            print(f"  Confidence: {dte_info.get('confidence_pct', 0)}%")
+            print(f"  Time Remaining: {dte_info.get('time_remaining_hours', 0):.1f} hours")
+        
         print("="*70 + "\n")
         
-        # Discord alert
+        # Discord alert with enhanced formatting
         if send_discord:
             try:
-                msg = f"🚨 **BREAKOUT ALERT**\n{format_signal_message(ticker, signal)}"
-                
-                # Add validation test info to Discord
-                if 'validation_test' in signal:
-                    val = signal['validation_test']
-                    status_emoji = "✅" if val['should_pass'] else "⚠️"
-                    msg += f"\n\n{status_emoji} **Validation Test:** {val['check_score']} checks"
-                    msg += f"\nConfidence: {val['original_confidence']}% → {val['adjusted_confidence']}%"
-                
+                msg = self._format_discord_alert(signal)
                 send_simple_message(msg)
                 print(f"[SIGNALS] Discord alert sent for {ticker}")
             except Exception as e:
                 print(f"[SIGNALS] Discord error: {e}")
+    
+    def _format_discord_alert(self, signal: Dict) -> str:
+        """
+        Format enhanced Discord alert message with DTE recommendations.
+        
+        Args:
+            signal: Signal dict
+        
+        Returns:
+            Formatted Discord message
+        """
+        ticker = signal['ticker']
+        direction = signal['signal']
+        entry = signal['entry']
+        stop = signal['stop']
+        target = signal['target']
+        confidence = signal['confidence']
+        
+        # Calculate risk/reward
+        risk = abs(entry - stop)
+        reward = abs(target - entry)
+        rr_ratio = reward / risk if risk > 0 else 0
+        
+        # Build message
+        msg = f"🚨 **{ticker} {direction} BREAKOUT** 🚨\n\n"
+        
+        # Entry guidance
+        entry_range_low = entry * 0.9985
+        entry_range_high = entry * 1.0015
+        msg += f"📍 **ENTRY GUIDANCE:**\n"
+        msg += f"   Limit Range: ${entry_range_low:.2f} - ${entry_range_high:.2f}\n"
+        msg += f"   Current Price: ${entry:.2f}\n"
+        msg += f"   Entry Window: Next 2-5 minutes\n\n"
+        
+        # Risk management
+        msg += f"🛡️ **RISK MANAGEMENT:**\n"
+        msg += f"   Stop Loss: ${stop:.2f} ({((stop - entry) / entry * 100):+.2f}%)\n"
+        msg += f"   Target: ${target:.2f} ({((target - entry) / entry * 100):+.2f}%)\n"
+        msg += f"   R:R Ratio: {rr_ratio:.2f}:1\n\n"
+        
+        # Signal quality
+        msg += f"📊 **SIGNAL QUALITY:**\n"
+        msg += f"   Confidence: {confidence}%\n"
+        msg += f"   Pattern: {signal.get('pattern', 'BOS/FVG Breakout')}\n"
+        msg += f"   Timeframe: Multi-TF Convergence\n\n"
+        
+        # === OPTIONS RECOMMENDATION (DTE) ===
+        if 'options_dte' in signal:
+            dte_info = signal['options_dte']
+            selected_dte = dte_info.get('dte')
+            
+            if selected_dte is not None:
+                msg += f"📈 **OPTIONS RECOMMENDATION:**\n"
+                msg += f"   ✅ **SELECTED: {selected_dte}DTE** (Expires {'Today' if selected_dte == 0 else 'Tomorrow'} 4:00 PM)\n\n"
+                
+                # Data analysis summary
+                factors = dte_info.get('data_factors', {})
+                time_hrs = dte_info.get('time_remaining_hours', 0)
+                
+                msg += f"   **Data Analysis:**\n"
+                msg += f"   {'✅' if factors.get('time_adequate') else '❌'} Time Adequate: {time_hrs:.1f} hours remaining\n"
+                msg += f"   {'✅' if factors.get('dte_0_liquid') else '❌'} Liquidity {'Strong' if factors.get('dte_0_liquid') else 'Weak'}\n"
+                msg += f"   {'✅' if factors.get('dte_0_theta_acceptable') else '❌'} Theta {'Acceptable' if factors.get('dte_0_theta_acceptable') else 'Aggressive'}\n"
+                msg += f"   {'✅' if factors.get('dte_0_spread_tight') else '❌'} Spread {'Tight' if factors.get('dte_0_spread_tight') else 'Wide'}\n"
+                msg += f"   {'✅' if factors.get('iv_favorable') else '❌'} IV {'Fair' if factors.get('iv_favorable') else 'Inflated'}\n\n"
+                
+                # Strike recommendations
+                strikes = dte_info.get('recommended_strikes', [])
+                if strikes:
+                    for i, strike in enumerate(strikes[:2], 1):
+                        label = "RECOMMENDED" if i == 1 else "Alternative"
+                        msg += f"   **Strike #{i} ({label}):**\n"
+                        msg += f"   - {strike['strike']}{'C' if direction == 'BUY' else 'P'} | Exp: {strike['exp_date']} | Score: {strike['score']}/30\n"
+                        msg += f"   - Delta: {strike['delta']:.2f} | Theta: {strike.get('theta', 0):.2f}\n"
+                        msg += f"   - Bid/Ask: ${strike['bid']:.2f} / ${strike['ask']:.2f} ({strike['spread_pct']:.1f}% spread)\n"
+                        msg += f"   - OI: {strike['open_interest']:,} | Volume: {strike['volume']:,}\n\n"
+            else:
+                # Skip signal
+                msg += f"🚫 **OPTIONS:** {dte_info.get('reasoning', 'No recommendation available')}\n\n"
+        else:
+            # Fallback time-based
+            now_et = datetime.now(ET)
+            market_close = now_et.replace(hour=16, minute=0, second=0, microsecond=0)
+            hours_left = (market_close - now_et).total_seconds() / 3600
+            
+            if hours_left >= 2.5:
+                msg += f"📈 **OPTIONS RECOMMENDATION:**\n"
+                msg += f"   ⏰ 0DTE (Expires Today 4:00 PM)\n"
+                msg += f"   Time Remaining: {hours_left:.1f} hours\n\n"
+            elif hours_left >= 1.5:
+                msg += f"📅 **OPTIONS RECOMMENDATION:**\n"
+                msg += f"   📆 1DTE (Expires Tomorrow 4:00 PM)\n"
+                msg += f"   Reason: Limited time today ({hours_left:.1f} hrs)\n\n"
+            else:
+                msg += f"🚫 **OPTIONS:** Too close to market close\n\n"
+        
+        # Timestamp and holding guidance
+        msg += f"⏰ **Signal Time:** {datetime.now(ET).strftime('%I:%M:%S %p ET')}\n"
+        msg += f"⏳ **Hold Time:** 15-30 minutes max"
+        
+        # Add validation test info if available
+        if 'validation_test' in signal:
+            val = signal['validation_test']
+            status_emoji = "✅" if val['should_pass'] else "⚠️"
+            msg += f"\n\n{status_emoji} **Validation:** {val['check_score']} checks | "
+            msg += f"Conf: {val['original_confidence']}% → {val['adjusted_confidence']}%"
+        
+        return msg
     
     def update_signal_status(self, ticker: str, current_price: float) -> Optional[str]:
         """
