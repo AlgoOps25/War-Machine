@@ -17,16 +17,23 @@ Integration:
 - Marks lower-TF FVGs as "secondary" for confluence tracking only
 """
 
-from datetime import datetime, time, timedelta
+from datetime import datetime, time
 from typing import List, Dict, Optional, Tuple
 from zoneinfo import ZoneInfo
 import config
 
-ET = ZoneInfo("America/New_York")
+# ════════════════════════════════════════════════════════════════════════════════
+# PHASE 3E: Import consolidated timeframe compression + metadata
+# ════════════════════════════════════════════════════════════════════════════════
+from mtf_compression import (
+    compress_to_3m,
+    compress_to_2m,
+    compress_to_1m,
+    TIMEFRAME_PRIORITY,
+    TIMEFRAME_WEIGHTS
+)
 
-# Timeframe priority (highest to lowest)
-TIMEFRAME_PRIORITY = ['5m', '3m', '2m', '1m']
-TIMEFRAME_WEIGHTS = {'5m': 1.00, '3m': 0.85, '2m': 0.70, '1m': 0.55}
+ET = ZoneInfo("America/New_York")
 
 # Stats tracking
 _priority_stats = {
@@ -35,70 +42,6 @@ _priority_stats = {
     'primary_tf_breakdown': {'5m': 0, '3m': 0, '2m': 0, '1m': 0},
     'confluence_found': 0
 }
-
-
-# ════════════════════════════════════════════════════════════════════════════════
-# TIMEFRAME COMPRESSION (from mtf_integration.py)
-# ════════════════════════════════════════════════════════════════════════════════
-
-def compress_to_3m(bars_5m: List[dict]) -> List[dict]:
-    """Compress 5m bars to approximate 3m bars."""
-    bars_3m = []
-    for bar in bars_5m:
-        bar_time = bar['datetime']
-        mid_price = (bar['open'] + bar['close']) / 2
-        mid_high = (bar['open'] + bar['high']) / 2
-        mid_low = (bar['open'] + bar['low']) / 2
-        
-        bars_3m.append({
-            'datetime': bar_time,
-            'open': bar['open'],
-            'high': max(bar['open'], mid_high),
-            'low': min(bar['open'], mid_low),
-            'close': mid_price,
-            'volume': bar['volume'] * 0.6
-        })
-    return bars_3m
-
-
-def compress_to_2m(bars_5m: List[dict]) -> List[dict]:
-    """Compress 5m bars to approximate 2m bars."""
-    bars_2m = []
-    for bar in bars_5m:
-        bar_time = bar['datetime']
-        third_1 = bar['open'] + (bar['close'] - bar['open']) * 0.4
-        
-        bars_2m.append({
-            'datetime': bar_time,
-            'open': bar['open'],
-            'high': max(bar['open'], third_1, bar['high'] * 0.3 + bar['open'] * 0.7),
-            'low': min(bar['open'], third_1, bar['low'] * 0.3 + bar['open'] * 0.7),
-            'close': third_1,
-            'volume': bar['volume'] * 0.4
-        })
-    return bars_2m
-
-
-def compress_to_1m(bars_5m: List[dict]) -> List[dict]:
-    """Compress 5m bars to approximate 1m bars."""
-    bars_1m = []
-    for bar in bars_5m:
-        bar_time = bar['datetime']
-        price_range = bar['close'] - bar['open']
-        
-        for i in range(5):
-            step_open = bar['open'] + price_range * (i / 5.0)
-            step_close = bar['open'] + price_range * ((i + 1) / 5.0)
-            
-            bars_1m.append({
-                'datetime': bar_time + timedelta(minutes=i),
-                'open': step_open,
-                'high': max(step_open, step_close, bar['high'] if i == 2 else step_open),
-                'low': min(step_open, step_close, bar['low'] if i == 3 else step_open),
-                'close': step_close,
-                'volume': bar['volume'] / 5.0
-            })
-    return bars_1m
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -185,7 +128,7 @@ def scan_all_timeframes_for_fvgs(
     if fvg_5m:
         fvgs.append(fvg_5m)
     
-    # Derive lower timeframes
+    # Derive lower timeframes using consolidated compression module
     bars_3m = compress_to_3m(bars_5m)
     bars_2m = compress_to_2m(bars_5m)
     bars_1m = compress_to_1m(bars_5m)
