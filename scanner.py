@@ -421,36 +421,46 @@ def start_scanner_loop():
 
 
 def get_screener_tickers(min_market_cap: int = 1_000_000_000, limit: int = 50) -> list:
-    """Screener function using EODHD API."""
+    """Screener function using EODHD API.
+
+    Valid sort fields: market_capitalization, adjusted_close, avgvol_1d, avgvol_200d,
+                       refund_1d_p, refund_5d_p, refund_1m_p, refund_6m_p, refund_1y_p
+    Valid filter fields: same as above, plus 'exchange' (string match).
+    exchange value must be lowercase: 'us', 'nasdaq', 'nyse', etc.
+    """
     import requests
     import json
-    url    = "https://eodhd.com/api/screener"
+    url = "https://eodhd.com/api/screener"
     params = {
         "api_token": config.EODHD_API_KEY,
         "filters": json.dumps([
             ["market_capitalization", ">=", min_market_cap],
-            ["volume",               ">=", 1000000],
-            ["exchange",             "=",  "US"]
+            ["avgvol_1d",            ">=", 1_000_000],
+            ["exchange",             "=",  "us"]        # lowercase required
         ]),
-        "limit": limit,
-        "sort":  "volume.desc"
+        "sort":   "avgvol_1d.desc",  # valid field, plain string (NOT JSON-encoded)
+        "limit":  limit,
+        "offset": 0
     }
     try:
         response = requests.get(url, params=params, timeout=15)
-        response.raise_for_status()
-        data    = response.json()
+        if response.status_code != 200:
+            print(f"[SCREENER] HTTP {response.status_code}: {response.text[:300]}")
+            response.raise_for_status()
+        data = response.json()
+        if not isinstance(data, dict) or "data" not in data:
+            print(f"[SCREENER] Unexpected response shape: {str(data)[:300]}")
+            return []
         tickers = []
-        if isinstance(data, dict) and "data" in data:
-            for item in data["data"]:
-                code = item.get("code")
-                if code:
-                    tickers.append(code.replace(".US", ""))
-        print(f"[SCREENER] Fetched {len(tickers)} tickers")
+        for item in data["data"]:
+            code = item.get("code")
+            if code:
+                tickers.append(code.replace(".US", "").replace(".us", ""))
+        print(f"[SCREENER] ✅ Fetched {len(tickers)} tickers (total available: {data.get('total', '?')})")
         return tickers[:limit]
     except Exception as e:
         print(f"[SCREENER] Error: {e}")
         return []
-
 
 # ── Entry point ──────────────────────────────────────────────────────────────
 if __name__ == "__main__":
