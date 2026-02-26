@@ -2,14 +2,12 @@
 Position Manager - Consolidated Position Tracking, Sizing, and Win Rate Analysis
 Replaces: position_tracker.py, position_sizing.py, win_rate_tracker.py
 
-Phase 1.9 Enhancements:
+Features:
   - Portfolio-level risk tracking (max drawdown, exposure limits)
   - Correlation-based position limits (sector/ticker concentration)
   - Dynamic position sizing (performance-based adjustment)
   - Risk/reward validation (minimum R:R requirements)
   - Circuit breaker (daily loss limits)
-  
-Phase 4 Integration:
   - Signal tracking when trades execute (links signals to positions)
 """
 import config
@@ -18,21 +16,17 @@ from typing import Dict, List, Optional, Tuple
 import db_connection
 from db_connection import get_conn, ph, dict_cursor, serial_pk
 
-# ══════════════════════════════════════════════════════════════════════════════
-# PHASE 4 INTEGRATION - Signal Analytics Tracking
-# ══════════════════════════════════════════════════════════════════════════════
 try:
     from signal_analytics import signal_tracker
-    PHASE_4_ENABLED = True
-    print("[POSITION] ✅ Phase 4 trade tracking enabled (signal_analytics)")
+    SIGNAL_TRACKING_ENABLED = True
+    print("[POSITION] ✅ Signal trade tracking enabled (signal_analytics)")
 except ImportError:
     signal_tracker = None
-    PHASE_4_ENABLED = False
-    print("[POSITION] ⚠️  Phase 4 trade tracking disabled (signal_analytics not available)")
+    SIGNAL_TRACKING_ENABLED = False
+    print("[POSITION] ⚠️  Signal trade tracking disabled (signal_analytics not available)")
 
 
-# Phase 1.9: Sector/ticker correlation mapping
-# Used to prevent over-concentration in correlated assets
+# Sector/ticker correlation mapping used to prevent over-concentration in correlated assets
 SECTOR_GROUPS = {
     "TECH": ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "TSLA", "AMD", "INTC", "CRM"],
     "FINANCE": ["JPM", "BAC", "WFC", "GS", "MS", "C"],
@@ -46,20 +40,17 @@ SECTOR_GROUPS = {
 class PositionManager:
 
     def __init__(self, db_path: str = None):
-        # Default to market_memory.db for unified storage
         self.db_path = db_path or "market_memory.db"
         self.positions = []  # Active positions cache
         
-        # Phase 1.9: Portfolio risk tracking
         self.account_size = getattr(config, "ACCOUNT_SIZE", 25_000)
-        self.intraday_high_water_mark = self.account_size  # Track peak balance for drawdown
+        self.intraday_high_water_mark = self.account_size
         self.session_starting_balance = self.account_size
-        self.max_daily_loss_pct = getattr(config, "MAX_DAILY_LOSS_PCT", 3.0)  # -3% daily limit
+        self.max_daily_loss_pct = getattr(config, "MAX_DAILY_LOSS_PCT", 3.0)
         self.max_open_positions = getattr(config, "MAX_OPEN_POSITIONS", 5)
-        self.max_sector_exposure_pct = getattr(config, "MAX_SECTOR_EXPOSURE_PCT", 40.0)  # 40% max per sector
+        self.max_sector_exposure_pct = getattr(config, "MAX_SECTOR_EXPOSURE_PCT", 40.0)
         self.min_risk_reward_ratio = getattr(config, "MIN_RISK_REWARD_RATIO", 1.5)
         
-        # Phase 1.9: Dynamic sizing adjustment factors
         self.consecutive_wins = 0
         self.consecutive_losses = 0
         self.performance_multiplier = 1.0  # 0.5-1.5 range based on recent performance
@@ -69,19 +60,14 @@ class PositionManager:
         self._load_session_state()
 
     def _load_session_state(self) -> None:
-        """
-        Phase 1.9: Load session starting balance and performance streak.
-        Called on initialization to resume intraday state.
-        """
+        """Load session starting balance and performance streak on initialization."""
         try:
             stats = self.get_daily_stats()
             total_pnl = stats.get("total_pnl", 0.0)
             
-            # Update current account balance
             self.account_size = self.session_starting_balance + total_pnl
             self.intraday_high_water_mark = max(self.intraday_high_water_mark, self.account_size)
             
-            # Calculate consecutive streak
             closed_trades = self.get_todays_closed_trades()
             if closed_trades:
                 self._update_performance_streak(closed_trades)
@@ -93,43 +79,34 @@ class PositionManager:
             print(f"[RISK] Session state load error: {e}")
 
     def _update_performance_streak(self, trades: List[Dict]) -> None:
-        """
-        Phase 1.9: Update consecutive win/loss streak for dynamic sizing.
-        
-        Args:
-            trades: List of closed trades (must include 'pnl' field)
-        """
+        """Update consecutive win/loss streak for dynamic sizing."""
         if not trades:
             return
         
-        # Reset streaks
         self.consecutive_wins = 0
         self.consecutive_losses = 0
         
-        # Count from most recent trade backward
         for trade in reversed(trades):
             pnl = trade.get("pnl", 0.0)
             if pnl > 0:
                 if self.consecutive_losses > 0:
-                    break  # Streak ended
+                    break
                 self.consecutive_wins += 1
             else:
                 if self.consecutive_wins > 0:
-                    break  # Streak ended
+                    break
                 self.consecutive_losses += 1
         
-        # Update performance multiplier (0.5 - 1.5 range)
-        # Scale down after losses, scale up after wins (conservative)
         if self.consecutive_losses >= 3:
-            self.performance_multiplier = 0.5  # 50% size after 3+ losses
+            self.performance_multiplier = 0.5
         elif self.consecutive_losses >= 2:
-            self.performance_multiplier = 0.75  # 75% size after 2 losses
+            self.performance_multiplier = 0.75
         elif self.consecutive_wins >= 3:
-            self.performance_multiplier = 1.25  # 125% size after 3+ wins
+            self.performance_multiplier = 1.25
         elif self.consecutive_wins >= 2:
-            self.performance_multiplier = 1.1   # 110% size after 2 wins
+            self.performance_multiplier = 1.1
         else:
-            self.performance_multiplier = 1.0   # Normal size
+            self.performance_multiplier = 1.0
 
     def _format_streak(self) -> str:
         """Format performance streak for display."""
@@ -142,19 +119,13 @@ class PositionManager:
 
     def check_circuit_breaker(self) -> Tuple[bool, str]:
         """
-        Phase 1.9: Check if daily loss limit has been hit.
-        Returns (is_breached, reason)
-        
-        Returns:
-            (True, reason) if circuit breaker triggered, (False, "") otherwise
+        Check if daily loss limit has been hit.
+        Returns (is_breached, reason).
         """
         stats = self.get_daily_stats()
         total_pnl = stats.get("total_pnl", 0.0)
-        
-        # Calculate daily loss percentage
         daily_loss_pct = (total_pnl / self.session_starting_balance) * 100
         
-        # Check if daily loss limit exceeded
         if daily_loss_pct <= -self.max_daily_loss_pct:
             reason = (
                 f"CIRCUIT BREAKER TRIGGERED: Daily loss limit reached "
@@ -166,25 +137,19 @@ class PositionManager:
 
     def check_max_drawdown(self) -> Tuple[bool, str]:
         """
-        Phase 1.9: Check if max drawdown from intraday high has been exceeded.
-        
-        Returns:
-            (True, reason) if max drawdown exceeded, (False, "") otherwise
+        Check if max drawdown from intraday high has been exceeded.
+        Returns (is_breached, reason).
         """
-        # Update current balance
         stats = self.get_daily_stats()
         total_pnl = stats.get("total_pnl", 0.0)
         current_balance = self.session_starting_balance + total_pnl
         
-        # Calculate drawdown from intraday peak
         drawdown = ((current_balance - self.intraday_high_water_mark) / 
                     self.intraday_high_water_mark) * 100
         
-        # Update high water mark if new peak
         if current_balance > self.intraday_high_water_mark:
             self.intraday_high_water_mark = current_balance
         
-        # Check if drawdown exceeds limit (default 5% from peak)
         max_drawdown_pct = getattr(config, "MAX_INTRADAY_DRAWDOWN_PCT", 5.0)
         if drawdown <= -max_drawdown_pct:
             reason = (
@@ -197,31 +162,21 @@ class PositionManager:
 
     def can_open_position(self, ticker: str, risk_dollars: float) -> Tuple[bool, str]:
         """
-        Phase 1.9: Validate if new position can be opened based on risk limits.
-        
-        Args:
-            ticker: Stock ticker
-            risk_dollars: Position risk in dollars
-        
-        Returns:
-            (can_open, reason) tuple
+        Validate if a new position can be opened based on risk limits.
+        Returns (can_open, reason) tuple.
         """
-        # Check circuit breaker
         breached, reason = self.check_circuit_breaker()
         if breached:
             return False, reason
         
-        # Check max drawdown
         breached, reason = self.check_max_drawdown()
         if breached:
             return False, reason
         
-        # Check max open positions
         open_positions = self.get_open_positions()
         if len(open_positions) >= self.max_open_positions:
             return False, f"Max open positions reached ({self.max_open_positions})"
         
-        # Phase 1.9: Check sector exposure
         sector = self._get_ticker_sector(ticker)
         if sector:
             sector_exposure = self._calculate_sector_exposure(sector)
@@ -234,7 +189,6 @@ class PositionManager:
                     f"> {self.max_sector_exposure_pct:.0f}% max"
                 )
         
-        # Check if ticker already has open position
         for pos in open_positions:
             if pos["ticker"] == ticker:
                 return False, f"Position already open for {ticker}"
@@ -242,37 +196,20 @@ class PositionManager:
         return True, "OK"
 
     def _get_ticker_sector(self, ticker: str) -> Optional[str]:
-        """
-        Phase 1.9: Get sector for ticker from SECTOR_GROUPS mapping.
-        
-        Args:
-            ticker: Stock ticker
-        
-        Returns:
-            Sector name or None if not found
-        """
+        """Get sector for ticker from SECTOR_GROUPS mapping."""
         for sector, tickers in SECTOR_GROUPS.items():
             if ticker in tickers:
                 return sector
         return None
 
     def _calculate_sector_exposure(self, sector: str) -> float:
-        """
-        Phase 1.9: Calculate current exposure to a sector.
-        
-        Args:
-            sector: Sector name from SECTOR_GROUPS
-        
-        Returns:
-            Exposure percentage of account balance
-        """
+        """Calculate current exposure percentage to a sector."""
         sector_tickers = SECTOR_GROUPS.get(sector, [])
         open_positions = self.get_open_positions()
         
         sector_risk = 0.0
         for pos in open_positions:
             if pos["ticker"] in sector_tickers:
-                # Calculate position risk
                 entry = pos["entry_price"]
                 stop = pos["stop_price"]
                 contracts = pos["remaining_contracts"]
@@ -283,15 +220,8 @@ class PositionManager:
 
     def validate_risk_reward(self, entry: float, stop: float, target: float) -> Tuple[bool, float]:
         """
-        Phase 1.9: Validate risk/reward ratio meets minimum threshold.
-        
-        Args:
-            entry: Entry price
-            stop: Stop loss price
-            target: Target price
-        
-        Returns:
-            (is_valid, risk_reward_ratio) tuple
+        Validate risk/reward ratio meets minimum threshold.
+        Returns (is_valid, risk_reward_ratio) tuple.
         """
         risk = abs(entry - stop)
         reward = abs(target - entry)
@@ -384,7 +314,7 @@ class PositionManager:
     def _close_stale_positions(self):
         """
         Force-close any OPEN positions whose entry_time is from a prior trading day.
-        Called on startup — ensures no overnight/weekend carryover for the 0DTE system.
+        Called on startup to ensure no overnight/weekend carryover for the 0DTE system.
         """
         today  = datetime.now().strftime("%Y-%m-%d")
         p      = ph()
@@ -415,11 +345,7 @@ class PositionManager:
     def calculate_position_size(self, confidence: float, grade: str,
                                 account_size: float = None,
                                 risk_per_share: float = 1.0) -> Dict:
-        """
-        Calculate contract size based on confidence, grade, and risk.
-        
-        Phase 1.9: Now applies performance multiplier for dynamic sizing.
-        """
+        """Calculate contract size based on confidence, grade, and risk. Applies performance multiplier."""
         account_size = account_size or self.account_size
 
         if confidence >= 0.85 and grade == "A+":
@@ -431,7 +357,6 @@ class PositionManager:
         else:
             risk_pct = config.POSITION_RISK["conservative"]
 
-        # Phase 1.9: Apply performance multiplier
         adjusted_risk_pct = risk_pct * self.performance_multiplier
         
         position_risk = account_size * adjusted_risk_pct
@@ -447,7 +372,7 @@ class PositionManager:
             "risk_dollars":    round(position_risk, 2),
             "risk_percentage": round(adjusted_risk_pct * 100, 2),
             "allocation_type": f"{round(adjusted_risk_pct * 100, 1)}% risk",
-            "performance_adj": self.performance_multiplier  # Phase 1.9: Track adjustment
+            "performance_adj": self.performance_multiplier
         }
 
 
@@ -458,12 +383,7 @@ class PositionManager:
                       t1: float, t2: float,
                       confidence: float, grade: str,
                       options_rec=None) -> int:
-        """
-        Open a new position and return position ID.
-        
-        Phase 1.9: Now validates risk limits before opening.
-        Phase 4: Tracks trade execution via signal_analytics.
-        """
+        """Open a new position and return position ID."""
         # Cast numpy types to native Python BEFORE SQL
         entry_price = float(entry_price)
         stop_price  = float(stop_price)
@@ -475,20 +395,17 @@ class PositionManager:
         t2          = float(t2)
         confidence  = float(confidence)
 
-        # Phase 1.9: Validate risk/reward ratio
         is_valid_rr, risk_reward = self.validate_risk_reward(entry_price, stop_price, t2)
         if not is_valid_rr:
             print(f"[RISK] ❌ {ticker} rejected - R:R {risk_reward:.2f} < {self.min_risk_reward_ratio:.2f} minimum")
             return -1
 
-        # Size the position based on actual stop distance
         risk_per_share = round(abs(entry_price - stop_price), 4) or 1.0
         sizing    = self.calculate_position_size(confidence, grade,
                                                  risk_per_share=risk_per_share)
         contracts = sizing["contracts"]
         risk_dollars = sizing["risk_dollars"]
 
-        # Phase 1.9: Validate position can be opened
         can_open, reason = self.can_open_position(ticker, risk_dollars)
         if not can_open:
             print(f"[RISK] ❌ {ticker} rejected - {reason}")
@@ -559,21 +476,15 @@ class PositionManager:
             "pnl":                  0.0
         })
 
-        # ══════════════════════════════════════════════════════════════════════════════
-        # PHASE 4 INTEGRATION POINT #7 - Track Trade Execution
-        # Record when position opens (TRADED stage)
-        # ══════════════════════════════════════════════════════════════════════════════
-        if PHASE_4_ENABLED and signal_tracker:
+        if SIGNAL_TRACKING_ENABLED and signal_tracker:
             try:
                 signal_tracker.record_trade_executed(
                     ticker=ticker,
                     position_id=position_id
                 )
-                print(f"[PHASE 4] 💰 {ticker} trade EXECUTED - Position ID {position_id}")
             except Exception as e:
-                print(f"[PHASE 4] Trade tracking error: {e}")
+                print(f"[POSITION] Signal tracking error: {e}")
 
-        # Phase 1.9: Enhanced logging with risk context
         sector = self._get_ticker_sector(ticker) or "UNKNOWN"
         print(f"[POSITION] Opened {ticker} {direction.upper()} - ID {position_id}")
         print(f"  Entry: {entry_price:.2f}  Stop: {stop_price:.2f}  "
@@ -583,7 +494,6 @@ class PositionManager:
               f"({sizing['risk_percentage']:.1f}%)")
         print(f"  Sector: {sector}  Streak: {self._format_streak()}")
         
-        # Log options context if available
         if options_rec:
             opt_str = f"  Options: {contract_type} ${strike} exp {expiry}"
             if delta:
@@ -688,11 +598,7 @@ class PositionManager:
 
 
     def close_position(self, position_id: int, exit_price: float, exit_reason: str):
-        """
-        Close a position fully and record final P&L.
-        
-        Phase 1.9: Updates performance streak and checks circuit breaker.
-        """
+        """Close a position fully and record final P&L. Updates performance streak and checks circuit breaker."""
         p      = ph()
         conn   = get_conn(self.db_path)
         cursor = dict_cursor(conn)
@@ -729,7 +635,6 @@ class PositionManager:
 
         self.positions = [p for p in self.positions if p["id"] != position_id]
 
-        # Phase 1.9: Update performance streak
         if exit_reason != "STALE_EOD":
             if final_pnl > 0:
                 self.consecutive_wins += 1
@@ -738,7 +643,6 @@ class PositionManager:
                 self.consecutive_losses += 1
                 self.consecutive_wins = 0
             
-            # Recalculate performance multiplier
             closed_trades = self.get_todays_closed_trades()
             self._update_performance_streak(closed_trades)
 
@@ -746,7 +650,6 @@ class PositionManager:
         print(f"[POSITION] {emoji} CLOSED {ticker} @ {exit_price:.2f} | {exit_reason}")
         print(f"  Total P&L: ${final_pnl:.2f}  Streak: {self._format_streak()}")
 
-        # FIX Bug #9: record every closed trade to the AI learning engine
         if exit_reason != "STALE_EOD":
             try:
                 from ai_learning import learning_engine
@@ -768,7 +671,6 @@ class PositionManager:
         except Exception as e:
             print(f"[POSITION] Discord exit alert failed: {e}")
         
-        # Phase 1.9: Check circuit breaker after close
         breached, reason = self.check_circuit_breaker()
         if breached:
             print(f"\n[RISK] 🚨 {reason}")
@@ -859,11 +761,7 @@ class PositionManager:
 
 
     def generate_report(self) -> str:
-        """
-        Generate end-of-day performance report string.
-        
-        Phase 1.9: Enhanced with risk metrics.
-        """
+        """Generate end-of-day performance report string."""
         stats         = self.get_daily_stats()
         win_rate_data = self.get_win_rate(lookback_days=30)
 
@@ -873,7 +771,6 @@ class PositionManager:
         total_pnl = stats.get("total_pnl", 0.0)
         win_rate  = stats.get("win_rate",  0.0)
         
-        # Phase 1.9: Risk metrics
         daily_return_pct = (total_pnl / self.session_starting_balance) * 100
         max_dd_pct = ((self.account_size - self.intraday_high_water_mark) / 
                       self.intraday_high_water_mark) * 100
@@ -926,12 +823,7 @@ class PositionManager:
         return [dict(row) for row in rows]
 
     def get_risk_summary(self) -> str:
-        """
-        Phase 1.9: Get formatted risk management summary.
-        
-        Returns:
-            Formatted string with current risk metrics
-        """
+        """Get formatted risk management summary."""
         stats = self.get_daily_stats()
         total_pnl = stats.get("total_pnl", 0.0)
         
@@ -966,5 +858,5 @@ class PositionManager:
         return summary
 
 
-# ── Global singleton ──────────────────────────────────────────────────────────────────
+# ── Global singleton ────────────────────────────────────────────────────────────────────────────────
 position_manager = PositionManager()
