@@ -1,0 +1,133 @@
+# Signal Generator Analytics Integration - Patch for _close_signal() method
+#
+# Add this code block to the _close_signal() method in signal_generator.py
+# Location: After P&L calculation (around line 605), before Discord alert
+#
+# This completes the analytics tracking loop:
+#   1. Signal generated ✅ (already tracked at line 317-330)
+#   2. Signal filled ⚠️ (needs manual fill tracking - see below)
+#   3. Signal closed ❌ (MISSING - add this code)
+
+# ==============================================================================
+# PATCH 1: Add to _close_signal() method (after P&L calculation)
+# ==============================================================================
+
+def _close_signal(self, ticker: str, status: str, exit_price: float) -> None:
+    """
+    Close an active signal and send update.
+    
+    Args:
+        ticker: Stock ticker
+        status: 'STOPPED_OUT' or 'HIT_TARGET'
+        exit_price: Price at which signal closed
+    """
+    if ticker not in self.active_signals:
+        return
+    
+    signal = self.active_signals[ticker]
+    entry = signal['entry']
+    
+    # Calculate P&L
+    if signal['signal'] == 'BUY':
+        pnl = exit_price - entry
+        pnl_pct = (pnl / entry) * 100
+    else:  # SELL
+        pnl = entry - exit_price
+        pnl_pct = (pnl / entry) * 100
+    
+    # ========== ADD THIS CODE BLOCK HERE ==========#
+    # Log signal outcome to analytics database
+    if ANALYTICS_ENABLED and signal_tracker and 'signal_id' in signal:
+        try:
+            outcome = 'win' if pnl > 0 else 'loss'
+            signal_tracker.record_signal_closed(
+                signal_id=signal['signal_id'],
+                exit_price=exit_price,
+                outcome=outcome
+            )
+            print(f"[ANALYTICS] Signal {signal['signal_id']} closed - {outcome.upper()} (${pnl:.2f}, {pnl_pct:+.2f}%)")
+        except Exception as e:
+            print(f"[ANALYTICS] Close tracking error: {e}")
+    # =============================================#
+    
+    # Console output
+    emoji = "✅" if status == 'HIT_TARGET' else "❌"
+    print(f"\n{emoji} {ticker} {status}: ${exit_price:.2f} | P&L: ${pnl:.2f} ({pnl_pct:+.2f}%)\n")
+    
+    # Discord alert
+    try:
+        msg = (
+            f"{emoji} **{ticker} {status}**\n"
+            f"Entry: ${entry:.2f} → Exit: ${exit_price:.2f}\n"
+            f"P&L: ${pnl:.2f} ({pnl_pct:+.2f}%)"
+        )
+        send_simple_message(msg)
+    except Exception as e:
+        print(f"[SIGNALS] Discord error: {e}")
+    
+    # Remove from active signals
+    del self.active_signals[ticker]
+
+
+# ==============================================================================
+# PATCH 2 (OPTIONAL): Add fill tracking for manual entries
+# ==============================================================================
+# If you manually enter positions (e.g., on Robinhood), add this helper function:
+
+def log_signal_filled(ticker: str) -> None:
+    """
+    Log when a signal is manually filled.
+    Call this after you enter a position on your broker.
+    
+    Args:
+        ticker: Stock ticker that was filled
+    """
+    if ticker not in signal_generator.active_signals:
+        print(f"[SIGNALS] No active signal found for {ticker}")
+        return
+    
+    signal = signal_generator.active_signals[ticker]
+    
+    if ANALYTICS_ENABLED and signal_tracker and 'signal_id' in signal:
+        try:
+            signal_tracker.record_signal_filled(signal['signal_id'])
+            print(f"[ANALYTICS] Signal {signal['signal_id']} marked as FILLED for {ticker}")
+        except Exception as e:
+            print(f"[ANALYTICS] Fill tracking error: {e}")
+    else:
+        print(f"[SIGNALS] Analytics not enabled or signal_id missing")
+
+
+# ==============================================================================
+# USAGE EXAMPLES
+# ==============================================================================
+
+# Example 1: Automatic close tracking (already handles this)
+# When monitor_active_signals() detects stop/target hit, _close_signal() is called
+# and the analytics are automatically logged.
+
+# Example 2: Manual fill tracking
+# After you enter a position on Robinhood:
+log_signal_filled("AAPL")  # Mark AAPL signal as filled
+
+# Example 3: Manual close tracking  
+# If you manually close a position, call:
+signal_generator._close_signal("AAPL", "MANUAL_CLOSE", 185.50)
+
+
+# ==============================================================================
+# VERIFICATION
+# ==============================================================================
+# After implementing, verify analytics are working:
+#
+# 1. Check signal was generated:
+#    python view_signals.py
+#    # Should show recent signals with signal_id
+#
+# 2. Check closed signals:
+#    python daily_analysis.py
+#    # Should show wins/losses and P&L
+#
+# 3. Run full analysis:
+#    python run_full_analysis.py
+#    # Should show performance metrics and recommendations
