@@ -188,21 +188,22 @@ class ConfirmationAnalyzer:
             Dict with winning signal patterns
         """
         query = """
-        SELECT 
-            ticker,
-            grade,
-            confidence,
-            hold_time_minutes,
-            return_pct,
-            entry_price,
-            exit_price,
-            t1_price,
-            t2_price
-        FROM signals
-        WHERE outcome = 'win'
-        ORDER BY grade, hold_time_minutes
+            SELECT
+                ticker,
+                grade,
+                confidence,
+                CAST((julianday(closed_at) - julianday(filled_at)) * 24 * 60 AS REAL) as hold_time_minutes,
+                return_pct,
+                generated_at,
+                filled_at,
+                closed_at
+            FROM signals
+            WHERE outcome = 'loss'
+                AND filled_at IS NOT NULL
+                AND closed_at IS NOT NULL
+            ORDER BY hold_time_minutes
         """
-        
+                
         df = pd.read_sql_query(query, self.conn)
         
         if len(df) == 0:
