@@ -22,6 +22,12 @@ Phase 1.8 Optimizations:
   - Cached ATR calculation
   - T1/T2 split targets (Issue #2 fix - FEB 25, 2026)
 
+Phase 2.0 Quick Failure Fixes (FEB 26, 2026):
+  - 2-bar holding period: Requires breakout to hold for 2+ bars before entry
+  - Entry 0.15% above/below breakout: Avoids buying exact top/selling exact bottom
+  - Data-driven: Addresses 71% quick failure rate identified by analytics
+  - Expected impact: 60-70% reduction in quick failures (<15 min)
+
 Risk Management:
   - Stop: ATR-based dynamic stop (typically 1.5-2x ATR)
   - T1: 1.5R (take 50% position, secure gains)
@@ -45,7 +51,8 @@ class BreakoutDetector:
                  t1_reward_ratio: float = 1.5,
                  t2_reward_ratio: float = 2.5,
                  min_candle_body_pct: float = 0.4,
-                 min_bars_since_breakout: int = 1):
+                 min_bars_since_breakout: int = 2,  # ⭐ PHASE 2.0: Changed from 1 to 2
+                 entry_offset_pct: float = 0.0015):  # ⭐ PHASE 2.0: New parameter (0.15%)
         """
         Args:
             lookback_bars: Number of bars to determine support/resistance
@@ -56,7 +63,8 @@ class BreakoutDetector:
             t1_reward_ratio: T1 target ratio (1.5R = take 50% profit)
             t2_reward_ratio: T2 target ratio (2.5R = let 50% run)
             min_candle_body_pct: Minimum candle body% for strong price action (0.4 = 40%)
-            min_bars_since_breakout: Bars to wait after initial break (false break filter)
+            min_bars_since_breakout: Bars to wait after initial break (Phase 2.0: now 2)
+            entry_offset_pct: Entry offset from breakout (Phase 2.0: 0.15% = 0.0015)
         """
         self.lookback_bars = lookback_bars
         self.volume_multiplier = volume_multiplier
@@ -67,6 +75,7 @@ class BreakoutDetector:
         self.t2_reward_ratio = t2_reward_ratio
         self.min_candle_body_pct = min_candle_body_pct
         self.min_bars_since_breakout = min_bars_since_breakout
+        self.entry_offset_pct = entry_offset_pct  # ⭐ PHASE 2.0
         
         # Performance optimization: Cache ATR calculations
         self._atr_cache: Dict[str, Tuple[float, int]] = {}  # ticker -> (atr, bars_count)
@@ -75,6 +84,7 @@ class BreakoutDetector:
         self._pdh_pdl_cache: Dict[str, Tuple[float, float]] = {}  # ticker -> (pdh, pdl)
         
         print(f"[BREAKOUT] Split targets enabled: T1={t1_reward_ratio}R (50%), T2={t2_reward_ratio}R (50%)")
+        print(f"[BREAKOUT] Phase 2.0 Quick Failure Fixes: {min_bars_since_breakout}-bar hold, {entry_offset_pct*100:.2f}% entry offset")
     
     def calculate_atr(self, bars: List[Dict], ticker: str = "unknown") -> float:
         """
@@ -299,6 +309,34 @@ class BreakoutDetector:
             'direction': direction
         }
     
+    def requires_confirmation_bars(self, bars: List[Dict], breakout_level: float, direction: str) -> bool:
+        """
+        ⭐ PHASE 2.0: Check if breakout has held for required confirmation bars.
+        
+        This prevents entering on the initial breakout bar (buying the top/selling the bottom).
+        Waits for price to demonstrate the breakout is holding before entry.
+        
+        Args:
+            bars: Price bars (must include current bar)
+            breakout_level: Resistance (BULL) or Support (BEAR)
+            direction: 'BUY' or 'SELL'
+        
+        Returns:
+            True if breakout has held for min_bars_since_breakout, False otherwise
+        """
+        if len(bars) < self.min_bars_since_breakout:
+            return False
+        
+        # Check last N bars (including current)
+        confirmation_bars = bars[-self.min_bars_since_breakout:]
+        
+        if direction == 'BUY':
+            # For BULL, all confirmation bars must close above resistance
+            return all(bar['close'] > breakout_level for bar in confirmation_bars)
+        else:
+            # For BEAR, all confirmation bars must close below support
+            return all(bar['close'] < breakout_level for bar in confirmation_bars)
+    
     def detect_breakout(self, bars: List[Dict], ticker: str = "unknown") -> Optional[Dict]:
         """
         Detect breakout entry signal.
@@ -309,6 +347,11 @@ class BreakoutDetector:
           - Price action strength filter
           - Breakout confirmation (wait N bars)
           - T1/T2 split targets (Issue #2 fix)
+        
+        Phase 2.0 Quick Failure Fixes:
+          - 2-bar holding period (requires_confirmation_bars)
+          - Entry 0.15% above/below breakout level
+          - Addresses 71% quick failure rate from analytics
         
         Args:
             bars: List of OHLCV bars (must have at least lookback_bars)
@@ -345,15 +388,13 @@ class BreakoutDetector:
             if candle_strength['direction'] != 'bull' or not candle_strength['is_strong']:
                 return None
             
-            # Phase 1.8: Breakout confirmation (wait N bars)
-            if self.min_bars_since_breakout > 0:
-                # Check if resistance was broken in previous bars
-                recent_bars = bars[-(self.min_bars_since_breakout + 1):-1]
-                if recent_bars and all(bar['close'] <= resistance for bar in recent_bars):
-                    # This is the initial break — wait for confirmation
-                    return None
+            # ⭐ PHASE 2.0: Require 2-bar holding period
+            if not self.requires_confirmation_bars(bars, resistance, 'BUY'):
+                return None
             
-            entry = latest['close']
+            # ⭐ PHASE 2.0: Entry 0.15% above resistance (avoid buying exact top)
+            entry = resistance * (1 + self.entry_offset_pct)
+            
             stop = entry - (atr * self.atr_stop_multiplier)
             risk = entry - stop
             
@@ -402,7 +443,7 @@ class BreakoutDetector:
                 'volume_multiple': round(volume_ratio, 1),  # For analytics
                 'confidence': confidence,
                 'reason': (
-                    f'Breakout above ${resistance:.2f} with {volume_ratio:.1f}x volume'
+                    f'Breakout above ${resistance:.2f} with {volume_ratio:.1f}x volume (2-bar hold)'
                     f'{" (PDH confluence)" if pdh_confluence else ""}'
                 ),
                 'type': 'BREAKOUT',
@@ -418,13 +459,13 @@ class BreakoutDetector:
             if candle_strength['direction'] != 'bear' or not candle_strength['is_strong']:
                 return None
             
-            # Phase 1.8: Breakout confirmation
-            if self.min_bars_since_breakout > 0:
-                recent_bars = bars[-(self.min_bars_since_breakout + 1):-1]
-                if recent_bars and all(bar['close'] >= support for bar in recent_bars):
-                    return None
+            # ⭐ PHASE 2.0: Require 2-bar holding period
+            if not self.requires_confirmation_bars(bars, support, 'SELL'):
+                return None
             
-            entry = latest['close']
+            # ⭐ PHASE 2.0: Entry 0.15% below support (avoid selling exact bottom)
+            entry = support * (1 - self.entry_offset_pct)
+            
             stop = entry + (atr * self.atr_stop_multiplier)
             risk = stop - entry
             
@@ -472,7 +513,7 @@ class BreakoutDetector:
                 'volume_multiple': round(volume_ratio, 1),
                 'confidence': confidence,
                 'reason': (
-                    f'Breakdown below ${support:.2f} with {volume_ratio:.1f}x volume'
+                    f'Breakdown below ${support:.2f} with {volume_ratio:.1f}x volume (2-bar hold)'
                     f'{" (PDL confluence)" if pdl_confluence else ""}'
                 ),
                 'type': 'BREAKDOWN',
@@ -489,6 +530,7 @@ class BreakoutDetector:
         
         Phase 1.8: Added price action strength filter for retest entries.
         Issue #2: Added T1/T2 split targets.
+        Phase 2.0: Applied same entry offset logic.
         
         Args:
             bars: List of OHLCV bars
@@ -526,7 +568,8 @@ class BreakoutDetector:
                     volume_ratio >= 1.5):
                 return None
             
-            entry = latest['close']
+            # ⭐ PHASE 2.0: Entry offset
+            entry = breakout_level * (1 + self.entry_offset_pct)
             stop = breakout_level - (atr * self.atr_stop_multiplier)
             risk = entry - stop
             
@@ -580,7 +623,8 @@ class BreakoutDetector:
                     volume_ratio >= 1.5):
                 return None
             
-            entry = latest['close']
+            # ⭐ PHASE 2.0: Entry offset
+            entry = breakout_level * (1 - self.entry_offset_pct)
             stop = breakout_level + (atr * self.atr_stop_multiplier)
             risk = stop - entry
             
@@ -761,7 +805,8 @@ if __name__ == "__main__":
         t1_reward_ratio=1.5,
         t2_reward_ratio=2.5,
         min_candle_body_pct=0.4,
-        min_bars_since_breakout=1
+        min_bars_since_breakout=2,  # ⭐ PHASE 2.0: 2-bar hold
+        entry_offset_pct=0.0015     # ⭐ PHASE 2.0: 0.15% offset
     )
     
     # Sample bars (OHLCV)
@@ -778,8 +823,10 @@ if __name__ == "__main__":
         {'datetime': datetime.now(), 'open': 105.5, 'high': 107, 'low': 105, 'close': 106, 'volume': 1200000},
         {'datetime': datetime.now(), 'open': 106, 'high': 107.5, 'low': 105.5, 'close': 106.5, 'volume': 1100000},
         {'datetime': datetime.now(), 'open': 106.5, 'high': 108, 'low': 106, 'close': 107, 'volume': 1000000},
-        # BREAKOUT BAR: Price breaks above 108 with 2.5x volume + strong bull candle
-        {'datetime': datetime.now(), 'open': 107, 'high': 110, 'low': 106.5, 'close': 109.5, 'volume': 2500000},
+        # BREAKOUT BAR 1: Initial break above 108
+        {'datetime': datetime.now(), 'open': 107, 'high': 110, 'low': 106.5, 'close': 109, 'volume': 2500000},
+        # CONFIRMATION BAR 2: Holds above 108 (required for Phase 2.0)
+        {'datetime': datetime.now(), 'open': 109, 'high': 110.5, 'low': 108.5, 'close': 110, 'volume': 2200000},
     ]
     
     signal = detector.detect_breakout(sample_bars, ticker="TEST")
@@ -804,4 +851,4 @@ if __name__ == "__main__":
         print(f"T2 Profit (50%): ${shares * 0.5 * (signal['t2'] - signal['entry']):.2f}")
         print(f"Max Total Profit: ${shares * signal['reward']:.2f}")
     else:
-        print("No breakout signal detected")
+        print("No breakout signal detected (waiting for 2-bar confirmation)")
