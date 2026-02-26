@@ -1,0 +1,383 @@
+"""
+Regime Filter - VIX/SPY Market Condition Detection
+
+Prevents trading in unfavorable market conditions by analyzing:
+  1. VIX levels (volatility regime)
+  2. SPY trend strength (trending vs. choppy)
+  3. Intraday momentum (buying/selling pressure)
+
+Regimes:
+  - TRENDING: Strong directional move, high success probability
+  - CHOPPY: Range-bound, low success probability
+  - VOLATILE: High VIX, unpredictable moves
+
+Usage:
+  from regime_filter import regime_filter
+  
+  if not regime_filter.is_favorable_regime():
+      print("Bad tape - halting new signals")
+      continue
+"""
+import time
+from typing import Dict, Optional, Tuple
+from datetime import datetime, timedelta
+from dataclasses import dataclass
+
+
+@dataclass
+class RegimeState:
+    """Current market regime state."""
+    regime: str              # TRENDING, CHOPPY, VOLATILE
+    vix: float              # Current VIX level
+    spy_trend: str          # BULL, BEAR, NEUTRAL
+    adx: Optional[float]    # Trend strength (0-100)
+    favorable: bool         # True = safe to trade
+    reason: str             # Why favorable/unfavorable
+    timestamp: datetime
+
+
+class RegimeFilter:
+    """
+    Market regime detection using VIX and SPY price action.
+    
+    Regime Classification:
+      TRENDING: ADX > 25, VIX < 30, clear directional move
+      CHOPPY:   ADX < 25, VIX < 20, range-bound action
+      VOLATILE: VIX > 30, erratic moves, avoid trading
+    """
+    
+    def __init__(self):
+        self._cache: Optional[RegimeState] = None
+        self._cache_ttl = 300  # 5-minute cache (regime doesn't change that fast)
+        self._last_check = 0
+        
+    def is_favorable_regime(self, force_refresh: bool = False) -> bool:
+        """
+        Check if current market regime is favorable for trading.
+        
+        Returns:
+            True if safe to trade, False if bad tape
+        """
+        state = self.get_regime_state(force_refresh=force_refresh)
+        return state.favorable
+    
+    def get_regime_state(self, force_refresh: bool = False) -> RegimeState:
+        """
+        Get current market regime state.
+        
+        Returns:
+            RegimeState with full regime analysis
+        """
+        now = time.time()
+        
+        # Return cached state if fresh
+        if not force_refresh and self._cache and (now - self._last_check) < self._cache_ttl:
+            return self._cache
+        
+        # Calculate new regime state
+        try:
+            vix = self._get_vix_level()
+            spy_bars = self._get_spy_bars()
+            
+            if not spy_bars or len(spy_bars) < 14:
+                # Insufficient data - default to CHOPPY (conservative)
+                return self._create_state(
+                    regime="CHOPPY",
+                    vix=vix or 20.0,
+                    spy_trend="NEUTRAL",
+                    adx=None,
+                    favorable=False,
+                    reason="Insufficient data for regime analysis"
+                )
+            
+            # Calculate regime components
+            spy_trend = self._calculate_spy_trend(spy_bars)
+            adx = self._calculate_adx(spy_bars)
+            
+            # Classify regime
+            regime, favorable, reason = self._classify_regime(
+                vix=vix,
+                adx=adx,
+                spy_trend=spy_trend,
+                spy_bars=spy_bars
+            )
+            
+            state = self._create_state(
+                regime=regime,
+                vix=vix,
+                spy_trend=spy_trend,
+                adx=adx,
+                favorable=favorable,
+                reason=reason
+            )
+            
+            # Cache result
+            self._cache = state
+            self._last_check = now
+            
+            return state
+            
+        except Exception as e:
+            print(f"[REGIME] Error calculating regime: {e}")
+            # On error, default to unfavorable (conservative)
+            return self._create_state(
+                regime="CHOPPY",
+                vix=20.0,
+                spy_trend="NEUTRAL",
+                adx=None,
+                favorable=False,
+                reason=f"Error: {str(e)}"
+            )
+    
+    def _create_state(self, regime: str, vix: float, spy_trend: str, 
+                      adx: Optional[float], favorable: bool, reason: str) -> RegimeState:
+        """Create RegimeState object."""
+        return RegimeState(
+            regime=regime,
+            vix=vix,
+            spy_trend=spy_trend,
+            adx=adx,
+            favorable=favorable,
+            reason=reason,
+            timestamp=datetime.now()
+        )
+    
+    def _get_vix_level(self) -> float:
+        """
+        Get current VIX level from data manager.
+        
+        Returns:
+            Current VIX value (default 20.0 if unavailable)
+        """
+        try:
+            from data_manager import data_manager
+            
+            # Try to get VIX from memory first (fastest)
+            bars = data_manager.get_bars_from_memory("VIX", limit=1)
+            if bars:
+                return bars[-1]["close"]
+            
+            # Fallback: fetch using cache-aware method
+            bars = data_manager.get_bars("VIX", timeframe="1m", limit=1)
+            if bars:
+                return bars[-1]["close"]
+            
+            # Default to neutral VIX if unavailable
+            return 20.0
+            
+        except Exception as e:
+            print(f"[REGIME] Error fetching VIX: {e}")
+            return 20.0
+    
+    def _get_spy_bars(self, limit: int = 50) -> list:
+        """
+        Get recent SPY bars for trend analysis.
+        
+        Returns:
+            List of SPY bars (most recent last)
+        """
+        try:
+            from data_manager import data_manager
+            
+            # Try memory first
+            bars = data_manager.get_bars_from_memory("SPY", limit=limit)
+            if bars and len(bars) >= 14:
+                return bars
+            
+            # Fallback: cache-aware fetch
+            bars = data_manager.get_bars("SPY", timeframe="1m", limit=limit)
+            if bars:
+                return bars
+            
+            return []
+            
+        except Exception as e:
+            print(f"[REGIME] Error fetching SPY bars: {e}")
+            return []
+    
+    def _calculate_spy_trend(self, bars: list) -> str:
+        """
+        Determine SPY trend direction using EMAs.
+        
+        Returns:
+            'BULL', 'BEAR', or 'NEUTRAL'
+        """
+        if len(bars) < 20:
+            return "NEUTRAL"
+        
+        try:
+            # Calculate 9 EMA and 20 EMA
+            closes = [b["close"] for b in bars[-20:]]
+            ema9 = self._calculate_ema(closes[-9:], 9)
+            ema20 = self._calculate_ema(closes, 20)
+            current_price = closes[-1]
+            
+            # Trend determination
+            if ema9 > ema20 and current_price > ema9:
+                return "BULL"
+            elif ema9 < ema20 and current_price < ema9:
+                return "BEAR"
+            else:
+                return "NEUTRAL"
+                
+        except Exception:
+            return "NEUTRAL"
+    
+    def _calculate_adx(self, bars: list, period: int = 14) -> Optional[float]:
+        """
+        Calculate ADX (Average Directional Index) for trend strength.
+        
+        ADX > 25 = Strong trend
+        ADX < 25 = Weak/choppy
+        
+        Returns:
+            ADX value (0-100) or None if insufficient data
+        """
+        if len(bars) < period + 1:
+            return None
+        
+        try:
+            # Calculate True Range
+            trs = []
+            for i in range(1, len(bars)):
+                high = bars[i]["high"]
+                low = bars[i]["low"]
+                prev_close = bars[i-1]["close"]
+                
+                tr = max(
+                    high - low,
+                    abs(high - prev_close),
+                    abs(low - prev_close)
+                )
+                trs.append(tr)
+            
+            # Calculate +DM and -DM
+            plus_dm = []
+            minus_dm = []
+            
+            for i in range(1, len(bars)):
+                up_move = bars[i]["high"] - bars[i-1]["high"]
+                down_move = bars[i-1]["low"] - bars[i]["low"]
+                
+                plus_dm.append(up_move if up_move > down_move and up_move > 0 else 0)
+                minus_dm.append(down_move if down_move > up_move and down_move > 0 else 0)
+            
+            # Smooth with EMA
+            atr = self._calculate_ema(trs[-period:], period)
+            plus_di = (self._calculate_ema(plus_dm[-period:], period) / atr) * 100
+            minus_di = (self._calculate_ema(minus_dm[-period:], period) / atr) * 100
+            
+            # Calculate DX and ADX
+            dx = abs(plus_di - minus_di) / (plus_di + minus_di) * 100 if (plus_di + minus_di) > 0 else 0
+            
+            # For simplicity, return DX as ADX proxy (full ADX needs smoothing)
+            return round(dx, 2)
+            
+        except Exception as e:
+            print(f"[REGIME] ADX calculation error: {e}")
+            return None
+    
+    def _calculate_ema(self, values: list, period: int) -> float:
+        """Calculate Exponential Moving Average."""
+        if not values:
+            return 0.0
+        
+        multiplier = 2 / (period + 1)
+        ema = values[0]
+        
+        for value in values[1:]:
+            ema = (value * multiplier) + (ema * (1 - multiplier))
+        
+        return ema
+    
+    def _classify_regime(
+        self,
+        vix: float,
+        adx: Optional[float],
+        spy_trend: str,
+        spy_bars: list
+    ) -> Tuple[str, bool, str]:
+        """
+        Classify market regime and determine if favorable for trading.
+        
+        Returns:
+            (regime, favorable, reason)
+        """
+        # VIX-based classification (highest priority)
+        if vix >= 35:
+            return ("VOLATILE", False, f"VIX too high ({vix:.1f}) - extreme fear/greed")
+        
+        if vix >= 30:
+            return ("VOLATILE", False, f"VIX elevated ({vix:.1f}) - elevated volatility")
+        
+        # Check for intraday whipsaw (rapid reversals)
+        if len(spy_bars) >= 10:
+            recent_bars = spy_bars[-10:]
+            reversals = sum(1 for i in range(1, len(recent_bars)) 
+                          if (recent_bars[i]["close"] - recent_bars[i]["open"]) * 
+                             (recent_bars[i-1]["close"] - recent_bars[i-1]["open"]) < 0)
+            
+            if reversals >= 6:  # 6+ reversals in 10 bars = choppy
+                return ("CHOPPY", False, f"Whipsaw action ({reversals}/10 reversals) - avoid")
+        
+        # ADX-based trend strength
+        if adx is not None:
+            if adx >= 25:
+                # Strong trend + low VIX = TRENDING (favorable)
+                if vix < 25:
+                    return ("TRENDING", True, f"Strong {spy_trend} trend (ADX: {adx:.0f}, VIX: {vix:.1f})")
+                else:
+                    return ("TRENDING", True, f"{spy_trend} trend with elevated VIX (ADX: {adx:.0f}, VIX: {vix:.1f})")
+            else:
+                # Weak trend = CHOPPY
+                return ("CHOPPY", False, f"Weak trend (ADX: {adx:.0f}) - range-bound")
+        
+        # Fallback: VIX + trend analysis only
+        if vix < 20 and spy_trend != "NEUTRAL":
+            return ("TRENDING", True, f"Low VIX ({vix:.1f}), {spy_trend} bias")
+        
+        # Default: CHOPPY (conservative)
+        return ("CHOPPY", False, f"Neutral conditions (VIX: {vix:.1f})")
+    
+    def print_regime_summary(self) -> None:
+        """Print formatted regime summary to console."""
+        state = self.get_regime_state()
+        
+        emoji = {
+            "TRENDING": "📈" if state.favorable else "📉",
+            "CHOPPY": "〰️",
+            "VOLATILE": "⚡"
+        }[state.regime]
+        
+        status = "✅ FAVORABLE" if state.favorable else "🚫 UNFAVORABLE"
+        
+        print("\n" + "=" * 70)
+        print(f"{emoji}  MARKET REGIME: {state.regime}  {status}")
+        print("=" * 70)
+        print(f"VIX:       {state.vix:.2f}")
+        print(f"SPY Trend: {state.spy_trend}")
+        if state.adx:
+            print(f"ADX:       {state.adx:.1f} (trend strength)")
+        print(f"Reason:    {state.reason}")
+        print("=" * 70 + "\n")
+    
+    def reset_cache(self) -> None:
+        """Clear cached regime state (force fresh calculation next check)."""
+        self._cache = None
+        self._last_check = 0
+        print("[REGIME] Cache cleared")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GLOBAL INSTANCE
+# ══════════════════════════════════════════════════════════════════════════════
+regime_filter = RegimeFilter()
+
+
+if __name__ == "__main__":
+    # Test regime filter
+    print("Testing Regime Filter...\n")
+    regime_filter.print_regime_summary()
+    
+    state = regime_filter.get_regime_state()
+    print(f"\nFavorable for trading: {state.favorable}")
