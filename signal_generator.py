@@ -564,6 +564,19 @@ class SignalGenerator:
             status: 'STOPPED_OUT' or 'HIT_TARGET'
             exit_price: Price at which signal closed
         """
+        # Log signal outcome to analytics database
+        if ANALYTICS_ENABLED and signal_tracker and 'signal_id' in signal:
+            try:
+                outcome = 'win' if pnl > 0 else 'loss'
+                signal_tracker.record_signal_closed(
+                    signal_id=signal['signal_id'],
+                    exit_price=exit_price,
+                    outcome=outcome
+                )
+                print(f"[ANALYTICS] Signal {signal['signal_id']} closed - {outcome.upper()} (${pnl:.2f}, {pnl_pct:+.2f}%)")
+            except Exception as e:
+                print(f"[ANALYTICS] Close tracking error: {e}")
+
         if ticker not in self.active_signals:
             return
         
