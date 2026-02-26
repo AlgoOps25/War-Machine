@@ -116,9 +116,9 @@ def test_section_2_signal_pipeline():
     except Exception as e:
         print_result("Signal generator", False, str(e))
     
-    # 2.3 Signal Validator
+    # 2.3 Signal Validator (from validation.py)
     try:
-        from signal_validator import get_validator
+        from validation import get_validator
         validator = get_validator()
         
         # Test validation with sample signal
@@ -156,10 +156,11 @@ def test_section_3_risk_management():
     except Exception as e:
         print_result("Position manager", False, str(e))
     
-    # 3.2 Regime Filter
+    # 3.2 Regime Filter (from validation.py)
     try:
-        from regime_filter import regime_filter
+        from validation import get_regime_filter
         
+        regime_filter = get_regime_filter()
         state = regime_filter.get_regime_state(force_refresh=True)
         favorable = "YES ✅" if state.favorable else "NO ❌"
         
@@ -178,9 +179,10 @@ def test_section_3_risk_management():
     except Exception as e:
         print_result("Daily bias engine", False, str(e))
     
-    # 3.4 Options Filter
+    # 3.4 Options Filter (from validation.py)
     try:
-        from options_filter import apply_ivr_multiplier, apply_uoa_multiplier
+        from validation import get_options_filter
+        options_filter = get_options_filter()
         print_result("Options filter", True, "IVR/UOA/GEX multipliers loaded")
     except Exception as e:
         print_result("Options filter", False, str(e))
