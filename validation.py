@@ -42,10 +42,25 @@ import requests
 import technical_indicators as ti
 import config
 
-# Import IV/UOA/GEX modules for options filter
+# Import IV/GEX modules for options filter
 from iv_tracker   import store_iv_observation, compute_ivr, ivr_to_confidence_multiplier
-from uoa_scanner  import scan_chain_for_uoa, format_uoa_summary
 from gex_engine   import compute_gex_levels, get_gex_signal_context
+
+# UOA now comes from options_intelligence (Phase 3C consolidation)
+try:
+    from options_intelligence import scan_chain_for_uoa
+    from uoa_scanner import format_uoa_summary  # Still in stub for convenience
+except ImportError:
+    # Fallback if options_intelligence not yet available
+    def scan_chain_for_uoa(*args, **kwargs):
+        return {
+            'uoa_multiplier': 1.0, 'uoa_label': 'UOA-UNAVAILABLE',
+            'uoa_detected': False, 'uoa_aligned': False,
+            'uoa_opposing': False, 'uoa_max_score': 0.0,
+            'uoa_top_aligned': [], 'uoa_top_opposing': []
+        }
+    def format_uoa_summary(uoa_data):
+        return "UOA scanner unavailable"
 
 ET = ZoneInfo("America/New_York")
 
@@ -459,7 +474,7 @@ class OptionsFilter:
 
         # UOA enrichment
         try:
-            uoa_result = scan_chain_for_uoa(chain, direction, entry_price)
+            uoa_result = scan_chain_for_uoa(ticker, direction, entry_price)
             best_option.update(uoa_result)
             if uoa_result.get('uoa_detected'):
                 print(f"[UOA] {ticker}: {format_uoa_summary(uoa_result)}")
