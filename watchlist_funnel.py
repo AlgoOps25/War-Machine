@@ -8,13 +8,13 @@ Timeline:
   9:25-9:30 AM: Final Top 3 - highest probability plays for opening bell
 
 Integration:
-  - Uses premarket_scanner_integration.py for professional 3-tier scoring
+  - Uses premarket_scanner.py (UNIFIED) for professional 3-tier scoring
   - Uses volume_analyzer.py for real-time volume tracking
   - Feeds scanner.py with optimized watchlist based on time of day
 """
 from datetime import datetime, time
 from typing import List, Dict, Optional
-import premarket_scanner_integration as momentum_screener  # Professional scanner
+import premarket_scanner as momentum_screener  # ✅ PHASE 1: Unified professional scanner
 import volume_analyzer
 import dynamic_screener
 import config
