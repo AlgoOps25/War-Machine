@@ -298,7 +298,7 @@ class DataManager:
             print(f"[DATA] Today REST backfill: no same-day data from EODHD — WS-only session\n")
 
     # =============================================================
-    # CACHE-AWARE STARTUP & SYNC (Phase 2: Merged from cache_integration)
+    # CACHE-AWARE STARTUP & SYNC
     # =============================================================
 
     def startup_backfill_with_cache(self, tickers: List[str], days: int = 30):
@@ -512,7 +512,7 @@ class DataManager:
         print(f"[CACHE] ✅ Warmup complete!\n")
 
     # =============================================================
-    # INCREMENTAL UPDATE (module-level legacy shim calls this)
+    # INCREMENTAL UPDATE
     # =============================================================
 
     def _get_last_bar_ts(self, ticker: str) -> Optional[datetime]:
@@ -534,7 +534,7 @@ class DataManager:
             ts = ts.replace(tzinfo=None)
         return ts
 
-    def _update_ticker_internal(self, ticker: str):
+    def update_ticker(self, ticker: str):
         """
         Smart incremental updates:
         - During market hours: SKIP (WebSocket owns today)
@@ -765,21 +765,12 @@ class DataManager:
     def get_latest_bar(self, ticker: str) -> Optional[Dict]:
         """
         Get the most recent bar for a ticker.
-        
-        WEBSOCKET-OPTIMIZED: Checks WebSocket feed FIRST if connected,
-        falls back to database query only if WS unavailable.
-        
-        This reduces API quota consumption and provides fresher data.
-        
-        Returns:
-            Bar dict with datetime, open, high, low, close, volume or None
+        Checks WebSocket feed first if connected, falls back to database.
         """
-        # OPTIMIZATION: Try WebSocket first
         ws_bar = self._get_ws_bar(ticker)
         if ws_bar:
             return ws_bar
         
-        # Fallback: Query database for latest bar
         p = ph()
         conn = get_conn(self.db_path)
         cursor = dict_cursor(conn)
@@ -800,14 +791,7 @@ class DataManager:
         return bars[0] if bars else None
 
     def get_latest_price(self, ticker: str) -> Optional[float]:
-        """
-        Get the most recent close price for a ticker.
-        
-        WEBSOCKET-OPTIMIZED: Checks WebSocket feed FIRST.
-        
-        Returns:
-            Close price as float or None
-        """
+        """Get the most recent close price for a ticker."""
         bar = self.get_latest_bar(ticker)
         return bar["close"] if bar else None
 
@@ -849,13 +833,11 @@ class DataManager:
 
     def get_previous_day_ohlc(self, ticker: str) -> Optional[Dict]:
         """
-        Fetch previous trading day's OHLC via get_daily_ohlc().
+        Fetch previous trading day's OHLC. Walks back up to 5 days to skip weekends/holidays.
         Returns dict: {"open", "high", "low", "close", "volume"} or None.
         """
         now_et = datetime.now(ET)
-        yesterday = now_et.date() - timedelta(days=1)
         
-        # Walk back up to 5 days to skip weekends/holidays
         for days_back in range(1, 6):
             target_date = now_et.date() - timedelta(days=days_back)
             ohlc = self.get_daily_ohlc(ticker, target_date)
@@ -871,8 +853,7 @@ class DataManager:
     def bulk_fetch_live_snapshots(self, tickers: List[str]) -> Dict[str, Dict]:
         """
         Fetch real-time price snapshots for up to 50 tickers in one call.
-        
-        WEBSOCKET-OPTIMIZED: For tickers with WS data, returns WS bars immediately.
+        For tickers with WS data, returns WS bars immediately.
         Only fetches REST API snapshots for tickers without WS coverage.
         """
         if not tickers:
@@ -954,7 +935,7 @@ class DataManager:
     # UTILITIES
     # =============================================================
 
-    def _cleanup_old_bars_internal(self, days_to_keep: int = 60):
+    def cleanup_old_bars(self, days_to_keep: int = 60):
         """Remove bars older than days_to_keep from 1m and 5m tables."""
         cutoff = datetime.now() - timedelta(days=days_to_keep)
         p = ph()
@@ -973,11 +954,8 @@ class DataManager:
     def get_bars_from_memory(self, ticker: str, limit: int = 390) -> List[Dict]:
         """
         Return N most recent bars. Prefer get_today_session_bars() for live scanning.
-        
-        WEBSOCKET-OPTIMIZED: If requesting only 1 bar and WS is connected,
-        returns WS bar immediately.
+        If requesting only 1 bar and WS is connected, returns WS bar immediately.
         """
-        # Optimization: Single bar request during live session
         if limit == 1:
             ws_bar = self._get_ws_bar(ticker)
             if ws_bar:
@@ -1036,22 +1014,17 @@ class DataManager:
     def get_vix_level(self) -> Optional[float]:
         """
         Get current VIX level for volatility-based threshold adjustments.
-
-        Returns:
-            VIX close price as float, or None if unavailable
+        Returns VIX close price as float, or None if unavailable.
         """
         try:
-            # Method 1: Try to get VIX from memory first (fastest)
             bars = self.get_bars_from_memory("VIX", limit=1)
             if bars:
                 return bars[-1]["close"]
             
-            # Method 2: Try latest bar
             bar = self.get_latest_bar("VIX")
             if bar:
                 return bar["close"]
 
-            # Method 3: Fall back to fetching latest VIX data via REST
             url = f"https://eodhd.com/api/real-time/VIX.INDX"
             params = {
                 "api_token": config.EODHD_API_KEY,
@@ -1069,17 +1042,8 @@ class DataManager:
             print(f"[DATA-MGR] VIX fetch error: {e}")
             return None
 
+
 # ─────────────────────────────────────────────────────────────
 # Global singleton
 # ─────────────────────────────────────────────────────────────
 data_manager = DataManager()
-
-
-# Legacy compatibility shims (keep for existing callers)
-def update_ticker(ticker: str):
-    """Module-level shim — calls DataManager internal method."""
-    data_manager._update_ticker_internal(ticker)
-
-def cleanup_old_bars(days_to_keep: int = 60):
-    """Module-level shim — calls DataManager internal method."""
-    data_manager._cleanup_old_bars_internal(days_to_keep)
