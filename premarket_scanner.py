@@ -375,6 +375,7 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
         'price':           price,
         'volume':          volume,
         'volume_score':    volume_score,
+        'composite_score': volume_score,  # Alias for watchlist_funnel.py compatibility
         'rvol':            volume_metrics['rvol'],
         'dollar_volume':   volume_metrics['dollar_volume'],
         'atr':             fundamentals['atr'],
@@ -417,3 +418,79 @@ def clear_cache():
     """Clear all scanner caches."""
     _scanner_cache.clear()
     print("[PREMARKET] All caches cleared")
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# COMPATIBILITY STUBS (for watchlist_funnel.py)
+# ═════════════════════════════════════════════════════════════════════════
+
+def run_momentum_screener(
+    tickers: List[str],
+    min_composite_score: float = 60.0,
+    use_cache: bool = True
+) -> List[Dict]:
+    """
+    Compatibility stub for watchlist_funnel.py.
+    Maps to scan_watchlist() with renamed parameters.
+    
+    Args:
+        tickers: List of ticker symbols to scan
+        min_composite_score: Minimum score threshold (maps to min_score)
+        use_cache: Whether to use caching (always enabled in unified scanner)
+    
+    Returns:
+        List of scored ticker dicts with 'composite_score' field
+    """
+    return scan_watchlist(tickers, min_score=min_composite_score)
+
+
+def get_top_n_movers(scored_tickers: List[Dict], n: int = 10) -> List[str]:
+    """
+    Get top N tickers from scored results.
+    Compatibility function for watchlist_funnel.py.
+    
+    Args:
+        scored_tickers: List of dicts with 'composite_score' or 'volume_score'
+        n: Number of top tickers to return
+    
+    Returns:
+        List of ticker symbols (strings)
+    """
+    sorted_tickers = sorted(
+        scored_tickers, 
+        key=lambda x: x.get('composite_score', x.get('volume_score', 0)), 
+        reverse=True
+    )
+    return [t['ticker'] for t in sorted_tickers[:n]]
+
+
+def print_momentum_summary(scored_tickers: List[Dict], top_n: int = 10):
+    """
+    Print formatted summary of top N movers.
+    Compatibility function for watchlist_funnel.py.
+    
+    Args:
+        scored_tickers: List of scored ticker dicts
+        top_n: Number of top tickers to display
+    """
+    if not scored_tickers:
+        print("[PREMARKET] No tickers to display")
+        return
+    
+    print(f"\n{'='*80}")
+    print(f"TOP {min(top_n, len(scored_tickers))} MOMENTUM MOVERS")
+    print(f"{'='*80}")
+    print(f"{'Rank':<6} {'Ticker':<8} {'Score':<8} {'RVOL':<8} {'Price':<10} {'Volume':>12}")
+    print(f"{'-'*80}")
+    
+    for i, ticker_data in enumerate(scored_tickers[:top_n], 1):
+        rank = f"#{i}"
+        ticker = ticker_data.get('ticker', 'N/A')
+        score = ticker_data.get('composite_score', ticker_data.get('volume_score', 0))
+        rvol = ticker_data.get('rvol', 0)
+        price = ticker_data.get('price', 0)
+        volume = ticker_data.get('volume', 0)
+        
+        print(f"{rank:<6} {ticker:<8} {score:<8.1f} {rvol:<8.2f} ${price:<9.2f} {volume:>12,}")
+    
+    print(f"{'='*80}\n")
