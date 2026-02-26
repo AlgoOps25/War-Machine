@@ -418,8 +418,7 @@ def start_scanner_loop():
         print(f"[WS] ERROR starting WebSocket feed: {e}")
 
     # CACHE-AWARE STARTUP: Loads from cache first, only fetches gaps
-    from data_manager_cache_integration import startup_backfill_with_cache
-    startup_backfill_with_cache(data_manager, startup_watchlist, days=30)
+    data_manager.startup_backfill_with_cache(startup_watchlist, days=30)
     data_manager.startup_intraday_backfill_today(startup_watchlist)
     set_backfill_complete()
 
