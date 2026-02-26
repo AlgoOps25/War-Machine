@@ -2,10 +2,10 @@
 Scanner Optimizer - Adaptive Scan Intervals
 Dynamically adjusts scan frequency and watchlist size based on time of day (ET).
 
-Fixes applied:
-- All time checks use Eastern Time via ZoneInfo
-- OR period starts at 9:40 (not 9:30) to match should_scan_now() rule
-- Print logs deduplicated (only prints on interval change)
+NOTE: This module will be merged into scanner.py in Phase 1.
+For now, it remains standalone for backward compatibility.
+
+New code should use scanner.py directly after Phase 1 consolidation.
 """
 from datetime import datetime, time
 from zoneinfo import ZoneInfo
