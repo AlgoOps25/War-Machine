@@ -33,7 +33,7 @@ from cfw6_confirmation import wait_for_confirmation, grade_signal_with_confirmat
 from trade_calculator import compute_stop_and_targets, get_adaptive_fvg_threshold
 from data_manager import data_manager
 from position_manager import position_manager
-from learning_policy import compute_confidence
+from ai_learning import compute_confidence
 import config
 from bos_fvg_engine import scan_bos_fvg, is_force_close_time
 
