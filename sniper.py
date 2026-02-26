@@ -53,6 +53,15 @@ except ImportError as import_err:
     PHASE_4_ENABLED = False
     print(f"[SIGNALS] ⚠️  Phase 4 monitoring disabled: {import_err}")
 
+# Production hardening helpers (Phase 3H)
+try:
+    from production_helpers import _send_alert_safe, _fetch_data_safe, _db_operation_safe
+    PRODUCTION_HELPERS_ENABLED = True
+    print("[SNIPER] ✅ Production hardening enabled")
+except ImportError:
+    PRODUCTION_HELPERS_ENABLED = False
+    print("[SNIPER] ⚠️  Production helpers not available")
+
 # Phase 4 tracking state
 _last_dashboard_check = datetime.now()
 _last_alert_check = datetime.now()
@@ -1291,12 +1300,28 @@ def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high,
     )
 
     log_proposed_trade(ticker, signal_type, direction, entry_price, confidence, grade)
-    send_options_signal_alert(
-        ticker=ticker, direction=direction,
-        entry=entry_price, stop=stop_price, t1=t1, t2=t2,
-        confidence=confidence, timeframe="5m", grade=grade, options_data=options_rec,
-        confirmation=bos_confirmation, candle_type=bos_candle_type
-    )
+    # Phase 3H: Non-blocking Discord alert
+    if PRODUCTION_HELPERS_ENABLED:
+        _send_alert_safe(
+            send_options_signal_alert,
+            ticker=ticker, direction=direction,
+            entry=entry_price, stop=stop_price, t1=t1, t2=t2,
+            confidence=confidence, timeframe="5m", grade=grade, 
+            options_data=options_rec,
+            confirmation=bos_confirmation, candle_type=bos_candle_type
+        )
+    else:
+        try:
+            send_options_signal_alert(
+                ticker=ticker, direction=direction,
+                entry=entry_price, stop=stop_price, t1=t1, t2=t2,
+                confidence=confidence, timeframe="5m", grade=grade, 
+                options_data=options_rec,
+                confirmation=bos_confirmation, candle_type=bos_candle_type
+            )
+        except Exception as e:
+            print(f"[DISCORD] ❌ Alert failed: {e}")
+
     position_id = position_manager.open_position(
         ticker=ticker, direction=direction,
         zone_low=zone_low, zone_high=zone_high,
@@ -1402,10 +1427,24 @@ def process_ticker(ticker: str):
         if ticker in armed_signals:
             return
 
-        bars_session = data_manager.get_today_session_bars(ticker)
-        if not bars_session:
-            print(f"[{ticker}] No session bars")
-            return
+        # Phase 3H: Safe data fetch with error handling
+        if PRODUCTION_HELPERS_ENABLED:
+            bars_session = _fetch_data_safe(
+                ticker,
+                lambda t: data_manager.get_today_session_bars(t),
+                "session bars"
+            )
+            if bars_session is None:
+                return  # Already logged by wrapper
+        else:
+            try:
+                bars_session = data_manager.get_today_session_bars(ticker)
+                if not bars_session:
+                    print(f"[{ticker}] No session bars")
+                    return
+            except Exception as e:
+                print(f"[{ticker}] ❌ Data fetch failed: {e}")
+                return
 
         print(
             f"[{ticker}] {_now_et().date()} ({len(bars_session)} bars) "
