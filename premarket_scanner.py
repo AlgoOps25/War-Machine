@@ -48,9 +48,9 @@ except ImportError:
     WS_AVAILABLE = False
 
 
-# ═══════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════
 # CACHING LAYER
-# ═══════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════
 
 class ScannerCache:
     """Caches professional scan results and fundamental data."""
@@ -88,9 +88,8 @@ class ScannerCache:
         self.fundamental_cache[ticker] = data
 
     def clear(self):
-        """Clear all caches."""
+        """Clear scan cache. Fundamentals persist for the session."""
         self.scan_cache = {}
-        # Keep fundamentals cached for entire session
 
     def get_stats(self) -> Dict:
         """Return cache statistics."""
@@ -109,13 +108,10 @@ class ScannerCache:
 # Global cache instance
 _scanner_cache = ScannerCache(ttl_seconds=180)
 
-# Previous close cache
-_prev_close_cache: Dict[str, float] = {}
 
-
-# ═══════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════
 # TIER 1: VOLUME SPIKE DETECTION
-# ═══════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════
 
 def calculate_relative_volume(
     current_volume: int,
@@ -211,9 +207,9 @@ def score_volume_quality(
     return round(total_score, 1), metrics
 
 
-# ═══════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════
 # FUNDAMENTAL DATA FETCHING (ATR, MARKET CAP, FLOAT)
-# ═══════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════
 
 def fetch_fundamental_data(ticker: str) -> Dict:
     """
@@ -234,7 +230,6 @@ def fetch_fundamental_data(ticker: str) -> Dict:
         return cached
 
     try:
-        # Get fundamentals from EODHD
         url = f"https://eodhd.com/api/fundamentals/{ticker}.US?api_token={config.EODHD_API_KEY}&fmt=json"
 
         response = requests.get(url, timeout=10)
@@ -243,40 +238,31 @@ def fetch_fundamental_data(ticker: str) -> Dict:
 
         data = response.json()
 
-        # Extract key data
-        highlights = data.get('Highlights', {})
-        technicals = data.get('Technicals', {})
+        highlights   = data.get('Highlights', {})
+        technicals   = data.get('Technicals', {})
         shares_stats = data.get('SharesStats', {})
 
-        market_cap = highlights.get('MarketCapitalization', 0) or 0
+        market_cap   = highlights.get('MarketCapitalization', 0) or 0
         float_shares = shares_stats.get('SharesFloat', 0) or shares_stats.get('SharesOutstanding', 0) or 0
+        atr          = technicals.get('AverageTrueRange14', 0) or 0
+        avg_volume   = highlights.get('AverageDailyVolume', 0) or 0
 
-        # ATR from technicals (if available)
-        atr = technicals.get('AverageTrueRange14', 0) or 0
-
-        # Average daily volume
-        avg_volume = highlights.get('AverageDailyVolume', 0) or 0
-
-        # If ATR not available, calculate from recent bars
+        # Fallback: calculate from recent intraday bars if fundamentals API has no data
         if atr == 0:
             atr = _calculate_atr_from_bars(ticker)
-
-        # If average volume not available, use fallback
         if avg_volume == 0:
             avg_volume = _get_average_volume_from_bars(ticker)
 
         fundamentals = {
-            'ticker': ticker,
-            'market_cap': market_cap,
-            'float_shares': float_shares,
-            'atr': atr,
+            'ticker':          ticker,
+            'market_cap':      market_cap,
+            'float_shares':    float_shares,
+            'atr':             atr,
             'avg_daily_volume': avg_volume,
-            'timestamp': datetime.now().isoformat()
+            'timestamp':       datetime.now().isoformat()
         }
 
-        # Cache for session
         _scanner_cache.set_fundamental(ticker, fundamentals)
-
         return fundamentals
 
     except Exception as e:
@@ -287,35 +273,37 @@ def fetch_fundamental_data(ticker: str) -> Dict:
 def _get_default_fundamentals(ticker: str) -> Dict:
     """Return default/fallback fundamental data."""
     return {
-        'ticker': ticker,
-        'market_cap': 0,
-        'float_shares': 0,
-        'atr': 0,
+        'ticker':          ticker,
+        'market_cap':      0,
+        'float_shares':    0,
+        'atr':             0,
         'avg_daily_volume': 0,
-        'timestamp': datetime.now().isoformat()
+        'timestamp':       datetime.now().isoformat()
     }
 
 
 def _calculate_atr_from_bars(ticker: str, periods: int = 14) -> float:
-    """Calculate ATR from recent daily bars if not in fundamentals."""
+    """
+    Calculate ATR from recent 1m bars stored in intraday_bars.
+    Used as fallback when EODHD fundamentals API has no ATR data.
+    """
     if not WS_AVAILABLE:
         return 0.0
 
     try:
-        bars = data_manager.get_bars(ticker, "1D", limit=periods + 1)
+        bars = data_manager.get_today_session_bars(ticker)
         if not bars or len(bars) < 2:
             return 0.0
 
         true_ranges = []
         for i in range(1, len(bars)):
-            prev_close = bars[i-1]['c']
-            curr_high = bars[i]['h']
-            curr_low = bars[i]['l']
-
+            prev_close = bars[i - 1]['close']
+            curr_high  = bars[i]['high']
+            curr_low   = bars[i]['low']
             tr = max(
                 curr_high - curr_low,
                 abs(curr_high - prev_close),
-                abs(curr_low - prev_close)
+                abs(curr_low  - prev_close)
             )
             true_ranges.append(tr)
 
@@ -327,16 +315,19 @@ def _calculate_atr_from_bars(ticker: str, periods: int = 14) -> float:
 
 
 def _get_average_volume_from_bars(ticker: str, periods: int = 20) -> int:
-    """Calculate average volume from recent bars."""
+    """
+    Calculate average volume from recent 1m bars stored in intraday_bars.
+    Used as fallback when EODHD fundamentals API has no volume data.
+    """
     if not WS_AVAILABLE:
         return 0
 
     try:
-        bars = data_manager.get_bars(ticker, "1D", limit=periods)
+        bars = data_manager.get_today_session_bars(ticker)
         if not bars:
             return 0
 
-        volumes = [bar['v'] for bar in bars if 'v' in bar]
+        volumes = [bar['volume'] for bar in bars]
         return int(statistics.mean(volumes)) if volumes else 0
 
     except Exception as e:
@@ -344,64 +335,56 @@ def _get_average_volume_from_bars(ticker: str, periods: int = 20) -> int:
         return 0
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# PUBLIC API (BACKWARDS COMPATIBLE)
-# ═══════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════
+# PUBLIC API
+# ═════════════════════════════════════════════════════════════════════════
 
 def scan_ticker(ticker: str) -> Optional[Dict]:
     """
     Scan a single ticker with professional 3-tier scoring.
     Returns scan result or None if ticker doesn't qualify.
-    
-    This is the main entry point compatible with watchlist_funnel.py
+    Compatible with watchlist_funnel.py.
     """
-    # Check cache first
     cached = _scanner_cache.get_scan(ticker)
     if cached:
         return cached
 
-    # Fetch fundamental data
     fundamentals = fetch_fundamental_data(ticker)
 
-    # Get current price/volume
     if WS_AVAILABLE:
         try:
             current_bar = get_current_bar(ticker)
             if not current_bar:
                 return None
-            
-            price = current_bar.get('c', 0)
-            volume = current_bar.get('v', 0)
-        except:
+
+            price  = current_bar.get('close', 0)
+            volume = current_bar.get('volume', 0)
+        except Exception:
             return None
     else:
         return None
 
-    # Score volume quality
     volume_score, volume_metrics = score_volume_quality(
         volume,
         fundamentals['avg_daily_volume'],
         price
     )
 
-    # Build result
     result = {
-        'ticker': ticker,
-        'price': price,
-        'volume': volume,
-        'volume_score': volume_score,
-        'rvol': volume_metrics['rvol'],
-        'dollar_volume': volume_metrics['dollar_volume'],
-        'atr': fundamentals['atr'],
-        'market_cap': fundamentals['market_cap'],
-        'float': fundamentals['float_shares'],
+        'ticker':          ticker,
+        'price':           price,
+        'volume':          volume,
+        'volume_score':    volume_score,
+        'rvol':            volume_metrics['rvol'],
+        'dollar_volume':   volume_metrics['dollar_volume'],
+        'atr':             fundamentals['atr'],
+        'market_cap':      fundamentals['market_cap'],
+        'float':           fundamentals['float_shares'],
         'avg_daily_volume': fundamentals['avg_daily_volume'],
-        'timestamp': datetime.now()
+        'timestamp':       datetime.now()
     }
 
-    # Cache result
     _scanner_cache.set_scan(ticker, result)
-
     return result
 
 
@@ -411,7 +394,7 @@ def scan_watchlist(tickers: List[str], min_score: float = 60.0) -> List[Dict]:
     Compatible with watchlist_funnel.py interface.
     """
     results = []
-    
+
     for ticker in tickers:
         try:
             scan_result = scan_ticker(ticker)
@@ -420,10 +403,8 @@ def scan_watchlist(tickers: List[str], min_score: float = 60.0) -> List[Dict]:
         except Exception as e:
             print(f"[PREMARKET] Error scanning {ticker}: {e}")
             continue
-    
-    # Sort by volume score descending
+
     results.sort(key=lambda x: x['volume_score'], reverse=True)
-    
     return results
 
 
@@ -435,22 +416,4 @@ def get_cache_stats() -> Dict:
 def clear_cache():
     """Clear all scanner caches."""
     _scanner_cache.clear()
-    _prev_close_cache.clear()
     print("[PREMARKET] All caches cleared")
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# COMPATIBILITY EXPORTS
-# ═══════════════════════════════════════════════════════════════════════════
-
-# Export individual functions for backwards compatibility
-__all__ = [
-    'calculate_relative_volume',
-    'calculate_dollar_volume',
-    'score_volume_quality',
-    'fetch_fundamental_data',
-    'scan_ticker',
-    'scan_watchlist',
-    'get_cache_stats',
-    'clear_cache',
-]

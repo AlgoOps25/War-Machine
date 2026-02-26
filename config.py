@@ -1,10 +1,6 @@
 """
-War Machine Configuration - Complete CFW6 + Options Integration
-Consolidates: config.py + config_updates.py
-Single source of truth for all system parameters
-
-Phase 1.9: Enhanced with portfolio-level risk management
-Phase 2.1: WebSocket real-time data integration
+War Machine Configuration
+Single source of truth for all system parameters.
 """
 import os
 from datetime import time
@@ -25,10 +21,10 @@ DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
 # ══════════════════════════════════════════════════════════════════════════════
 MARKET_OPEN           = time(9, 30)
 MARKET_CLOSE          = time(16, 0)
-OPENING_RANGE_END     = time(9, 40)   # CFW6: 10-minute OR window
-PREMARKET_START       = time(4, 0)    # CFW6: Advanced pre-market levels
+OPENING_RANGE_END     = time(9, 40)   # 10-minute OR window
+PREMARKET_START       = time(4, 0)    # Pre-market levels
 
-# 0DTE forced close times (moved from bos_fvg_engine.py)
+# 0DTE forced close times
 HARD_CLOSE_TIME       = time(15, 45)  # Begin closing all 0DTE positions
 FORCE_CLOSE_TIME      = time(15, 55)  # Liquidate any remaining 0DTE at market
 
@@ -111,7 +107,7 @@ STOP_MULTIPLIERS = {
     "A-": 1.8       # Wider stop for marginal signals
 }
 
-# Target risk:reward ratios (CFW6 video rules)
+# Target risk:reward ratios
 TARGET_1_RR = 2.0   # T1 = 2R for all grades
 TARGET_2_RR = 3.5   # T2 = 3.5R for all grades
 
@@ -126,11 +122,11 @@ POSITION_RISK = {
 ACCOUNT_SIZE   = float(os.getenv("ACCOUNT_SIZE", "25000"))
 MAX_CONTRACTS  = 10         # Hard cap on contracts per trade
 
-# Phase 1.9: Portfolio-level risk controls
+# Portfolio-level risk controls
 MAX_DAILY_LOSS_PCT        = 3.0    # Circuit breaker: stop trading at -3% daily loss
-MAX_INTRADAY_DRAWDOWN_PCT = 5.0    # Max drawdown from intraday peak (5%)
-MAX_OPEN_POSITIONS        = 5      # Maximum concurrent positions (prevent over-diversification)
-MAX_SECTOR_EXPOSURE_PCT   = 40.0   # Maximum exposure to single sector (40%)
+MAX_INTRADAY_DRAWDOWN_PCT = 5.0    # Max drawdown from intraday peak
+MAX_OPEN_POSITIONS        = 5      # Maximum concurrent positions
+MAX_SECTOR_EXPOSURE_PCT   = 40.0   # Maximum exposure to single sector
 MIN_RISK_REWARD_RATIO     = 1.5    # Minimum R:R ratio to enter trade
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -152,11 +148,9 @@ CONFIDENCE_FLOOR          = 0.50        # Minimum confidence floor (decay only)
 
 # Per signal-type minimums
 MIN_CONFIDENCE_OR        = 0.70    # OR-Anchored signals (CFW6_OR)
-MIN_CONFIDENCE_INTRADAY  = 0.75    # Intraday BOS signals (CFW6_INTRADAY) — higher bar
+MIN_CONFIDENCE_INTRADAY  = 0.75    # Intraday BOS signals (CFW6_INTRADAY)
 
 # Per-grade overrides: effective_min = max(type_floor, grade_floor, absolute_floor)
-# A+ can pass with less because the pattern quality is highest.
-# A- requires more because the pattern is marginal.
 MIN_CONFIDENCE_BY_GRADE = {
     "A+": 0.65,
     "A":  0.70,
@@ -216,27 +210,17 @@ DARKPOOL_BOOST_FACTOR    = 0.05         # +5% confidence for dark pool
 
 # ══════════════════════════════════════════════════════════════════════════════
 # GEX (GAMMA EXPOSURE) MULTIPLIERS
-# These multipliers are applied to base confidence in sniper.py Step 11.
-# The IVR/UOA/GEX multipliers stack multiplicatively.
+# Applied to base confidence in sniper.py Step 11.
+# IVR/UOA/GEX multipliers stack multiplicatively.
 #
-# Theoretical bounds (for reference only, not enforced):
-#   Maximum combined multiplier: 1.134  (1.08 IVR × 1.05 UOA/GEX)
-#   Minimum combined multiplier: 0.8924 (0.97 IVR × 0.92 UOA/GEX)
-#
-# Actual ceiling/floor guard rails (enforced in options_filter.py):
-#   IVR multiplier ceiling:  1.30 (IVR < 20, very cheap IV)
-#   IVR multiplier floor:    0.70 (IVR > 80, expensive IV)
-#   UOA multiplier ceiling:  1.30 (strong unusual flow)
-#   UOA multiplier floor:    0.70 (adverse flow)
-#   GEX multiplier ceiling:  1.30 (favorable gamma environment)
-#   GEX multiplier floor:    0.70 (unfavorable gamma headwinds)
+# Enforced ceiling/floor guard rails (options_filter.py):
+#   IVR multiplier: 0.70 – 1.30
+#   UOA multiplier: 0.70 – 1.30
+#   GEX multiplier: 0.70 – 1.30
 # ══════════════════════════════════════════════════════════════════════════════
 
 # ══════════════════════════════════════════════════════════════════════════════
 # WEBSOCKET REAL-TIME DATA FEED
-# Connects to EODHD WebSocket for sub-minute price updates.
-# Reduces REST API quota consumption and enables true real-time alerting.
-# Requires EODHD plan with WebSocket access (EOD+Intraday or All-In-One).
 # ══════════════════════════════════════════════════════════════════════════════
 ENABLE_WEBSOCKET_FEED = True            # Toggle WebSocket feed on/off
 WS_FLUSH_INTERVAL     = 10              # Flush open bars to DB every N seconds
@@ -244,15 +228,10 @@ WS_RECONNECT_DELAY    = 5               # Wait N seconds before reconnecting on 
 WS_SUBSCRIBE_CHUNK    = 50              # Max tickers per subscribe message
 WS_SPIKE_THRESHOLD    = 0.10            # Reject ticks > 10% from current close (bad prints)
 
-# Legacy config names (deprecated, kept for backward compatibility)
-FLUSH_INTERVAL    = WS_FLUSH_INTERVAL
-RECONNECT_DELAY   = WS_RECONNECT_DELAY
-
 # ══════════════════════════════════════════════════════════════════════════════
 # DATABASE & LOGGING
 # ══════════════════════════════════════════════════════════════════════════════
 DB_PATH             = "market_memory.db"        # Main market data database (SQLite fallback)
-# TRADES_DB_PATH removed — position_manager now defaults to market_memory.db for unified storage
 LOG_LEVEL           = "INFO"
 BARS_RETENTION_DAYS = 60                         # Auto-cleanup bars older than 60 days
 
