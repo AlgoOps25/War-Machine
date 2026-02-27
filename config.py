@@ -15,6 +15,26 @@ from dataclasses import dataclass, field
 import json
 from pathlib import Path
 
+
+# ========================================
+# API KEYS & CREDENTIALS
+# ========================================
+
+# EODHD API Key (required for data_manager, signal_generator, etc.)
+EODHD_API_KEY = "695cf9738b6fc2.79743285"  # Replace with your actual key
+
+# Account Configuration
+ACCOUNT_SIZE = 5000  # Your trading account size in USD
+
+# Risk Management
+MAX_SECTOR_EXPOSURE_PCT = 30.0  # Maximum exposure to any single sector (%)
+MAX_POSITION_SIZE_PCT = 5.0     # Maximum % of account per position
+MAX_DAILY_LOSS_PCT = 2.0        # Stop trading if daily loss exceeds this %
+
+# Database Configuration (optional - uses SQLite if not set)
+DATABASE_URL = None  # Set to PostgreSQL URL if using Railway/Heroku
+
+
 # ========================================
 # FILTER CONFIGURATION DATACLASS
 # ========================================
@@ -26,6 +46,7 @@ class FilterConfig:
     weight: float = 1.0  # Weight in combined scoring (0.0 to 2.0)
     params: Dict[str, Any] = field(default_factory=dict)
     description: str = ""
+
 
 # ========================================
 # MAIN CONFIGURATION CLASS
