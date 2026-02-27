@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """
-Comprehensive Parameter Optimization System
+Comprehensive Parameter Optimization System with Result Caching
+
+NEW: Caches backtest results to avoid re-testing same parameters!
 
 Tests EVERY available EODHD data point for optimal BOS/FVG signal detection:
 
@@ -38,6 +40,7 @@ Outputs:
     - comprehensive_results.csv (all parameter combinations)
     - top_20_configs.json (best performing setups)
     - optimization_report.txt (detailed analysis)
+    - backtest_cache/ (cached results by parameter hash)
 """
 import sys
 from datetime import datetime, timedelta, time as dtime
@@ -46,8 +49,10 @@ from typing import List, Dict, Optional, Tuple
 import pandas as pd
 import numpy as np
 import json
+import hashlib
 from itertools import product
 import time as time_module
+from pathlib import Path
 
 from data_manager import DataManager
 from db_connection import get_conn, ph, dict_cursor
@@ -60,9 +65,13 @@ TICKERS = [
     "GOOGL", "AMZN", "NFLX", "INTC", "PLTR", "COIN", "SOFI"
 ]
 
+# Cache directory
+CACHE_DIR = Path("backtest_cache")
+CACHE_DIR.mkdir(exist_ok=True)
+
 
 class ComprehensiveOptimizer:
-    """Test all EODHD data points for optimal parameters."""
+    """Test all EODHD data points for optimal parameters with result caching."""
     
     def __init__(self, db_path: str = "market_memory.db", days: int = 10):
         self.db_path = db_path
@@ -73,13 +82,14 @@ class ComprehensiveOptimizer:
         self.start_date = (now_et - timedelta(days=days)).date()
         
         print(f"\n{'='*70}")
-        print("COMPREHENSIVE PARAMETER OPTIMIZATION")
+        print("COMPREHENSIVE PARAMETER OPTIMIZATION WITH CACHING")
         print(f"{'='*70}")
         print(f"Period: {self.start_date} to {self.end_date}")
         print(f"Tickers: {len(TICKERS)}")
+        print(f"Cache: {CACHE_DIR}")
         print(f"{'='*70}\n")
         
-        # Load all bars into memory
+        # Load all bars into memory ONCE
         print("⏳ Loading bars into memory...")
         self.bars_cache = {}
         for ticker in TICKERS:
@@ -106,6 +116,43 @@ class ComprehensiveOptimizer:
         if self.vix_level:
             regime = "Low" if self.vix_level < 15 else "High" if self.vix_level > 25 else "Normal"
             print(f"📉 Current VIX: {self.vix_level:.2f} ({regime} volatility)\n")
+    
+    # ==================== CACHING FUNCTIONS ====================
+    
+    def _get_config_hash(self, config: Dict) -> str:
+        """Generate unique hash for parameter config."""
+        # Sort keys to ensure consistent hashing
+        config_str = "_".join(
+            f"{k}={v}" for k, v in sorted(config.items())
+        )
+        return hashlib.md5(config_str.encode()).hexdigest()
+    
+    def _load_cached_result(self, config_hash: str) -> Optional[Dict]:
+        """Load cached backtest result."""
+        cache_file = CACHE_DIR / f"{config_hash}.json"
+        if cache_file.exists():
+            try:
+                with open(cache_file) as f:
+                    return json.load(f)
+            except Exception as e:
+                print(f"  ⚠️ Cache read error: {e}")
+                return None
+        return None
+    
+    def _save_result_to_cache(self, config_hash: str, result: Dict):
+        """Save backtest result to cache."""
+        cache_file = CACHE_DIR / f"{config_hash}.json"
+        try:
+            with open(cache_file, 'w') as f:
+                json.dump(result, f, default=str)
+        except Exception as e:
+            print(f"  ⚠️ Cache write error: {e}")
+    
+    def _count_cached_results(self) -> int:
+        """Count how many results are already cached."""
+        return len(list(CACHE_DIR.glob("*.json")))
+    
+    # ==================== DATA LOADING ====================
     
     def _load_bars(self, ticker: str) -> List[Dict]:
         """Load intraday bars from database."""
@@ -610,7 +657,7 @@ class ComprehensiveOptimizer:
     # ==================== OPTIMIZATION RUNNER ====================
     
     def run_optimization(self) -> pd.DataFrame:
-        """Run comprehensive parameter grid search."""
+        """Run comprehensive parameter grid search with caching."""
         print(f"{'='*70}")
         print("BUILDING PARAMETER GRID")
         print(f"{'='*70}\n")
@@ -639,28 +686,63 @@ class ComprehensiveOptimizer:
         combinations = [dict(zip(keys, v)) for v in product(*values)]
         
         total = len(combinations)
-        print(f"✅ Generated {total:,} parameter combinations\n")
+        cached_count = self._count_cached_results()
+        
+        print(f"✅ Generated {total:,} parameter combinations")
+        print(f"💾 Found {cached_count:,} cached results\n")
         print(f"{'='*70}")
         print("TESTING PARAMETERS")
         print(f"{'='*70}\n")
         
         results = []
         start_time = time_module.time()
+        cache_hits = 0
         
         for idx, params in enumerate(combinations, 1):
-            test_start = time_module.time()
+            config_hash = self._get_config_hash(params)
             
+            # Try to load from cache first
+            cached_result = self._load_cached_result(config_hash)
+            
+            if cached_result:
+                results.append(cached_result)
+                cache_hits += 1
+                
+                if cached_result['total_trades'] > 0:
+                    print(
+                        f"[{idx}/{total}] ⚡ CACHED | "
+                        f"Vol={params['volume_mult']:.1f}x "
+                        f"ATR={params['atr_stop_mult']:.1f} "
+                        f"RR={params['risk_reward']:.1f} "
+                        f"LB={params['lookback']} | "
+                        f"Trades: {cached_result['total_trades']} "
+                        f"WR: {cached_result['win_rate']:.1f}% "
+                        f"PF: {cached_result['profit_factor']:.2f}"
+                    )
+                continue
+            
+            # Not cached - run backtest
+            test_start = time_module.time()
             result = self.test_parameters(params)
+            
+            # Save to cache
+            self._save_result_to_cache(config_hash, result)
             results.append(result)
             
             test_duration = time_module.time() - test_start
             elapsed = time_module.time() - start_time
-            avg_time = elapsed / idx
-            remaining = (total - idx) * avg_time
+            tests_run = idx - cache_hits
+            
+            if tests_run > 0:
+                avg_time = elapsed / tests_run
+                remaining_tests = total - idx
+                remaining = remaining_tests * avg_time
+            else:
+                remaining = 0
             
             if result['total_trades'] > 0:
                 print(
-                    f"[{idx}/{total}] "
+                    f"[{idx}/{total}] 🧪 NEW | "
                     f"Vol={params['volume_mult']:.1f}x "
                     f"ATR={params['atr_stop_mult']:.1f} "
                     f"RR={params['risk_reward']:.1f} "
@@ -674,7 +756,8 @@ class ComprehensiveOptimizer:
                 )
         
         print(f"\n{'='*70}")
-        print("✅ OPTIMIZATION COMPLETE")
+        print(f"✅ OPTIMIZATION COMPLETE")
+        print(f"💾 Cache hits: {cache_hits}/{total} ({cache_hits/total*100:.1f}%)")
         print(f"{'='*70}\n")
         
         return pd.DataFrame(results)
