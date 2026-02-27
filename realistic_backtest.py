@@ -26,7 +26,7 @@ import pandas as pd
 # Add src to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
-from db_connection import get_conn  # Changed from utils.dbconnection
+from utils.db_connection import get_conn
 from data_manager import DataManager  # Use DataManager instead of direct DB calls
 
 # Import War Machine modules

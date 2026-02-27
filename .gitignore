@@ -153,6 +153,58 @@ TODO.txt
 test_output/
 backtests/
 
+# Backtest cache files (V1 and V2)
+*.pkl.gz
+.backtest_cache/
+backtest_cache_v2/
+backtest_results*.csv
+backtest_summary.txt
+top_configs.json
+
+# Optimization results (keep or remove based on preference)
+focused_optimization_v2_results.csv
+*_optimization_*.csv
+
+# Analysis reports
+full_analysis_report*.txt
+
+# Backup files (IMPORTANT - prevents cluttering repo)
+*.backup
+*.backup_*
+*.bak
+*.old
+*_backup.*
+*-backup/
+War-Machine-backup/
+archive/backups/
+
+# Configuration backups
+policy.json
+*.json.bak
+learning_data.json
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+temp/
+tmp/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Notes and scratch files
+Notes.txt
+SCRATCH.md
+TODO.txt
+
+# Local test outputs
+test_output/
+backtests/
+
 # Backtest cache files
 *.pkl.gz
 .backtest_cache/
@@ -162,3 +214,19 @@ top_configs.json
 
 # Analysis reports
 full_analysis_report*.txt
+
+# === V2 OPTIMIZATION CACHE (ADD THIS) ===
+backtest_cache_v2/
+focused_optimization_v2_results.csv
+
+# Advanced MTF results
+advanced_mtf_results*.csv
+
+# Old/test versions of scripts
+*_fixed.py
+*_working.py
+realistic_backtest_v*.py
+
+# Recommendation files
+optimal_config_recommendation.json
+top_*_configurations.csv
