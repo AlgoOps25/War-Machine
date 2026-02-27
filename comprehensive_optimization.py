@@ -33,7 +33,7 @@ from pathlib import Path
 import time as time_module
 from itertools import product
 
-from data import DataManager
+from data_manager import DataManager
 
 ET = ZoneInfo("America/New_York")
 
