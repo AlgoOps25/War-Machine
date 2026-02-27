@@ -78,7 +78,7 @@ class SignalGenerator:
     
     def __init__(self, 
                  lookback_bars: int = 12,
-                 volume_multiplier: float = 2.0,
+                 volume_multiplier: float = 3.0,
                  cooldown_minutes: int = 15,
                  min_confidence: int = 60):
         """
@@ -91,8 +91,8 @@ class SignalGenerator:
         self.detector = BreakoutDetector(
             lookback_bars=lookback_bars,
             volume_multiplier=volume_multiplier,
-            atr_stop_multiplier=1.5,
-            risk_reward_ratio=2.0
+            atr_stop_multiplier=2.5,
+            risk_reward_ratio=3.0
         )
         
         self.cooldown_minutes = cooldown_minutes
