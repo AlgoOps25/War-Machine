@@ -2,8 +2,7 @@
 """
 Focused Parameter Optimization - ~1000 High-Quality Combinations
 
-Smarter parameter selection focusing on realistic trading scenarios.
-FIXED: PDH/PDL loading now queries correct date range.
+FIXED: PDH/PDL loading now uses correct date format for SQL queries.
 """
 
 import sys
@@ -127,43 +126,63 @@ class FocusedOptimizer:
         print(f"\n✅ Cached {len(self.bars_cache)} tickers with {total_bars:,} total bars\n")
     
     def load_pdh_pdl(self):
-        """Load previous day high/low."""
+        """Load previous day high/low using date() SQL function."""
         print("⏳ Loading previous day OHLC data...")
         
-        # Go back multiple days to find a trading day
-        for days_back in range(1, 6):
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        
+        # Try to find a previous trading day going back up to 10 days
+        for days_back in range(1, 11):
             prev_date = self.start_date - timedelta(days=days_back)
+            prev_date_str = prev_date.isoformat()
             
             found_any = False
+            
             for ticker in self.tickers:
                 if ticker not in self.bars_cache:
                     continue
                 
-                # Only try this ticker if we haven't found PDH/PDL yet
+                # Only process if we haven't found this ticker yet
                 if ticker in self.pdh_pdl_cache:
                     continue
                 
-                # Load bars for previous date
-                bars = self.load_bars_from_db(
-                    ticker, 
-                    start_date=prev_date,
-                    end_date=prev_date
-                )
+                # Query using date() function for proper comparison
+                query = """
+                    SELECT datetime, high, low
+                    FROM intraday_bars
+                    WHERE ticker = ?
+                      AND date(datetime) = ?
+                    ORDER BY datetime
+                """
                 
-                if bars:
-                    pdh = max(b["high"] for b in bars)
-                    pdl = min(b["low"] for b in bars)
-                    self.pdh_pdl_cache[ticker] = {"pdh": pdh, "pdl": pdl}
-                    found_any = True
+                try:
+                    cur.execute(query, (ticker, prev_date_str))
+                    rows = cur.fetchall()
+                    
+                    if rows:
+                        pdh = max(float(r["high"]) for r in rows)
+                        pdl = min(float(r["low"]) for r in rows)
+                        self.pdh_pdl_cache[ticker] = {"pdh": pdh, "pdl": pdl}
+                        found_any = True
+                
+                except Exception as e:
+                    print(f"  Error querying {ticker} for {prev_date}: {e}")
+                    continue
             
-            # If we found data for this date, print it and we're done
+            # If we found data for any ticker on this date, we're done
             if found_any:
-                print(f"  Using prior day: {prev_date}")
-                for ticker in self.pdh_pdl_cache:
+                print(f"  Using prior day: {prev_date} ({prev_date.strftime('%A')})")
+                print()
+                for ticker in sorted(self.pdh_pdl_cache.keys()):
                     pdh = self.pdh_pdl_cache[ticker]["pdh"]
                     pdl = self.pdh_pdl_cache[ticker]["pdl"]
-                    print(f"  ✅ {ticker} PDH: ${pdh:.2f} PDL: ${pdl:.2f}")
+                    print(f"  ✅ {ticker:6} PDH: ${pdh:7.2f} PDL: ${pdl:7.2f}")
                 break
+        
+        cur.close()
+        conn.close()
         
         if not self.pdh_pdl_cache:
             print("  ⚠️ Warning: Could not load PDH/PDL for any ticker!")
