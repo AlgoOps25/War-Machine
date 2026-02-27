@@ -18,14 +18,21 @@ Output:
 """
 
 import sys
+import os
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 import pandas as pd
 
+# Add src to path
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
+
+from db_connection import get_conn  # Changed from utils.dbconnection
+from data_manager import DataManager  # Use DataManager instead of direct DB calls
+
 # Import War Machine modules
-from utils.dbconnection import getconn
-from breakoutdetector import BreakoutDetector
-from technicalindicators import fetch_atr
+from utils.db_connection import getconn
+from breakout_detector import BreakoutDetector
+from technical_indicators import fetch_atr
 
 print("=" * 80)
 print("REALISTIC BACKTEST - War Machine BOS/FVG System")
