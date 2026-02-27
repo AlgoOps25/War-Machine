@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
 """
-Advanced Multi-Timeframe Multi-Indicator Backtest - FINE-TUNED
+Advanced Multi-Timeframe Multi-Indicator Backtest - FINE-TUNED + VIX FILTER
 
 High-quality signal detection using:
 - BOS/FVG on 1-min (entry trigger)
 - 5-min trend confirmation (EMA alignment)
 - RSI momentum filter
-- Volume surge confirmation (2.5x+ instead of 3x)
-- Wider ATR-based stops (3.0x instead of 2.5x)
-- More achievable target (2.5R instead of 3R)
-- Pullback entry confirmation (wait 1-2 bars after BOS)
+- Volume surge confirmation (2.5x+)
+- VIX > 15 filter (only trade in volatile markets)
+- Wider ATR-based stops (3.0x)
+- More achievable target (2.5R)
+- Pullback entry confirmation
 - Time-of-day filter (9:30-11:00 AM)
 
-Goal: 40-60% win rate with 20-50 high-quality trades
+Goal: 40-60% win rate with 20-50 high-quality trades in volatile conditions
 """
 
 import sys
@@ -27,21 +28,17 @@ import sqlite3
 ET = ZoneInfo("America/New_York")
 
 print("=" * 80)
-print("ADVANCED MULTI-TIMEFRAME MULTI-INDICATOR BACKTEST - FINE-TUNED")
+print("ADVANCED MTF BACKTEST - FINE-TUNED + VIX FILTER")
 print("=" * 80)
 print()
 
 
 class AdvancedMTFBacktest:
     """
-    Multi-timeframe, multi-indicator backtest engine with fine-tuned parameters.
+    Multi-timeframe, multi-indicator backtest engine with VIX volatility filter.
     
-    CHANGES FROM V1:
-    - Volume filter: 3.0x → 2.5x (more signals)
-    - ATR stop: 2.5x → 3.0x (wider stops, less whipsaw)
-    - Target: 3.0R → 2.5R (more achievable)
-    - Entry: Added pullback confirmation (reduces premature entries)
-    - RSI range: Slightly widened (48-72 for longs, 28-52 for shorts)
+    NEW: VIX > 15 filter ensures we only trade in volatile market conditions
+    where BOS/FVG patterns are more reliable.
     """
     
     def __init__(self):
@@ -59,34 +56,105 @@ class AdvancedMTFBacktest:
         ]
         
         # FINE-TUNED PARAMETERS
-        self.volume_multiplier = 2.5  # Was 3.0 - more relaxed
-        self.atr_stop_multiplier = 3.0  # Was 2.5 - wider stops
-        self.target_rr = 2.5  # Was 3.0 - more achievable
+        self.volume_multiplier = 2.5
+        self.atr_stop_multiplier = 3.0
+        self.target_rr = 2.5
         self.lookback = 12
         
-        # RSI ranges (slightly wider)
-        self.rsi_long_min = 48  # Was 50
-        self.rsi_long_max = 72  # Was 70
-        self.rsi_short_min = 28  # Was 30
-        self.rsi_short_max = 52  # Was 50
+        # RSI ranges
+        self.rsi_long_min = 48
+        self.rsi_long_max = 72
+        self.rsi_short_min = 28
+        self.rsi_short_max = 52
+        
+        # VIX filter (NEW)
+        self.vix_threshold = 15.0
         
         # Time filter
         self.session_start = dtime(9, 30)
         self.session_end = dtime(11, 0)
+        
+        # VIX data cache
+        self.vix_cache = {}
         
         print(f"Backtest Period: {self.start_date} to {self.end_date}")
         print(f"Database: {self.db_path}")
         print(f"Test Tickers: {len(self.tickers)}")
         print(f"Session: {self.session_start.strftime('%H:%M')} - {self.session_end.strftime('%H:%M')} ET")
         print()
-        print("FINE-TUNED PARAMETERS:")
-        print(f"  Volume Filter: {self.volume_multiplier}x average (was 3.0x)")
-        print(f"  ATR Stop: {self.atr_stop_multiplier}x (was 2.5x)")
-        print(f"  Target: {self.target_rr}R (was 3.0R)")
-        print(f"  RSI Long: {self.rsi_long_min}-{self.rsi_long_max} (was 50-70)")
-        print(f"  RSI Short: {self.rsi_short_min}-{self.rsi_short_max} (was 30-50)")
+        print("PARAMETERS:")
+        print(f"  Volume Filter: {self.volume_multiplier}x average")
+        print(f"  ATR Stop: {self.atr_stop_multiplier}x")
+        print(f"  Target: {self.target_rr}R")
+        print(f"  RSI Long: {self.rsi_long_min}-{self.rsi_long_max}")
+        print(f"  RSI Short: {self.rsi_short_min}-{self.rsi_short_max}")
+        print(f"  VIX Filter: > {self.vix_threshold} (NEW)")
         print(f"  Entry: With pullback confirmation")
         print()
+    
+    def load_vix_data(self) -> Dict[str, float]:
+        """
+        Load VIX data from database and create datetime -> vix mapping.
+        VIX is stored as ticker '^VIX' in intraday_bars.
+        """
+        if self.vix_cache:
+            return self.vix_cache
+        
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        
+        query = """
+            SELECT datetime, close as vix
+            FROM intraday_bars
+            WHERE ticker = '^VIX'
+              AND datetime >= ?
+              AND datetime <= ?
+            ORDER BY datetime ASC
+        """
+        
+        try:
+            cur.execute(query, (self.start_date, self.end_date))
+            rows = cur.fetchall()
+            
+            for row in rows:
+                dt = row["datetime"] if isinstance(row["datetime"], datetime) else datetime.fromisoformat(str(row["datetime"]))
+                # Round to nearest minute for matching
+                dt = dt.replace(second=0, microsecond=0)
+                self.vix_cache[dt] = float(row["vix"])
+            
+            print(f"[VIX] Loaded {len(self.vix_cache)} VIX data points")
+            
+        except sqlite3.OperationalError:
+            print("[VIX] Warning: No VIX data in database, filter disabled")
+        except Exception as e:
+            print(f"[VIX] Error loading VIX: {e}")
+        
+        cur.close()
+        conn.close()
+        return self.vix_cache
+    
+    def get_vix_at_time(self, dt: datetime) -> Optional[float]:
+        """
+        Get VIX value at specific datetime.
+        Returns most recent VIX value within 5 minutes.
+        """
+        if not self.vix_cache:
+            return None
+        
+        dt = dt.replace(second=0, microsecond=0)
+        
+        # Try exact match first
+        if dt in self.vix_cache:
+            return self.vix_cache[dt]
+        
+        # Find closest within 5 minutes
+        for i in range(5):
+            check_dt = dt - timedelta(minutes=i)
+            if check_dt in self.vix_cache:
+                return self.vix_cache[check_dt]
+        
+        return None
     
     def calculate_ema(self, bars: List[Dict], period: int) -> List[float]:
         """Calculate EMA from bars."""
@@ -231,43 +299,43 @@ class AdvancedMTFBacktest:
         return bars_5m
     
     def check_pullback_entry(self, bars: List[Dict], idx: int, direction: str) -> bool:
-        """
-        Check if current bar shows pullback confirmation after BOS.
-        
-        For LONG: Previous bar should show minor pullback (lower close than 2 bars ago)
-        For SHORT: Previous bar should show minor rally (higher close than 2 bars ago)
-        
-        This prevents entering at the very top/bottom of the initial spike.
-        """
+        """Check if current bar shows pullback confirmation after BOS."""
         if idx < 3:
-            return True  # Not enough history, allow entry
+            return True
         
         current = bars[idx]
         prev_1 = bars[idx - 1]
         prev_2 = bars[idx - 2]
         
         if direction == "LONG":
-            # Want to see a minor pullback, then resumption
-            # Prev bar's close < 2 bars ago, current bar resuming up
             pullback_occurred = prev_1["close"] < prev_2["close"]
             resuming = current["close"] > prev_1["close"]
             return pullback_occurred and resuming
         
         else:  # SHORT
-            # Want to see a minor rally, then resumption down
             rally_occurred = prev_1["close"] > prev_2["close"]
             resuming = current["close"] < prev_1["close"]
             return rally_occurred and resuming
     
     def detect_bos_fvg(self, bars_1m: List[Dict], bars_5m: List[Dict], idx: int) -> Optional[Dict]:
-        """Detect BOS/FVG setup with multi-timeframe confirmation and pullback entry."""
+        """Detect BOS/FVG setup with multi-timeframe confirmation, pullback entry, and VIX filter."""
         if idx < self.lookback + 20:
             return None
         
         current_bar = bars_1m[idx]
         current_time = current_bar["datetime"].time()
         
+        # Time filter
         if not (self.session_start <= current_time <= self.session_end):
+            return None
+        
+        # VIX filter (NEW)
+        vix = self.get_vix_at_time(current_bar["datetime"])
+        if vix is None:
+            # If no VIX data, allow trade (don't want to block everything)
+            pass
+        elif vix < self.vix_threshold:
+            # VIX too low, skip this signal
             return None
         
         recent_1m = bars_1m[max(0, idx-50):idx+1]
@@ -320,7 +388,7 @@ class AdvancedMTFBacktest:
         current_price = current_bar["close"]
         ticker = bars_1m[0].get("ticker", "UNKNOWN")
         
-        # LONG setup (widened RSI range, pullback confirmation)
+        # LONG setup
         if (
             current_rsi > self.rsi_long_min and current_rsi < self.rsi_long_max and
             current_price > ema_9[-1] and
@@ -330,7 +398,6 @@ class AdvancedMTFBacktest:
         ):
             recent_highs = [b["high"] for b in recent_1m[-self.lookback:-1]]
             if current_bar["high"] > max(recent_highs):
-                # Check pullback entry
                 if not self.check_pullback_entry(bars_1m, idx, "LONG"):
                     return None
                 
@@ -347,11 +414,12 @@ class AdvancedMTFBacktest:
                     "rsi": current_rsi,
                     "volume_ratio": volume_ratio,
                     "atr": current_atr,
+                    "vix": vix if vix else 0.0,
                     "timeframe_confirmation": "5m_ema_aligned",
                     "signal_type": "BOS_LONG_PULLBACK"
                 }
         
-        # SHORT setup (widened RSI range, pullback confirmation)
+        # SHORT setup
         if (
             current_rsi < self.rsi_short_max and current_rsi > self.rsi_short_min and
             current_price < ema_9[-1] and
@@ -361,7 +429,6 @@ class AdvancedMTFBacktest:
         ):
             recent_lows = [b["low"] for b in recent_1m[-self.lookback:-1]]
             if current_bar["low"] < min(recent_lows):
-                # Check pullback entry
                 if not self.check_pullback_entry(bars_1m, idx, "SHORT"):
                     return None
                 
@@ -378,6 +445,7 @@ class AdvancedMTFBacktest:
                     "rsi": current_rsi,
                     "volume_ratio": volume_ratio,
                     "atr": current_atr,
+                    "vix": vix if vix else 0.0,
                     "timeframe_confirmation": "5m_ema_aligned",
                     "signal_type": "BOS_SHORT_PULLBACK"
                 }
@@ -478,6 +546,10 @@ class AdvancedMTFBacktest:
         print("="*80)
         print()
         
+        # Load VIX data first
+        self.load_vix_data()
+        print()
+        
         all_trades = []
         
         for ticker in self.tickers:
@@ -523,8 +595,8 @@ class AdvancedMTFBacktest:
         """Generate backtest report."""
         if not trades:
             print("❌ No trades found with current filters.")
-            print("\nThe pullback confirmation may be too strict.")
-            print("Try: Expand time window to 9:30-12:00 or reduce volume to 2.0x")
+            print("\nVIX filter may be too restrictive during this period.")
+            print("Check VIX levels during test period.")
             return
         
         df = pd.DataFrame(trades)
@@ -540,8 +612,11 @@ class AdvancedMTFBacktest:
         
         profit_factor = abs(winners["pnl"].sum() / losers["pnl"].sum()) if len(losers) > 0 and losers["pnl"].sum() != 0 else 0
         
+        # VIX stats
+        avg_vix = df["vix"].mean()
+        
         print("="*80)
-        print("ADVANCED MTF BACKTEST RESULTS - FINE-TUNED")
+        print("ADVANCED MTF BACKTEST - WITH VIX FILTER")
         print("="*80)
         print()
         print(f"Total Trades: {total_trades}")
@@ -552,6 +627,7 @@ class AdvancedMTFBacktest:
         print(f"Avg Win: ${avg_win:.2f}")
         print(f"Avg Loss: ${avg_loss:.2f}")
         print(f"Profit Factor: {profit_factor:.2f}")
+        print(f"Avg VIX: {avg_vix:.1f}")
         print()
         
         print("Exit Breakdown:")
@@ -561,13 +637,14 @@ class AdvancedMTFBacktest:
         print()
         
         # Compare to previous run
-        print("IMPROVEMENT vs ORIGINAL:")
-        print("  Original: 34 trades, 20.6% win rate, -$9.44 P&L")
-        print(f"  Current:  {total_trades} trades, {win_rate:.1f}% win rate, ${total_pnl:.2f} P&L")
+        print("IMPROVEMENT TRACKING:")
+        print("  V1 (Original):     34 trades, 20.6% WR, -$9.44 P&L")
+        print("  V2 (Fine-tuned):   17 trades, 35.3% WR, +$7.04 P&L")
+        print(f"  V3 (VIX filter):   {total_trades} trades, {win_rate:.1f}% WR, ${total_pnl:.2f} P&L")
         print()
         
-        df.to_csv("advanced_mtf_results_tuned.csv", index=False)
-        print("✅ Results saved to advanced_mtf_results_tuned.csv")
+        df.to_csv("advanced_mtf_results_vix.csv", index=False)
+        print("✅ Results saved to advanced_mtf_results_vix.csv")
         print()
         
         if len(winners) > 0:
@@ -579,7 +656,7 @@ class AdvancedMTFBacktest:
                 print(f"\n{trade['ticker']} {trade['direction']}:")
                 print(f"  Entry: ${trade['entry']:.2f} → Exit: ${trade['exit_price']:.2f}")
                 print(f"  P&L: ${trade['pnl']:.2f} ({trade['pnl_pct']:.2f}%)")
-                print(f"  RSI: {trade['rsi']:.1f}, Volume: {trade['volume_ratio']:.1f}x")
+                print(f"  RSI: {trade['rsi']:.1f}, Volume: {trade['volume_ratio']:.1f}x, VIX: {trade['vix']:.1f}")
                 print(f"  Exit: {trade['exit_reason']} after {trade['bars_held']} bars")
             print()
 
@@ -587,7 +664,7 @@ class AdvancedMTFBacktest:
 def main():
     backtest = AdvancedMTFBacktest()
     
-    print("Starting FINE-TUNED advanced multi-timeframe backtest...")
+    print("Starting FINE-TUNED backtest with VIX filter...")
     print()
     
     trades = backtest.run_backtest()
