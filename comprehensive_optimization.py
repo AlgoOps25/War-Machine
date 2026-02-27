@@ -1,853 +1,550 @@
 #!/usr/bin/env python3
 """
-Comprehensive Parameter Optimization System with Result Caching
+Comprehensive BOS/FVG Parameter Optimization - EXPANDED GRID (900+ COMBINATIONS)
 
-AGGRESSIVE QUALITY FOCUS: 96 parameter combinations targeting 20-60 high-quality trades!
+Tests 900+ parameter combinations to find optimal settings:
+- Volume multipliers: 1.5x to 8.0x (10 values)
+- ATR stop multipliers: 1.0x to 6.0x (10 values)
+- Risk:reward ratios: 1.5R to 6.0R (9 values)
+- Lookback periods: 6, 8, 10, 12, 14, 16, 20 (7 values)
+- Momentum filters: none, weak, strong (3 values)
+- Trend filters: none, aligned (2 values)
+- Time filters: all, open, mid, power (4 values)
 
-Tests EVERY available EODHD data point for optimal BOS/FVG signal detection:
+After filtering unrealistic combinations: ~900-1000 tests
 
-1. CORE EODHD DATA:
-   - OHLCV (Open, High, Low, Close, Volume)
-   - Intraday bars (1-minute)
-   - Previous day OHLC (PDH, PDL, PDC)
-   - VIX level (volatility regime)
-
-2. DERIVED INDICATORS:
-   - ATR (Average True Range)
-   - Volume ratio (current/average)
-   - Momentum (rate of change)
-   - Gap size (open vs prev close)
-   - Trend direction (HH/LL detection)
-   - Relative strength (vs SPY)
-   - Breakout strength (distance from structure)
-
-3. AGGRESSIVE PARAMETER GRID (96 combinations):
-   - Volume multipliers: 3.0x, 4.0x (ONLY strong volume confirmation)
-   - ATR stop multiples: 1.5, 2.0 (tight risk control)
-   - Risk/Reward ratios: 2.0, 2.5, 3.0 (solid R:R)
-   - Lookback periods: 12, 16 (stable structure levels)
-   - Momentum filter: 'strong' ONLY (>0.5% - always required!)
-   - Trend filters: None, Aligned only
-   - Time filters: 'open' (9:30-10:00), 'power' (15:30-16:00) - peak volatility only!
-
-Usage:
-    python comprehensive_optimization.py
-
-Outputs:
-    - comprehensive_results.csv (all parameter combinations)
-    - top_20_configs.json (best performing setups)
-    - optimization_report.txt (detailed analysis)
-    - backtest_cache/ (cached results by parameter hash)
+Goal: Find optimal balance between:
+- Win rate (target 45-65%)
+- Trade count (target 20-100 trades)
+- Profit factor (target >1.5)
+- Risk:Reward alignment
 """
+
 import sys
+import os
 from datetime import datetime, timedelta, time as dtime
 from zoneinfo import ZoneInfo
 from typing import List, Dict, Optional, Tuple
 import pandas as pd
 import numpy as np
+import sqlite3
 import json
-import hashlib
-from itertools import product
-import time as time_module
 from pathlib import Path
+import time as time_module
+from itertools import product
 
-from data_manager import DataManager
-from db_connection import get_conn, ph, dict_cursor
+from data import DataManager
 
 ET = ZoneInfo("America/New_York")
 
-# Test with liquid tickers
-TICKERS = [
-    "SPY", "QQQ", "AAPL", "MSFT", "NVDA", "TSLA", "META", "AMD",
-    "GOOGL", "AMZN", "NFLX", "INTC", "PLTR", "COIN", "SOFI"
-]
-
-# Cache directory
-CACHE_DIR = Path("backtest_cache")
-CACHE_DIR.mkdir(exist_ok=True)
+print("\n" + "="*70)
+print("COMPREHENSIVE PARAMETER OPTIMIZATION - EXPANDED GRID (900+)")
+print("="*70)
 
 
 class ComprehensiveOptimizer:
-    """Test all EODHD data points for optimal parameters with result caching."""
+    """
+    Tests 900+ parameter combinations to find optimal BOS/FVG settings.
+    Uses caching to avoid re-running same tests.
+    """
     
-    def __init__(self, db_path: str = "market_memory.db", days: int = 10):
-        self.db_path = db_path
-        self.data_manager = DataManager(db_path)
+    def __init__(self):
+        self.dm = DataManager()
+        self.cache_dir = Path("backtest_cache")
+        self.cache_dir.mkdir(exist_ok=True)
         
-        now_et = datetime.now(ET)
-        self.end_date = now_et.date()
-        self.start_date = (now_et - timedelta(days=days)).date()
+        # Test period
+        self.test_days = 10
+        self.end_date = datetime.now(ET).date()
+        self.start_date = self.end_date - timedelta(days=self.test_days)
         
-        print(f"\n{'='*70}")
-        print("AGGRESSIVE QUALITY-FOCUSED PARAMETER OPTIMIZATION")
-        print(f"{'='*70}")
-        print(f"Period: {self.start_date} to {self.end_date}")
-        print(f"Tickers: {len(TICKERS)}")
-        print(f"Cache: {CACHE_DIR}")
-        print(f"{'='*70}\n")
+        # Expanded ticker universe
+        self.tickers = [
+            "SPY", "QQQ", "AAPL", "MSFT", "NVDA",
+            "TSLA", "META", "AMD", "GOOGL", "AMZN",
+            "NFLX", "INTC", "PLTR", "COIN", "SOFI"
+        ]
         
-        # Load all bars into memory ONCE
-        print("⏳ Loading bars into memory...")
+        # Cache loaded bars
         self.bars_cache = {}
-        for ticker in TICKERS:
-            bars = self._load_bars(ticker)
+        self.pdh_pdl_cache = {}
+        
+        print(f"Period: {self.start_date} to {self.end_date}")
+        print(f"Tickers: {len(self.tickers)}")
+        print(f"Cache: {self.cache_dir}")
+        print("="*70)
+        print()
+    
+    def load_all_bars(self):
+        """Pre-load all bars into memory for speed."""
+        print("⏳ Loading bars into memory...")
+        total_bars = 0
+        
+        for ticker in self.tickers:
+            bars = self.dm.get_bars_between(
+                ticker=ticker,
+                start=self.start_date,
+                end=self.end_date
+            )
+            
             if bars:
                 self.bars_cache[ticker] = bars
+                total_bars += len(bars)
                 print(f"  ✅ {ticker}: {len(bars):,} bars")
+            else:
+                print(f"  ⚠️  {ticker}: No data")
         
-        total_bars = sum(len(b) for b in self.bars_cache.values())
         print(f"\n✅ Cached {len(self.bars_cache)} tickers with {total_bars:,} total bars\n")
-        
-        # Load previous day data for PDH/PDL testing
+    
+    def load_pdh_pdl(self):
+        """Load previous day high/low for each ticker."""
         print("⏳ Loading previous day OHLC data...")
-        self.prev_day_cache = {}
-        for ticker in TICKERS:
-            prev_day = self.data_manager.get_previous_day_ohlc(ticker)
-            if prev_day:
-                self.prev_day_cache[ticker] = prev_day
-                print(f"  ✅ {ticker} PDH: ${prev_day['high']:.2f} PDL: ${prev_day['low']:.2f}")
-        print()
         
-        # Get VIX level for volatility regime
-        self.vix_level = self.data_manager.get_vix_level()
-        if self.vix_level:
-            regime = "Low" if self.vix_level < 15 else "High" if self.vix_level > 25 else "Normal"
-            print(f"📉 Current VIX: {self.vix_level:.2f} ({regime} volatility)\n")
+        for ticker in self.tickers:
+            if ticker not in self.bars_cache:
+                continue
+            
+            # Get bars from day before test period
+            prev_date = self.start_date - timedelta(days=1)
+            bars = self.dm.get_bars_between(ticker, prev_date, prev_date)
+            
+            if bars:
+                pdh = max(b["high"] for b in bars)
+                pdl = min(b["low"] for b in bars)
+                self.pdh_pdl_cache[ticker] = {"pdh": pdh, "pdl": pdl}
+                print(f"  ✅ {ticker} PDH: ${pdh:.2f} PDL: ${pdl:.2f}")
+        
+        print()
     
-    # ==================== CACHING FUNCTIONS ====================
+    def get_vix_level(self) -> float:
+        """Get current VIX level from database."""
+        conn = sqlite3.connect("market_memory.db")
+        cur = conn.cursor()
+        
+        try:
+            cur.execute("""
+                SELECT close FROM intraday_bars
+                WHERE ticker = '^VIX'
+                ORDER BY datetime DESC
+                LIMIT 1
+            """)
+            row = cur.fetchone()
+            if row:
+                return float(row[0])
+        except:
+            pass
+        finally:
+            cur.close()
+            conn.close()
+        
+        return 0.0
     
-    def _get_config_hash(self, config: Dict) -> str:
-        """Generate unique hash for parameter config."""
-        # Sort keys to ensure consistent hashing
-        config_str = "_".join(
-            f"{k}={v}" for k, v in sorted(config.items())
-        )
-        return hashlib.md5(config_str.encode()).hexdigest()
+    def generate_parameter_grid(self) -> List[Dict]:
+        """
+        Generate expanded parameter grid (900+ combinations).
+        
+        Returns:
+            List of parameter dicts
+        """
+        grid = []
+        
+        # EXPANDED RANGES with finer granularity
+        volume_multipliers = [1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 6.0, 8.0]
+        atr_stops = [1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 6.0]
+        risk_rewards = [1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 6.0]
+        lookbacks = [6, 8, 10, 12, 14, 16, 20]
+        momentum_filters = ['none', 'weak', 'strong']
+        trend_filters = ['none', 'aligned']
+        time_filters = ['all', 'open', 'mid', 'power']
+        
+        for vol in volume_multipliers:
+            for atr in atr_stops:
+                for rr in risk_rewards:
+                    for lb in lookbacks:
+                        for momentum in momentum_filters:
+                            for trend in trend_filters:
+                                for timefilter in time_filters:
+                                    # Skip unrealistic combinations
+                                    if atr * rr > 25:  # Skip if target is >25 ATRs away
+                                        continue
+                                    if vol > 6.0 and atr < 2.0:  # High volume needs wider stops
+                                        continue
+                                    if rr > 4.0 and atr < 2.0:  # High R:R needs wider stops
+                                        continue
+                                    
+                                    grid.append({
+                                        "volume_multiplier": vol,
+                                        "atr_stop_multiplier": atr,
+                                        "target_rr": rr,
+                                        "lookback": lb,
+                                        "momentum_filter": momentum,
+                                        "trend_filter": trend,
+                                        "time_filter": timefilter
+                                    })
+        
+        return grid
     
-    def _load_cached_result(self, config_hash: str) -> Optional[Dict]:
-        """Load cached backtest result."""
-        cache_file = CACHE_DIR / f"{config_hash}.json"
+    def get_cache_key(self, params: Dict) -> str:
+        """Generate cache key from parameters."""
+        return f"vol{params['volume_multiplier']}_atr{params['atr_stop_multiplier']}_rr{params['target_rr']}_lb{params['lookback']}_mom{params['momentum_filter']}_trend{params['trend_filter']}_time{params['time_filter']}"
+    
+    def load_cached_result(self, cache_key: str) -> Optional[Dict]:
+        """Load cached backtest result if exists."""
+        cache_file = self.cache_dir / f"{cache_key}.json"
+        
         if cache_file.exists():
             try:
-                with open(cache_file) as f:
+                with open(cache_file, 'r') as f:
                     return json.load(f)
-            except Exception as e:
-                print(f"  ⚠️ Cache read error: {e}")
+            except:
                 return None
+        
         return None
     
-    def _save_result_to_cache(self, config_hash: str, result: Dict):
+    def save_cached_result(self, cache_key: str, result: Dict):
         """Save backtest result to cache."""
-        cache_file = CACHE_DIR / f"{config_hash}.json"
+        cache_file = self.cache_dir / f"{cache_key}.json"
+        
         try:
             with open(cache_file, 'w') as f:
-                json.dump(result, f, default=str)
-        except Exception as e:
-            print(f"  ⚠️ Cache write error: {e}")
+                json.dump(result, f)
+        except:
+            pass
     
-    def _count_cached_results(self) -> int:
-        """Count how many results are already cached."""
-        return len(list(CACHE_DIR.glob("*.json")))
-    
-    # ==================== DATA LOADING ====================
-    
-    def _load_bars(self, ticker: str) -> List[Dict]:
-        """Load intraday bars from database."""
-        try:
-            conn = get_conn(self.db_path)
-            cur = dict_cursor(conn)
-            
-            query = f"""
-            SELECT datetime, open, high, low, close, volume
-            FROM intraday_bars
-            WHERE ticker = {ph()}
-              AND datetime >= {ph()}
-              AND datetime <= {ph()}
-            ORDER BY datetime
-            """
-            
-            cur.execute(query, (ticker, self.start_date, self.end_date))
-            rows = cur.fetchall()
-            conn.close()
-            
-            if not rows:
-                return []
-            
-            bars = []
-            for row in rows:
-                dt = row["datetime"]
-                if isinstance(dt, str):
-                    dt = datetime.fromisoformat(dt)
-                if hasattr(dt, "tzinfo") and dt.tzinfo is not None:
-                    dt = dt.replace(tzinfo=None)
-                
-                bars.append({
-                    "datetime": dt,
-                    "open": float(row["open"]),
-                    "high": float(row["high"]),
-                    "low": float(row["low"]),
-                    "close": float(row["close"]),
-                    "volume": int(row["volume"])
-                })
-            
-            return bars
-        except Exception as e:
-            print(f"Error loading {ticker}: {e}")
-            return []
-    
-    # ==================== INDICATOR CALCULATIONS ====================
-    
-    def _calculate_atr(self, bars: List[Dict], period: int = 14) -> float:
-        """Calculate Average True Range."""
-        if len(bars) < period + 1:
-            return 0
+    def detect_bos(self, bars: List[Dict], idx: int, lookback: int, direction: str) -> bool:
+        """Detect break of structure."""
+        if idx < lookback:
+            return False
         
-        tr_values = []
-        for i in range(1, len(bars)):
-            high = bars[i]['high']
-            low = bars[i]['low']
-            prev_close = bars[i-1]['close']
+        current = bars[idx]
+        recent = bars[idx-lookback:idx]
+        
+        if direction == "LONG":
+            recent_highs = [b["high"] for b in recent]
+            return current["high"] > max(recent_highs)
+        else:
+            recent_lows = [b["low"] for b in recent]
+            return current["low"] < min(recent_lows)
+    
+    def calculate_atr(self, bars: List[Dict], idx: int, period: int = 14) -> float:
+        """Calculate ATR at specific index."""
+        if idx < period + 1:
+            return 0.0
+        
+        recent = bars[max(0, idx-period-1):idx+1]
+        
+        true_ranges = []
+        for i in range(1, len(recent)):
+            high = recent[i]["high"]
+            low = recent[i]["low"]
+            prev_close = recent[i-1]["close"]
             
             tr = max(
                 high - low,
                 abs(high - prev_close),
                 abs(low - prev_close)
             )
-            tr_values.append(tr)
+            true_ranges.append(tr)
         
-        return np.mean(tr_values[-period:]) if tr_values else 0
+        return sum(true_ranges) / len(true_ranges) if true_ranges else 0.0
     
-    def _calculate_avg_volume(self, bars: List[Dict], period: int = 20) -> float:
-        """Calculate average volume over period."""
-        if len(bars) < period:
-            return 0
+    def calculate_momentum(self, bars: List[Dict], idx: int, period: int = 5) -> float:
+        """Calculate momentum (rate of change)."""
+        if idx < period:
+            return 0.0
         
-        volumes = [b['volume'] for b in bars[-period:]]
-        return np.mean(volumes)
+        current = bars[idx]["close"]
+        past = bars[idx - period]["close"]
+        
+        return (current - past) / past if past != 0 else 0.0
     
-    def _calculate_momentum(self, bars: List[Dict], period: int = 5) -> float:
-        """Calculate momentum (ROC - Rate of Change)."""
-        if len(bars) < period:
-            return 0
-        
-        current_close = bars[-1]['close']
-        past_close = bars[-period]['close']
-        return (current_close - past_close) / past_close
-    
-    def _calculate_gap_size(self, current_bar: Dict, prev_bar: Dict) -> float:
-        """Calculate gap percentage between bars."""
-        if prev_bar['close'] == 0:
-            return 0
-        return abs(current_bar['open'] - prev_bar['close']) / prev_bar['close']
-    
-    def _detect_trend(self, bars: List[Dict], lookback: int) -> Tuple[bool, str]:
-        """Detect trend direction (higher highs or lower lows)."""
-        if len(bars) < lookback:
-            return False, 'none'
-        
-        recent_bars = bars[-lookback:]
-        highs = [b['high'] for b in recent_bars]
-        lows = [b['low'] for b in recent_bars]
-        
-        # Uptrend: Higher highs
-        higher_highs = highs[-1] > max(highs[:-1]) if len(highs) > 1 else False
-        # Downtrend: Lower lows
-        lower_lows = lows[-1] < min(lows[:-1]) if len(lows) > 1 else False
-        
-        if higher_highs:
-            return True, 'up'
-        elif lower_lows:
-            return True, 'down'
-        return False, 'none'
-    
-    def _calculate_relative_strength(self, ticker: str, bars: List[Dict]) -> float:
-        """Calculate relative strength vs SPY."""
-        if ticker == 'SPY' or 'SPY' not in self.bars_cache:
-            return 0
-        
-        if len(bars) < 20 or len(self.bars_cache['SPY']) < 20:
-            return 0
-        
-        # Compare recent performance
-        ticker_change = (bars[-1]['close'] - bars[-20]['close']) / bars[-20]['close']
-        spy_bars = self.bars_cache['SPY']
-        spy_change = (spy_bars[-1]['close'] - spy_bars[-20]['close']) / spy_bars[-20]['close']
-        
-        return ticker_change - spy_change
-    
-    def _calculate_breakout_strength(self, price: float, level: float) -> float:
-        """Calculate breakout strength (% above/below level)."""
-        if level == 0:
-            return 0
-        return abs(price - level) / level
-    
-    def _check_pdh_pdl(self, ticker: str, price: float, direction: str) -> Tuple[bool, str]:
-        """Check if price is breaking PDH/PDL."""
-        if ticker not in self.prev_day_cache:
-            return False, 'none'
-        
-        prev_day = self.prev_day_cache[ticker]
-        pdh = prev_day['high']
-        pdl = prev_day['low']
-        
-        if direction == 'long' and price > pdh:
-            return True, 'above_pdh'
-        elif direction == 'short' and price < pdl:
-            return True, 'below_pdl'
-        
-        return False, 'none'
-    
-    def _check_vix_filter(self, vix_filter: str) -> bool:
-        """Check if current VIX matches filter criteria."""
-        if not self.vix_level or vix_filter == 'none':
+    def check_time_filter(self, dt: datetime, timefilter: str) -> bool:
+        """Check if time matches filter."""
+        if timefilter == 'all':
             return True
         
-        if vix_filter == 'low' and self.vix_level < 15:
-            return True
-        elif vix_filter == 'normal' and 15 <= self.vix_level <= 25:
-            return True
-        elif vix_filter == 'high' and self.vix_level > 25:
-            return True
+        t = dt.time()
+        
+        if timefilter == 'open':
+            return dtime(9, 30) <= t < dtime(10, 0)
+        elif timefilter == 'mid':
+            return dtime(11, 0) <= t < dtime(14, 0)
+        elif timefilter == 'power':
+            return dtime(15, 30) <= t <= dtime(16, 0)
         
         return False
     
-    def _check_time_filter(self, dt: datetime, time_filter: str) -> bool:
-        """Check if time matches filter criteria."""
-        if time_filter == 'all':
-            return True
-        
-        current_time = dt.time()
-        
-        if time_filter == 'open':
-            return dtime(9, 30) <= current_time <= dtime(10, 0)
-        elif time_filter == 'power':
-            return dtime(15, 30) <= current_time <= dtime(16, 0)
-        
-        return True
-    
-    # ==================== SIGNAL DETECTION ====================
-    
-    def detect_signal(self, ticker: str, bars: List[Dict], params: Dict) -> Optional[Dict]:
-        """Detect breakout signal with comprehensive parameter testing."""
-        if len(bars) < params['lookback'] + 20:  # Need extra for indicators
-            return None
-        
-        current = bars[-1]
-        prev = bars[-2]
-        
-        # Calculate all indicators
-        atr = self._calculate_atr(bars)
-        avg_volume = self._calculate_avg_volume(bars)
-        momentum = self._calculate_momentum(bars, period=5)
-        gap_pct = self._calculate_gap_size(current, prev)
-        is_trending, trend_dir = self._detect_trend(bars, params['lookback'])
-        rel_strength = self._calculate_relative_strength(ticker, bars)
-        
-        if atr == 0 or avg_volume == 0:
-            return None
-        
-        # FILTER 1: Volume confirmation
-        volume_ratio = current['volume'] / avg_volume
-        if volume_ratio < params['volume_mult']:
-            return None
-        
-        # FILTER 2: Time-of-day
-        if not self._check_time_filter(current['datetime'], params['time_filter']):
-            return None
-        
-        # FILTER 3: VIX regime
-        if not self._check_vix_filter(params['vix_filter']):
-            return None
-        
-        # Find structure levels (support/resistance)
-        lookback_bars = bars[-params['lookback']-1:-1]
-        highs = [b['high'] for b in lookback_bars]
-        lows = [b['low'] for b in lookback_bars]
-        
-        resistance = max(highs)
-        support = min(lows)
-        
-        signal = None
-        
-        # ==================== BULLISH BREAKOUT ====================
-        if current['close'] > resistance:
-            breakout_strength = self._calculate_breakout_strength(current['close'], resistance)
-            
-            # FILTER 4: Momentum (ALWAYS 'strong' now)
-            if params['momentum_filter'] == 'strong' and momentum <= 0.005:
-                return None
-            
-            # FILTER 5: Trend alignment
-            if params['trend_filter'] and not (is_trending and trend_dir == 'up'):
-                return None
-            
-            # FILTER 6: Gap size
-            if params['gap_filter'] == 'small' and gap_pct < 0.001:
-                return None
-            elif params['gap_filter'] == 'large' and gap_pct < 0.005:
-                return None
-            
-            # FILTER 7: PDH/PDL
-            pdh_break, pdh_status = self._check_pdh_pdl(ticker, current['close'], 'long')
-            if params['pdh_filter'] == 'require' and not pdh_break:
-                return None
-            elif params['pdh_filter'] == 'against' and pdh_break:
-                return None
-            
-            # FILTER 8: Relative strength
-            if params['rs_filter'] and rel_strength < 0:
-                return None
-            
-            # Calculate entry, stop, target
-            entry = current['close']
-            stop = entry - (atr * params['atr_stop_mult'])
-            risk_amount = atr * params['atr_stop_mult']
-            target = entry + (risk_amount * params['risk_reward'])
-            
-            signal = {
-                'ticker': ticker,
-                'direction': 'long',
-                'entry': entry,
-                'stop': stop,
-                'target': target,
-                'datetime': current['datetime'],
-                'indicators': {
-                    'volume_ratio': volume_ratio,
-                    'momentum': momentum,
-                    'gap_pct': gap_pct,
-                    'trend': trend_dir,
-                    'breakout_strength': breakout_strength,
-                    'rel_strength': rel_strength,
-                    'pdh_status': pdh_status
-                }
-            }
-        
-        # ==================== BEARISH BREAKOUT ====================
-        elif current['close'] < support:
-            breakout_strength = self._calculate_breakout_strength(current['close'], support)
-            
-            # FILTER 4: Momentum (ALWAYS 'strong' now)
-            if params['momentum_filter'] == 'strong' and momentum >= -0.005:
-                return None
-            
-            # FILTER 5: Trend alignment
-            if params['trend_filter'] and not (is_trending and trend_dir == 'down'):
-                return None
-            
-            # FILTER 6: Gap size
-            if params['gap_filter'] == 'small' and gap_pct < 0.001:
-                return None
-            elif params['gap_filter'] == 'large' and gap_pct < 0.005:
-                return None
-            
-            # FILTER 7: PDH/PDL
-            pdh_break, pdh_status = self._check_pdh_pdl(ticker, current['close'], 'short')
-            if params['pdh_filter'] == 'require' and not pdh_break:
-                return None
-            elif params['pdh_filter'] == 'against' and pdh_break:
-                return None
-            
-            # FILTER 8: Relative strength
-            if params['rs_filter'] and rel_strength > 0:
-                return None
-            
-            # Calculate entry, stop, target
-            entry = current['close']
-            stop = entry + (atr * params['atr_stop_mult'])
-            risk_amount = atr * params['atr_stop_mult']
-            target = entry - (risk_amount * params['risk_reward'])
-            
-            signal = {
-                'ticker': ticker,
-                'direction': 'short',
-                'entry': entry,
-                'stop': stop,
-                'target': target,
-                'datetime': current['datetime'],
-                'indicators': {
-                    'volume_ratio': volume_ratio,
-                    'momentum': momentum,
-                    'gap_pct': gap_pct,
-                    'trend': trend_dir,
-                    'breakout_strength': breakout_strength,
-                    'rel_strength': rel_strength,
-                    'pdh_status': pdh_status
-                }
-            }
-        
-        return signal
-    
-    # ==================== TRADE SIMULATION ====================
-    
-    def simulate_trade(self, signal: Dict, bars: List[Dict]) -> Optional[Dict]:
-        """Simulate trade from entry to exit."""
-        entry_idx = next((i for i, b in enumerate(bars) 
-                         if b["datetime"] == signal["datetime"]), None)
-        
-        if entry_idx is None or entry_idx >= len(bars) - 1:
-            return None
-        
-        entry = signal['entry']
-        stop = signal['stop']
-        target = signal['target']
-        direction = signal['direction']
-        
-        # Simulate forward (max 30 bars = 30 minutes)
-        for i in range(entry_idx + 1, min(entry_idx + 30, len(bars))):
-            bar = bars[i]
-            
-            if direction == 'long':
-                if bar['low'] <= stop:
-                    return {
-                        'exit_price': stop,
-                        'exit_reason': 'stop',
-                        'pnl': stop - entry,
-                        'bars_held': i - entry_idx,
-                        'exit_time': bar['datetime']
-                    }
-                if bar['high'] >= target:
-                    return {
-                        'exit_price': target,
-                        'exit_reason': 'target',
-                        'pnl': target - entry,
-                        'bars_held': i - entry_idx,
-                        'exit_time': bar['datetime']
-                    }
-            else:  # short
-                if bar['high'] >= stop:
-                    return {
-                        'exit_price': stop,
-                        'exit_reason': 'stop',
-                        'pnl': entry - stop,
-                        'bars_held': i - entry_idx,
-                        'exit_time': bar['datetime']
-                    }
-                if bar['low'] <= target:
-                    return {
-                        'exit_price': target,
-                        'exit_reason': 'target',
-                        'pnl': entry - target,
-                        'bars_held': i - entry_idx,
-                        'exit_time': bar['datetime']
-                    }
-        
-        # Timeout - close at current price
-        last_bar = bars[min(entry_idx + 30, len(bars) - 1)]
-        exit_price = last_bar['close']
-        
-        if direction == 'long':
-            pnl = exit_price - entry
-        else:
-            pnl = entry - exit_price
-        
-        return {
-            'exit_price': exit_price,
-            'exit_reason': 'timeout',
-            'pnl': pnl,
-            'bars_held': min(30, len(bars) - entry_idx - 1),
-            'exit_time': last_bar['datetime']
-        }
-    
-    # ==================== PARAMETER TESTING ====================
-    
-    def test_parameters(self, params: Dict) -> Dict:
-        """Test single parameter combination across all tickers."""
+    def backtest_parameters(self, params: Dict) -> Dict:
+        """Run backtest with specific parameters."""
         trades = []
         
-        for ticker, bars in self.bars_cache.items():
-            # Scan through bars looking for signals
-            i = params['lookback'] + 20
-            while i < len(bars):
-                bars_slice = bars[:i+1]
-                signal = self.detect_signal(ticker, bars_slice, params)
+        for ticker in self.tickers:
+            if ticker not in self.bars_cache:
+                continue
+            
+            bars = self.bars_cache[ticker]
+            pdh_pdl = self.pdh_pdl_cache.get(ticker, {"pdh": 0, "pdl": 0})
+            
+            for i in range(params["lookback"] + 20, len(bars)):
+                current = bars[i]
                 
-                if signal:
-                    result = self.simulate_trade(signal, bars)
-                    
-                    if result:
-                        trade = {
-                            'ticker': ticker,
-                            'entry_time': signal['datetime'],
-                            'exit_time': result['exit_time'],
-                            'direction': signal['direction'],
-                            'entry': signal['entry'],
-                            'exit': result['exit_price'],
-                            'stop': signal['stop'],
-                            'target': signal['target'],
-                            'pnl': result['pnl'],
-                            'pnl_pct': (result['pnl'] / signal['entry']) * 100,
-                            'exit_reason': result['exit_reason'],
-                            'bars_held': result['bars_held']
-                        }
-                        trades.append(trade)
-                        
-                        # Skip forward to avoid overlapping signals
-                        i += 15
+                # Time filter
+                if not self.check_time_filter(current["datetime"], params["time_filter"]):
+                    continue
+                
+                # Volume filter
+                recent = bars[max(0, i-20):i]
+                avg_volume = sum(b["volume"] for b in recent) / len(recent) if recent else 0
+                
+                if avg_volume == 0 or current["volume"] < avg_volume * params["volume_multiplier"]:
+                    continue
+                
+                # ATR calculation
+                atr = self.calculate_atr(bars, i)
+                if atr == 0:
+                    continue
+                
+                # Momentum filter
+                momentum = self.calculate_momentum(bars, i)
+                
+                if params["momentum_filter"] == 'weak':
+                    if abs(momentum) < 0.002:  # 0.2%
+                        continue
+                elif params["momentum_filter"] == 'strong':
+                    if abs(momentum) < 0.005:  # 0.5%
                         continue
                 
-                i += 1
+                # Detect LONG setup
+                if self.detect_bos(bars, i, params["lookback"], "LONG"):
+                    if pdh_pdl["pdh"] > 0 and current["close"] > pdh_pdl["pdh"]:
+                        # Trend filter
+                        if params["trend_filter"] == 'aligned':
+                            if momentum <= 0:
+                                continue
+                        
+                        entry = current["close"]
+                        stop = entry - (atr * params["atr_stop_multiplier"])
+                        target = entry + (atr * params["atr_stop_multiplier"] * params["target_rr"])
+                        
+                        # Simulate outcome
+                        outcome = self.simulate_trade(bars, i+1, "LONG", entry, stop, target)
+                        if outcome:
+                            trades.append(outcome)
+                
+                # Detect SHORT setup
+                elif self.detect_bos(bars, i, params["lookback"], "SHORT"):
+                    if pdh_pdl["pdl"] > 0 and current["close"] < pdh_pdl["pdl"]:
+                        # Trend filter
+                        if params["trend_filter"] == 'aligned':
+                            if momentum >= 0:
+                                continue
+                        
+                        entry = current["close"]
+                        stop = entry + (atr * params["atr_stop_multiplier"])
+                        target = entry - (atr * params["atr_stop_multiplier"] * params["target_rr"])
+                        
+                        # Simulate outcome
+                        outcome = self.simulate_trade(bars, i+1, "SHORT", entry, stop, target)
+                        if outcome:
+                            trades.append(outcome)
         
-        # Calculate performance metrics
+        # Calculate metrics
         if not trades:
             return {
-                'params': params,
-                'total_trades': 0,
-                'winners': 0,
-                'losers': 0,
-                'win_rate': 0,
-                'profit_factor': 0,
-                'total_pnl': 0,
-                'avg_pnl': 0,
-                'avg_win': 0,
-                'avg_loss': 0,
-                'max_win': 0,
-                'max_loss': 0,
-                'avg_bars_held': 0
+                "trades": 0,
+                "win_rate": 0.0,
+                "profit_factor": 0.0,
+                "total_pnl": 0.0
             }
         
-        winners = [t for t in trades if t['pnl'] > 0]
-        losers = [t for t in trades if t['pnl'] <= 0]
+        winners = [t for t in trades if t["pnl"] > 0]
+        losers = [t for t in trades if t["pnl"] <= 0]
         
-        total_trades = len(trades)
-        win_count = len(winners)
-        loss_count = len(losers)
-        win_rate = (win_count / total_trades) * 100
-        total_pnl = sum(t['pnl'] for t in trades)
-        avg_pnl = total_pnl / total_trades
+        total_pnl = sum(t["pnl"] for t in trades)
+        win_rate = len(winners) / len(trades) * 100 if trades else 0
         
-        avg_win = np.mean([t['pnl'] for t in winners]) if winners else 0
-        avg_loss = np.mean([t['pnl'] for t in losers]) if losers else 0
-        max_win = max([t['pnl'] for t in winners]) if winners else 0
-        max_loss = min([t['pnl'] for t in losers]) if losers else 0
-        
-        if loss_count > 0 and avg_loss != 0:
-            profit_factor = abs((win_count * avg_win) / (loss_count * avg_loss))
-        elif win_count > 0:
-            profit_factor = float('inf')
-        else:
-            profit_factor = 0
-        
-        avg_bars_held = np.mean([t['bars_held'] for t in trades])
+        total_wins = sum(t["pnl"] for t in winners) if winners else 0
+        total_losses = abs(sum(t["pnl"] for t in losers)) if losers else 0
+        profit_factor = total_wins / total_losses if total_losses > 0 else 0
         
         return {
-            'params': params,
-            'total_trades': total_trades,
-            'winners': win_count,
-            'losers': loss_count,
-            'win_rate': win_rate,
-            'profit_factor': profit_factor,
-            'total_pnl': total_pnl,
-            'avg_pnl': avg_pnl,
-            'avg_win': avg_win,
-            'avg_loss': avg_loss,
-            'max_win': max_win,
-            'max_loss': max_loss,
-            'avg_bars_held': avg_bars_held
+            "trades": len(trades),
+            "win_rate": win_rate,
+            "profit_factor": profit_factor,
+            "total_pnl": total_pnl,
+            "avg_win": sum(t["pnl"] for t in winners) / len(winners) if winners else 0,
+            "avg_loss": sum(t["pnl"] for t in losers) / len(losers) if losers else 0
         }
     
-    # ==================== OPTIMIZATION RUNNER ====================
+    def simulate_trade(self, bars: List[Dict], start_idx: int, direction: str, 
+                      entry: float, stop: float, target: float) -> Optional[Dict]:
+        """Simulate trade execution."""
+        if start_idx >= len(bars):
+            return None
+        
+        future_bars = bars[start_idx:min(start_idx + 30, len(bars))]
+        
+        for i, bar in enumerate(future_bars, 1):
+            if direction == "LONG":
+                if bar["low"] <= stop:
+                    return {"pnl": stop - entry, "bars": i, "exit": "stop"}
+                if bar["high"] >= target:
+                    return {"pnl": target - entry, "bars": i, "exit": "target"}
+            else:
+                if bar["high"] >= stop:
+                    return {"pnl": entry - stop, "bars": i, "exit": "stop"}
+                if bar["low"] <= target:
+                    return {"pnl": entry - target, "bars": i, "exit": "target"}
+        
+        # Timeout
+        if future_bars:
+            final_bar = future_bars[-1]
+            pnl = (final_bar["close"] - entry) if direction == "LONG" else (entry - final_bar["close"])
+            return {"pnl": pnl, "bars": len(future_bars), "exit": "timeout"}
+        
+        return None
     
-    def run_optimization(self) -> pd.DataFrame:
-        """Run comprehensive parameter grid search with caching."""
-        print(f"{'='*70}")
-        print("BUILDING AGGRESSIVE QUALITY-FOCUSED GRID")
-        print(f"{'='*70}\n")
+    def run_optimization(self):
+        """Run comprehensive parameter optimization."""
+        # Pre-load data
+        self.load_all_bars()
+        self.load_pdh_pdl()
         
-        # Define AGGRESSIVE parameter grid (96 combinations)
-        param_grid = {
-            # Core parameters - VERY STRICT
-            'volume_mult': [3.0, 4.0],            # 2 - ONLY strong volume
-            'atr_stop_mult': [1.5, 2.0],          # 2 - Tight stops
-            'risk_reward': [2.0, 2.5, 3.0],       # 3 - Good R:R
-            'lookback': [12, 16],                 # 2 - Stable structure
-            
-            # Filters - MAXIMUM STRICTNESS
-            'momentum_filter': ['strong'],        # 1 - ONLY strong momentum!
-            'trend_filter': [False, True],        # 2
-            'gap_filter': ['none'],               # 1
-            'vix_filter': ['none'],               # 1
-            'time_filter': ['open', 'power'],     # 2 - Peak vol only!
-            'pdh_filter': ['none'],               # 1
-            'rs_filter': [False]                  # 1
-            # Total: 2 × 2 × 3 × 2 × 1 × 2 × 1 × 1 × 2 × 1 × 1 = 96
-        }
+        vix = self.get_vix_level()
+        if vix > 0:
+            vix_desc = "High" if vix > 20 else "Normal" if vix > 15 else "Low"
+            print(f"📉 Current VIX: {vix:.2f} ({vix_desc} volatility)\n")
         
-        # Generate all combinations
-        keys = param_grid.keys()
-        values = param_grid.values()
-        combinations = [dict(zip(keys, v)) for v in product(*values)]
+        # Generate parameter grid
+        print("="*70)
+        print("BUILDING EXPANDED PARAMETER GRID")
+        print("="*70)
+        print()
         
-        total = len(combinations)
-        cached_count = self._count_cached_results()
+        param_grid = self.generate_parameter_grid()
+        print(f"✅ Generated {len(param_grid)} parameter combinations")
         
-        print(f"✅ Generated {total:,} parameter combinations")
-        print(f"💾 Found {cached_count:,} cached results\n")
-        print(f"🎯 TARGET: 20-60 quality trades @ 50-60% win rate\n")
-        print(f"{'='*70}")
+        # Check cache
+        cached_count = 0
+        for params in param_grid:
+            cache_key = self.get_cache_key(params)
+            if self.load_cached_result(cache_key):
+                cached_count += 1
+        
+        print(f"💾 Found {cached_count} cached results")
+        print(f"\n🎯 TARGET: 20-100 quality trades @ 45-65% win rate")
+        print()
+        
+        # Run tests
+        print("="*70)
         print("TESTING PARAMETERS")
-        print(f"{'='*70}\n")
+        print("="*70)
+        print()
         
         results = []
         start_time = time_module.time()
-        cache_hits = 0
         
-        for idx, params in enumerate(combinations, 1):
-            config_hash = self._get_config_hash(params)
+        for idx, params in enumerate(param_grid, 1):
+            cache_key = self.get_cache_key(params)
             
-            # Try to load from cache first
-            cached_result = self._load_cached_result(config_hash)
-            
-            if cached_result:
-                results.append(cached_result)
-                cache_hits += 1
-                
-                if cached_result['total_trades'] > 0:
-                    print(
-                        f"[{idx}/{total}] ⚡ CACHED | "
-                        f"Vol={params['volume_mult']:.1f}x "
-                        f"ATR={params['atr_stop_mult']:.1f} "
-                        f"RR={params['risk_reward']:.1f} "
-                        f"LB={params['lookback']} | "
-                        f"Trades: {cached_result['total_trades']} "
-                        f"WR: {cached_result['win_rate']:.1f}% "
-                        f"PF: {cached_result['profit_factor']:.2f}"
-                    )
-                continue
-            
-            # Not cached - run backtest
-            test_start = time_module.time()
-            result = self.test_parameters(params)
-            
-            # Save to cache
-            self._save_result_to_cache(config_hash, result)
-            results.append(result)
-            
-            test_duration = time_module.time() - test_start
-            elapsed = time_module.time() - start_time
-            tests_run = idx - cache_hits
-            
-            if tests_run > 0:
-                avg_time = elapsed / tests_run
-                remaining_tests = total - idx
-                remaining = remaining_tests * avg_time
+            # Try cache first
+            cached = self.load_cached_result(cache_key)
+            if cached:
+                result = cached
+                status = "⚡ CACHED"
             else:
-                remaining = 0
+                result = self.backtest_parameters(params)
+                self.save_cached_result(cache_key, result)
+                status = "✅ TESTED"
             
-            if result['total_trades'] > 0:
-                print(
-                    f"[{idx}/{total}] 🧪 NEW | "
-                    f"Vol={params['volume_mult']:.1f}x "
-                    f"ATR={params['atr_stop_mult']:.1f} "
-                    f"RR={params['risk_reward']:.1f} "
-                    f"LB={params['lookback']} | "
-                    f"Trades: {result['total_trades']} "
-                    f"WR: {result['win_rate']:.1f}% "
-                    f"PF: {result['profit_factor']:.2f} "
-                    f"P&L: ${result['total_pnl']:.2f} | "
-                    f"{test_duration:.1f}s | "
-                    f"ETA: {remaining/60:.1f}m"
-                )
+            results.append({**params, **result})
+            
+            # Print progress every 10 tests
+            if idx % 10 == 0 or idx == len(param_grid):
+                elapsed = time_module.time() - start_time
+                rate = idx / elapsed if elapsed > 0 else 0
+                eta = (len(param_grid) - idx) / rate if rate > 0 else 0
+                
+                print(f"[{idx}/{len(param_grid)}] {status} | "
+                      f"Vol={params['volume_multiplier']}x "
+                      f"ATR={params['atr_stop_multiplier']} "
+                      f"RR={params['target_rr']} "
+                      f"LB={params['lookback']} | "
+                      f"Trades: {result['trades']} "
+                      f"WR: {result['win_rate']:.1f}% "
+                      f"PF: {result['profit_factor']:.2f} | "
+                      f"ETA: {eta/60:.1f}m")
         
-        print(f"\n{'='*70}")
-        print(f"✅ OPTIMIZATION COMPLETE")
-        print(f"💾 Cache hits: {cache_hits}/{total} ({cache_hits/total*100:.1f}%)")
-        print(f"{'='*70}\n")
+        # Save results
+        df = pd.DataFrame(results)
+        df.to_csv("comprehensive_optimization_results.csv", index=False)
         
-        return pd.DataFrame(results)
+        # Generate report
+        self.generate_report(df)
+    
+    def generate_report(self, df: pd.DataFrame):
+        """Generate optimization report."""
+        print("\n" + "="*70)
+        print("OPTIMIZATION COMPLETE")
+        print("="*70)
+        print()
+        
+        # Filter for quality setups
+        quality = df[
+            (df["trades"] >= 20) & 
+            (df["trades"] <= 100) &
+            (df["win_rate"] >= 45) &
+            (df["profit_factor"] >= 1.5)
+        ].copy()
+        
+        quality = quality.sort_values("profit_factor", ascending=False)
+        
+        print(f"📊 Total Configurations Tested: {len(df)}")
+        print(f"✅ Quality Setups Found: {len(quality)}")
+        print()
+        
+        if len(quality) > 0:
+            print("🏆 TOP 10 PARAMETER SETS:")
+            print()
+            
+            for idx, row in quality.head(10).iterrows():
+                print(f"{idx+1}. Vol={row['volume_multiplier']}x | "
+                      f"ATR={row['atr_stop_multiplier']}x | "
+                      f"RR={row['target_rr']}R | "
+                      f"LB={row['lookback']} | "
+                      f"Mom={row['momentum_filter']} | "
+                      f"Trend={row['trend_filter']} | "
+                      f"Time={row['time_filter']}")
+                print(f"   Trades: {row['trades']:.0f} | "
+                      f"WR: {row['win_rate']:.1f}% | "
+                      f"PF: {row['profit_factor']:.2f} | "
+                      f"P&L: ${row['total_pnl']:.2f}")
+                print()
+        else:
+            print("⚠️  No configurations met quality criteria")
+            print("   Showing best by profit factor:")
+            print()
+            
+            best = df.sort_values("profit_factor", ascending=False).head(10)
+            for idx, row in best.iterrows():
+                print(f"{idx+1}. Vol={row['volume_multiplier']}x | "
+                      f"ATR={row['atr_stop_multiplier']}x | "
+                      f"RR={row['target_rr']}R | "
+                      f"LB={row['lookback']}")
+                print(f"   Trades: {row['trades']:.0f} | "
+                      f"WR: {row['win_rate']:.1f}% | "
+                      f"PF: {row['profit_factor']:.2f}")
+                print()
+        
+        print("="*70)
+        print("✅ Results saved to: comprehensive_optimization_results.csv")
+        print("="*70)
+        print()
 
 
 def main():
-    """Run comprehensive optimization and save results."""
-    optimizer = ComprehensiveOptimizer(days=10)
-    results_df = optimizer.run_optimization()
-    
-    # Save all results
-    results_df.to_csv("comprehensive_results.csv", index=False)
-    print("💾 Saved comprehensive_results.csv\n")
-    
-    # Filter to meaningful configs (minimum 10 trades due to aggressive filters)
-    meaningful = results_df[results_df['total_trades'] >= 10]
-    
-    if len(meaningful) == 0:
-        print("⚠️ No configurations with 10+ trades found!\n")
-        top_20 = results_df.nlargest(20, 'total_pnl')
-    else:
-        # Sort by total P&L
-        profitable = meaningful[meaningful['total_pnl'] > 0]
-        
-        if len(profitable) == 0:
-            print("⚠️ No profitable configurations found!\n")
-            top_20 = meaningful.nlargest(20, 'total_pnl')
-        else:
-            print(f"✅ Found {len(profitable)} profitable configurations!\n")
-            top_20 = profitable.nlargest(20, 'total_pnl')
-    
-    # Print top 20
-    print(f"{'='*70}")
-    print("TOP 20 PARAMETER COMBINATIONS")
-    print(f"{'='*70}\n")
-    
-    for idx, row in enumerate(top_20.iterrows(), 1):
-        result = row[1]
-        params = result['params']
-        
-        print(f"#{idx}")
-        print(f"  Volume: {params['volume_mult']:.1f}x | "
-              f"ATR Stop: {params['atr_stop_mult']:.1f} | "
-              f"R:R: {params['risk_reward']:.1f}:1 | "
-              f"Lookback: {params['lookback']}")
-        print(f"  Momentum: {params['momentum_filter']} | "
-              f"Trend: {'Yes' if params['trend_filter'] else 'No'} | "
-              f"Time: {params['time_filter']}")
-        print(f"  ---")
-        print(f"  Trades: {result['total_trades']} "
-              f"({result['winners']}W / {result['losers']}L)")
-        print(f"  Win Rate: {result['win_rate']:.1f}%")
-        print(f"  Profit Factor: {result['profit_factor']:.2f}")
-        print(f"  Total P&L: ${result['total_pnl']:.2f}")
-        print(f"  Avg Win: ${result['avg_win']:.2f} | "
-              f"Avg Loss: ${result['avg_loss']:.2f}")
-        print(f"  Avg Hold: {result['avg_bars_held']:.1f} bars\n")
-    
-    # Save top configs
-    top_configs = []
-    for idx, row in enumerate(top_20.iterrows(), 1):
-        result = row[1]
-        top_configs.append({
-            'rank': idx,
-            'params': result['params'],
-            'metrics': {
-                'total_trades': int(result['total_trades']),
-                'win_rate': float(result['win_rate']),
-                'profit_factor': float(result['profit_factor']),
-                'total_pnl': float(result['total_pnl']),
-                'avg_win': float(result['avg_win']),
-                'avg_loss': float(result['avg_loss'])
-            }
-        })
-    
-    with open('top_20_configs.json', 'w') as f:
-        json.dump(top_configs, f, indent=2, default=str)
-    
-    print("💾 Saved top_20_configs.json")
-    
-    # Create optimization report
-    with open('optimization_report.txt', 'w') as f:
-        f.write("AGGRESSIVE QUALITY-FOCUSED OPTIMIZATION REPORT\n")
-        f.write("="*70 + "\n\n")
-        f.write(f"Total Configurations Tested: {len(results_df)}\n")
-        f.write(f"Configurations with 10+ Trades: {len(meaningful)}\n")
-        if len(profitable) > 0:
-            f.write(f"Profitable Configurations: {len(profitable)}\n")
-        f.write(f"\nBest Configuration:\n")
-        if len(top_20) > 0:
-            best = top_20.iloc[0]
-            f.write(f"  Total P&L: ${best['total_pnl']:.2f}\n")
-            f.write(f"  Win Rate: {best['win_rate']:.1f}%\n")
-            f.write(f"  Profit Factor: {best['profit_factor']:.2f}\n")
-    
-    print("📄 Saved optimization_report.txt\n")
-    print("✅ OPTIMIZATION COMPLETE!\n")
+    optimizer = ComprehensiveOptimizer()
+    optimizer.run_optimization()
 
 
 if __name__ == "__main__":
