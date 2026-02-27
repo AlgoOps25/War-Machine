@@ -6,6 +6,7 @@ Tests War Machine signal logic with proper BOS/FVG detection using
 optimized parameters from config.py:
 - Volume confirmation (3.0x average - from config.MIN_REL_VOL)
 - ATR-based stops (2.5x - from config.STOP_MULTIPLIERS['A'])
+- Breakeven stop management (move to entry after 1R profit)
 - Structure breaks (new highs/lows)
 - Momentum confirmation
 
@@ -44,12 +45,15 @@ class RealisticBacktest:
         self.atr_stop_multiplier = config.STOP_MULTIPLIERS['A']  # 2.5x
         self.target_rr = config.TARGET_1_RR  # 3.0R
         self.lookback_bars = config.LOOKBACK_BARS  # 12
+        self.breakeven_trigger = config.BREAKEVEN_TRIGGER_RR  # 1.0R
+        self.breakeven_enabled = config.BREAKEVEN_ENABLED  # True
         
         print(f"📊 Using optimized config parameters:")
         print(f"   Volume filter: {self.volume_multiplier}x average")
         print(f"   ATR stop: {self.atr_stop_multiplier}x")
         print(f"   Target: {self.target_rr}R")
-        print(f"   Lookback: {self.lookback_bars} bars\n")
+        print(f"   Lookback: {self.lookback_bars} bars")
+        print(f"   Breakeven: {'Enabled' if self.breakeven_enabled else 'Disabled'} (trigger at {self.breakeven_trigger}R)\n")
         
         # Date range (last 10 days for speed)
         now_et = datetime.now(ET)
@@ -181,6 +185,7 @@ class RealisticBacktest:
                     'entry': current['close'],
                     'stop': current['close'] - (atr * self.atr_stop_multiplier),
                     'target': current['close'] + (atr * self.target_rr),
+                    'atr': atr,
                     'datetime': current['datetime'],
                     'volume_ratio': volume_ratio,
                     'breakout_level': resistance
@@ -195,6 +200,7 @@ class RealisticBacktest:
                     'entry': current['close'],
                     'stop': current['close'] + (atr * self.atr_stop_multiplier),
                     'target': current['close'] - (atr * self.target_rr),
+                    'atr': atr,
                     'datetime': current['datetime'],
                     'volume_ratio': volume_ratio,
                     'breakout_level': support
@@ -203,7 +209,7 @@ class RealisticBacktest:
         return signal
     
     def simulate_trade(self, signal: Dict, bars: List[Dict]) -> Dict:
-        """Simulate trade from signal."""
+        """Simulate trade from signal with breakeven stop management."""
         entry_idx = next((i for i, b in enumerate(bars) 
                          if b["datetime"] == signal["datetime"]), None)
         
@@ -214,43 +220,71 @@ class RealisticBacktest:
         stop = signal['stop']
         target = signal['target']
         direction = signal['direction']
+        atr = signal['atr']
+        
+        # Breakeven stop tracking
+        breakeven_triggered = False
+        breakeven_trigger_price = entry + (atr * self.breakeven_trigger) if direction == 'long' else entry - (atr * self.breakeven_trigger)
         
         # Simulate forward (max 30 bars)
         for i in range(entry_idx + 1, min(entry_idx + 30, len(bars))):
             bar = bars[i]
             
             if direction == 'long':
+                # Check if breakeven should trigger
+                if self.breakeven_enabled and not breakeven_triggered and bar['high'] >= breakeven_trigger_price:
+                    stop = entry  # Move stop to breakeven
+                    breakeven_triggered = True
+                
+                # Check stop
                 if bar['low'] <= stop:
+                    pnl = stop - entry
                     return {
                         'exit_price': stop,
-                        'exit_reason': 'stop',
-                        'pnl': stop - entry,
-                        'bars_held': i - entry_idx
+                        'exit_reason': 'stop_breakeven' if breakeven_triggered and pnl == 0 else 'stop',
+                        'pnl': pnl,
+                        'bars_held': i - entry_idx,
+                        'breakeven_triggered': breakeven_triggered
                     }
+                
+                # Check target
                 if bar['high'] >= target:
                     return {
                         'exit_price': target,
                         'exit_reason': 'target',
                         'pnl': target - entry,
-                        'bars_held': i - entry_idx
+                        'bars_held': i - entry_idx,
+                        'breakeven_triggered': breakeven_triggered
                     }
+            
             else:  # short
+                # Check if breakeven should trigger
+                if self.breakeven_enabled and not breakeven_triggered and bar['low'] <= breakeven_trigger_price:
+                    stop = entry  # Move stop to breakeven
+                    breakeven_triggered = True
+                
+                # Check stop
                 if bar['high'] >= stop:
+                    pnl = entry - stop
                     return {
                         'exit_price': stop,
-                        'exit_reason': 'stop',
-                        'pnl': entry - stop,
-                        'bars_held': i - entry_idx
+                        'exit_reason': 'stop_breakeven' if breakeven_triggered and pnl == 0 else 'stop',
+                        'pnl': pnl,
+                        'bars_held': i - entry_idx,
+                        'breakeven_triggered': breakeven_triggered
                     }
+                
+                # Check target
                 if bar['low'] <= target:
                     return {
                         'exit_price': target,
                         'exit_reason': 'target',
                         'pnl': entry - target,
-                        'bars_held': i - entry_idx
+                        'bars_held': i - entry_idx,
+                        'breakeven_triggered': breakeven_triggered
                     }
         
-        # Close at last bar
+        # Close at last bar (timeout)
         last_bar = bars[min(entry_idx + 30, len(bars) - 1)]
         exit_price = last_bar['close']
         
@@ -263,7 +297,8 @@ class RealisticBacktest:
             'exit_price': exit_price,
             'exit_reason': 'timeout',
             'pnl': pnl,
-            'bars_held': min(30, len(bars) - entry_idx - 1)
+            'bars_held': min(30, len(bars) - entry_idx - 1),
+            'breakeven_triggered': breakeven_triggered
         }
     
     def run_backtest(self) -> pd.DataFrame:
@@ -299,7 +334,8 @@ class RealisticBacktest:
                             'pnl_pct': (result['pnl'] / signal['entry']) * 100,
                             'exit_reason': result['exit_reason'],
                             'bars_held': result['bars_held'],
-                            'volume_ratio': signal['volume_ratio']
+                            'volume_ratio': signal['volume_ratio'],
+                            'breakeven_triggered': result['breakeven_triggered']
                         }
                         all_trades.append(trade)
                         
@@ -331,22 +367,31 @@ def main():
     
     total_trades = len(results_df)
     winners = len(results_df[results_df['pnl'] > 0])
-    losers = len(results_df[results_df['pnl'] <= 0])
+    losers = len(results_df[results_df['pnl'] < 0])
+    breakeven_count = len(results_df[results_df['pnl'] == 0])
     
     win_rate = (winners / total_trades) * 100
     total_pnl = results_df['pnl'].sum()
     avg_win = results_df[results_df['pnl'] > 0]['pnl'].mean() if winners > 0 else 0
-    avg_loss = results_df[results_df['pnl'] <= 0]['pnl'].mean() if losers > 0 else 0
+    avg_loss = results_df[results_df['pnl'] < 0]['pnl'].mean() if losers > 0 else 0
+    
+    # Breakeven stats
+    be_triggered = len(results_df[results_df['breakeven_triggered'] == True])
+    be_saved = len(results_df[(results_df['breakeven_triggered'] == True) & (results_df['pnl'] == 0)])
     
     print(f"Total Trades: {total_trades}")
     print(f"Winners: {winners} ({win_rate:.1f}%)")
     print(f"Losers: {losers}")
+    print(f"Breakeven: {breakeven_count} (stop moved to entry)")
+    print(f"\nBreakeven Management:")
+    print(f"  Triggered: {be_triggered} trades ({be_triggered/total_trades*100:.1f}%)")
+    print(f"  Saved from loss: {be_saved} trades")
     print(f"\nTotal P&L: ${total_pnl:.2f}")
     print(f"Avg Win: ${avg_win:.2f}")
     print(f"Avg Loss: ${avg_loss:.2f}")
     
     if avg_loss != 0:
-        profit_factor = abs(winners * avg_win / (losers * avg_loss)) if losers > 0 else float('inf')
+        profit_factor = abs(winners * avg_win / (losers * abs(avg_loss))) if losers > 0 else float('inf')
         print(f"Profit Factor: {profit_factor:.2f}")
     
     print("\n" + "="*60)
@@ -369,7 +414,8 @@ def main():
     
     top_5 = results_df.nlargest(5, 'pnl')
     for idx, row in top_5.iterrows():
-        print(f"{row['ticker']} {row['direction'].upper()}:")
+        be_flag = "[BE triggered]" if row['breakeven_triggered'] else ""
+        print(f"{row['ticker']} {row['direction'].upper()}: {be_flag}")
         print(f"  Entry: ${row['entry']:.2f} → Exit: ${row['exit']:.2f}")
         print(f"  P&L: ${row['pnl']:.2f} ({row['pnl_pct']:.2f}%)")
         print(f"  Exit: {row['exit_reason']} after {row['bars_held']} bars\n")
@@ -380,7 +426,8 @@ def main():
     
     bottom_5 = results_df.nsmallest(5, 'pnl')
     for idx, row in bottom_5.iterrows():
-        print(f"{row['ticker']} {row['direction'].upper()}:")
+        be_flag = "[BE triggered]" if row['breakeven_triggered'] else ""
+        print(f"{row['ticker']} {row['direction'].upper()}: {be_flag}")
         print(f"  Entry: ${row['entry']:.2f} → Exit: ${row['exit']:.2f}")
         print(f"  P&L: ${row['pnl']:.2f} ({row['pnl_pct']:.2f}%)")
         print(f"  Exit: {row['exit_reason']} after {row['bars_held']} bars\n")
