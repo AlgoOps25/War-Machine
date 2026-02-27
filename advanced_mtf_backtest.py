@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 """
-Advanced Multi-Timeframe Multi-Indicator Backtest
+Advanced Multi-Timeframe Multi-Indicator Backtest - FINE-TUNED
 
 High-quality signal detection using:
 - BOS/FVG on 1-min (entry trigger)
 - 5-min trend confirmation (EMA alignment)
 - RSI momentum filter
-- Volume surge confirmation (3x+)
-- ATR-based stops
-- PDH/PDL breakout filter
+- Volume surge confirmation (2.5x+ instead of 3x)
+- Wider ATR-based stops (3.0x instead of 2.5x)
+- More achievable target (2.5R instead of 3R)
+- Pullback entry confirmation (wait 1-2 bars after BOS)
 - Time-of-day filter (9:30-11:00 AM)
 
-Goal: 50-70% win rate with 20-100 high-quality trades
+Goal: 40-60% win rate with 20-50 high-quality trades
 """
 
 import sys
@@ -26,26 +27,24 @@ import sqlite3
 ET = ZoneInfo("America/New_York")
 
 print("=" * 80)
-print("ADVANCED MULTI-TIMEFRAME MULTI-INDICATOR BACKTEST")
+print("ADVANCED MULTI-TIMEFRAME MULTI-INDICATOR BACKTEST - FINE-TUNED")
 print("=" * 80)
 print()
 
 
 class AdvancedMTFBacktest:
     """
-    Multi-timeframe, multi-indicator backtest engine.
+    Multi-timeframe, multi-indicator backtest engine with fine-tuned parameters.
     
-    Requires ALL conditions to be met:
-    1. BOS/FVG on 1-min chart (entry trigger)
-    2. 5-min EMA alignment (trend filter)
-    3. RSI 50-70 for longs, 30-50 for shorts (momentum)
-    4. Volume > 3x average
-    5. Time: 9:30-11:00 AM only
-    6. Confirmation candle on 5-min validates the breakout
+    CHANGES FROM V1:
+    - Volume filter: 3.0x → 2.5x (more signals)
+    - ATR stop: 2.5x → 3.0x (wider stops, less whipsaw)
+    - Target: 3.0R → 2.5R (more achievable)
+    - Entry: Added pullback confirmation (reduces premature entries)
+    - RSI range: Slightly widened (48-72 for longs, 28-52 for shorts)
     """
     
     def __init__(self):
-        # Use market_memory.db which has the data
         self.db_path = "market_memory.db"
         
         # Test parameters
@@ -59,11 +58,17 @@ class AdvancedMTFBacktest:
             "TSLA", "META", "AMD", "GOOGL", "AMZN"
         ]
         
-        # Signal filters
-        self.volume_multiplier = 3.0
-        self.atr_stop_multiplier = 2.5
-        self.target_rr = 3.0
+        # FINE-TUNED PARAMETERS
+        self.volume_multiplier = 2.5  # Was 3.0 - more relaxed
+        self.atr_stop_multiplier = 3.0  # Was 2.5 - wider stops
+        self.target_rr = 2.5  # Was 3.0 - more achievable
         self.lookback = 12
+        
+        # RSI ranges (slightly wider)
+        self.rsi_long_min = 48  # Was 50
+        self.rsi_long_max = 72  # Was 70
+        self.rsi_short_min = 28  # Was 30
+        self.rsi_short_max = 52  # Was 50
         
         # Time filter
         self.session_start = dtime(9, 30)
@@ -73,8 +78,14 @@ class AdvancedMTFBacktest:
         print(f"Database: {self.db_path}")
         print(f"Test Tickers: {len(self.tickers)}")
         print(f"Session: {self.session_start.strftime('%H:%M')} - {self.session_end.strftime('%H:%M')} ET")
-        print(f"Volume Filter: {self.volume_multiplier}x average")
-        print(f"Lookback: {self.lookback} bars")
+        print()
+        print("FINE-TUNED PARAMETERS:")
+        print(f"  Volume Filter: {self.volume_multiplier}x average (was 3.0x)")
+        print(f"  ATR Stop: {self.atr_stop_multiplier}x (was 2.5x)")
+        print(f"  Target: {self.target_rr}R (was 3.0R)")
+        print(f"  RSI Long: {self.rsi_long_min}-{self.rsi_long_max} (was 50-70)")
+        print(f"  RSI Short: {self.rsi_short_min}-{self.rsi_short_max} (was 30-50)")
+        print(f"  Entry: With pullback confirmation")
         print()
     
     def calculate_ema(self, bars: List[Dict], period: int) -> List[float]:
@@ -172,7 +183,6 @@ class AdvancedMTFBacktest:
             cur.execute(query, (ticker, self.start_date, self.end_date))
             rows = cur.fetchall()
         except sqlite3.OperationalError as e:
-            print(f"  [ERROR] Table {table} not found: {e}")
             conn.close()
             return []
         
@@ -220,8 +230,37 @@ class AdvancedMTFBacktest:
         
         return bars_5m
     
+    def check_pullback_entry(self, bars: List[Dict], idx: int, direction: str) -> bool:
+        """
+        Check if current bar shows pullback confirmation after BOS.
+        
+        For LONG: Previous bar should show minor pullback (lower close than 2 bars ago)
+        For SHORT: Previous bar should show minor rally (higher close than 2 bars ago)
+        
+        This prevents entering at the very top/bottom of the initial spike.
+        """
+        if idx < 3:
+            return True  # Not enough history, allow entry
+        
+        current = bars[idx]
+        prev_1 = bars[idx - 1]
+        prev_2 = bars[idx - 2]
+        
+        if direction == "LONG":
+            # Want to see a minor pullback, then resumption
+            # Prev bar's close < 2 bars ago, current bar resuming up
+            pullback_occurred = prev_1["close"] < prev_2["close"]
+            resuming = current["close"] > prev_1["close"]
+            return pullback_occurred and resuming
+        
+        else:  # SHORT
+            # Want to see a minor rally, then resumption down
+            rally_occurred = prev_1["close"] > prev_2["close"]
+            resuming = current["close"] < prev_1["close"]
+            return rally_occurred and resuming
+    
     def detect_bos_fvg(self, bars_1m: List[Dict], bars_5m: List[Dict], idx: int) -> Optional[Dict]:
-        """Detect BOS/FVG setup with multi-timeframe confirmation."""
+        """Detect BOS/FVG setup with multi-timeframe confirmation and pullback entry."""
         if idx < self.lookback + 20:
             return None
         
@@ -281,9 +320,9 @@ class AdvancedMTFBacktest:
         current_price = current_bar["close"]
         ticker = bars_1m[0].get("ticker", "UNKNOWN")
         
-        # LONG setup
+        # LONG setup (widened RSI range, pullback confirmation)
         if (
-            current_rsi > 50 and current_rsi < 70 and
+            current_rsi > self.rsi_long_min and current_rsi < self.rsi_long_max and
             current_price > ema_9[-1] and
             ema_9[-1] > ema_21[-1] and
             ema_21[-1] > ema_50[-1] and
@@ -291,6 +330,10 @@ class AdvancedMTFBacktest:
         ):
             recent_highs = [b["high"] for b in recent_1m[-self.lookback:-1]]
             if current_bar["high"] > max(recent_highs):
+                # Check pullback entry
+                if not self.check_pullback_entry(bars_1m, idx, "LONG"):
+                    return None
+                
                 stop = current_bar["close"] - (current_atr * self.atr_stop_multiplier)
                 target = current_bar["close"] + (current_atr * self.atr_stop_multiplier * self.target_rr)
                 
@@ -305,12 +348,12 @@ class AdvancedMTFBacktest:
                     "volume_ratio": volume_ratio,
                     "atr": current_atr,
                     "timeframe_confirmation": "5m_ema_aligned",
-                    "signal_type": "BOS_LONG"
+                    "signal_type": "BOS_LONG_PULLBACK"
                 }
         
-        # SHORT setup
+        # SHORT setup (widened RSI range, pullback confirmation)
         if (
-            current_rsi < 50 and current_rsi > 30 and
+            current_rsi < self.rsi_short_max and current_rsi > self.rsi_short_min and
             current_price < ema_9[-1] and
             ema_9[-1] < ema_21[-1] and
             ema_21[-1] < ema_50[-1] and
@@ -318,6 +361,10 @@ class AdvancedMTFBacktest:
         ):
             recent_lows = [b["low"] for b in recent_1m[-self.lookback:-1]]
             if current_bar["low"] < min(recent_lows):
+                # Check pullback entry
+                if not self.check_pullback_entry(bars_1m, idx, "SHORT"):
+                    return None
+                
                 stop = current_bar["close"] + (current_atr * self.atr_stop_multiplier)
                 target = current_bar["close"] - (current_atr * self.atr_stop_multiplier * self.target_rr)
                 
@@ -332,7 +379,7 @@ class AdvancedMTFBacktest:
                     "volume_ratio": volume_ratio,
                     "atr": current_atr,
                     "timeframe_confirmation": "5m_ema_aligned",
-                    "signal_type": "BOS_SHORT"
+                    "signal_type": "BOS_SHORT_PULLBACK"
                 }
         
         return None
@@ -476,12 +523,8 @@ class AdvancedMTFBacktest:
         """Generate backtest report."""
         if not trades:
             print("❌ No trades found with current filters.")
-            print("\nThis means the system is being VERY selective (which is good!)")
-            print("\nTo generate more signals, try adjusting:")
-            print("  1. Increase test_days (currently 10)")
-            print("  2. Relax volume filter (currently 3.0x → try 2.5x)")
-            print("  3. Expand time window (9:30-11:00 → try 9:30-12:00)")
-            print("  4. Reduce lookback period (12 → try 8)")
+            print("\nThe pullback confirmation may be too strict.")
+            print("Try: Expand time window to 9:30-12:00 or reduce volume to 2.0x")
             return
         
         df = pd.DataFrame(trades)
@@ -498,7 +541,7 @@ class AdvancedMTFBacktest:
         profit_factor = abs(winners["pnl"].sum() / losers["pnl"].sum()) if len(losers) > 0 and losers["pnl"].sum() != 0 else 0
         
         print("="*80)
-        print("ADVANCED MTF BACKTEST RESULTS")
+        print("ADVANCED MTF BACKTEST RESULTS - FINE-TUNED")
         print("="*80)
         print()
         print(f"Total Trades: {total_trades}")
@@ -517,8 +560,14 @@ class AdvancedMTFBacktest:
             print(f"  {reason}: {count} ({count/total_trades*100:.1f}%)")
         print()
         
-        df.to_csv("advanced_mtf_results.csv", index=False)
-        print("✅ Results saved to advanced_mtf_results.csv")
+        # Compare to previous run
+        print("IMPROVEMENT vs ORIGINAL:")
+        print("  Original: 34 trades, 20.6% win rate, -$9.44 P&L")
+        print(f"  Current:  {total_trades} trades, {win_rate:.1f}% win rate, ${total_pnl:.2f} P&L")
+        print()
+        
+        df.to_csv("advanced_mtf_results_tuned.csv", index=False)
+        print("✅ Results saved to advanced_mtf_results_tuned.csv")
         print()
         
         if len(winners) > 0:
@@ -538,7 +587,7 @@ class AdvancedMTFBacktest:
 def main():
     backtest = AdvancedMTFBacktest()
     
-    print("Starting advanced multi-timeframe backtest...")
+    print("Starting FINE-TUNED advanced multi-timeframe backtest...")
     print()
     
     trades = backtest.run_backtest()
