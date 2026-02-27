@@ -28,12 +28,12 @@ from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 from discord_helpers import send_options_signal_alert, send_simple_message
 from validation import get_options_recommendation, get_validator, get_regime_filter
-from ai_learning import learning_engine
+# # from ai_learning import learning_engine  # Archived - not currently used  # ARCHIVED - Feature not currently in use
 from cfw6_confirmation import wait_for_confirmation, grade_signal_with_confirmations
 from trade_calculator import compute_stop_and_targets, get_adaptive_fvg_threshold
 from data_manager import data_manager
 from position_manager import position_manager
-from ai_learning import compute_confidence
+# from ai_learning import compute_confidence  # ARCHIVED - Feature not currently in use
 import config
 from bos_fvg_engine import scan_bos_fvg, is_force_close_time
 
