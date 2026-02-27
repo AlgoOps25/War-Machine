@@ -31,13 +31,6 @@ logger = logging.getLogger(__name__)
 
 # Import War Machine components
 try:
-    from config import (
-        WATCHLIST,
-        MIN_CONFIDENCE,
-        FVG_THRESHOLD,
-        STOP_LOSS_PERCENT,
-        MIN_REL_VOL
-    )
     from data_manager import DataManager
     from db_connection import get_conn, ph, dict_cursor
 except ImportError as e:
@@ -46,6 +39,18 @@ except ImportError as e:
     sys.exit(1)
 
 ET = ZoneInfo("America/New_York")
+
+# Ticker list - same as build_cache.py
+TICKERS = [
+    "SPY", "QQQ", "AAPL", "MSFT", "NVDA", "TSLA", "META", "AMD",
+    "GOOGL", "AMZN", "NFLX", "DIS", "INTC", "BABA", "BA", "JPM",
+    "V", "MA", "PYPL", "SQ", "COIN", "PLTR", "SOFI", "RBLX",
+    "GME", "AMC", "SNAP", "UBER", "LYFT", "SHOP", "ZM", "ROKU",
+    "DKNG", "PENN", "ABNB", "DASH", "HOOD", "RIVN", "LCID", "F",
+    "GM", "NIO", "XPEV", "LI", "PLUG", "FCEL", "BLNK", "CHPT",
+    "ENPH", "SEDG", "RUN", "SPWR", "CSIQ", "JKS", "NOVA", "SOL",
+    "TAN", "ICLN", "PBW", "QCLN", "SMOG", "ACES", "FAN", "GRID"
+]
 
 class BacktestEngine:
     """
@@ -62,6 +67,7 @@ class BacktestEngine:
         self.start_date = (now_et - timedelta(days=30)).date()
         
         logger.info(f"Backtest period: {self.start_date} to {self.end_date}")
+        logger.info(f"Testing {len(TICKERS)} tickers")
     
     def _load_cached_bars(self, ticker: str) -> List[Dict]:
         """
@@ -266,7 +272,7 @@ class BacktestEngine:
             "avg_pnl": 0
         }
         
-        for ticker in WATCHLIST:
+        for ticker in TICKERS:
             # Load bars
             bars = self._load_cached_bars(ticker)
             if not bars:
@@ -327,8 +333,8 @@ class BacktestEngine:
                     result = self.run_parameter_test(conf, fvg, sl)
                     all_results.append(result)
                     
-                    # Save partial results every 100 tests
-                    if test_num % 100 == 0:
+                    # Save partial results every 25 tests
+                    if test_num % 25 == 0:
                         df = pd.DataFrame(all_results)
                         df.to_csv(f"backtest_results_partial_{test_num}.csv", index=False)
                         logger.info(f"Saved partial results to backtest_results_partial_{test_num}.csv")
@@ -390,9 +396,10 @@ def main():
         f.write("COMPREHENSIVE BACKTEST SUMMARY\n")
         f.write("="*60 + "\n\n")
         f.write(f"Total configurations tested: {len(results_df)}\n")
-        f.write(f"Profitable configurations: {len(profitable)}\n")
-        f.write(f"Best total PnL: ${results_df['total_pnl'].max():.2f}\n")
-        f.write(f"Best win rate: {results_df['win_rate'].max():.1f}%\n")
+        if len(profitable) > 0:
+            f.write(f"Profitable configurations: {len(profitable)}\n")
+            f.write(f"Best total PnL: ${results_df['total_pnl'].max():.2f}\n")
+            f.write(f"Best win rate: {results_df['win_rate'].max():.1f}%\n")
     
     print("\n✅ BACKTEST COMPLETE!\n")
     print("Check these files:")
