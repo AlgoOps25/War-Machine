@@ -3,6 +3,7 @@
 Focused Parameter Optimization V2 - With Market Regime Filters
 
 NEW: VIX regime, SPY trend, and VWAP filters to trade only in favorable conditions.
+SPEED OPTIMIZED: 5 core tickers + 2 regime combos = ~15 minute runtime
 """
 
 import sys
@@ -21,6 +22,7 @@ ET = ZoneInfo("America/New_York")
 
 print("\n" + "="*70)
 print("FOCUSED OPTIMIZATION V2 - WITH MARKET REGIME FILTERS")
+print("SPEED OPTIMIZED: 5 Tickers + 2 Regime Combos = ~15min")
 print("="*70)
 
 
@@ -40,11 +42,13 @@ class FocusedOptimizerV2:
         self.end_date = datetime.now(ET).date()
         self.start_date = self.end_date - timedelta(days=self.test_days)
         
-        # Liquid tickers
+        # SPEED OPTIMIZED: Top 5 most liquid tickers
         self.tickers = [
-            "SPY", "QQQ", "AAPL", "MSFT", "NVDA",
-            "TSLA", "META", "AMD", "GOOGL", "AMZN",
-            "NFLX", "INTC", "PLTR", "COIN", "SOFI"
+            "SPY",   # Market proxy (required for SPY trend filter)
+            "QQQ",   # Tech/Nasdaq proxy
+            "AAPL",  # Mega cap tech
+            "NVDA",  # High volatility chip stock
+            "TSLA"   # Extreme mover
         ]
         
         # Cache
@@ -53,7 +57,7 @@ class FocusedOptimizerV2:
         self.vix_value = 0.0
         
         print(f"Period: {self.start_date} to {self.end_date} ({self.test_days} days)")
-        print(f"Tickers: {len(self.tickers)}")
+        print(f"Tickers: {len(self.tickers)} (SPEED OPTIMIZED)")
         print(f"Cache: {self.cache_dir}")
         print("="*70)
         print()
@@ -240,7 +244,7 @@ class FocusedOptimizerV2:
     def generate_parameter_grid(self) -> List[Dict]:
         """
         Generate parameter grid with market regime filters.
-        Target: ~20,000 combinations with regime sampling.
+        SPEED OPTIMIZED: 2 regime combos instead of 3.
         """
         grid = []
         
@@ -252,11 +256,6 @@ class FocusedOptimizerV2:
         momentum_filters = ['none', 'weak', 'strong']
         trend_filters = ['none', 'aligned']
         time_filters = ['all', 'open', 'mid', 'power']
-        
-        # NEW: Market regime filters
-        vix_regimes = ['any', 'normal', 'elevated']  # Skip 'low' and 'high' (bad for breakouts)
-        spy_trend_options = [False, True]  # Require SPY alignment
-        vwap_options = [False, True]  # Require VWAP alignment
         
         for vol in volume_multipliers:
             for atr in atr_stops:
@@ -286,13 +285,12 @@ class FocusedOptimizerV2:
                                     time_sample = ['all', 'open']
                                 
                                 for timefilter in time_sample:
-                                    # NEW: Sample regime combinations intelligently
-                                    # Test baseline (no filters) + 2 filtered versions
+                                    # SPEED OPTIMIZED: Only 2 regime combinations
+                                    # Test baseline vs full filtering
                                     
                                     regime_combinations = [
                                         ('any', False, False),     # Baseline: No regime filters
-                                        ('elevated', True, True),  # Aggressive: All filters on
-                                        ('normal', True, False)    # Moderate: VIX + SPY only
+                                        ('elevated', True, True),  # Full filtering: VIX + SPY + VWAP
                                     ]
                                     
                                     for vix_regime, spy_filter, vwap_filter in regime_combinations:
@@ -728,7 +726,8 @@ class FocusedOptimizerV2:
         
         param_grid = self.generate_parameter_grid()
         print(f"✅ Generated {len(param_grid)} combinations")
-        print(f"   (3x more than V1 due to regime filter sampling)")
+        print(f"   SPEED OPTIMIZED: 5 tickers + 2 regime combos")
+        print(f"   Expected runtime: ~15 minutes")
         
         # Check cache
         cached_count = 0
@@ -828,7 +827,7 @@ class FocusedOptimizerV2:
                 print()
         else:
             print("⚠️  No configurations met strict criteria")
-            print("   Showing best by profit factor:")
+            print("   Showing best by profit factor (min 10 trades):")
             print()
             
             best = df[df["trades"] >= 10].sort_values("profit_factor", ascending=False).head(10)
