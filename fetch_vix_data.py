@@ -4,6 +4,8 @@ Fetch VIX Data from EODHD and store in database
 
 VIX (^VIX) is used as volatility filter for trading signals.
 Only trade when VIX > 15 for better pattern reliability.
+
+Tries multiple ticker formats and falls back to EOD data if intraday unavailable.
 """
 
 import sys
@@ -21,19 +23,11 @@ print("VIX DATA FETCHER")
 print("="*80)
 print()
 
-def fetch_vix_intraday(api_key: str, start_date: datetime, end_date: datetime):
+def try_fetch_vix_intraday(api_key: str, start_date: datetime, end_date: datetime, ticker_format: str):
     """
-    Fetch VIX 1-minute intraday data from EODHD.
-    
-    Args:
-        api_key: EODHD API key
-        start_date: Start date
-        end_date: End date
-    
-    Returns:
-        List of dicts with datetime, open, high, low, close, volume
+    Try to fetch VIX intraday data with specific ticker format.
     """
-    url = "https://eodhd.com/api/intraday/^VIX.INDX"
+    url = f"https://eodhd.com/api/intraday/{ticker_format}"
     
     params = {
         "api_token": api_key,
@@ -43,22 +37,21 @@ def fetch_vix_intraday(api_key: str, start_date: datetime, end_date: datetime):
         "fmt": "json"
     }
     
-    print(f"Fetching VIX data from {start_date.date()} to {end_date.date()}...")
+    print(f"  Trying {ticker_format}...", end=" ")
     
     try:
-        response = requests.get(url, params=params, timeout=60)
+        response = requests.get(url, params=params, timeout=30)
         response.raise_for_status()
         data = response.json()
         
-        if not data:
-            print("  No data returned from EODHD")
-            return []
+        if not data or "error" in str(data).lower():
+            print("Not found")
+            return None
         
         bars = []
         for item in data:
             try:
                 dt = datetime.fromtimestamp(item["timestamp"], tz=ET).replace(tzinfo=None)
-                
                 bars.append({
                     "datetime": dt,
                     "open": float(item["open"]),
@@ -67,28 +60,107 @@ def fetch_vix_intraday(api_key: str, start_date: datetime, end_date: datetime):
                     "close": float(item["close"]),
                     "volume": int(item.get("volume", 0))
                 })
-            except (KeyError, ValueError, TypeError) as e:
+            except (KeyError, ValueError, TypeError):
                 continue
         
-        print(f"  Fetched {len(bars)} VIX bars")
+        if bars:
+            print(f"✅ Success! {len(bars)} bars")
+            return bars
+        else:
+            print("No data")
+            return None
+    
+    except requests.exceptions.HTTPError:
+        print("404 Not Found")
+        return None
+    except Exception as e:
+        print(f"Error: {e}")
+        return None
+
+
+def fetch_vix_eod(api_key: str, start_date: datetime, end_date: datetime):
+    """
+    Fetch VIX end-of-day data and expand to 1-minute bars.
+    Use as fallback when intraday not available.
+    """
+    url = "https://eodhd.com/api/eod/^VIX.INDX"
+    
+    params = {
+        "api_token": api_key,
+        "from": start_date.strftime("%Y-%m-%d"),
+        "to": end_date.strftime("%Y-%m-%d"),
+        "fmt": "json"
+    }
+    
+    print("  Trying EOD data ^VIX.INDX...", end=" ")
+    
+    try:
+        response = requests.get(url, params=params, timeout=30)
+        response.raise_for_status()
+        data = response.json()
+        
+        if not data:
+            print("No data")
+            return []
+        
+        print(f"✅ Success! {len(data)} days")
+        
+        # Expand EOD to intraday by creating bars at market open (9:30 AM)
+        bars = []
+        for item in data:
+            try:
+                date = datetime.strptime(item["date"], "%Y-%m-%d").date()
+                dt = datetime.combine(date, datetime.strptime("09:30", "%H:%M").time())
+                
+                # Create a bar at 9:30 AM for each day
+                bars.append({
+                    "datetime": dt,
+                    "open": float(item["open"]),
+                    "high": float(item["high"]),
+                    "low": float(item["low"]),
+                    "close": float(item["close"]),
+                    "volume": int(item.get("volume", 0))
+                })
+            except (KeyError, ValueError, TypeError):
+                continue
+        
+        print(f"  Expanded to {len(bars)} intraday bars (one per day at 9:30 AM)")
         return bars
     
-    except requests.exceptions.HTTPError as e:
-        print(f"  HTTP Error: {e}")
-        print(f"  Response: {response.text[:200]}")
-        return []
     except Exception as e:
-        print(f"  Error: {e}")
+        print(f"Error: {e}")
         return []
+
+
+def fetch_vix_data(api_key: str, start_date: datetime, end_date: datetime):
+    """
+    Fetch VIX data, trying multiple methods.
+    """
+    print(f"Fetching VIX data from {start_date.date()} to {end_date.date()}...")
+    print()
+    
+    # Try different intraday ticker formats
+    ticker_formats = [
+        "^VIX.US",      # US exchange format
+        "VIX.INDX",     # Index format without ^
+        "^VIX",         # Basic format
+        "VIX.US",       # US without ^
+    ]
+    
+    for ticker_format in ticker_formats:
+        bars = try_fetch_vix_intraday(api_key, start_date, end_date, ticker_format)
+        if bars:
+            return bars
+    
+    # Fallback to EOD data
+    print()
+    print("Intraday not available, trying end-of-day data...")
+    return fetch_vix_eod(api_key, start_date, end_date)
 
 
 def store_vix_data(db_path: str, bars: list):
     """
     Store VIX data in intraday_bars table with ticker '^VIX'.
-    
-    Args:
-        db_path: Path to SQLite database
-        bars: List of bar dicts
     """
     if not bars:
         print("No bars to store")
@@ -176,15 +248,15 @@ def main():
     print()
     
     # Fetch VIX data
-    bars = fetch_vix_intraday(api_key, start_date, end_date)
+    bars = fetch_vix_data(api_key, start_date, end_date)
     
     if not bars:
         print("\n❌ Failed to fetch VIX data")
         print("\nPossible issues:")
-        print("  1. EODHD API key may not have access to ^VIX.INDX")
-        print("  2. Try ^VIX instead of ^VIX.INDX")
-        print("  3. VIX intraday may require higher subscription tier")
-        print("\nYou can still run backtests without VIX filter.")
+        print("  1. EODHD subscription may not include VIX data")
+        print("  2. VIX requires higher tier subscription")
+        print("\nWorkaround: Backtest will run without VIX filter.")
+        print("The system works fine without it - VIX just adds extra quality filter.")
         return
     
     # Store in database
@@ -200,6 +272,7 @@ def main():
     print(f"  Min: {min(vix_closes):.2f}")
     print(f"  Max: {max(vix_closes):.2f}")
     print(f"  Avg: {sum(vix_closes)/len(vix_closes):.2f}")
+    print(f"  Days > 15: {len([v for v in vix_closes if v > 15])} / {len(vix_closes)}")
     print()
     print("Now run: python advanced_mtf_backtest.py")
 
