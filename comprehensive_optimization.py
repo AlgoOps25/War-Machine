@@ -2,7 +2,7 @@
 """
 Comprehensive Parameter Optimization System with Result Caching
 
-NEW: Optimized parameter grid for QUALITY over QUANTITY!
+OPTIMIZED: 288 parameter combinations for 45-minute runtime!
 
 Tests EVERY available EODHD data point for optimal BOS/FVG signal detection:
 
@@ -21,12 +21,12 @@ Tests EVERY available EODHD data point for optimal BOS/FVG signal detection:
    - Relative strength (vs SPY)
    - Breakout strength (distance from structure)
 
-3. OPTIMIZED PARAMETER GRID (144 combinations):
-   - Volume multipliers: 2.5x, 3.0x, 3.5x, 4.0x (STRONG confirmation only)
+3. OPTIMIZED PARAMETER GRID (288 combinations):
+   - Volume multipliers: 2.5x, 3.0x, 4.0x (STRONG confirmation only)
    - ATR stop multiples: 1.5, 2.0 (tighter risk control)
    - Risk/Reward ratios: 2.0, 2.5, 3.0 (better R:R)
-   - Lookback periods: 8, 10, 12 (responsive to recent action)
-   - Momentum filters: Weak (>0), Strong (>0.5%) (NO 'none' - always require momentum)
+   - Lookback periods: 8, 12 (most responsive values)
+   - Momentum filters: Weak (>0), Strong (>0.5%) (ALWAYS required)
    - Trend filters: None, Aligned only
    - Time filters: Morning (9:30-11), Power (15-16) (best liquidity windows)
 
@@ -659,22 +659,23 @@ class ComprehensiveOptimizer:
         print("BUILDING OPTIMIZED PARAMETER GRID")
         print(f"{'='*70}\n")
         
-        # Define OPTIMIZED parameter grid (focus on quality signals)
+        # Define OPTIMIZED parameter grid (288 combinations)
         param_grid = {
             # Core parameters - STRICTER VALUES
-            'volume_mult': [2.5, 3.0, 3.5, 4.0],  # Higher volume confirmation
-            'atr_stop_mult': [1.5, 2.0],          # Tighter stops
-            'risk_reward': [2.0, 2.5, 3.0],       # Good R:R ratios
-            'lookback': [8, 10, 12],              # More responsive
+            'volume_mult': [2.5, 3.0, 4.0],       # 3 - Higher volume confirmation
+            'atr_stop_mult': [1.5, 2.0],          # 2 - Tighter stops
+            'risk_reward': [2.0, 2.5, 3.0],       # 3 - Good R:R ratios
+            'lookback': [8, 12],                  # 2 - Most responsive values
             
             # Filters - ALWAYS require momentum
-            'momentum_filter': ['weak', 'strong'], # NO 'none' option!
-            'trend_filter': [False, True],
-            'gap_filter': ['none'],
-            'vix_filter': ['none'],
-            'time_filter': ['morning', 'power'],   # Best liquidity windows
-            'pdh_filter': ['none'],
-            'rs_filter': [False]
+            'momentum_filter': ['weak', 'strong'], # 2 - NO 'none' option!
+            'trend_filter': [False, True],        # 2
+            'gap_filter': ['none'],               # 1
+            'vix_filter': ['none'],               # 1
+            'time_filter': ['morning', 'power'],  # 2 - Best liquidity windows
+            'pdh_filter': ['none'],               # 1
+            'rs_filter': [False]                  # 1
+            # Total: 3 × 2 × 3 × 2 × 2 × 2 × 1 × 1 × 2 × 1 × 1 = 288
         }
         
         # Generate all combinations
