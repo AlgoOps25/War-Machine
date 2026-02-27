@@ -1,4 +1,4 @@
-"""
+﻿"""
 utils/ - Database and utility modules
 
 Phase 2B: Organized utilities into dedicated package.
@@ -10,7 +10,7 @@ Or import specific module:
     from utils.db_connection import get_conn
 """
 
-from db_connection import (
+from .db_connection import (
     get_conn,
     ph,
     dict_cursor,
