@@ -2,19 +2,8 @@
 """
 Focused Parameter Optimization - ~1000 High-Quality Combinations
 
-Smarter parameter selection focusing on realistic trading scenarios:
-- Volume multipliers: 2.0x, 3.0x, 4.0x, 5.0x, 6.0x (5 values)
-- ATR stop multipliers: 1.5x, 2.0x, 2.5x, 3.0x, 4.0x (5 values)
-- Risk:reward ratios: 2.0R, 2.5R, 3.0R, 3.5R, 4.0R (5 values)
-- Lookback periods: 8, 10, 12, 16, 20 (5 values)
-- Momentum filters: none, weak, strong (3 values)
-- Trend filters: none, aligned (2 values)
-- Time filters: all, open, mid, power (4 values)
-
-Total: 5 * 5 * 5 * 5 * 3 * 2 * 4 = 15,000 combinations
-After intelligent filtering: ~1,000 combinations
-
-Completes in 15-30 minutes vs 5+ hours
+Smarter parameter selection focusing on realistic trading scenarios.
+FIXED: PDH/PDL loading now queries correct date range.
 """
 
 import sys
@@ -69,8 +58,13 @@ class FocusedOptimizer:
         print("="*70)
         print()
     
-    def load_bars_from_db(self, ticker: str) -> List[Dict]:
+    def load_bars_from_db(self, ticker: str, start_date=None, end_date=None) -> List[Dict]:
         """Load bars directly from database."""
+        if start_date is None:
+            start_date = self.start_date
+        if end_date is None:
+            end_date = self.end_date
+            
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
@@ -85,7 +79,7 @@ class FocusedOptimizer:
         """
         
         try:
-            cur.execute(query, (ticker, self.start_date, self.end_date))
+            cur.execute(query, (ticker, start_date, end_date))
             rows = cur.fetchall()
             
             bars = []
@@ -136,20 +130,43 @@ class FocusedOptimizer:
         """Load previous day high/low."""
         print("⏳ Loading previous day OHLC data...")
         
-        prev_date = self.start_date - timedelta(days=1)
+        # Go back multiple days to find a trading day
+        for days_back in range(1, 6):
+            prev_date = self.start_date - timedelta(days=days_back)
+            
+            found_any = False
+            for ticker in self.tickers:
+                if ticker not in self.bars_cache:
+                    continue
+                
+                # Only try this ticker if we haven't found PDH/PDL yet
+                if ticker in self.pdh_pdl_cache:
+                    continue
+                
+                # Load bars for previous date
+                bars = self.load_bars_from_db(
+                    ticker, 
+                    start_date=prev_date,
+                    end_date=prev_date
+                )
+                
+                if bars:
+                    pdh = max(b["high"] for b in bars)
+                    pdl = min(b["low"] for b in bars)
+                    self.pdh_pdl_cache[ticker] = {"pdh": pdh, "pdl": pdl}
+                    found_any = True
+            
+            # If we found data for this date, print it and we're done
+            if found_any:
+                print(f"  Using prior day: {prev_date}")
+                for ticker in self.pdh_pdl_cache:
+                    pdh = self.pdh_pdl_cache[ticker]["pdh"]
+                    pdl = self.pdh_pdl_cache[ticker]["pdl"]
+                    print(f"  ✅ {ticker} PDH: ${pdh:.2f} PDL: ${pdl:.2f}")
+                break
         
-        for ticker in self.tickers:
-            if ticker not in self.bars_cache:
-                continue
-            
-            bars = self.load_bars_from_db(ticker)
-            prev_bars = [b for b in bars if b["datetime"].date() == prev_date]
-            
-            if prev_bars:
-                pdh = max(b["high"] for b in prev_bars)
-                pdl = min(b["low"] for b in prev_bars)
-                self.pdh_pdl_cache[ticker] = {"pdh": pdh, "pdl": pdl}
-                print(f"  ✅ {ticker} PDH: ${pdh:.2f} PDL: ${pdl:.2f}")
+        if not self.pdh_pdl_cache:
+            print("  ⚠️ Warning: Could not load PDH/PDL for any ticker!")
         
         print()
     
