@@ -1,0 +1,332 @@
+[
+  {
+    "filters": [
+      "price_range"
+    ],
+    "train_win_rate": 0.7402597402597403,
+    "val_win_rate": 0.8285714285714286,
+    "val_total_signals": 35,
+    "val_profit_factor": 1.5772058998862448,
+    "signals_retained_pct": 55.55555555555556,
+    "beats_baseline": true,
+    "timestamp": "2026-02-27T15:24:12.938673"
+  },
+  {
+    "filters": [
+      "atr_threshold"
+    ],
+    "train_win_rate": 0.7346938775510204,
+    "val_win_rate": 0.7777777777777778,
+    "val_total_signals": 63,
+    "val_profit_factor": 1.2993479384839461,
+    "signals_retained_pct": 100.0,
+    "beats_baseline": true,
+    "timestamp": "2026-02-27T15:24:13.810341"
+  },
+  {
+    "filters": [
+      "rsi_threshold"
+    ],
+    "train_win_rate": 0.7216494845360825,
+    "val_win_rate": 0.813953488372093,
+    "val_total_signals": 43,
+    "val_profit_factor": 1.5682487151562252,
+    "signals_retained_pct": 68.25396825396825,
+    "beats_baseline": true,
+    "timestamp": "2026-02-27T15:24:14.739900"
+  },
+  {
+    "filters": [
+      "bollinger_position"
+    ],
+    "train_win_rate": 0.7542372881355932,
+    "val_win_rate": 0.8,
+    "val_total_signals": 50,
+    "val_profit_factor": 1.4985810163991775,
+    "signals_retained_pct": 79.36507936507937,
+    "beats_baseline": true,
+    "timestamp": "2026-02-27T15:24:15.417131"
+  },
+  {
+    "filters": [
+      "vix_level"
+    ],
+    "train_win_rate": 0.7346938775510204,
+    "val_win_rate": 0.7777777777777778,
+    "val_total_signals": 63,
+    "val_profit_factor": 1.2993479384839461,
+    "signals_retained_pct": 100.0,
+    "beats_baseline": true,
+    "timestamp": "2026-02-27T15:24:16.307677"
+  },
+  {
+    "filters": [
+      "price_range",
+      "atr_threshold"
+    ],
+    "train_win_rate": 0.7402597402597403,
+    "val_win_rate": 0.8285714285714286,
+    "val_total_signals": 35,
+    "val_profit_factor": 1.5772058998862448,
+    "signals_retained_pct": 55.55555555555556,
+    "beats_baseline": true,
+    "timestamp": "2026-02-27T15:24:17.675180"
+  },
+  {
+    "filters": [
+      "price_range",
+      "rsi_threshold"
+    ],
+    "train_win_rate": 0.7313432835820896,
+    "val_win_rate": 0.8387096774193549,
+    "val_total_signals": 31,
+    "val_profit_factor": 1.7131637654843708,
+    "signals_retained_pct": 49.2063492063492,
+    "beats_baseline": true,
+    "timestamp": "2026-02-27T15:24:19.086507"
+  },
+  {
+    "filters": [
+      "price_range",
+      "bollinger_position"
+    ],
+    "train_win_rate": 0.7916666666666666,
+    "val_win_rate": 0.9090909090909091,
+    "val_total_signals": 22,
+    "val_profit_factor": 3.227793029573547,
+    "signals_retained_pct": 34.92063492063492,
+    "beats_baseline": true,
+    "timestamp": "2026-02-27T15:24:20.355178"
+  },
+  {
+    "filters": [
+      "price_range",
+      "vix_level"
+    ],
+    "train_win_rate": 0.7402597402597403,
+    "val_win_rate": 0.8285714285714286,
+    "val_total_signals": 35,
+    "val_profit_factor": 1.5772058998862448,
+    "signals_retained_pct": 55.55555555555556,
+    "beats_baseline": true,
+    "timestamp": "2026-02-27T15:24:21.770407"
+  },
+  {
+    "filters": [
+      "atr_threshold",
+      "rsi_threshold"
+    ],
+    "train_win_rate": 0.7216494845360825,
+    "val_win_rate": 0.813953488372093,
+    "val_total_signals": 43,
+    "val_profit_factor": 1.5682487151562252,
+    "signals_retained_pct": 68.25396825396825,
+    "beats_baseline": true,
+    "timestamp": "2026-02-27T15:24:23.331176"
+  },
+  {
+    "filters": [
+      "atr_threshold",
+      "bollinger_position"
+    ],
+    "train_win_rate": 0.7542372881355932,
+    "val_win_rate": 0.8,
+    "val_total_signals": 50,
+    "val_profit_factor": 1.4985810163991775,
+    "signals_retained_pct": 79.36507936507937,
+    "beats_baseline": true,
+    "timestamp": "2026-02-27T15:24:24.903865"
+  },
+  {
+    "filters": [
+      "atr_threshold",
+      "vix_level"
+    ],
+    "train_win_rate": 0.7346938775510204,
+    "val_win_rate": 0.7777777777777778,
+    "val_total_signals": 63,
+    "val_profit_factor": 1.2993479384839461,
+    "signals_retained_pct": 100.0,
+    "beats_baseline": true,
+    "timestamp": "2026-02-27T15:24:26.543191"
+  },
+  {
+    "filters": [
+      "rsi_threshold",
+      "bollinger_position"
+    ],
+    "train_win_rate": 0.75,
+    "val_win_rate": 0.8666666666666667,
+    "val_total_signals": 30,
+    "val_profit_factor": 2.3182623090633614,
+    "signals_retained_pct": 47.61904761904761,
+    "beats_baseline": true,
+    "timestamp": "2026-02-27T15:24:27.960573"
+  },
+  {
+    "filters": [
+      "rsi_threshold",
+      "vix_level"
+    ],
+    "train_win_rate": 0.7216494845360825,
+    "val_win_rate": 0.813953488372093,
+    "val_total_signals": 43,
+    "val_profit_factor": 1.5682487151562252,
+    "signals_retained_pct": 68.25396825396825,
+    "beats_baseline": true,
+    "timestamp": "2026-02-27T15:24:29.605210"
+  },
+  {
+    "filters": [
+      "bollinger_position",
+      "vix_level"
+    ],
+    "train_win_rate": 0.7542372881355932,
+    "val_win_rate": 0.8,
+    "val_total_signals": 50,
+    "val_profit_factor": 1.4985810163991775,
+    "signals_retained_pct": 79.36507936507937,
+    "beats_baseline": true,
+    "timestamp": "2026-02-27T15:24:31.113880"
+  },
+  {
+    "filters": [
+      "price_range",
+      "atr_threshold",
+      "rsi_threshold"
+    ],
+    "train_win_rate": 0.7313432835820896,
+    "val_win_rate": 0.8387096774193549,
+    "val_total_signals": 31,
+    "val_profit_factor": 1.7131637654843708,
+    "signals_retained_pct": 49.2063492063492,
+    "beats_baseline": true,
+    "timestamp": "2026-02-27T15:24:33.199021"
+  },
+  {
+    "filters": [
+      "price_range",
+      "atr_threshold",
+      "bollinger_position"
+    ],
+    "train_win_rate": 0.7916666666666666,
+    "val_win_rate": 0.9090909090909091,
+    "val_total_signals": 22,
+    "val_profit_factor": 3.227793029573547,
+    "signals_retained_pct": 34.92063492063492,
+    "beats_baseline": true,
+    "timestamp": "2026-02-27T15:24:35.226596"
+  },
+  {
+    "filters": [
+      "price_range",
+      "atr_threshold",
+      "vix_level"
+    ],
+    "train_win_rate": 0.7402597402597403,
+    "val_win_rate": 0.8285714285714286,
+    "val_total_signals": 35,
+    "val_profit_factor": 1.5772058998862448,
+    "signals_retained_pct": 55.55555555555556,
+    "beats_baseline": true,
+    "timestamp": "2026-02-27T15:24:37.421435"
+  },
+  {
+    "filters": [
+      "price_range",
+      "rsi_threshold",
+      "bollinger_position"
+    ],
+    "train_win_rate": 0.7894736842105263,
+    "val_win_rate": 0.9444444444444444,
+    "val_total_signals": 18,
+    "val_profit_factor": 5.280638759245978,
+    "signals_retained_pct": 28.57142857142857,
+    "beats_baseline": false,
+    "timestamp": "2026-02-27T15:24:39.413836"
+  },
+  {
+    "filters": [
+      "price_range",
+      "rsi_threshold",
+      "vix_level"
+    ],
+    "train_win_rate": 0.7313432835820896,
+    "val_win_rate": 0.8387096774193549,
+    "val_total_signals": 31,
+    "val_profit_factor": 1.7131637654843708,
+    "signals_retained_pct": 49.2063492063492,
+    "beats_baseline": true,
+    "timestamp": "2026-02-27T15:24:41.603010"
+  },
+  {
+    "filters": [
+      "price_range",
+      "bollinger_position",
+      "vix_level"
+    ],
+    "train_win_rate": 0.7916666666666666,
+    "val_win_rate": 0.9090909090909091,
+    "val_total_signals": 22,
+    "val_profit_factor": 3.227793029573547,
+    "signals_retained_pct": 34.92063492063492,
+    "beats_baseline": true,
+    "timestamp": "2026-02-27T15:24:43.697836"
+  },
+  {
+    "filters": [
+      "atr_threshold",
+      "rsi_threshold",
+      "bollinger_position"
+    ],
+    "train_win_rate": 0.75,
+    "val_win_rate": 0.8666666666666667,
+    "val_total_signals": 30,
+    "val_profit_factor": 2.3182623090633614,
+    "signals_retained_pct": 47.61904761904761,
+    "beats_baseline": true,
+    "timestamp": "2026-02-27T15:24:45.981051"
+  },
+  {
+    "filters": [
+      "atr_threshold",
+      "rsi_threshold",
+      "vix_level"
+    ],
+    "train_win_rate": 0.7216494845360825,
+    "val_win_rate": 0.813953488372093,
+    "val_total_signals": 43,
+    "val_profit_factor": 1.5682487151562252,
+    "signals_retained_pct": 68.25396825396825,
+    "beats_baseline": true,
+    "timestamp": "2026-02-27T15:24:48.466305"
+  },
+  {
+    "filters": [
+      "atr_threshold",
+      "bollinger_position",
+      "vix_level"
+    ],
+    "train_win_rate": 0.7542372881355932,
+    "val_win_rate": 0.8,
+    "val_total_signals": 50,
+    "val_profit_factor": 1.4985810163991775,
+    "signals_retained_pct": 79.36507936507937,
+    "beats_baseline": true,
+    "timestamp": "2026-02-27T15:24:50.806284"
+  },
+  {
+    "filters": [
+      "rsi_threshold",
+      "bollinger_position",
+      "vix_level"
+    ],
+    "train_win_rate": 0.75,
+    "val_win_rate": 0.8666666666666667,
+    "val_total_signals": 30,
+    "val_profit_factor": 2.3182623090633614,
+    "signals_retained_pct": 47.61904761904761,
+    "beats_baseline": true,
+    "timestamp": "2026-02-27T15:24:53.081482"
+  }
+]
