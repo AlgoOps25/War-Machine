@@ -2,9 +2,10 @@
 """
 Quick Backtest - Realistic Signal Detection
 
-Tests War Machine signal logic with proper BOS/FVG detection:
-- Volume confirmation (2x average)
-- ATR-based stops
+Tests War Machine signal logic with proper BOS/FVG detection using
+optimized parameters from config.py:
+- Volume confirmation (3.0x average - from config.MIN_REL_VOL)
+- ATR-based stops (2.5x - from config.STOP_MULTIPLIERS['A'])
 - Structure breaks (new highs/lows)
 - Momentum confirmation
 
@@ -20,6 +21,7 @@ import numpy as np
 
 from data_manager import DataManager
 from db_connection import get_conn, ph, dict_cursor
+import config
 
 ET = ZoneInfo("America/New_York")
 
@@ -31,11 +33,23 @@ TEST_TICKERS = [
 
 
 class RealisticBacktest:
-    """Backtest with proper BOS/FVG signal detection."""
+    """Backtest with proper BOS/FVG signal detection using config.py parameters."""
     
     def __init__(self, db_path: str = "market_memory.db"):
         self.db_path = db_path
         self.data_manager = DataManager(db_path)
+        
+        # Load optimized parameters from config
+        self.volume_multiplier = config.MIN_REL_VOL  # 3.0x
+        self.atr_stop_multiplier = config.STOP_MULTIPLIERS['A']  # 2.5x
+        self.target_rr = config.TARGET_1_RR  # 3.0R
+        self.lookback_bars = config.LOOKBACK_BARS  # 12
+        
+        print(f"📊 Using optimized config parameters:")
+        print(f"   Volume filter: {self.volume_multiplier}x average")
+        print(f"   ATR stop: {self.atr_stop_multiplier}x")
+        print(f"   Target: {self.target_rr}R")
+        print(f"   Lookback: {self.lookback_bars} bars\n")
         
         # Date range (last 10 days for speed)
         now_et = datetime.now(ET)
@@ -127,9 +141,9 @@ class RealisticBacktest:
         volumes = [b['volume'] for b in bars[-period:]]
         return np.mean(volumes)
     
-    def detect_breakout(self, bars: List[Dict], lookback: int = 12) -> Dict:
-        """Detect BOS/FVG breakout with proper criteria."""
-        if len(bars) < lookback + 14:  # Need extra bars for ATR
+    def detect_breakout(self, bars: List[Dict]) -> Dict:
+        """Detect BOS/FVG breakout with proper criteria using config parameters."""
+        if len(bars) < self.lookback_bars + 14:  # Need extra bars for ATR
             return None
         
         current = bars[-1]
@@ -142,13 +156,13 @@ class RealisticBacktest:
         if atr == 0 or avg_volume == 0:
             return None
         
-        # Volume confirmation (2x average)
+        # Volume confirmation (from config.MIN_REL_VOL = 3.0)
         volume_ratio = current['volume'] / avg_volume
-        if volume_ratio < 2.0:
+        if volume_ratio < self.volume_multiplier:
             return None
         
         # Find structure (highs/lows in lookback)
-        lookback_bars = bars[-lookback-1:-1]
+        lookback_bars = bars[-self.lookback_bars-1:-1]
         highs = [b['high'] for b in lookback_bars]
         lows = [b['low'] for b in lookback_bars]
         
@@ -165,8 +179,8 @@ class RealisticBacktest:
                 signal = {
                     'direction': 'long',
                     'entry': current['close'],
-                    'stop': current['close'] - (atr * 1.5),
-                    'target': current['close'] + (atr * 3.0),
+                    'stop': current['close'] - (atr * self.atr_stop_multiplier),
+                    'target': current['close'] + (atr * self.target_rr),
                     'datetime': current['datetime'],
                     'volume_ratio': volume_ratio,
                     'breakout_level': resistance
@@ -179,8 +193,8 @@ class RealisticBacktest:
                 signal = {
                     'direction': 'short',
                     'entry': current['close'],
-                    'stop': current['close'] + (atr * 1.5),
-                    'target': current['close'] - (atr * 3.0),
+                    'stop': current['close'] + (atr * self.atr_stop_multiplier),
+                    'target': current['close'] - (atr * self.target_rr),
                     'datetime': current['datetime'],
                     'volume_ratio': volume_ratio,
                     'breakout_level': support
@@ -266,7 +280,7 @@ class RealisticBacktest:
             # Scan through bars looking for signals
             for i in range(26, len(bars)):  # Need 26 bars for indicators
                 bars_slice = bars[:i+1]
-                signal = self.detect_breakout(bars_slice, lookback=12)
+                signal = self.detect_breakout(bars_slice)
                 
                 if signal:
                     # Simulate trade
@@ -304,9 +318,10 @@ def main():
     if len(results_df) == 0:
         print("❌ No trades found!\n")
         print("This means:")
-        print("  - Signal criteria are too strict, OR")
+        print("  - Signal criteria are too strict (volume filter at 3.0x), OR")
         print("  - Not enough bars in database, OR")
         print("  - No clear breakouts in test period\n")
+        print("💡 This is GOOD - quality over quantity!\n")
         return
     
     # Calculate statistics
@@ -340,7 +355,8 @@ def main():
     
     exit_counts = results_df['exit_reason'].value_counts()
     for reason, count in exit_counts.items():
-        print(f"  {reason}: {count} ({count/total_trades*100:.1f}%)")
+        pct = count/total_trades*100
+        print(f"  {reason}: {count} ({pct:.1f}%)")
     
     # Save results
     results_df.to_csv("quick_backtest_results.csv", index=False)
