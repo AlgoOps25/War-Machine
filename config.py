@@ -1,304 +1,890 @@
 """
-War Machine Configuration
-Single source of truth for all system parameters.
+War Machine Filter Configuration System - Phase 3
+Centralized configuration for all market filters
 
-OPTIMIZED PARAMETERS - Based on backtest analysis showing:
-- 29% baseline WR → Target 42-45% WR
-- 68.4% stop-outs → Target 45-50% with wider stops
-- Profit Factor 0.68 → Target 1.8-2.0
+Features:
+- Enable/disable individual filters
+- Parameter tuning for each filter
+- Preset configurations (conservative, balanced, aggressive)
+- Filter weighting system
+- Easy-to-modify filter combinations
 """
-import os
-from datetime import time
-from dotenv import load_dotenv
 
-
-# Load environment variables from .env file
-load_dotenv()
-
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# API & DISCORD CONFIGURATION
-# ══════════════════════════════════════════════════════════════════════════════
-EODHD_API_KEY       = os.getenv("EODHD_API_KEY", "").strip()
-DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# MARKET TIMING
-# ══════════════════════════════════════════════════════════════════════════════
-MARKET_OPEN           = time(9, 30)
-MARKET_CLOSE          = time(16, 0)
-OPENING_RANGE_END     = time(9, 40)   # 10-minute OR window
-PREMARKET_START       = time(4, 0)    # Pre-market levels
-
-
-# 0DTE forced close times
-HARD_CLOSE_TIME       = time(15, 45)  # Begin closing all 0DTE positions
-FORCE_CLOSE_TIME      = time(15, 55)  # Liquidate any remaining 0DTE at market
-
-
-# Time-of-day filters (OPTIMIZED from backtest)
-OPTIMAL_TRADE_WINDOWS = [
-    (time(9, 30), time(10, 30)),   # Opening hour - best win rate
-    (time(15, 0), time(16, 0))     # Power hour - institutional flows
-]
-AVOID_CHOPPY_HOURS = True              # Skip 11:30 AM - 1:30 PM lunch chop
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# SCANNER SETTINGS
-# ══════════════════════════════════════════════════════════════════════════════
-TOP_SCAN_COUNT    = 50                  # Max tickers per scan cycle
-MARKET_CAP_MIN    = 1_000_000_000       # $1B minimum market cap
-
-
-# Adaptive scan intervals by time of day (seconds)
-SCAN_INTERVALS = {
-    "opening_range": 30,    # 9:30-9:45 - catch early setups fast
-    "morning":       60,    # 9:45-11:00 - active morning session
-    "midday":        180,   # 11:00-14:00 - slow choppy period
-    "afternoon":     60,    # 14:00-15:30 - afternoon momentum
-    "power_hour":    45,    # 15:30-16:00 - power hour urgency
-    "after_hours":   300    # Outside market - minimal scanning
-}
-
-
-# Adaptive watchlist size by time of day
-WATCHLIST_SIZE = {
-    "early_morning": 30,    # 9:30-10:30 - focused list
-    "mid_session":   50,    # 10:30-15:00 - full list
-    "late_day":      35,    # 15:00-16:00 - reduced list
-    "default":       40
-}
-
-
-# Volume & liquidity filters (OPTIMIZED - was 1.5, now 3.0 for quality)
-MIN_REL_VOL      = 3.0     # Minimum relative volume threshold - 100% increase
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# CFW6 SIGNAL DETECTION PARAMETERS
-# ══════════════════════════════════════════════════════════════════════════════
-
-# Breakout detection (ADDED - was missing!)
-LOOKBACK_BARS = 12                      # Structure break lookback period
-MIN_ADX = 25                            # Minimum ADX for trend strength (CRITICAL)
-MOMENTUM_FILTER_ENABLED = True          # Require directional momentum
-
-
-# ORB (Opening Range Breakout) settings
-ORB_BREAK_THRESHOLD = 0.001             # 0.1% default breakout threshold
-MIN_OR_RANGE_PCT    = 0.003             # 0.3% minimum OR width; sub-0.3% = choppy open,
-                                        # breakouts are statistically low quality.
-                                        # When narrow, OR path is skipped and the ticker
-                                        # falls through to the intraday BOS scan instead.
-
-
-# Adaptive ORB thresholds by volume (overrides ORB_BREAK_THRESHOLD)
-ORB_THRESHOLDS = {
-    "high_volume":   0.0008,            # 0.08% for 2x+ volume breakouts
-    "normal_volume": 0.001,             # 0.10% for 1.5-2x volume
-    "low_volume":    0.0015             # 0.15% for weak volume breakouts
-}
-
-
-# FVG (Fair Value Gap) settings
-FVG_MIN_SIZE_PCT = 0.002               # 0.2% default minimum FVG size
-
-
-# Adaptive FVG thresholds by volatility (overrides FVG_MIN_SIZE_PCT)
-FVG_THRESHOLDS = {
-    "high_volatility":   0.003,         # 0.3% for ATR > 2.0%
-    "medium_volatility": 0.002,         # 0.2% for ATR 1.0-2.0%
-    "low_volatility":    0.0015         # 0.15% for ATR < 1.0%
-}
-
-
-# CFW6 Confirmation settings
-MAX_WAIT_CANDLES            = 15        # Reduced from 20 (optimization)
-OPTIMAL_CONFIRMATION_WINDOW = 5         # Ideal: confirmed within 5 candles
-CONFIRMATION_BAR_HOLD       = 3         # 3-bar confirmation (98.5% pattern accuracy)
-
-
-# Multi-timeframe confirmation
-CONFIRMATION_TIMEFRAMES = ["5m", "3m", "2m", "1m"]  # Priority: highest to lowest
-
-
-# MTF convergence confidence boosts
-MTF_CONVERGENCE_BOOST = {
-    "three_plus": 0.15,                 # +15% for 3+ timeframes aligned
-    "two":        0.05                  # +5% for 2 timeframes aligned
-}
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# RISK MANAGEMENT (OPTIMIZED - stops widened to reduce 68% stop-out rate)
-# ══════════════════════════════════════════════════════════════════════════════
-
-# Grade-based ATR stop loss multipliers (WIDENED by 60-67%)
-STOP_MULTIPLIERS = {
-    "A+": 2.0,      # Was 1.2 → +67% wider stop
-    "A":  2.5,      # Was 1.5 → +67% wider stop (OPTIMAL from backtest)
-    "A-": 3.0       # Was 1.8 → +67% wider stop
-}
-
-
-# Target risk:reward ratios (OPTIMIZED - was 2.0/3.5, now 3.0/5.0)
-TARGET_1_RR = 3.0   # T1 = 3R for all grades (was 2.0)
-TARGET_2_RR = 5.0   # T2 = 5R for all grades (was 3.5)
-
-
-# Position sizing (% of account at risk per trade)
-POSITION_RISK = {
-    "A+_high_confidence": 0.030,        # 3.0% for A+ with 85%+ confidence
-    "A_high_confidence":  0.024,        # 2.4% for A with 75%+ confidence
-    "standard":           0.020,        # 2.0% standard risk
-    "conservative":       0.014         # 1.4% for marginal signals
-}
-
-
-ACCOUNT_SIZE   = float(os.getenv("ACCOUNT_SIZE", "25000"))
-MAX_CONTRACTS  = 10         # Hard cap on contracts per trade
-
-
-# Portfolio-level risk controls
-MAX_DAILY_LOSS_PCT        = 3.0    # Circuit breaker: stop trading at -3% daily loss
-MAX_INTRADAY_DRAWDOWN_PCT = 5.0    # Max drawdown from intraday peak
-MAX_OPEN_POSITIONS        = 5      # Maximum concurrent positions
-MAX_SECTOR_EXPOSURE_PCT   = 40.0   # Maximum exposure to single sector
-MIN_RISK_REWARD_RATIO     = 2.0    # Minimum R:R ratio to enter trade (was 1.5, now 2.0)
-
-
-# Breakeven stop management (ADDED)
-BREAKEVEN_TRIGGER_RR = 1.0          # Move stop to breakeven after 1R profit
-BREAKEVEN_ENABLED = True            # Enable breakeven stop management
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# CONFIDENCE DECAY SETTINGS
-# ══════════════════════════════════════════════════════════════════════════════
-CONFIDENCE_DECAY_ENABLED  = True
-DECAY_START_CANDLE        = 6           # No penalty for candles 1-5
-DECAY_RATE_EARLY          = 0.02        # 2% per candle (candles 6-10)
-DECAY_RATE_MID            = 0.03        # 3% per candle (candles 11-15)
-DECAY_RATE_LATE           = 0.05        # 5% per candle (candles 16+)
-CONFIDENCE_FLOOR          = 0.50        # Minimum confidence floor (decay only)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# CONFIDENCE THRESHOLD GATE (OPTIMIZED - relaxed for quality A- signals)
-# Applied AFTER all multipliers (IVR × UOA × GEX) are computed.
-# Signals below their effective minimum are silently dropped before arming.
-# Tune these values upward as your win-rate data accumulates.
-# ══════════════════════════════════════════════════════════════════════════════
-
-# Per signal-type minimums (RELAXED from 0.70/0.75)
-MIN_CONFIDENCE_OR        = 0.65    # OR-Anchored signals (CFW6_OR) - was 0.70
-MIN_CONFIDENCE_INTRADAY  = 0.70    # Intraday BOS signals (CFW6_INTRADAY) - was 0.75
-
-
-# Per-grade overrides (RELAXED - especially A- from 0.78 → 0.70)
-MIN_CONFIDENCE_BY_GRADE = {
-    "A+": 0.60,     # Was 0.65 → -5% more permissive
-    "A":  0.65,     # Was 0.70 → -5% more permissive
-    "A-": 0.70,     # Was 0.78 → -8% more permissive (CRITICAL fix)
-}
-
-
-# Global safety net regardless of type or grade
-CONFIDENCE_ABSOLUTE_FLOOR = 0.60
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# AI LEARNING ENGINE SETTINGS
-# ══════════════════════════════════════════════════════════════════════════════
-LEARNING_LOOKBACK_DAYS      = 30
-MIN_TRADES_FOR_LEARNING     = 10
-CONFIDENCE_SMOOTHING        = 0.7       # EMA smoothing factor
-INITIAL_MIN_CONFIDENCE      = 0.70      # Was 0.75 → relaxed
-INITIAL_TARGET_WIN_RATE     = 0.65
-
-
-# Baseline win rate for confirmation weight calculation
-BASELINE_WIN_RATE           = 0.65
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# OPTIONS TRADING SETTINGS
-# ══════════════════════════════════════════════════════════════════════════════
-
-# IV filters
-IV_RANK_MIN = 20            # Minimum IV rank for consideration
-IV_RANK_MAX = 80            # Maximum IV rank (avoid IV crush)
-
-
-# Liquidity filters
-MIN_OPTION_OI           = 500           # Minimum open interest
-MIN_OPTION_VOLUME       = 100           # Minimum daily volume
-MAX_BID_ASK_SPREAD_PCT  = 0.10          # 10% max spread as % of mid
-
-
-# Flat delta range (used by options_filter.py for strike selection)
-TARGET_DELTA_MIN = 0.35     # Minimum absolute delta (excludes far OTM)
-TARGET_DELTA_MAX = 0.60     # Maximum absolute delta (excludes deep ITM)
-
-
-# Delta targets by grade (higher confidence = more aggressive delta)
-DELTA_TARGETS = {
-    "A+": (0.50, 0.60),     # ATM for highest quality
-    "A":  (0.40, 0.50),     # Standard range
-    "A-": (0.35, 0.45)      # OTM for marginal signals
-}
-
-
-# DTE (Days to Expiration) preferences
-MIN_DTE   = 7               # Minimum days to expiration
-MAX_DTE   = 45              # Maximum days to expiration
-IDEAL_DTE = 21              # Target DTE for signals
-
-
-# Theta decay limits
-MAX_THETA_DECAY_PCT = 0.05  # Max daily theta decay as % of premium
-
-
-# Dark pool integration
-DARKPOOL_BOOST_THRESHOLD = 1_000_000    # $1M+ dark pool adds confidence
-DARKPOOL_BOOST_FACTOR    = 0.05         # +5% confidence for dark pool
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# GEX (GAMMA EXPOSURE) MULTIPLIERS
-# Applied to base confidence in sniper.py Step 11.
-# IVR/UOA/GEX multipliers stack multiplicatively.
-#
-# Enforced ceiling/floor guard rails (options_filter.py):
-#   IVR multiplier: 0.70 – 1.30
-#   UOA multiplier: 0.70 – 1.30
-#   GEX multiplier: 0.70 – 1.30
-# ══════════════════════════════════════════════════════════════════════════════
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# WEBSOCKET REAL-TIME DATA FEED
-# ══════════════════════════════════════════════════════════════════════════════
-ENABLE_WEBSOCKET_FEED = True            # Toggle WebSocket feed on/off
-WS_FLUSH_INTERVAL     = 10              # Flush open bars to DB every N seconds
-WS_RECONNECT_DELAY    = 5               # Wait N seconds before reconnecting on error
-WS_SUBSCRIBE_CHUNK    = 50              # Max tickers per subscribe message
-WS_SPIKE_THRESHOLD    = 0.10            # Reject ticks > 10% from current close (bad prints)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# DATABASE & LOGGING
-# ══════════════════════════════════════════════════════════════════════════════
-DB_PATH             = "market_memory.db"        # Main market data database (SQLite fallback)
-LOG_LEVEL           = "INFO"
-BARS_RETENTION_DAYS = 60                         # Auto-cleanup bars older than 60 days
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# DEPLOYMENT SETTINGS (Railway)
-# ══════════════════════════════════════════════════════════════════════════════
-ENVIRONMENT   = os.getenv("ENVIRONMENT", "production")
-IS_PRODUCTION = ENVIRONMENT == "production"
+from typing import Dict, List, Optional, Any
+from dataclasses import dataclass, field
+import json
+from pathlib import Path
+
+# ========================================
+# FILTER CONFIGURATION DATACLASS
+# ========================================
+
+@dataclass
+class FilterConfig:
+    """Configuration for a single filter"""
+    enabled: bool = True
+    weight: float = 1.0  # Weight in combined scoring (0.0 to 2.0)
+    params: Dict[str, Any] = field(default_factory=dict)
+    description: str = ""
+
+# ========================================
+# MAIN CONFIGURATION CLASS
+# ========================================
+
+class WarMachineConfig:
+    """
+    Centralized configuration for War Machine trading system
+    
+    Usage:
+        config = WarMachineConfig()
+        config.load_preset('aggressive')
+        enabled_filters = config.get_enabled_filters()
+    """
+    
+    def __init__(self, config_file: Optional[str] = None):
+        """
+        Initialize configuration
+        
+        Args:
+            config_file: Optional JSON file to load config from
+        """
+        self.config_file = config_file
+        
+        # Initialize default configurations
+        self._init_baseline_config()
+        self._init_technical_config()
+        self._init_volume_config()
+        self._init_options_config()
+        self._init_fundamental_config()
+        self._init_market_context_config()
+        self._init_time_config()
+        
+        # Load from file if provided
+        if config_file and Path(config_file).exists():
+            self.load_from_file(config_file)
+    
+    # ========================================
+    # BASELINE SCANNER CONFIG (V2 OPTIMIZED)
+    # ========================================
+    
+    def _init_baseline_config(self):
+        """Baseline scanner parameters (V2 optimized)"""
+        self.baseline = {
+            'volume_multiplier': 2.0,
+            'atr_multiplier': 4.0,
+            'risk_reward_ratio': 2.5,
+            'lookback_periods': 16,
+            'trading_window': {
+                'start': '09:30',
+                'end': '10:00'
+            },
+            'min_price': 5.0,
+            'max_price': 500.0,
+            'timeframe': '1min'  # 1min beats 5min in testing
+        }
+    
+    # ========================================
+    # TECHNICAL INDICATORS CONFIG
+    # ========================================
+    
+    def _init_technical_config(self):
+        """Technical indicator filter configurations"""
+        self.technical_filters = {
+            'rsi': FilterConfig(
+                enabled=False,  # Baseline won in testing
+                weight=1.0,
+                params={
+                    'period': 14,
+                    'oversold': 30.0,
+                    'overbought': 70.0,
+                    'lookback_days': 90
+                },
+                description="RSI momentum filter - detects overbought/oversold"
+            ),
+            
+            'macd': FilterConfig(
+                enabled=False,
+                weight=1.2,
+                params={
+                    'lookback_days': 90
+                },
+                description="MACD trend filter - detects bullish/bearish crossovers"
+            ),
+            
+            'bollinger_bands': FilterConfig(
+                enabled=False,
+                weight=1.0,
+                params={
+                    'period': 20,
+                    'std_dev': 2,
+                    'lookback_days': 90
+                },
+                description="Bollinger Bands - detects volatility and price position"
+            ),
+            
+            'stochastic': FilterConfig(
+                enabled=False,
+                weight=0.9,
+                params={
+                    'fast_k': 14,
+                    'slow_k': 3,
+                    'slow_d': 3,
+                    'lookback_days': 90
+                },
+                description="Stochastic oscillator - momentum and crossovers"
+            ),
+            
+            'adx': FilterConfig(
+                enabled=False,
+                weight=1.3,
+                params={
+                    'period': 14,
+                    'min_trend_strength': 25.0,
+                    'lookback_days': 90
+                },
+                description="ADX trend strength - filters for strong trends"
+            ),
+            
+            'atr': FilterConfig(
+                enabled=False,
+                weight=1.1,
+                params={
+                    'period': 14,
+                    'min_atr_percentile': 50.0,
+                    'lookback_days': 252
+                },
+                description="ATR volatility - ensures sufficient price movement"
+            ),
+            
+            'ema': FilterConfig(
+                enabled=False,
+                weight=1.0,
+                params={
+                    'fast_period': 9,
+                    'slow_period': 21,
+                    'lookback_days': 90
+                },
+                description="EMA crossover - trend following"
+            ),
+            
+            'sma': FilterConfig(
+                enabled=False,
+                weight=0.9,
+                params={
+                    'period': 50,
+                    'lookback_days': 90
+                },
+                description="SMA support/resistance - price vs moving average"
+            ),
+            
+            'obv': FilterConfig(
+                enabled=False,
+                weight=1.0,
+                params={
+                    'lookback_days': 90
+                },
+                description="On Balance Volume - volume-price relationship"
+            ),
+            
+            'cci': FilterConfig(
+                enabled=False,
+                weight=0.8,
+                params={
+                    'period': 20,
+                    'lookback_days': 90
+                },
+                description="Commodity Channel Index - cyclical trends"
+            ),
+            
+            'roc': FilterConfig(
+                enabled=False,
+                weight=0.9,
+                params={
+                    'period': 12,
+                    'lookback_days': 90
+                },
+                description="Rate of Change - momentum measurement"
+            ),
+            
+            'willr': FilterConfig(
+                enabled=False,
+                weight=0.8,
+                params={
+                    'period': 14,
+                    'lookback_days': 90
+                },
+                description="Williams %R - momentum oscillator"
+            )
+        }
+    
+    # ========================================
+    # VOLUME & MOMENTUM CONFIG
+    # ========================================
+    
+    def _init_volume_config(self):
+        """Volume and momentum filter configurations"""
+        self.volume_filters = {
+            'volume_surge': FilterConfig(
+                enabled=False,
+                weight=1.5,
+                params={
+                    'min_volume_ratio': 1.5,
+                    'avg_period': 20,
+                    'lookback_days': 90
+                },
+                description="Volume surge - detects unusual volume spikes"
+            ),
+            
+            'price_momentum': FilterConfig(
+                enabled=False,
+                weight=1.3,
+                params={
+                    'period': 10,
+                    'min_momentum_pct': 2.0,
+                    'lookback_days': 90
+                },
+                description="Price momentum - recent price movement strength"
+            ),
+            
+            'gap_size': FilterConfig(
+                enabled=False,
+                weight=1.4,
+                params={
+                    'min_gap_pct': 2.0,
+                    'max_gap_pct': 10.0
+                },
+                description="Gap size filter - optimal gap range"
+            ),
+            
+            'relative_volume': FilterConfig(
+                enabled=False,
+                weight=1.2,
+                params={
+                    'min_rvol': 2.0,
+                    'lookback_periods': 20
+                },
+                description="Relative volume - volume vs historical average"
+            ),
+            
+            'volume_price_trend': FilterConfig(
+                enabled=False,
+                weight=1.0,
+                params={
+                    'lookback_days': 30
+                },
+                description="Volume Price Trend - accumulation/distribution"
+            )
+        }
+    
+    # ========================================
+    # OPTIONS FLOW CONFIG
+    # ========================================
+    
+    def _init_options_config(self):
+        """Options flow filter configurations"""
+        self.options_filters = {
+            'options_iv_rank': FilterConfig(
+                enabled=False,
+                weight=1.2,
+                params={
+                    'min_iv_rank': 30.0,
+                    'max_iv_rank': 80.0,
+                    'lookback_days': 252
+                },
+                description="IV Rank - implied volatility percentile"
+            ),
+            
+            'put_call_ratio': FilterConfig(
+                enabled=False,
+                weight=1.1,
+                params={
+                    'min_ratio': 0.5,
+                    'max_ratio': 2.0
+                },
+                description="Put/Call ratio - options sentiment"
+            ),
+            
+            'options_volume': FilterConfig(
+                enabled=False,
+                weight=1.3,
+                params={
+                    'min_volume_ratio': 2.0
+                },
+                description="Options volume surge - unusual options activity"
+            ),
+            
+            'unusual_whales': FilterConfig(
+                enabled=False,
+                weight=1.5,
+                params={
+                    'min_premium': 50000,
+                    'lookback_hours': 24
+                },
+                description="Unusual options flow - large premium trades"
+            ),
+            
+            'iv_percentile': FilterConfig(
+                enabled=False,
+                weight=1.1,
+                params={
+                    'min_percentile': 40.0,
+                    'lookback_days': 252
+                },
+                description="IV Percentile - current IV vs historical"
+            ),
+            
+            'option_spreads': FilterConfig(
+                enabled=False,
+                weight=1.0,
+                params={
+                    'max_bid_ask_pct': 10.0
+                },
+                description="Options spreads - liquidity check"
+            )
+        }
+    
+    # ========================================
+    # FUNDAMENTAL CONFIG
+    # ========================================
+    
+    def _init_fundamental_config(self):
+        """Fundamental filter configurations"""
+        self.fundamental_filters = {
+            'market_cap': FilterConfig(
+                enabled=False,
+                weight=1.0,
+                params={
+                    'min_market_cap': 1e9,  # $1B
+                    'max_market_cap': None
+                },
+                description="Market cap filter - company size"
+            ),
+            
+            'liquidity': FilterConfig(
+                enabled=False,
+                weight=1.4,
+                params={
+                    'min_avg_dollar_volume': 10e6,  # $10M
+                    'avg_period': 20
+                },
+                description="Liquidity filter - average dollar volume"
+            ),
+            
+            'sector': FilterConfig(
+                enabled=False,
+                weight=0.8,
+                params={
+                    'allowed_sectors': [],  # Empty = all sectors
+                    'excluded_sectors': []
+                },
+                description="Sector filter - industry selection"
+            ),
+            
+            'pe_ratio': FilterConfig(
+                enabled=False,
+                weight=0.7,
+                params={
+                    'min_pe': 0,
+                    'max_pe': 50
+                },
+                description="P/E ratio - valuation filter"
+            ),
+            
+            'float_size': FilterConfig(
+                enabled=False,
+                weight=1.2,
+                params={
+                    'min_float': 10e6,  # 10M shares
+                    'max_float': 500e6  # 500M shares
+                },
+                description="Float size - shares available for trading"
+            ),
+            
+            'short_interest': FilterConfig(
+                enabled=False,
+                weight=1.1,
+                params={
+                    'min_short_pct': 10.0,
+                    'max_short_pct': 40.0
+                },
+                description="Short interest - potential squeeze candidates"
+            )
+        }
+    
+    # ========================================
+    # MARKET CONTEXT CONFIG
+    # ========================================
+    
+    def _init_market_context_config(self):
+        """Market context filter configurations"""
+        self.market_context_filters = {
+            'spy_correlation': FilterConfig(
+                enabled=False,
+                weight=1.0,
+                params={
+                    'max_correlation': 0.8,
+                    'lookback_days': 60
+                },
+                description="SPY correlation - stock-specific vs market-wide"
+            ),
+            
+            'vix_level': FilterConfig(
+                enabled=False,
+                weight=1.2,
+                params={
+                    'min_vix': 15.0,
+                    'max_vix': 30.0
+                },
+                description="VIX level - market volatility context"
+            ),
+            
+            'sector_strength': FilterConfig(
+                enabled=False,
+                weight=1.1,
+                params={
+                    'min_sector_momentum': 1.0,
+                    'lookback_days': 10
+                },
+                description="Sector strength - relative sector performance"
+            ),
+            
+            'market_breadth': FilterConfig(
+                enabled=False,
+                weight=1.0,
+                params={
+                    'min_advance_decline': 0.6
+                },
+                description="Market breadth - advance/decline ratio"
+            ),
+            
+            'premarket_volume': FilterConfig(
+                enabled=False,
+                weight=1.3,
+                params={
+                    'min_pm_volume_ratio': 0.3
+                },
+                description="Premarket volume - early interest indicator"
+            )
+        }
+    
+    # ========================================
+    # TIME-BASED CONFIG
+    # ========================================
+    
+    def _init_time_config(self):
+        """Time-based filter configurations"""
+        self.time_filters = {
+            'day_of_week': FilterConfig(
+                enabled=False,
+                weight=0.8,
+                params={
+                    'allowed_days': ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']
+                },
+                description="Day of week - trading calendar filter"
+            ),
+            
+            'time_of_day': FilterConfig(
+                enabled=False,
+                weight=1.0,
+                params={
+                    'start_time': '09:30',
+                    'end_time': '10:00'
+                },
+                description="Time of day - intraday window filter"
+            ),
+            
+            'avoid_fomc': FilterConfig(
+                enabled=False,
+                weight=1.5,
+                params={
+                    'check_calendar': True
+                },
+                description="FOMC days - avoid high-impact events"
+            ),
+            
+            'earnings_date': FilterConfig(
+                enabled=False,
+                weight=1.2,
+                params={
+                    'days_before': 0,
+                    'days_after': 1
+                },
+                description="Earnings proximity - avoid or target earnings"
+            ),
+            
+            'expiration_week': FilterConfig(
+                enabled=False,
+                weight=0.9,
+                params={
+                    'avoid_opex': True
+                },
+                description="Options expiration week - volatility consideration"
+            )
+        }
+    
+    # ========================================
+    # PRESET CONFIGURATIONS
+    # ========================================
+    
+    def load_preset(self, preset_name: str):
+        """
+        Load a preset configuration
+        
+        Available presets:
+        - baseline: No filters (V2 optimized baseline only)
+        - conservative: Strong filters, high quality setups only
+        - balanced: Moderate filtering
+        - aggressive: Light filtering, more opportunities
+        - volume_focused: Heavy emphasis on volume/liquidity
+        - technical_focused: Heavy emphasis on technical indicators
+        - options_focused: Options flow and Greeks
+        """
+        if preset_name == 'baseline':
+            self._load_baseline_preset()
+        elif preset_name == 'conservative':
+            self._load_conservative_preset()
+        elif preset_name == 'balanced':
+            self._load_balanced_preset()
+        elif preset_name == 'aggressive':
+            self._load_aggressive_preset()
+        elif preset_name == 'volume_focused':
+            self._load_volume_focused_preset()
+        elif preset_name == 'technical_focused':
+            self._load_technical_focused_preset()
+        elif preset_name == 'options_focused':
+            self._load_options_focused_preset()
+        else:
+            raise ValueError(f"Unknown preset: {preset_name}")
+    
+    def _load_baseline_preset(self):
+        """Baseline: No filters, just V2 optimized scanner"""
+        # Disable all filters
+        self._disable_all_filters()
+    
+    def _load_conservative_preset(self):
+        """Conservative: High-quality setups only"""
+        self._disable_all_filters()
+        
+        # Enable key filters with strict parameters
+        self.volume_filters['volume_surge'].enabled = True
+        self.volume_filters['volume_surge'].params['min_volume_ratio'] = 2.0
+        
+        self.fundamental_filters['liquidity'].enabled = True
+        self.fundamental_filters['liquidity'].params['min_avg_dollar_volume'] = 20e6
+        
+        self.market_context_filters['vix_level'].enabled = True
+        self.market_context_filters['vix_level'].params = {'min_vix': 16.0, 'max_vix': 28.0}
+        
+        self.technical_filters['adx'].enabled = True
+        self.technical_filters['adx'].params['min_trend_strength'] = 30.0
+    
+    def _load_balanced_preset(self):
+        """Balanced: Moderate filtering"""
+        self._disable_all_filters()
+        
+        # Enable moderate filters
+        self.volume_filters['volume_surge'].enabled = True
+        self.volume_filters['gap_size'].enabled = True
+        
+        self.fundamental_filters['liquidity'].enabled = True
+        
+        self.technical_filters['rsi'].enabled = True
+        self.technical_filters['macd'].enabled = True
+        
+        self.market_context_filters['vix_level'].enabled = True
+    
+    def _load_aggressive_preset(self):
+        """Aggressive: Light filtering, more opportunities"""
+        self._disable_all_filters()
+        
+        # Enable only basic filters
+        self.volume_filters['volume_surge'].enabled = True
+        self.volume_filters['volume_surge'].params['min_volume_ratio'] = 1.3
+        
+        self.fundamental_filters['liquidity'].enabled = True
+        self.fundamental_filters['liquidity'].params['min_avg_dollar_volume'] = 5e6
+    
+    def _load_volume_focused_preset(self):
+        """Volume-focused: Emphasis on volume and liquidity"""
+        self._disable_all_filters()
+        
+        # Enable all volume filters
+        self.volume_filters['volume_surge'].enabled = True
+        self.volume_filters['volume_surge'].weight = 2.0
+        
+        self.volume_filters['price_momentum'].enabled = True
+        self.volume_filters['price_momentum'].weight = 1.5
+        
+        self.volume_filters['relative_volume'].enabled = True
+        
+        self.fundamental_filters['liquidity'].enabled = True
+        self.fundamental_filters['liquidity'].weight = 1.8
+        
+        self.market_context_filters['premarket_volume'].enabled = True
+    
+    def _load_technical_focused_preset(self):
+        """Technical-focused: Multiple technical indicators"""
+        self._disable_all_filters()
+        
+        # Enable technical indicators
+        self.technical_filters['rsi'].enabled = True
+        self.technical_filters['macd'].enabled = True
+        self.technical_filters['bollinger_bands'].enabled = True
+        self.technical_filters['adx'].enabled = True
+        self.technical_filters['atr'].enabled = True
+        
+        # Basic liquidity filter
+        self.fundamental_filters['liquidity'].enabled = True
+    
+    def _load_options_focused_preset(self):
+        """Options-focused: Options flow and Greeks"""
+        self._disable_all_filters()
+        
+        # Enable options filters
+        self.options_filters['options_iv_rank'].enabled = True
+        self.options_filters['put_call_ratio'].enabled = True
+        self.options_filters['options_volume'].enabled = True
+        self.options_filters['unusual_whales'].enabled = True
+        
+        # Supporting filters
+        self.volume_filters['volume_surge'].enabled = True
+        self.fundamental_filters['liquidity'].enabled = True
+        self.market_context_filters['vix_level'].enabled = True
+    
+    def _disable_all_filters(self):
+        """Disable all filters"""
+        for filter_dict in [
+            self.technical_filters,
+            self.volume_filters,
+            self.options_filters,
+            self.fundamental_filters,
+            self.market_context_filters,
+            self.time_filters
+        ]:
+            for filter_config in filter_dict.values():
+                filter_config.enabled = False
+    
+    # ========================================
+    # UTILITY METHODS
+    # ========================================
+    
+    def get_enabled_filters(self) -> Dict[str, FilterConfig]:
+        """Get all enabled filters with their configurations"""
+        enabled = {}
+        
+        for category in [
+            self.technical_filters,
+            self.volume_filters,
+            self.options_filters,
+            self.fundamental_filters,
+            self.market_context_filters,
+            self.time_filters
+        ]:
+            for name, config in category.items():
+                if config.enabled:
+                    enabled[name] = config
+        
+        return enabled
+    
+    def get_filter_names(self) -> List[str]:
+        """Get list of enabled filter names"""
+        return list(self.get_enabled_filters().keys())
+    
+    def get_filter_params(self) -> Dict[str, Dict]:
+        """Get parameters for all enabled filters"""
+        enabled = self.get_enabled_filters()
+        return {name: config.params for name, config in enabled.items()}
+    
+    def get_filter_weights(self) -> Dict[str, float]:
+        """Get weights for all enabled filters"""
+        enabled = self.get_enabled_filters()
+        return {name: config.weight for name, config in enabled.items()}
+    
+    def enable_filter(self, filter_name: str):
+        """Enable a specific filter"""
+        filter_config = self._find_filter(filter_name)
+        if filter_config:
+            filter_config.enabled = True
+        else:
+            raise ValueError(f"Filter not found: {filter_name}")
+    
+    def disable_filter(self, filter_name: str):
+        """Disable a specific filter"""
+        filter_config = self._find_filter(filter_name)
+        if filter_config:
+            filter_config.enabled = False
+        else:
+            raise ValueError(f"Filter not found: {filter_name}")
+    
+    def update_filter_params(self, filter_name: str, params: Dict):
+        """Update parameters for a specific filter"""
+        filter_config = self._find_filter(filter_name)
+        if filter_config:
+            filter_config.params.update(params)
+        else:
+            raise ValueError(f"Filter not found: {filter_name}")
+    
+    def _find_filter(self, filter_name: str) -> Optional[FilterConfig]:
+        """Find a filter by name across all categories"""
+        for category in [
+            self.technical_filters,
+            self.volume_filters,
+            self.options_filters,
+            self.fundamental_filters,
+            self.market_context_filters,
+            self.time_filters
+        ]:
+            if filter_name in category:
+                return category[filter_name]
+        return None
+    
+    def get_all_filters(self) -> Dict[str, FilterConfig]:
+        """Get all filters (enabled and disabled)"""
+        all_filters = {}
+        
+        for category in [
+            self.technical_filters,
+            self.volume_filters,
+            self.options_filters,
+            self.fundamental_filters,
+            self.market_context_filters,
+            self.time_filters
+        ]:
+            all_filters.update(category)
+        
+        return all_filters
+    
+    def print_config_summary(self):
+        """Print configuration summary"""
+        print("="*70)
+        print("WAR MACHINE FILTER CONFIGURATION")
+        print("="*70)
+        
+        print("\nBASELINE SCANNER:")
+        for key, value in self.baseline.items():
+            print(f"  {key}: {value}")
+        
+        enabled = self.get_enabled_filters()
+        print(f"\nENABLED FILTERS: {len(enabled)}")
+        
+        if enabled:
+            for name, config in enabled.items():
+                print(f"\n  {name.upper()}")
+                print(f"    Weight: {config.weight}")
+                print(f"    Description: {config.description}")
+                print(f"    Params: {config.params}")
+        else:
+            print("  None (Baseline mode)")
+        
+        print("\n" + "="*70)
+    
+    # ========================================
+    # SAVE/LOAD CONFIGURATION
+    # ========================================
+    
+    def save_to_file(self, filename: str):
+        """Save configuration to JSON file"""
+        config_data = {
+            'baseline': self.baseline,
+            'technical_filters': self._serialize_filters(self.technical_filters),
+            'volume_filters': self._serialize_filters(self.volume_filters),
+            'options_filters': self._serialize_filters(self.options_filters),
+            'fundamental_filters': self._serialize_filters(self.fundamental_filters),
+            'market_context_filters': self._serialize_filters(self.market_context_filters),
+            'time_filters': self._serialize_filters(self.time_filters)
+        }
+        
+        with open(filename, 'w') as f:
+            json.dump(config_data, f, indent=2)
+        
+        print(f"Configuration saved to {filename}")
+    
+    def load_from_file(self, filename: str):
+        """Load configuration from JSON file"""
+        with open(filename, 'r') as f:
+            config_data = json.load(f)
+        
+        self.baseline = config_data.get('baseline', self.baseline)
+        
+        # Load filters
+        self._deserialize_filters(config_data.get('technical_filters', {}), self.technical_filters)
+        self._deserialize_filters(config_data.get('volume_filters', {}), self.volume_filters)
+        self._deserialize_filters(config_data.get('options_filters', {}), self.options_filters)
+        self._deserialize_filters(config_data.get('fundamental_filters', {}), self.fundamental_filters)
+        self._deserialize_filters(config_data.get('market_context_filters', {}), self.market_context_filters)
+        self._deserialize_filters(config_data.get('time_filters', {}), self.time_filters)
+        
+        print(f"Configuration loaded from {filename}")
+    
+    def _serialize_filters(self, filters: Dict[str, FilterConfig]) -> Dict:
+        """Convert FilterConfig objects to dict for JSON serialization"""
+        return {
+            name: {
+                'enabled': config.enabled,
+                'weight': config.weight,
+                'params': config.params,
+                'description': config.description
+            }
+            for name, config in filters.items()
+        }
+    
+    def _deserialize_filters(self, data: Dict, target: Dict[str, FilterConfig]):
+        """Load FilterConfig objects from dict"""
+        for name, config_dict in data.items():
+            if name in target:
+                target[name].enabled = config_dict.get('enabled', False)
+                target[name].weight = config_dict.get('weight', 1.0)
+                target[name].params = config_dict.get('params', {})
+                target[name].description = config_dict.get('description', '')
+
+
+# ========================================
+# EXAMPLE USAGE
+# ========================================
+
+if __name__ == "__main__":
+    # Create default config
+    config = WarMachineConfig()
+    
+    # Test baseline (no filters)
+    print("\n" + "="*70)
+    print("BASELINE CONFIGURATION")
+    print("="*70)
+    config.load_preset('baseline')
+    config.print_config_summary()
+    
+    # Test balanced preset
+    print("\n" + "="*70)
+    print("BALANCED CONFIGURATION")
+    print("="*70)
+    config.load_preset('balanced')
+    config.print_config_summary()
+    
+    # Test conservative preset
+    print("\n" + "="*70)
+    print("CONSERVATIVE CONFIGURATION")
+    print("="*70)
+    config.load_preset('conservative')
+    config.print_config_summary()
+    
+    # Custom configuration
+    print("\n" + "="*70)
+    print("CUSTOM CONFIGURATION")
+    print("="*70)
+    config.load_preset('baseline')
+    config.enable_filter('rsi')
+    config.enable_filter('volume_surge')
+    config.update_filter_params('rsi', {'period': 10})
+    config.print_config_summary()
+    
+    # Save configuration
+    config.save_to_file('war_machine_config.json')
+    
+    # Show usage for scanner integration
+    print("\n" + "="*70)
+    print("USAGE IN SCANNER")
+    print("="*70)
+    print("enabled_filters = config.get_filter_names()")
+    print("filter_params = config.get_filter_params()")
+    print("filter_weights = config.get_filter_weights()")
+    print("\nEnabled filters:", config.get_filter_names())
