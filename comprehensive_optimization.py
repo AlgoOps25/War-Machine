@@ -2,7 +2,7 @@
 """
 Comprehensive Parameter Optimization System with Result Caching
 
-NEW: Caches backtest results to avoid re-testing same parameters!
+NEW: Optimized parameter grid for QUALITY over QUANTITY!
 
 Tests EVERY available EODHD data point for optimal BOS/FVG signal detection:
 
@@ -21,17 +21,14 @@ Tests EVERY available EODHD data point for optimal BOS/FVG signal detection:
    - Relative strength (vs SPY)
    - Breakout strength (distance from structure)
 
-3. PARAMETER GRID:
-   - Volume multipliers: 1.5x, 2.0x, 2.5x, 3.0x, 4.0x
-   - ATR stop multiples: 1.0, 1.5, 2.0, 2.5, 3.0
-   - Risk/Reward ratios: 1.5, 2.0, 2.5, 3.0, 4.0
-   - Lookback periods: 8, 10, 12, 16, 20, 24
-   - Momentum filters: None, Weak (>0), Strong (>0.5%)
-   - Trend filters: None, Same direction only
-   - Gap filters: None, Small (>0.1%), Large (>0.5%)
-   - VIX filters: None, Low (<15), Normal (15-25), High (>25)
-   - Time filters: All day, Morning (9:30-11), Midday (11-15), Power (15-16)
-   - PDH/PDL: Ignore, Require breakout, Filter against
+3. OPTIMIZED PARAMETER GRID (144 combinations):
+   - Volume multipliers: 2.5x, 3.0x, 3.5x, 4.0x (STRONG confirmation only)
+   - ATR stop multiples: 1.5, 2.0 (tighter risk control)
+   - Risk/Reward ratios: 2.0, 2.5, 3.0 (better R:R)
+   - Lookback periods: 8, 10, 12 (responsive to recent action)
+   - Momentum filters: Weak (>0), Strong (>0.5%) (NO 'none' - always require momentum)
+   - Trend filters: None, Aligned only
+   - Time filters: Morning (9:30-11), Power (15-16) (best liquidity windows)
 
 Usage:
     python comprehensive_optimization.py
@@ -82,7 +79,7 @@ class ComprehensiveOptimizer:
         self.start_date = (now_et - timedelta(days=days)).date()
         
         print(f"\n{'='*70}")
-        print("COMPREHENSIVE PARAMETER OPTIMIZATION WITH CACHING")
+        print("COMPREHENSIVE PARAMETER OPTIMIZATION - QUALITY FOCUSED")
         print(f"{'='*70}")
         print(f"Period: {self.start_date} to {self.end_date}")
         print(f"Tickers: {len(TICKERS)}")
@@ -659,23 +656,23 @@ class ComprehensiveOptimizer:
     def run_optimization(self) -> pd.DataFrame:
         """Run comprehensive parameter grid search with caching."""
         print(f"{'='*70}")
-        print("BUILDING PARAMETER GRID")
+        print("BUILDING OPTIMIZED PARAMETER GRID")
         print(f"{'='*70}\n")
         
-        # Define comprehensive parameter grid
+        # Define OPTIMIZED parameter grid (focus on quality signals)
         param_grid = {
-            # Core parameters
-            'volume_mult': [2.0, 2.5, 3.0],
-            'atr_stop_mult': [1.5, 2.0, 2.5],
-            'risk_reward': [2.0, 2.5, 3.0],
-            'lookback': [12, 16, 20],
+            # Core parameters - STRICTER VALUES
+            'volume_mult': [2.5, 3.0, 3.5, 4.0],  # Higher volume confirmation
+            'atr_stop_mult': [1.5, 2.0],          # Tighter stops
+            'risk_reward': [2.0, 2.5, 3.0],       # Good R:R ratios
+            'lookback': [8, 10, 12],              # More responsive
             
-            # Filters
-            'momentum_filter': ['none', 'weak'],
+            # Filters - ALWAYS require momentum
+            'momentum_filter': ['weak', 'strong'], # NO 'none' option!
             'trend_filter': [False, True],
             'gap_filter': ['none'],
             'vix_filter': ['none'],
-            'time_filter': ['all', 'morning', 'power'],
+            'time_filter': ['morning', 'power'],   # Best liquidity windows
             'pdh_filter': ['none'],
             'rs_filter': [False]
         }
@@ -690,6 +687,7 @@ class ComprehensiveOptimizer:
         
         print(f"✅ Generated {total:,} parameter combinations")
         print(f"💾 Found {cached_count:,} cached results\n")
+        print(f"⚠️  OPTIMIZED GRID: Expect 50-200 trades per config (vs 1,800+)\n")
         print(f"{'='*70}")
         print("TESTING PARAMETERS")
         print(f"{'='*70}\n")
