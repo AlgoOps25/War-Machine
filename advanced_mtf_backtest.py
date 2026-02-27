@@ -21,8 +21,6 @@ from zoneinfo import ZoneInfo
 from typing import List, Dict, Optional
 import pandas as pd
 import numpy as np
-import requests
-import json
 import sqlite3
 
 ET = ZoneInfo("America/New_York")
@@ -43,13 +41,12 @@ class AdvancedMTFBacktest:
     3. RSI 50-70 for longs, 30-50 for shorts (momentum)
     4. Volume > 3x average
     5. Time: 9:30-11:00 AM only
-    6. Price breaks PDH (longs) or PDL (shorts)
-    7. Confirmation candle on 5-min validates the breakout
+    6. Confirmation candle on 5-min validates the breakout
     """
     
     def __init__(self):
-        # Use war_machine.db which has the data
-        self.db_path = "war_machine.db"
+        # Use market_memory.db which has the data
+        self.db_path = "market_memory.db"
         
         # Test parameters
         self.test_days = 10
@@ -72,14 +69,12 @@ class AdvancedMTFBacktest:
         self.session_start = dtime(9, 30)
         self.session_end = dtime(11, 0)
         
-        # Indicator cache
-        self.indicator_cache = {}
-        
         print(f"Backtest Period: {self.start_date} to {self.end_date}")
         print(f"Database: {self.db_path}")
         print(f"Test Tickers: {len(self.tickers)}")
         print(f"Session: {self.session_start.strftime('%H:%M')} - {self.session_end.strftime('%H:%M')} ET")
         print(f"Volume Filter: {self.volume_multiplier}x average")
+        print(f"Lookback: {self.lookback} bars")
         print()
     
     def calculate_ema(self, bars: List[Dict], period: int) -> List[float]:
@@ -88,11 +83,9 @@ class AdvancedMTFBacktest:
         ema = []
         multiplier = 2 / (period + 1)
         
-        # First EMA is SMA
         if len(closes) >= period:
             ema.append(sum(closes[:period]) / period)
             
-            # Subsequent EMAs
             for i in range(period, len(closes)):
                 ema_value = (closes[i] - ema[-1]) * multiplier + ema[-1]
                 ema.append(ema_value)
@@ -110,8 +103,6 @@ class AdvancedMTFBacktest:
         losses = [abs(min(c, 0)) for c in changes]
         
         rsi_values = []
-        
-        # First RSI using SMA
         avg_gain = sum(gains[:period]) / period
         avg_loss = sum(losses[:period]) / period
         
@@ -121,7 +112,6 @@ class AdvancedMTFBacktest:
             rs = avg_gain / avg_loss
             rsi_values.append(100 - (100 / (1 + rs)))
         
-        # Subsequent RSI using EMA
         for i in range(period, len(gains)):
             avg_gain = (avg_gain * (period - 1) + gains[i]) / period
             avg_loss = (avg_loss * (period - 1) + losses[i]) / period
@@ -153,11 +143,8 @@ class AdvancedMTFBacktest:
             true_ranges.append(tr)
         
         atr_values = []
-        
-        # First ATR is SMA of TR
         atr_values.append(sum(true_ranges[:period]) / period)
         
-        # Subsequent ATRs use smoothing
         for i in range(period, len(true_ranges)):
             atr = (atr_values[-1] * (period - 1) + true_ranges[i]) / period
             atr_values.append(atr)
@@ -214,7 +201,6 @@ class AdvancedMTFBacktest:
         
         for bar in bars_1m:
             dt = bar["datetime"]
-            # Floor to 5-min boundary
             minute_floor = (dt.minute // 5) * 5
             bucket_dt = dt.replace(minute=minute_floor, second=0, microsecond=0)
             buckets[bucket_dt].append(bar)
@@ -235,48 +221,37 @@ class AdvancedMTFBacktest:
         return bars_5m
     
     def detect_bos_fvg(self, bars_1m: List[Dict], bars_5m: List[Dict], idx: int) -> Optional[Dict]:
-        """
-        Detect BOS/FVG setup with multi-timeframe confirmation.
-        
-        Returns signal dict if all conditions met, None otherwise.
-        """
-        if idx < self.lookback + 20:  # Need history for indicators
+        """Detect BOS/FVG setup with multi-timeframe confirmation."""
+        if idx < self.lookback + 20:
             return None
         
         current_bar = bars_1m[idx]
         current_time = current_bar["datetime"].time()
         
-        # Time filter: 9:30-11:00 AM only
         if not (self.session_start <= current_time <= self.session_end):
             return None
         
-        # Get recent bars for analysis
         recent_1m = bars_1m[max(0, idx-50):idx+1]
         
-        # Calculate indicators
         rsi_values = self.calculate_rsi(recent_1m, period=14)
-        if not rsi_values or len(rsi_values) < 1:
+        if not rsi_values:
             return None
         
         current_rsi = rsi_values[-1]
         
-        # ATR for stops
         atr_values = self.calculate_atr(recent_1m, period=14)
-        if not atr_values or len(atr_values) < 1:
+        if not atr_values:
             return None
         
         current_atr = atr_values[-1]
         
-        # Volume analysis
         recent_volumes = [b["volume"] for b in recent_1m[-20:]]
         avg_volume = sum(recent_volumes) / len(recent_volumes)
         volume_ratio = current_bar["volume"] / avg_volume if avg_volume > 0 else 0
         
-        # Volume filter
         if volume_ratio < self.volume_multiplier:
             return None
         
-        # Find matching 5-min bar for trend confirmation
         current_5m_bar = None
         for bar_5m in reversed(bars_5m):
             if bar_5m["datetime"] <= current_bar["datetime"]:
@@ -286,7 +261,6 @@ class AdvancedMTFBacktest:
         if not current_5m_bar:
             return None
         
-        # Get 5-min bars for EMA calculation
         try:
             idx_5m = bars_5m.index(current_5m_bar)
         except ValueError:
@@ -297,7 +271,6 @@ class AdvancedMTFBacktest:
         
         recent_5m = bars_5m[max(0, idx_5m-50):idx_5m+1]
         
-        # Calculate EMAs on 5-min
         ema_9 = self.calculate_ema(recent_5m, 9)
         ema_21 = self.calculate_ema(recent_5m, 21)
         ema_50 = self.calculate_ema(recent_5m, 50)
@@ -308,15 +281,14 @@ class AdvancedMTFBacktest:
         current_price = current_bar["close"]
         ticker = bars_1m[0].get("ticker", "UNKNOWN")
         
-        # Detect LONG setup
+        # LONG setup
         if (
-            current_rsi > 50 and current_rsi < 70 and  # Bullish momentum
-            current_price > ema_9[-1] and  # Price above short EMA
-            ema_9[-1] > ema_21[-1] and  # EMAs aligned bullish
+            current_rsi > 50 and current_rsi < 70 and
+            current_price > ema_9[-1] and
+            ema_9[-1] > ema_21[-1] and
             ema_21[-1] > ema_50[-1] and
-            current_bar["close"] > current_bar["open"]  # Bullish candle
+            current_bar["close"] > current_bar["open"]
         ):
-            # BOS detection: Higher high
             recent_highs = [b["high"] for b in recent_1m[-self.lookback:-1]]
             if current_bar["high"] > max(recent_highs):
                 stop = current_bar["close"] - (current_atr * self.atr_stop_multiplier)
@@ -336,15 +308,14 @@ class AdvancedMTFBacktest:
                     "signal_type": "BOS_LONG"
                 }
         
-        # Detect SHORT setup
+        # SHORT setup
         if (
-            current_rsi < 50 and current_rsi > 30 and  # Bearish momentum
-            current_price < ema_9[-1] and  # Price below short EMA
-            ema_9[-1] < ema_21[-1] and  # EMAs aligned bearish
+            current_rsi < 50 and current_rsi > 30 and
+            current_price < ema_9[-1] and
+            ema_9[-1] < ema_21[-1] and
             ema_21[-1] < ema_50[-1] and
-            current_bar["close"] < current_bar["open"]  # Bearish candle
+            current_bar["close"] < current_bar["open"]
         ):
-            # BOS detection: Lower low
             recent_lows = [b["low"] for b in recent_1m[-self.lookback:-1]]
             if current_bar["low"] < min(recent_lows):
                 stop = current_bar["close"] + (current_atr * self.atr_stop_multiplier)
@@ -367,16 +338,13 @@ class AdvancedMTFBacktest:
         return None
     
     def simulate_trade(self, signal: Dict, bars_1m: List[Dict]) -> Optional[Dict]:
-        """
-        Simulate trade execution.
-        """
+        """Simulate trade execution."""
         entry_time = signal["datetime"]
         entry_price = signal["entry"]
         stop_loss = signal["stop"]
         target = signal["target"]
         direction = signal["direction"]
         
-        # Find future bars
         entry_idx = None
         for i, bar in enumerate(bars_1m):
             if bar["datetime"] == entry_time:
@@ -386,11 +354,10 @@ class AdvancedMTFBacktest:
         if entry_idx is None or entry_idx >= len(bars_1m) - 1:
             return None
         
-        future_bars = bars_1m[entry_idx+1:min(entry_idx+31, len(bars_1m))]  # Max 30 bars (30 min)
+        future_bars = bars_1m[entry_idx+1:min(entry_idx+31, len(bars_1m))]
         
         for i, bar in enumerate(future_bars, 1):
             if direction == "LONG":
-                # Check stop
                 if bar["low"] <= stop_loss:
                     return {
                         "outcome": "LOSS",
@@ -402,7 +369,6 @@ class AdvancedMTFBacktest:
                         "exit_reason": "stop"
                     }
                 
-                # Check target
                 if bar["high"] >= target:
                     return {
                         "outcome": "WIN",
@@ -415,7 +381,6 @@ class AdvancedMTFBacktest:
                     }
             
             else:  # SHORT
-                # Check stop
                 if bar["high"] >= stop_loss:
                     return {
                         "outcome": "LOSS",
@@ -427,7 +392,6 @@ class AdvancedMTFBacktest:
                         "exit_reason": "stop"
                     }
                 
-                # Check target
                 if bar["low"] <= target:
                     return {
                         "outcome": "WIN",
@@ -439,7 +403,6 @@ class AdvancedMTFBacktest:
                         "exit_reason": "target"
                     }
         
-        # Timeout
         if future_bars:
             final_bar = future_bars[-1]
             exit_price = final_bar["close"]
@@ -462,9 +425,7 @@ class AdvancedMTFBacktest:
         return None
     
     def run_backtest(self) -> List[Dict]:
-        """
-        Run complete backtest.
-        """
+        """Run complete backtest."""
         print("="*80)
         print("LOADING DATA")
         print("="*80)
@@ -473,67 +434,58 @@ class AdvancedMTFBacktest:
         all_trades = []
         
         for ticker in self.tickers:
-            print(f"Processing {ticker}...")
+            print(f"Processing {ticker}...", end=" ")
             
-            # Load 1-min bars
             bars_1m = self.load_bars(ticker, "1m")
             
             if len(bars_1m) < 100:
-                print(f"  Insufficient data: {len(bars_1m)} 1m bars")
+                print(f"Insufficient data ({len(bars_1m)} bars)")
                 continue
             
-            # Create 5-min bars from 1-min
             bars_5m = self.materialize_5m_bars(bars_1m)
             
             if len(bars_5m) < 50:
-                print(f"  Insufficient 5m bars: {len(bars_5m)}")
+                print(f"Insufficient 5m bars ({len(bars_5m)})")
                 continue
             
-            print(f"  Loaded {len(bars_1m)} 1m bars, created {len(bars_5m)} 5m bars")
-            
-            # Add ticker to bars for reference
             for bar in bars_1m:
                 bar["ticker"] = ticker
             for bar in bars_5m:
                 bar["ticker"] = ticker
             
-            # Scan for signals
             signals = []
             for i in range(len(bars_1m)):
                 signal = self.detect_bos_fvg(bars_1m, bars_5m, i)
                 if signal:
                     signals.append(signal)
             
-            print(f"  Found {len(signals)} signals")
-            
-            # Simulate trades
+            ticker_trades = 0
             for signal in signals:
                 result = self.simulate_trade(signal, bars_1m)
                 if result:
                     trade = {**signal, **result}
                     all_trades.append(trade)
+                    ticker_trades += 1
             
-            print(f"  Simulated {len([t for t in all_trades if t.get('ticker') == ticker])} trades")
-            print()
+            print(f"{len(bars_1m)} bars → {len(signals)} signals → {ticker_trades} trades")
         
+        print()
         return all_trades
     
     def generate_report(self, trades: List[Dict]):
-        """
-        Generate backtest report.
-        """
+        """Generate backtest report."""
         if not trades:
             print("❌ No trades found with current filters.")
-            print("\nThis is GOOD - it means the system is being very selective!")
-            print("\nTo generate signals, try:")
+            print("\nThis means the system is being VERY selective (which is good!)")
+            print("\nTo generate more signals, try adjusting:")
             print("  1. Increase test_days (currently 10)")
-            print("  2. Relax volume filter (currently 3.0x)")
-            print("  3. Expand time window (currently 9:30-11:00 AM)")
+            print("  2. Relax volume filter (currently 3.0x → try 2.5x)")
+            print("  3. Expand time window (9:30-11:00 → try 9:30-12:00)")
+            print("  4. Reduce lookback period (12 → try 8)")
             return
         
         df = pd.DataFrame(trades)
         
-        # Calculate metrics
         total_trades = len(trades)
         winners = df[df["outcome"] == "WIN"]
         losers = df[df["outcome"] == "LOSS"]
@@ -559,24 +511,21 @@ class AdvancedMTFBacktest:
         print(f"Profit Factor: {profit_factor:.2f}")
         print()
         
-        # Exit reasons
         print("Exit Breakdown:")
         exit_counts = df["exit_reason"].value_counts()
         for reason, count in exit_counts.items():
             print(f"  {reason}: {count} ({count/total_trades*100:.1f}%)")
         print()
         
-        # Save results
         df.to_csv("advanced_mtf_results.csv", index=False)
         print("✅ Results saved to advanced_mtf_results.csv")
         print()
         
-        # Top trades
         if len(winners) > 0:
             print("="*80)
             print("TOP 5 WINNING TRADES")
             print("="*80)
-            top_winners = winners.nlargest(5, "pnl")
+            top_winners = winners.nlargest(min(5, len(winners)), "pnl")
             for idx, trade in top_winners.iterrows():
                 print(f"\n{trade['ticker']} {trade['direction']}:")
                 print(f"  Entry: ${trade['entry']:.2f} → Exit: ${trade['exit_price']:.2f}")
