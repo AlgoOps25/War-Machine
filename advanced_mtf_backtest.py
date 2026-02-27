@@ -23,10 +23,7 @@ import pandas as pd
 import numpy as np
 import requests
 import json
-
-from db_connection import get_conn, ph, dict_cursor
-from data_manager import DataManager
-import config
+import sqlite3
 
 ET = ZoneInfo("America/New_York")
 
@@ -51,8 +48,8 @@ class AdvancedMTFBacktest:
     """
     
     def __init__(self):
-        self.data_manager = DataManager()
-        self.api_key = config.EODHD_API_KEY
+        # Use war_machine.db which has the data
+        self.db_path = "war_machine.db"
         
         # Test parameters
         self.test_days = 10
@@ -79,70 +76,14 @@ class AdvancedMTFBacktest:
         self.indicator_cache = {}
         
         print(f"Backtest Period: {self.start_date} to {self.end_date}")
+        print(f"Database: {self.db_path}")
         print(f"Test Tickers: {len(self.tickers)}")
         print(f"Session: {self.session_start.strftime('%H:%M')} - {self.session_end.strftime('%H:%M')} ET")
         print(f"Volume Filter: {self.volume_multiplier}x average")
         print()
     
-    def fetch_eodhd_indicator(self, ticker: str, function: str, period: int = 14) -> List[Dict]:
-        """
-        Fetch technical indicators from EODHD API.
-        
-        Available functions:
-        - RSI: Relative Strength Index
-        - EMA: Exponential Moving Average
-        - SMA: Simple Moving Average
-        - MACD: Moving Average Convergence Divergence
-        - ATR: Average True Range
-        - BBANDS: Bollinger Bands
-        - STOCH: Stochastic Oscillator
-        - ADX: Average Directional Index
-        """
-        cache_key = f"{ticker}_{function}_{period}"
-        if cache_key in self.indicator_cache:
-            return self.indicator_cache[cache_key]
-        
-        # EODHD technical indicators endpoint
-        url = f"https://eodhd.com/api/technical/{ticker}.US"
-        
-        params = {
-            "api_token": self.api_key,
-            "function": function,
-            "period": period,
-            "from": int((datetime.combine(self.start_date, dtime(0, 0)).replace(tzinfo=ET)).timestamp()),
-            "to": int((datetime.combine(self.end_date, dtime(23, 59)).replace(tzinfo=ET)).timestamp()),
-            "fmt": "json"
-        }
-        
-        try:
-            response = requests.get(url, params=params, timeout=30)
-            response.raise_for_status()
-            data = response.json()
-            
-            if not data:
-                return []
-            
-            # Parse response
-            indicators = []
-            for item in data:
-                try:
-                    dt = datetime.fromtimestamp(item["timestamp"], tz=ET).replace(tzinfo=None)
-                    indicators.append({
-                        "datetime": dt,
-                        "value": float(item.get(function.lower(), item.get("value", 0)))
-                    })
-                except (KeyError, ValueError, TypeError) as e:
-                    continue
-            
-            self.indicator_cache[cache_key] = indicators
-            return indicators
-        
-        except Exception as e:
-            print(f"[INDICATOR] Error fetching {function} for {ticker}: {e}")
-            return []
-    
     def calculate_ema(self, bars: List[Dict], period: int) -> List[float]:
-        """Calculate EMA from bars (fallback if EODHD doesn't have it)."""
+        """Calculate EMA from bars."""
         closes = [b["close"] for b in bars]
         ema = []
         multiplier = 2 / (period + 1)
@@ -159,7 +100,7 @@ class AdvancedMTFBacktest:
         return ema
     
     def calculate_rsi(self, bars: List[Dict], period: int = 14) -> List[float]:
-        """Calculate RSI from bars (fallback if EODHD doesn't have it)."""
+        """Calculate RSI from bars."""
         closes = [b["close"] for b in bars]
         if len(closes) < period + 1:
             return []
@@ -227,7 +168,8 @@ class AdvancedMTFBacktest:
         """Load bars from database."""
         table = "intraday_bars" if timeframe == "1m" else "intraday_bars_5m"
         
-        conn = get_conn()
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
         cur = conn.cursor()
         
         query = f"""
@@ -239,23 +181,58 @@ class AdvancedMTFBacktest:
             ORDER BY datetime ASC
         """
         
-        cur.execute(query, (ticker, self.start_date, self.end_date))
-        rows = cur.fetchall()
+        try:
+            cur.execute(query, (ticker, self.start_date, self.end_date))
+            rows = cur.fetchall()
+        except sqlite3.OperationalError as e:
+            print(f"  [ERROR] Table {table} not found: {e}")
+            conn.close()
+            return []
         
         bars = []
         for row in rows:
             bars.append({
-                "datetime": row[0] if isinstance(row[0], datetime) else datetime.fromisoformat(str(row[0])),
-                "open": float(row[1]),
-                "high": float(row[2]),
-                "low": float(row[3]),
-                "close": float(row[4]),
-                "volume": int(row[5]) if row[5] else 0
+                "datetime": row["datetime"] if isinstance(row["datetime"], datetime) else datetime.fromisoformat(str(row["datetime"])),
+                "open": float(row["open"]),
+                "high": float(row["high"]),
+                "low": float(row["low"]),
+                "close": float(row["close"]),
+                "volume": int(row["volume"]) if row["volume"] else 0
             })
         
         cur.close()
         conn.close()
         return bars
+    
+    def materialize_5m_bars(self, bars_1m: List[Dict]) -> List[Dict]:
+        """Create 5-min bars from 1-min bars (in-memory)."""
+        if not bars_1m:
+            return []
+        
+        from collections import defaultdict
+        buckets = defaultdict(list)
+        
+        for bar in bars_1m:
+            dt = bar["datetime"]
+            # Floor to 5-min boundary
+            minute_floor = (dt.minute // 5) * 5
+            bucket_dt = dt.replace(minute=minute_floor, second=0, microsecond=0)
+            buckets[bucket_dt].append(bar)
+        
+        bars_5m = []
+        for bucket_dt in sorted(buckets):
+            bucket = buckets[bucket_dt]
+            bars_5m.append({
+                "datetime": bucket_dt,
+                "open": bucket[0]["open"],
+                "high": max(b["high"] for b in bucket),
+                "low": min(b["low"] for b in bucket),
+                "close": bucket[-1]["close"],
+                "volume": sum(b["volume"] for b in bucket),
+                "ticker": bucket[0].get("ticker")
+            })
+        
+        return bars_5m
     
     def detect_bos_fvg(self, bars_1m: List[Dict], bars_5m: List[Dict], idx: int) -> Optional[Dict]:
         """
@@ -310,7 +287,11 @@ class AdvancedMTFBacktest:
             return None
         
         # Get 5-min bars for EMA calculation
-        idx_5m = bars_5m.index(current_5m_bar)
+        try:
+            idx_5m = bars_5m.index(current_5m_bar)
+        except ValueError:
+            return None
+        
         if idx_5m < 50:
             return None
         
@@ -325,6 +306,7 @@ class AdvancedMTFBacktest:
             return None
         
         current_price = current_bar["close"]
+        ticker = bars_1m[0].get("ticker", "UNKNOWN")
         
         # Detect LONG setup
         if (
@@ -341,7 +323,7 @@ class AdvancedMTFBacktest:
                 target = current_bar["close"] + (current_atr * self.atr_stop_multiplier * self.target_rr)
                 
                 return {
-                    "ticker": bars_1m[0].get("ticker", "UNKNOWN"),
+                    "ticker": ticker,
                     "datetime": current_bar["datetime"],
                     "direction": "LONG",
                     "entry": current_bar["close"],
@@ -369,7 +351,7 @@ class AdvancedMTFBacktest:
                 target = current_bar["close"] - (current_atr * self.atr_stop_multiplier * self.target_rr)
                 
                 return {
-                    "ticker": bars_1m[0].get("ticker", "UNKNOWN"),
+                    "ticker": ticker,
                     "datetime": current_bar["datetime"],
                     "direction": "SHORT",
                     "entry": current_bar["close"],
@@ -493,15 +475,21 @@ class AdvancedMTFBacktest:
         for ticker in self.tickers:
             print(f"Processing {ticker}...")
             
-            # Load 1-min and 5-min bars
+            # Load 1-min bars
             bars_1m = self.load_bars(ticker, "1m")
-            bars_5m = self.load_bars(ticker, "5m")
             
-            if len(bars_1m) < 100 or len(bars_5m) < 50:
-                print(f"  Insufficient data: {len(bars_1m)} 1m bars, {len(bars_5m)} 5m bars")
+            if len(bars_1m) < 100:
+                print(f"  Insufficient data: {len(bars_1m)} 1m bars")
                 continue
             
-            print(f"  Loaded {len(bars_1m)} 1m bars, {len(bars_5m)} 5m bars")
+            # Create 5-min bars from 1-min
+            bars_5m = self.materialize_5m_bars(bars_1m)
+            
+            if len(bars_5m) < 50:
+                print(f"  Insufficient 5m bars: {len(bars_5m)}")
+                continue
+            
+            print(f"  Loaded {len(bars_1m)} 1m bars, created {len(bars_5m)} 5m bars")
             
             # Add ticker to bars for reference
             for bar in bars_1m:
@@ -535,7 +523,12 @@ class AdvancedMTFBacktest:
         Generate backtest report.
         """
         if not trades:
-            print("No trades found.")
+            print("❌ No trades found with current filters.")
+            print("\nThis is GOOD - it means the system is being very selective!")
+            print("\nTo generate signals, try:")
+            print("  1. Increase test_days (currently 10)")
+            print("  2. Relax volume filter (currently 3.0x)")
+            print("  3. Expand time window (currently 9:30-11:00 AM)")
             return
         
         df = pd.DataFrame(trades)
@@ -579,17 +572,18 @@ class AdvancedMTFBacktest:
         print()
         
         # Top trades
-        print("="*80)
-        print("TOP 5 WINNING TRADES")
-        print("="*80)
-        top_winners = winners.nlargest(5, "pnl")
-        for idx, trade in top_winners.iterrows():
-            print(f"\n{trade['ticker']} {trade['direction']}:")
-            print(f"  Entry: ${trade['entry']:.2f} → Exit: ${trade['exit_price']:.2f}")
-            print(f"  P&L: ${trade['pnl']:.2f} ({trade['pnl_pct']:.2f}%)")
-            print(f"  RSI: {trade['rsi']:.1f}, Volume: {trade['volume_ratio']:.1f}x")
-            print(f"  Exit: {trade['exit_reason']} after {trade['bars_held']} bars")
-        print()
+        if len(winners) > 0:
+            print("="*80)
+            print("TOP 5 WINNING TRADES")
+            print("="*80)
+            top_winners = winners.nlargest(5, "pnl")
+            for idx, trade in top_winners.iterrows():
+                print(f"\n{trade['ticker']} {trade['direction']}:")
+                print(f"  Entry: ${trade['entry']:.2f} → Exit: ${trade['exit_price']:.2f}")
+                print(f"  P&L: ${trade['pnl']:.2f} ({trade['pnl_pct']:.2f}%)")
+                print(f"  RSI: {trade['rsi']:.1f}, Volume: {trade['volume_ratio']:.1f}x")
+                print(f"  Exit: {trade['exit_reason']} after {trade['bars_held']} bars")
+            print()
 
 
 def main():
