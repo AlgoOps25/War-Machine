@@ -1,6 +1,9 @@
 """
 BOS + FVG Engine — 0DTE Intraday Signal Detection
 Break of Structure → Fair Value Gap → Entry/Exit for same-session options
+
+UPDATED: Proper confirmation-wait-then-enter-next-bar logic
+Based on Nitro Trades video transcript (lines 1238-1255)
 """
 from datetime import datetime, time, timedelta
 from typing import List, Dict, Optional, Tuple
@@ -276,58 +279,81 @@ def classify_confirmation_candle(bar: Dict, fvg: Dict) -> Dict:
 
 
 # ─────────────────────────────────────────────────────────────
-# ENTRY TRIGGER — Price Retrace Into FVG + Confirmation
+# ENTRY TRIGGER — Proper Confirmation-Wait-Then-Enter Logic
 # ─────────────────────────────────────────────────────────────
 
-def check_fvg_entry(current_bar: Dict, fvg: Dict,
+def check_fvg_entry(bars: List[Dict], fvg: Dict,
                    require_confirmation: bool = True) -> Optional[Dict]:
     """
-    Entry fires when the current bar trades INTO the FVG zone
-    AND shows proper candle confirmation.
+    CRITICAL FIX: Proper confirmation-wait-then-enter-next-bar logic.
 
-    Bull: price dips into [fvg_low, fvg_high] → buy the dip into gap
-    Bear: price rallies into [fvg_low, fvg_high] → sell the rip into gap
+    Based on Nitro Trades video transcript (lines 1238-1255):
+    1. Price retests FVG (pullback into the gap)
+    2. Wait for that candle to CLOSE
+    3. Grade the CLOSED candle (A+/A/A-)
+    4. Enter on NEXT bar open if valid confirmation
+
+    This checks the PREVIOUS bar (bars[-2]) for FVG retest + confirmation,
+    then triggers entry on the CURRENT bar (bars[-1]) open.
 
     If require_confirmation=True (default), only A+, A, or A- candles
     trigger entries. Set to False to allow all FVG touches (not recommended).
+
+    Returns:
+        Dict with entry details if confirmed, None otherwise
     """
+    if len(bars) < 2:
+        return None  # Need at least 2 bars (previous + current)
+
+    # PREVIOUS bar = the one that just CLOSED (potential confirmation candle)
+    prev_bar = bars[-2]
+    # CURRENT bar = the one that's forming NOW (entry bar)
+    current_bar = bars[-1]
+
     direction = fvg["direction"]
     fvg_low   = fvg["fvg_low"]
     fvg_high  = fvg["fvg_high"]
     fvg_mid   = fvg["fvg_mid"]
 
-    # Check if price is IN the FVG zone
+    # ── Step 1: Did the PREVIOUS bar (closed candle) retest FVG? ─────
     price_in_fvg = False
 
     if direction == "bull":
-        # Price must touch or enter the FVG from above
-        if current_bar["low"] <= fvg_high and current_bar["close"] >= fvg_low:
+        # Price must have touched or entered the FVG from above
+        if prev_bar["low"] <= fvg_high and prev_bar["close"] >= fvg_low:
             price_in_fvg = True
 
     elif direction == "bear":
-        # Price must touch or enter the FVG from below
-        if current_bar["high"] >= fvg_low and current_bar["close"] <= fvg_high:
+        # Price must have touched or entered the FVG from below
+        if prev_bar["high"] >= fvg_low and prev_bar["close"] <= fvg_high:
             price_in_fvg = True
 
     if not price_in_fvg:
-        return None
+        return None  # Previous bar didn't retest FVG, keep scanning
 
-    # Classify the confirmation candle
-    confirmation = classify_confirmation_candle(current_bar, fvg)
+    # ── Step 2: Grade the CLOSED confirmation candle ─────────────────
+    confirmation = classify_confirmation_candle(prev_bar, fvg)
 
     # Require valid confirmation grade (A+, A, or A-)
     if require_confirmation and confirmation["grade"] is None:
-        return None
+        return None  # Candle touched FVG but didn't confirm, keep waiting
+
+    # ── Step 3: Trigger entry on NEXT bar open (current bar) ─────────
+    # Entry price = current bar's OPEN (the bar AFTER confirmation closed)
+    entry_price = current_bar["open"]
 
     return {
-        "entry_price":     fvg_mid,
-        "entry_type":      "FVG_FILL",
-        "entry_bar":       current_bar,
-        "fvg_low":         fvg_low,
-        "fvg_high":        fvg_high,
-        "confirmation":    confirmation["grade"],
-        "conf_score":      confirmation["score"],
-        "candle_type":     confirmation["candle_type"]
+        "entry_price":      entry_price,
+        "entry_type":       "FVG_FILL",
+        "entry_bar":        current_bar,
+        "confirmation_bar": prev_bar,  # The bar that confirmed
+        "confirmed_at":     prev_bar["datetime"],  # When confirmation closed
+        "entry_at":         current_bar["datetime"],  # When we entered
+        "fvg_low":          fvg_low,
+        "fvg_high":         fvg_high,
+        "confirmation":     confirmation["grade"],
+        "conf_score":       confirmation["score"],
+        "candle_type":      confirmation["candle_type"]
     }
 
 
@@ -404,8 +430,10 @@ def scan_bos_fvg(ticker: str, bars: List[Dict],
                 fvg_min_pct: float = FVG_MIN_PCT,
                 require_confirmation: bool = True) -> Optional[Dict]:
     """
-    Full BOS+FVG scan on latest bars with 3-tier confirmation grading.
-    Returns a complete signal dict or None.
+    Full BOS+FVG scan with proper confirmation-wait-then-enter logic.
+
+    CRITICAL UPDATE: Now checks PREVIOUS bar for FVG retest + confirmation,
+    then enters on NEXT bar open. This fixes premature entries during pullback.
 
     fvg_min_pct: minimum FVG gap size as a fraction of price.
                  Pass the adaptive threshold from trade_calculator
@@ -414,6 +442,9 @@ def scan_bos_fvg(ticker: str, bars: List[Dict],
 
     require_confirmation: If True (default), only A+, A, or A- candles
                          trigger entries. Set False to allow all FVG touches.
+
+    Returns:
+        Complete signal dict with entry details, or None if no valid setup
 
     Called every scan cycle from sniper.py process_ticker().
     """
@@ -437,11 +468,12 @@ def scan_bos_fvg(ticker: str, bars: List[Dict],
     if not fvg:
         return None
 
-    # ── Step 3: Check if current bar is entering FVG + confirm ────
-    entry_trigger = check_fvg_entry(latest_bar, fvg,
+    # ── Step 3: Check if PREVIOUS bar retested FVG + confirmed ────
+    #    Then enter on CURRENT bar open
+    entry_trigger = check_fvg_entry(bars, fvg,
                                     require_confirmation=require_confirmation)
     if not entry_trigger:
-        return None
+        return None  # Either no retest yet, or no valid confirmation
 
     # ── Step 4: Compute 0DTE stops and targets ──────────────────
     levels = compute_0dte_stops_and_targets(
@@ -449,22 +481,24 @@ def scan_bos_fvg(ticker: str, bars: List[Dict],
     )
 
     return {
-        "ticker":        ticker,
-        "direction":     bos["direction"],
-        "entry":         entry_trigger["entry_price"],
-        "stop":          levels["stop"],
-        "t1":            levels["t1"],
-        "t2":            levels["t2"],
-        "risk":          levels["risk"],
-        "fvg_low":       fvg["fvg_low"],
-        "fvg_high":      fvg["fvg_high"],
-        "fvg_size_pct":  fvg["fvg_size_pct"],
-        "bos_price":     bos["bos_price"],
-        "bos_strength":  round(bos["strength"] * 100, 3),
-        "entry_type":    "BOS+FVG",
-        "signal_time":   latest_bar["datetime"],
-        "dte":           0,
-        "confirmation":  entry_trigger["confirmation"],
-        "conf_score":    entry_trigger["conf_score"],
-        "candle_type":   entry_trigger["candle_type"]
+        "ticker":          ticker,
+        "direction":       bos["direction"],
+        "entry":           entry_trigger["entry_price"],
+        "stop":            levels["stop"],
+        "t1":              levels["t1"],
+        "t2":              levels["t2"],
+        "risk":            levels["risk"],
+        "fvg_low":         fvg["fvg_low"],
+        "fvg_high":        fvg["fvg_high"],
+        "fvg_size_pct":    fvg["fvg_size_pct"],
+        "bos_price":       bos["bos_price"],
+        "bos_strength":    round(bos["strength"] * 100, 3),
+        "entry_type":      "BOS+FVG",
+        "signal_time":     latest_bar["datetime"],
+        "confirmed_at":    entry_trigger["confirmed_at"],  # NEW
+        "entry_at":        entry_trigger["entry_at"],       # NEW
+        "dte":             0,
+        "confirmation":    entry_trigger["confirmation"],
+        "conf_score":      entry_trigger["conf_score"],
+        "candle_type":     entry_trigger["candle_type"]
     }
