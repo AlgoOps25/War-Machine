@@ -2,7 +2,7 @@
 """
 Comprehensive Parameter Optimization System with Result Caching
 
-OPTIMIZED: 288 parameter combinations for 45-minute runtime!
+AGGRESSIVE QUALITY FOCUS: 96 parameter combinations targeting 20-60 high-quality trades!
 
 Tests EVERY available EODHD data point for optimal BOS/FVG signal detection:
 
@@ -21,14 +21,14 @@ Tests EVERY available EODHD data point for optimal BOS/FVG signal detection:
    - Relative strength (vs SPY)
    - Breakout strength (distance from structure)
 
-3. OPTIMIZED PARAMETER GRID (288 combinations):
-   - Volume multipliers: 2.5x, 3.0x, 4.0x (STRONG confirmation only)
-   - ATR stop multiples: 1.5, 2.0 (tighter risk control)
-   - Risk/Reward ratios: 2.0, 2.5, 3.0 (better R:R)
-   - Lookback periods: 8, 12 (most responsive values)
-   - Momentum filters: Weak (>0), Strong (>0.5%) (ALWAYS required)
+3. AGGRESSIVE PARAMETER GRID (96 combinations):
+   - Volume multipliers: 3.0x, 4.0x (ONLY strong volume confirmation)
+   - ATR stop multiples: 1.5, 2.0 (tight risk control)
+   - Risk/Reward ratios: 2.0, 2.5, 3.0 (solid R:R)
+   - Lookback periods: 12, 16 (stable structure levels)
+   - Momentum filter: 'strong' ONLY (>0.5% - always required!)
    - Trend filters: None, Aligned only
-   - Time filters: Morning (9:30-11), Power (15-16) (best liquidity windows)
+   - Time filters: 'open' (9:30-10:00), 'power' (15:30-16:00) - peak volatility only!
 
 Usage:
     python comprehensive_optimization.py
@@ -79,7 +79,7 @@ class ComprehensiveOptimizer:
         self.start_date = (now_et - timedelta(days=days)).date()
         
         print(f"\n{'='*70}")
-        print("COMPREHENSIVE PARAMETER OPTIMIZATION - QUALITY FOCUSED")
+        print("AGGRESSIVE QUALITY-FOCUSED PARAMETER OPTIMIZATION")
         print(f"{'='*70}")
         print(f"Period: {self.start_date} to {self.end_date}")
         print(f"Tickers: {len(TICKERS)}")
@@ -318,12 +318,10 @@ class ComprehensiveOptimizer:
         
         current_time = dt.time()
         
-        if time_filter == 'morning':
-            return dtime(9, 30) <= current_time <= dtime(11, 0)
-        elif time_filter == 'midday':
-            return dtime(11, 0) < current_time <= dtime(15, 0)
+        if time_filter == 'open':
+            return dtime(9, 30) <= current_time <= dtime(10, 0)
         elif time_filter == 'power':
-            return dtime(15, 0) < current_time <= dtime(16, 0)
+            return dtime(15, 30) <= current_time <= dtime(16, 0)
         
         return True
     
@@ -375,10 +373,8 @@ class ComprehensiveOptimizer:
         if current['close'] > resistance:
             breakout_strength = self._calculate_breakout_strength(current['close'], resistance)
             
-            # FILTER 4: Momentum
+            # FILTER 4: Momentum (ALWAYS 'strong' now)
             if params['momentum_filter'] == 'strong' and momentum <= 0.005:
-                return None
-            elif params['momentum_filter'] == 'weak' and momentum <= 0:
                 return None
             
             # FILTER 5: Trend alignment
@@ -430,10 +426,8 @@ class ComprehensiveOptimizer:
         elif current['close'] < support:
             breakout_strength = self._calculate_breakout_strength(current['close'], support)
             
-            # FILTER 4: Momentum
+            # FILTER 4: Momentum (ALWAYS 'strong' now)
             if params['momentum_filter'] == 'strong' and momentum >= -0.005:
-                return None
-            elif params['momentum_filter'] == 'weak' and momentum >= 0:
                 return None
             
             # FILTER 5: Trend alignment
@@ -656,26 +650,26 @@ class ComprehensiveOptimizer:
     def run_optimization(self) -> pd.DataFrame:
         """Run comprehensive parameter grid search with caching."""
         print(f"{'='*70}")
-        print("BUILDING OPTIMIZED PARAMETER GRID")
+        print("BUILDING AGGRESSIVE QUALITY-FOCUSED GRID")
         print(f"{'='*70}\n")
         
-        # Define OPTIMIZED parameter grid (288 combinations)
+        # Define AGGRESSIVE parameter grid (96 combinations)
         param_grid = {
-            # Core parameters - STRICTER VALUES
-            'volume_mult': [2.5, 3.0, 4.0],       # 3 - Higher volume confirmation
-            'atr_stop_mult': [1.5, 2.0],          # 2 - Tighter stops
-            'risk_reward': [2.0, 2.5, 3.0],       # 3 - Good R:R ratios
-            'lookback': [8, 12],                  # 2 - Most responsive values
+            # Core parameters - VERY STRICT
+            'volume_mult': [3.0, 4.0],            # 2 - ONLY strong volume
+            'atr_stop_mult': [1.5, 2.0],          # 2 - Tight stops
+            'risk_reward': [2.0, 2.5, 3.0],       # 3 - Good R:R
+            'lookback': [12, 16],                 # 2 - Stable structure
             
-            # Filters - ALWAYS require momentum
-            'momentum_filter': ['weak', 'strong'], # 2 - NO 'none' option!
+            # Filters - MAXIMUM STRICTNESS
+            'momentum_filter': ['strong'],        # 1 - ONLY strong momentum!
             'trend_filter': [False, True],        # 2
             'gap_filter': ['none'],               # 1
             'vix_filter': ['none'],               # 1
-            'time_filter': ['morning', 'power'],  # 2 - Best liquidity windows
+            'time_filter': ['open', 'power'],     # 2 - Peak vol only!
             'pdh_filter': ['none'],               # 1
             'rs_filter': [False]                  # 1
-            # Total: 3 × 2 × 3 × 2 × 2 × 2 × 1 × 1 × 2 × 1 × 1 = 288
+            # Total: 2 × 2 × 3 × 2 × 1 × 2 × 1 × 1 × 2 × 1 × 1 = 96
         }
         
         # Generate all combinations
@@ -688,7 +682,7 @@ class ComprehensiveOptimizer:
         
         print(f"✅ Generated {total:,} parameter combinations")
         print(f"💾 Found {cached_count:,} cached results\n")
-        print(f"⚠️  OPTIMIZED GRID: Expect 50-200 trades per config (vs 1,800+)\n")
+        print(f"🎯 TARGET: 20-60 quality trades @ 50-60% win rate\n")
         print(f"{'='*70}")
         print("TESTING PARAMETERS")
         print(f"{'='*70}\n")
@@ -771,11 +765,11 @@ def main():
     results_df.to_csv("comprehensive_results.csv", index=False)
     print("💾 Saved comprehensive_results.csv\n")
     
-    # Filter to meaningful configs (minimum 20 trades)
-    meaningful = results_df[results_df['total_trades'] >= 20]
+    # Filter to meaningful configs (minimum 10 trades due to aggressive filters)
+    meaningful = results_df[results_df['total_trades'] >= 10]
     
     if len(meaningful) == 0:
-        print("⚠️ No configurations with 20+ trades found!\n")
+        print("⚠️ No configurations with 10+ trades found!\n")
         top_20 = results_df.nlargest(20, 'total_pnl')
     else:
         # Sort by total P&L
@@ -839,10 +833,10 @@ def main():
     
     # Create optimization report
     with open('optimization_report.txt', 'w') as f:
-        f.write("COMPREHENSIVE PARAMETER OPTIMIZATION REPORT\n")
+        f.write("AGGRESSIVE QUALITY-FOCUSED OPTIMIZATION REPORT\n")
         f.write("="*70 + "\n\n")
         f.write(f"Total Configurations Tested: {len(results_df)}\n")
-        f.write(f"Configurations with 20+ Trades: {len(meaningful)}\n")
+        f.write(f"Configurations with 10+ Trades: {len(meaningful)}\n")
         if len(profitable) > 0:
             f.write(f"Profitable Configurations: {len(profitable)}\n")
         f.write(f"\nBest Configuration:\n")
