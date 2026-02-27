@@ -159,3 +159,6 @@ backtests/
 backtest_results*.csv
 backtest_summary.txt
 top_configs.json
+
+# Analysis reports
+full_analysis_report*.txt
