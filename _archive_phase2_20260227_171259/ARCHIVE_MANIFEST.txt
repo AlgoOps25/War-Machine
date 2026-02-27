@@ -1,0 +1,22 @@
+﻿# WAR MACHINE - PHASE 2 CLEANUP ARCHIVE
+# Created: 2026-02-27 17:13:00
+# 
+# This archive contains 9 files removed during Phase 2 cleanup:
+#
+# REDUNDANT SCANNERS (superseded by sniper.py):
+#   - war_machine_scanner_v4.py
+#   - premarket_scanner.py
+#   - dynamic_screener.py
+#   - watchlist_funnel.py
+#
+# OPTIMIZATION/BACKTEST (complete - 90.9% WR achieved):
+#   - realistic_backtest_v2.py
+#   - momentum_screener_optimized.py
+#
+# UNUSED FILTERS (not imported):
+#   - fundamentals_filter.py
+#   - insider_filter.py
+#   - ws_feed.py
+#
+# These files are safely archived and can be restored if needed.
+# Production system remains intact with 39 critical files.
