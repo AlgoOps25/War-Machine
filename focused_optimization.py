@@ -2,7 +2,7 @@
 """
 Focused Parameter Optimization - ~1000 High-Quality Combinations
 
-FIXED: PDH/PDL loading now uses correct date format for SQL queries.
+FIXED: Proper BOS detection using swing point validation.
 """
 
 import sys
@@ -275,20 +275,108 @@ class FocusedOptimizer:
         except:
             pass
     
+    def find_swing_high(self, bars: List[Dict], idx: int, swing_window: int = 3) -> bool:
+        """
+        Identify if current bar is a swing high.
+        A swing high has higher highs than N bars on both sides.
+        """
+        if idx < swing_window or idx >= len(bars) - swing_window:
+            return False
+        
+        current_high = bars[idx]["high"]
+        
+        # Check bars before
+        for i in range(idx - swing_window, idx):
+            if bars[i]["high"] >= current_high:
+                return False
+        
+        # Check bars after
+        for i in range(idx + 1, idx + swing_window + 1):
+            if bars[i]["high"] >= current_high:
+                return False
+        
+        return True
+    
+    def find_swing_low(self, bars: List[Dict], idx: int, swing_window: int = 3) -> bool:
+        """
+        Identify if current bar is a swing low.
+        A swing low has lower lows than N bars on both sides.
+        """
+        if idx < swing_window or idx >= len(bars) - swing_window:
+            return False
+        
+        current_low = bars[idx]["low"]
+        
+        # Check bars before
+        for i in range(idx - swing_window, idx):
+            if bars[i]["low"] <= current_low:
+                return False
+        
+        # Check bars after
+        for i in range(idx + 1, idx + swing_window + 1):
+            if bars[i]["low"] <= current_low:
+                return False
+        
+        return True
+    
     def detect_bos(self, bars: List[Dict], idx: int, lookback: int, direction: str) -> bool:
-        """Detect break of structure."""
-        if idx < lookback:
+        """
+        Detect PROPER break of structure.
+        
+        LONG BOS: Price breaks above most recent swing high within lookback period
+        SHORT BOS: Price breaks below most recent swing low within lookback period
+        """
+        if idx < lookback + 10:  # Need extra bars for swing detection
             return False
         
         current = bars[idx]
-        recent = bars[idx-lookback:idx]
+        search_window = bars[max(0, idx - lookback):idx]
         
         if direction == "LONG":
-            recent_highs = [b["high"] for b in recent]
-            return current["high"] > max(recent_highs)
-        else:
-            recent_lows = [b["low"] for b in recent]
-            return current["low"] < min(recent_lows)
+            # Find the most recent swing high
+            last_swing_high = None
+            last_swing_idx = None
+            
+            for i in range(len(search_window) - 1, -1, -1):
+                actual_idx = max(0, idx - lookback) + i
+                
+                # Skip bars too close to current
+                if actual_idx > idx - 5:
+                    continue
+                
+                if self.find_swing_high(bars, actual_idx, swing_window=2):
+                    last_swing_high = bars[actual_idx]["high"]
+                    last_swing_idx = actual_idx
+                    break
+            
+            # BOS occurs when current high breaks above swing high
+            if last_swing_high is not None:
+                return current["high"] > last_swing_high
+            
+            return False
+        
+        else:  # SHORT
+            # Find the most recent swing low
+            last_swing_low = None
+            last_swing_idx = None
+            
+            for i in range(len(search_window) - 1, -1, -1):
+                actual_idx = max(0, idx - lookback) + i
+                
+                # Skip bars too close to current
+                if actual_idx > idx - 5:
+                    continue
+                
+                if self.find_swing_low(bars, actual_idx, swing_window=2):
+                    last_swing_low = bars[actual_idx]["low"]
+                    last_swing_idx = actual_idx
+                    break
+            
+            # BOS occurs when current low breaks below swing low
+            if last_swing_low is not None:
+                return current["low"] < last_swing_low
+            
+            return False
     
     def calculate_atr(self, bars: List[Dict], idx: int, period: int = 14) -> float:
         """Calculate ATR."""
@@ -349,7 +437,7 @@ class FocusedOptimizer:
             bars = self.bars_cache[ticker]
             pdh_pdl = self.pdh_pdl_cache.get(ticker, {"pdh": 0, "pdl": 0})
             
-            for i in range(params["lookback"] + 20, len(bars)):
+            for i in range(params["lookback"] + 20, len(bars) - 5):  # Need future bars for swing detection
                 current = bars[i]
                 
                 # Time filter
