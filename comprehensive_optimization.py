@@ -33,8 +33,6 @@ from pathlib import Path
 import time as time_module
 from itertools import product
 
-from data_manager import DataManager
-
 ET = ZoneInfo("America/New_York")
 
 print("\n" + "="*70)
@@ -49,7 +47,7 @@ class ComprehensiveOptimizer:
     """
     
     def __init__(self):
-        self.dm = DataManager()
+        self.db_path = "market_memory.db"
         self.cache_dir = Path("backtest_cache")
         self.cache_dir.mkdir(exist_ok=True)
         
@@ -75,17 +73,59 @@ class ComprehensiveOptimizer:
         print("="*70)
         print()
     
+    def load_bars_from_db(self, ticker: str) -> List[Dict]:
+        """Load bars directly from database."""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        
+        query = """
+            SELECT datetime, open, high, low, close, volume
+            FROM intraday_bars
+            WHERE ticker = ?
+              AND datetime >= ?
+              AND datetime <= ?
+            ORDER BY datetime ASC
+        """
+        
+        try:
+            cur.execute(query, (ticker, self.start_date, self.end_date))
+            rows = cur.fetchall()
+            
+            bars = []
+            for row in rows:
+                dt = row["datetime"]
+                if isinstance(dt, str):
+                    dt = datetime.fromisoformat(dt)
+                if hasattr(dt, "tzinfo") and dt.tzinfo is not None:
+                    dt = dt.replace(tzinfo=None)
+                
+                bars.append({
+                    "datetime": dt,
+                    "open": float(row["open"]),
+                    "high": float(row["high"]),
+                    "low": float(row["low"]),
+                    "close": float(row["close"]),
+                    "volume": int(row["volume"])
+                })
+            
+            return bars
+        
+        except Exception as e:
+            print(f"  Error loading {ticker}: {e}")
+            return []
+        
+        finally:
+            cur.close()
+            conn.close()
+    
     def load_all_bars(self):
         """Pre-load all bars into memory for speed."""
         print("⏳ Loading bars into memory...")
         total_bars = 0
         
         for ticker in self.tickers:
-            bars = self.dm.get_bars_between(
-                ticker=ticker,
-                start=self.start_date,
-                end=self.end_date
-            )
+            bars = self.load_bars_from_db(ticker)
             
             if bars:
                 self.bars_cache[ticker] = bars
@@ -100,17 +140,18 @@ class ComprehensiveOptimizer:
         """Load previous day high/low for each ticker."""
         print("⏳ Loading previous day OHLC data...")
         
+        prev_date = self.start_date - timedelta(days=1)
+        
         for ticker in self.tickers:
             if ticker not in self.bars_cache:
                 continue
             
-            # Get bars from day before test period
-            prev_date = self.start_date - timedelta(days=1)
-            bars = self.dm.get_bars_between(ticker, prev_date, prev_date)
+            bars = self.load_bars_from_db(ticker)
+            prev_bars = [b for b in bars if b["datetime"].date() == prev_date]
             
-            if bars:
-                pdh = max(b["high"] for b in bars)
-                pdl = min(b["low"] for b in bars)
+            if prev_bars:
+                pdh = max(b["high"] for b in prev_bars)
+                pdl = min(b["low"] for b in prev_bars)
                 self.pdh_pdl_cache[ticker] = {"pdh": pdh, "pdl": pdl}
                 print(f"  ✅ {ticker} PDH: ${pdh:.2f} PDL: ${pdl:.2f}")
         
@@ -118,7 +159,7 @@ class ComprehensiveOptimizer:
     
     def get_vix_level(self) -> float:
         """Get current VIX level from database."""
-        conn = sqlite3.connect("market_memory.db")
+        conn = sqlite3.connect(self.db_path)
         cur = conn.cursor()
         
         try:
