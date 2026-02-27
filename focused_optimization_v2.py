@@ -3,7 +3,8 @@
 Focused Parameter Optimization V2 - With Market Regime Filters
 
 NEW: VIX regime, SPY trend, and VWAP filters to trade only in favorable conditions.
-SPEED OPTIMIZED: 5 core tickers + 2 regime combos = ~15 minute runtime
+SPEED OPTIMIZED: 5 core tickers + 2 regime combos = ~15min
+FIXED: VIX regime matches current market (normal instead of elevated)
 """
 
 import sys
@@ -245,6 +246,7 @@ class FocusedOptimizerV2:
         """
         Generate parameter grid with market regime filters.
         SPEED OPTIMIZED: 2 regime combos instead of 3.
+        FIXED: Use 'normal' VIX regime to match current market.
         """
         grid = []
         
@@ -286,11 +288,11 @@ class FocusedOptimizerV2:
                                 
                                 for timefilter in time_sample:
                                     # SPEED OPTIMIZED: Only 2 regime combinations
-                                    # Test baseline vs full filtering
+                                    # FIXED: Use 'normal' instead of 'elevated' to match current VIX
                                     
                                     regime_combinations = [
                                         ('any', False, False),     # Baseline: No regime filters
-                                        ('elevated', True, True),  # Full filtering: VIX + SPY + VWAP
+                                        ('normal', True, True),    # Full filtering: VIX=normal + SPY + VWAP
                                     ]
                                     
                                     for vix_regime, spy_filter, vwap_filter in regime_combinations:
