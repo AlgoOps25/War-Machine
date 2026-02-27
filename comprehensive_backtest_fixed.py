@@ -68,13 +68,24 @@ class BacktestEngine:
         
         logger.info(f"Backtest period: {self.start_date} to {self.end_date}")
         logger.info(f"Testing {len(TICKERS)} tickers")
+        
+        # PERFORMANCE FIX: Load all bars into memory at startup
+        logger.info("\n⏳ Loading all bars into memory...")
+        self.bars_cache = {}
+        for i, ticker in enumerate(TICKERS, 1):
+            bars = self._load_bars_from_db(ticker)
+            if bars:
+                self.bars_cache[ticker] = bars
+                logger.info(f"  [{i}/{len(TICKERS)}] {ticker}: {len(bars)} bars")
+            else:
+                logger.info(f"  [{i}/{len(TICKERS)}] {ticker}: No data")
+        
+        logger.info(f"\n✅ Cached {len(self.bars_cache)} tickers with {sum(len(b) for b in self.bars_cache.values()):,} total bars")
     
-    def _load_cached_bars(self, ticker: str) -> List[Dict]:
+    def _load_bars_from_db(self, ticker: str) -> List[Dict]:
         """
         Load historical bars from intraday_bars table.
-        
-        FIXED: Uses intraday_bars table (not candle_cache)
-        FIXED: No context manager for cursor (SQLite doesn't support it)
+        Called ONCE per ticker at startup.
         """
         try:
             conn = get_conn(self.db_path)
@@ -118,7 +129,7 @@ class BacktestEngine:
             return bars
             
         except Exception as e:
-            logger.error(f"Cache load error for {ticker}: {e}")
+            logger.error(f"DB load error for {ticker}: {e}")
             return []
     
     def detect_signals(self, ticker: str, bars: List[Dict], 
@@ -258,6 +269,7 @@ class BacktestEngine:
                           stop_loss_pct: float) -> Dict:
         """
         Test a single parameter combination across all tickers.
+        OPTIMIZED: Uses in-memory bars_cache instead of DB queries.
         """
         results = {
             "confidence_grade": confidence_grade,
@@ -272,12 +284,8 @@ class BacktestEngine:
             "avg_pnl": 0
         }
         
-        for ticker in TICKERS:
-            # Load bars
-            bars = self._load_cached_bars(ticker)
-            if not bars:
-                continue
-            
+        # Use cached bars instead of loading from DB
+        for ticker, bars in self.bars_cache.items():
             # Detect signals
             signals = self.detect_signals(ticker, bars, fvg_threshold, confidence_grade)
             
@@ -317,29 +325,44 @@ class BacktestEngine:
         stop_loss_pcts = [0.01, 0.015, 0.02, 0.025, 0.03]
         
         total_tests = len(confidence_grades) * len(fvg_thresholds) * len(stop_loss_pcts)
-        logger.info(f"\nTesting {total_tests} parameter combinations...")
+        logger.info(f"\n{'='*60}")
+        logger.info(f"Testing {total_tests} parameter combinations...")
+        logger.info(f"{'='*60}\n")
         
         all_results = []
         test_num = 0
+        
+        import time
+        start_time = time.time()
         
         for conf in confidence_grades:
             for fvg in fvg_thresholds:
                 for sl in stop_loss_pcts:
                     test_num += 1
-                    
-                    logger.info(f"Progress: {test_num}/{total_tests} ({test_num/total_tests*100:.1f}%)")
-                    logger.info(f"Testing params: conf={conf}, fvg={fvg}, sl={sl}")
+                    test_start = time.time()
                     
                     result = self.run_parameter_test(conf, fvg, sl)
                     all_results.append(result)
+                    
+                    test_duration = time.time() - test_start
+                    elapsed = time.time() - start_time
+                    avg_time = elapsed / test_num
+                    remaining = (total_tests - test_num) * avg_time
+                    
+                    logger.info(
+                        f"[{test_num}/{total_tests}] conf={conf} fvg={fvg:.3f} sl={sl:.2f} | "
+                        f"Trades: {result['total_trades']} | "
+                        f"Time: {test_duration:.1f}s | "
+                        f"ETA: {remaining/60:.1f}m"
+                    )
                     
                     # Save partial results every 25 tests
                     if test_num % 25 == 0:
                         df = pd.DataFrame(all_results)
                         df.to_csv(f"backtest_results_partial_{test_num}.csv", index=False)
-                        logger.info(f"Saved partial results to backtest_results_partial_{test_num}.csv")
+                        logger.info(f"💾 Saved partial results to backtest_results_partial_{test_num}.csv")
         
-        logger.info("Backtest complete!")
+        logger.info("\n✅ Backtest complete!")
         return pd.DataFrame(all_results)
 
 
@@ -348,10 +371,10 @@ def main():
     Main backtest runner.
     """
     logger.info("="*60)
-    logger.info("COMPREHENSIVE BACKTEST ENGINE")
+    logger.info("COMPREHENSIVE BACKTEST ENGINE - OPTIMIZED")
     logger.info("="*60)
     
-    # Initialize engine
+    # Initialize engine (this caches all bars)
     engine = BacktestEngine()
     
     # Run backtest
@@ -359,7 +382,7 @@ def main():
     
     # Save full results
     results_df.to_csv("backtest_results.csv", index=False)
-    logger.info(f"Saved results to backtest_results.csv")
+    logger.info(f"\n💾 Saved results to backtest_results.csv")
     
     # Find top configurations
     if len(results_df) > 0:
@@ -389,7 +412,7 @@ def main():
                 print(f"  Total PnL: ${config['total_pnl']:.2f}")
                 print(f"  Avg PnL: ${config['avg_pnl']:.2f}")
         else:
-            logger.warning("No profitable configurations found!")
+            logger.warning("⚠️  No profitable configurations found!")
     
     # Create summary report
     with open("backtest_summary.txt", "w") as f:
@@ -401,11 +424,13 @@ def main():
             f.write(f"Best total PnL: ${results_df['total_pnl'].max():.2f}\n")
             f.write(f"Best win rate: {results_df['win_rate'].max():.1f}%\n")
     
-    print("\n✅ BACKTEST COMPLETE!\n")
-    print("Check these files:")
+    print("\n" + "="*60)
+    print("✅ BACKTEST COMPLETE!")
+    print("="*60)
+    print("\nCheck these files:")
     print("  - backtest_results.csv (all results)")
     print("  - top_configs.json (top 10 configs)")
-    print("  - backtest_summary.txt (detailed report)")
+    print("  - backtest_summary.txt (detailed report)\n")
 
 
 if __name__ == "__main__":
