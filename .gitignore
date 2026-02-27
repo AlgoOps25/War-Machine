@@ -152,3 +152,10 @@ TODO.txt
 # Local test outputs
 test_output/
 backtests/
+
+# Backtest cache files
+*.pkl.gz
+.backtest_cache/
+backtest_results*.csv
+backtest_summary.txt
+top_configs.json
