@@ -12,7 +12,6 @@ For new code, use:
 from app.validation.validation import (
     SignalValidator,
     get_validator,
-    validate_signal,
     RegimeFilter,
     get_regime_filter,
     OptionsFilter,
@@ -23,7 +22,6 @@ from app.validation.validation import (
 __all__ = [
     'SignalValidator',
     'get_validator',
-    'validate_signal',
     'RegimeFilter',
     'get_regime_filter',
     'OptionsFilter',
@@ -39,5 +37,6 @@ def get_instance():
     if _validator_instance is None:
         _validator_instance = get_validator()
     return _validator_instance
+
 
 
