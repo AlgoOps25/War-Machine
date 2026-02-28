@@ -1,6 +1,7 @@
 """
 War Machine Filter Combination Optimizer - UPDATED
 Now uses real filters from market_filters.py
+IMPROVED: 70% baseline WR, 30-signal minimum, better statistical validation
 """
 
 import pandas as pd
@@ -66,8 +67,8 @@ class FilterCombinationOptimizer:
     def __init__(self, 
                  db_path: str = "market_memory.db",
                  signals_csv: str = "validation_signals.csv",
-                 baseline_wr: float = 0.73,
-                 min_signals: int = 20):
+                 baseline_wr: float = 0.70,  # UPDATED: 70% baseline
+                 min_signals: int = 30):      # UPDATED: 30 signal minimum
         """Initialize optimizer"""
         self.db_path = db_path
         self.signals_csv = signals_csv
@@ -91,6 +92,7 @@ class FilterCombinationOptimizer:
         print(f"\nLoaded {len(self.baseline_signals)} baseline signals")
         print(f"Train: {len(self.train_signals)}, Validation: {len(self.val_signals)}")
         print(f"Baseline WR: {baseline_wr*100:.1f}%")
+        print(f"Minimum signals required: {min_signals}")
     
     def _load_baseline_signals(self) -> pd.DataFrame:
         """Load baseline signals from CSV"""
@@ -338,6 +340,7 @@ class FilterCombinationOptimizer:
         
         print(f"\nTotal combinations tested: {len(self.results)}")
         print(f"Baseline win rate: {self.baseline_wr*100:.1f}%")
+        print(f"Minimum signals required: {self.min_signals}")
         
         top_results = self.get_top_results(top_n)
         
@@ -353,6 +356,7 @@ class FilterCombinationOptimizer:
             print(f"   Train WR: {result.train_win_rate*100:.1f}%")
             print(f"   Signals: {result.val_total_signals} ({result.signals_retained_pct:.1f}% retained)")
             print(f"   Profit Factor: {result.val_profit_factor:.2f}")
+            print(f"   Statistically significant: {'✅' if result.is_statistically_significant else '❌'}")
             print(f"   Beats baseline: {'✅' if result.beats_baseline else '❌'}")
             print()
     
@@ -368,6 +372,7 @@ class FilterCombinationOptimizer:
                 'val_total_signals': result.val_total_signals,
                 'val_profit_factor': result.val_profit_factor,
                 'signals_retained_pct': result.signals_retained_pct,
+                'is_statistically_significant': result.is_statistically_significant,
                 'beats_baseline': result.beats_baseline,
                 'timestamp': result.timestamp
             })
@@ -388,6 +393,7 @@ def main():
     print("="*70)
     print("WAR MACHINE FILTER OPTIMIZER")
     print("Real filter testing with market data")
+    print("IMPROVED: 70% baseline WR, 30-signal minimum")
     print("="*70)
     
     # Show available filters
@@ -396,11 +402,11 @@ def main():
     for i, f in enumerate(available, 1):
         print(f"  {i:2d}. {f}")
     
-    # Initialize
+    # Initialize with updated parameters
     optimizer = FilterCombinationOptimizer(
         signals_csv="validation_signals.csv",
-        baseline_wr=0.73,
-        min_signals=20
+        baseline_wr=0.70,  # UPDATED: 70% baseline
+        min_signals=30      # UPDATED: 30 signal minimum
     )
     
     if optimizer.baseline_signals.empty:
