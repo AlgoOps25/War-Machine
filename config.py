@@ -913,3 +913,6 @@ if __name__ == "__main__":
 # Market Hours (EST)
 MARKET_OPEN = "09:30"
 MARKET_CLOSE = "16:00"
+
+# Discord Alerts
+DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1471917294891307100/onHzBfoozy0UK91wBi-7w0lC3NzF_eiiW2sUAuWLZogpWfMAk5Azfr7DcFyaGeKDM_Sa"
