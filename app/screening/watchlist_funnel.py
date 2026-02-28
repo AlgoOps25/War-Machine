@@ -14,9 +14,9 @@ Integration:
 """
 from datetime import datetime, time
 from typing import List, Dict, Optional
-import premarket_scanner as momentum_screener  # âœ… PHASE 1: Unified professional scanner
-import volume_analyzer
-import dynamic_screener
+from app.screening import premarket_scanner as momentum_screener  # âœ… PHASE 1: Unified professional scanner
+from app.screening import volume_analyzer
+from app.screening import dynamic_screener
 from utils import config
 
 
@@ -381,4 +381,9 @@ if __name__ == "__main__":
     # Get metadata
     metadata = funnel.get_watchlist_metadata()
     print(f"\nðŸ“Š Metadata: {metadata}")
+
+
+
+
+
 

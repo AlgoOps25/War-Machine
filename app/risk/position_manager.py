@@ -14,7 +14,7 @@ from utils import config
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 from app.data import db_connection
-from db_connection import get_conn, ph, dict_cursor, serial_pk
+from app.data.db_connection import get_conn, ph, dict_cursor, serial_pk
 
 try:
     from signal_analytics import signal_tracker
@@ -860,4 +860,5 @@ class PositionManager:
 
 # â”€â”€ Global singleton â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 position_manager = PositionManager()
+
 

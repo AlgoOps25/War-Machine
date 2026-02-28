@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import json
 
-from breakout_detector import BreakoutDetector, format_signal_message
+from app.signals.breakout_detector import BreakoutDetector, format_signal_message
 from app.data.data_manager import data_manager
 from discord_helpers import send_simple_message
 
@@ -808,4 +808,5 @@ if __name__ == "__main__":
     # Print performance stats
     print("\n" + "="*70)
     print_performance_report(days=7)
+
 

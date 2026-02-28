@@ -1,4 +1,4 @@
-"""
+﻿"""
 Scanner Module - Intelligent Watchlist Builder & Scanner Loop
 INTEGRATED: Adaptive Watchlist Funnel, Pre-Market Scanner, Position Monitoring, Database Cleanup
 CANDLE CACHE: Cache-aware startup with 95%+ API reduction
@@ -8,39 +8,39 @@ import time
 import threading
 from datetime import datetime, time as dtime
 from zoneinfo import ZoneInfo
-import config
+from utils import config
 
-from data_manager import data_manager
-from position_manager import position_manager
-from ws_feed import start_ws_feed, subscribe_tickers, set_backfill_complete
+from app.data.data_manager import data_manager
+from app.risk.position_manager import position_manager
+from app.data.ws_feed import start_ws_feed, subscribe_tickers, set_backfill_complete
 from scanner_optimizer import (
     get_adaptive_scan_interval,
     should_scan_now,
     calculate_optimal_watchlist_size
 )
-from signal_generator import (
+from app.signals.signal_generator import (
     check_and_alert,
     monitor_signals,
     print_active_signals,
     signal_generator
 )
-from watchlist_funnel import (
+from app.screening.watchlist_funnel import (
     get_current_watchlist,
     get_watchlist_with_metadata,
     get_funnel
 )
 
-# ────────────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # OPTIONAL: SIGNAL ANALYTICS
-# ────────────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 try:
     from signal_analytics import signal_tracker
     ANALYTICS_ENABLED = True
-    print("[SCANNER] ✅ Signal analytics enabled")
+    print("[SCANNER] âœ… Signal analytics enabled")
 except ImportError:
     ANALYTICS_ENABLED = False
     signal_tracker = None
-    print("[SCANNER] ⚠️  signal_analytics not available — analytics disabled")
+    print("[SCANNER] âš ï¸  signal_analytics not available â€” analytics disabled")
 
 API_KEY = os.getenv("EODHD_API_KEY", "")
 
@@ -78,8 +78,8 @@ def build_watchlist(force_refresh: bool = False) -> list:
 
 
 def monitor_open_positions():
-    from data_manager import data_manager
-    from ws_feed import get_current_bar, is_connected
+    from app.data.data_manager import data_manager
+    from app.data.ws_feed import get_current_bar, is_connected
     open_positions = position_manager.get_open_positions()
     if not open_positions:
         return
@@ -107,12 +107,12 @@ def start_scanner_loop():
     print(f"Market Hours: {config.MARKET_OPEN} - {config.MARKET_CLOSE}")
     print(f"Adaptive intervals + watchlist funnel + breakout signals active")
     if ANALYTICS_ENABLED:
-        print(f"Analytics:     ✅ ENABLED (quality scoring, Sharpe, expectancy)")
-    print(f"Candle Cache:  ✅ ENABLED (95%+ API reduction on redeploy)")
+        print(f"Analytics:     âœ… ENABLED (quality scoring, Sharpe, expectancy)")
+    print(f"Candle Cache:  âœ… ENABLED (95%+ API reduction on redeploy)")
     print(f"{'='*60}\n")
 
     try:
-        send_simple_message("🎯 WAR MACHINE ONLINE - CFW6 Scanner + Breakout Detector Started")
+        send_simple_message("ðŸŽ¯ WAR MACHINE ONLINE - CFW6 Scanner + Breakout Detector Started")
     except Exception as e:
         print(f"[SCANNER] Discord unavailable: {e}")
 
@@ -122,7 +122,7 @@ def start_scanner_loop():
     last_report_day     = None
     loss_streak_alerted = False
 
-    # ── STARTUP SEQUENCE ──────────────────────────────────────────────────────
+    # â”€â”€ STARTUP SEQUENCE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     startup_watchlist = list(EMERGENCY_FALLBACK)
     try:
         start_ws_feed(startup_watchlist)
@@ -133,7 +133,7 @@ def start_scanner_loop():
     data_manager.startup_backfill_with_cache(startup_watchlist, days=30)
     data_manager.startup_intraday_backfill_today(startup_watchlist)
     set_backfill_complete()
-    # ──────────────────────────────────────────────────────────────────────────
+    # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     while True:
         try:
@@ -159,20 +159,20 @@ def start_scanner_loop():
                         )
 
                         stage_emoji = {
-                            'wide': '📡', 'narrow': '🎯',
-                            'final': '🔥', 'live': '⚡'
+                            'wide': 'ðŸ“¡', 'narrow': 'ðŸŽ¯',
+                            'final': 'ðŸ”¥', 'live': 'âš¡'
                         }
-                        emoji = stage_emoji.get(metadata['stage'], '📊')
+                        emoji = stage_emoji.get(metadata['stage'], 'ðŸ“Š')
 
                         msg = (
                             f"{emoji} **{metadata['stage_description']}**\n"
-                            f"✅ Watchlist: {len(premarket_watchlist)} tickers\n"
+                            f"âœ… Watchlist: {len(premarket_watchlist)} tickers\n"
                             f"{', '.join(premarket_watchlist[:20])}"
                             f"{'...' if len(premarket_watchlist) > 20 else ''}"
                         )
 
                         if volume_signals:
-                            msg += f"\n\n⚠️ {len(volume_signals)} volume signals active"
+                            msg += f"\n\nâš ï¸ {len(volume_signals)} volume signals active"
 
                         send_simple_message(msg)
 
@@ -234,7 +234,7 @@ def start_scanner_loop():
                 if position_manager.has_loss_streak(max_consecutive_losses=3):
                     if not loss_streak_alerted:
                         msg = (
-                            "🛑 **CIRCUIT BREAKER** — 3 consecutive losses today. "
+                            "ðŸ›‘ **CIRCUIT BREAKER** â€” 3 consecutive losses today. "
                             "New scans halted for the rest of the session. "
                             "Open positions still monitored."
                         )
@@ -243,7 +243,7 @@ def start_scanner_loop():
                         except Exception:
                             pass
                         loss_streak_alerted = True
-                        print("[RISK] Daily loss streak reached — halting new scans.")
+                        print("[RISK] Daily loss streak reached â€” halting new scans.")
                     monitor_open_positions()
                     time.sleep(60)
                     continue
@@ -350,7 +350,7 @@ def start_scanner_loop():
                     try:
                         daily_stats = position_manager.get_daily_stats()
                         eod_report  = (
-                            f"📊 **EOD Report {current_day}**\n"
+                            f"ðŸ“Š **EOD Report {current_day}**\n"
                             f"Trades: {daily_stats['trades']} | "
                             f"WR: {daily_stats['win_rate']:.1f}% | "
                             f"P&L: ${daily_stats['total_pnl']:+.2f}"
@@ -414,7 +414,7 @@ def start_scanner_loop():
             import traceback
             traceback.print_exc()
             try:
-                send_simple_message(f"⚠️ Scanner Error: {str(e)}")
+                send_simple_message(f"âš ï¸ Scanner Error: {str(e)}")
             except Exception:
                 pass
             time.sleep(30)
@@ -456,12 +456,19 @@ def get_screener_tickers(min_market_cap: int = 1_000_000_000, limit: int = 50) -
             code = item.get("code")
             if code:
                 tickers.append(code.replace(".US", "").replace(".us", ""))
-        print(f"[SCREENER] ✅ Fetched {len(tickers)} tickers (total available: {data.get('total', '?')})")
+        print(f"[SCREENER] âœ… Fetched {len(tickers)} tickers (total available: {data.get('total', '?')})")
         return tickers[:limit]
     except Exception as e:
         print(f"[SCREENER] Error: {e}")
         return []
 
-# ── Entry point ──────────────────────────────────────────────────────────────
+# â”€â”€ Entry point â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 if __name__ == "__main__":
     start_scanner_loop()
+
+
+
+
+
+
+
