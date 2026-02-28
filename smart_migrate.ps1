@@ -128,7 +128,7 @@ foreach ($file in $config.files) {
     }
 }
 
-# STEP 3: Test imports
+$env:PYTHONIOENCODING = "utf-8"  # Fix Windows Unicode issues`n# STEP 3: Test imports
 Write-Host "`n Step 3: Testing all imports..." -ForegroundColor Yellow
 
 $allPassed = $true
@@ -176,3 +176,4 @@ git push
 
 Write-Host "`n $Subsystem MIGRATION COMPLETE!" -ForegroundColor Green
 Write-Host "Backup saved in: $backupFolder" -ForegroundColor Gray
+
