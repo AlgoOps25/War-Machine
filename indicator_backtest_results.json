@@ -7,12 +7,12 @@
       "bollinger_position"
     ],
     "expected_wr": 90.9,
-    "total_trades": 866,
-    "wins": 644,
-    "losses": 222,
-    "win_rate": 74.364896073903,
-    "profit_factor": 7.252252252252252,
-    "total_pnl": 138800.0
+    "total_trades": 860,
+    "wins": 657,
+    "losses": 203,
+    "win_rate": 76.3953488372093,
+    "profit_factor": 8.091133004926109,
+    "total_pnl": 143950.0
   },
   {
     "id": 2,
@@ -23,12 +23,12 @@
       "bollinger_position"
     ],
     "expected_wr": 94.4,
-    "total_trades": 512,
-    "wins": 371,
-    "losses": 141,
-    "win_rate": 72.4609375,
-    "profit_factor": 6.578014184397163,
-    "total_pnl": 78650.0
+    "total_trades": 480,
+    "wins": 364,
+    "losses": 116,
+    "win_rate": 75.83333333333333,
+    "profit_factor": 7.844827586206897,
+    "total_pnl": 79400.0
   },
   {
     "id": 3,
@@ -39,12 +39,12 @@
       "bollinger_position"
     ],
     "expected_wr": 90.9,
-    "total_trades": 72,
+    "total_trades": 70,
     "wins": 58,
-    "losses": 14,
-    "win_rate": 80.55555555555556,
-    "profit_factor": 10.357142857142858,
-    "total_pnl": 13100.0
+    "losses": 12,
+    "win_rate": 82.85714285714286,
+    "profit_factor": 12.083333333333334,
+    "total_pnl": 13300.0
   },
   {
     "id": 4,
@@ -54,12 +54,12 @@
       "trend_alignment"
     ],
     "expected_wr": 75.0,
-    "total_trades": 813,
-    "wins": 628,
-    "losses": 185,
-    "win_rate": 77.24477244772447,
-    "profit_factor": 8.486486486486486,
-    "total_pnl": 138500.0
+    "total_trades": 838,
+    "wins": 625,
+    "losses": 213,
+    "win_rate": 74.58233890214797,
+    "profit_factor": 7.335680751173709,
+    "total_pnl": 134950.0
   },
   {
     "id": 5,
@@ -69,12 +69,12 @@
       "bollinger_position"
     ],
     "expected_wr": 80.0,
-    "total_trades": 1893,
-    "wins": 1425,
-    "losses": 468,
-    "win_rate": 75.27733755942948,
-    "profit_factor": 7.612179487179487,
-    "total_pnl": 309450.0
+    "total_trades": 2341,
+    "wins": 1772,
+    "losses": 569,
+    "win_rate": 75.69414780008543,
+    "profit_factor": 7.785588752196837,
+    "total_pnl": 386100.0
   },
   {
     "id": 6,
@@ -85,11 +85,11 @@
       "trend_alignment"
     ],
     "expected_wr": 78.0,
-    "total_trades": 768,
-    "wins": 583,
-    "losses": 185,
-    "win_rate": 75.91145833333334,
-    "profit_factor": 7.878378378378378,
-    "total_pnl": 127250.0
+    "total_trades": 800,
+    "wins": 614,
+    "losses": 186,
+    "win_rate": 76.75,
+    "profit_factor": 8.25268817204301,
+    "total_pnl": 134900.0
   }
 ]
