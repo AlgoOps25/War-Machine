@@ -590,7 +590,7 @@ class PositionManager:
         print(f"  Partial P&L: ${partial_pnl:.2f} | Stop â†’ BE: {entry_price:.2f}")
 
         try:
-            from discord_helpers import send_scaling_alert
+            from app.discord_helpers import send_scaling_alert
             send_scaling_alert(ticker, exit_price, contracts_to_close,
                                contracts_left, partial_pnl, entry_price)
         except Exception as e:
@@ -666,7 +666,7 @@ class PositionManager:
                 print(f"[POSITION] AI record error: {e}")
 
         try:
-            from discord_helpers import send_exit_alert
+            from app.discord_helpers import send_exit_alert
             send_exit_alert(ticker, exit_price, exit_reason, final_pnl)
         except Exception as e:
             print(f"[POSITION] Discord exit alert failed: {e}")
@@ -860,5 +860,6 @@ class PositionManager:
 
 # â”€â”€ Global singleton â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 position_manager = PositionManager()
+
 
 

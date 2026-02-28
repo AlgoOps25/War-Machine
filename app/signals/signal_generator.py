@@ -19,7 +19,7 @@ import json
 
 from app.signals.breakout_detector import BreakoutDetector, format_signal_message
 from app.data.data_manager import data_manager
-from discord_helpers import send_simple_message
+from app.discord_helpers import send_simple_message
 
 # Import signal analytics for performance tracking
 try:
@@ -808,5 +808,6 @@ if __name__ == "__main__":
     # Print performance stats
     print("\n" + "="*70)
     print_performance_report(days=7)
+
 
 

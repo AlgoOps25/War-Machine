@@ -26,7 +26,7 @@ import requests
 import json
 from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
-from discord_helpers import send_options_signal_alert, send_simple_message
+from app.discord_helpers import send_options_signal_alert, send_simple_message
 from app.validation.validation import get_options_recommendation, get_validator, get_regime_filter
 # # # from ai_learning import learning_engine  # Archived - not currently used  # ARCHIVED - Feature not currently in use  # ARCHIVED - not currently used
 from app.validation.cfw6_confirmation import wait_for_confirmation, grade_signal_with_confirmations
@@ -1651,6 +1651,7 @@ def send_discord(message: str):
         requests.post(config.DISCORD_WEBHOOK_URL, json={"content": message}, timeout=5)
     except Exception as e:
         print(f"[DISCORD] Error: {e}")
+
 
 
 

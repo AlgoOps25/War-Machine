@@ -37,7 +37,7 @@ ET = ZoneInfo("America/New_York")
 # Import performance monitor and Discord helpers
 try:
     from . import performance_monitor
-    from discord_helpers import send_simple_message
+    from app.discord_helpers import send_simple_message
     ALERTS_ENABLED = True
 except ImportError as e:
     print(f"[ALERTS] Warning: Could not import dependencies - {e}")
@@ -372,6 +372,7 @@ if __name__ == "__main__":
         print("Alert system ready. Alerts will be sent to Discord when conditions are met.")
     else:
         print("Alert system disabled - dependencies not available.")
+
 
 
 
