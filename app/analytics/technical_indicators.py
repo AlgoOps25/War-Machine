@@ -469,7 +469,7 @@ def check_rsi_divergence(
     """
     try:
         # Need price data to compare with RSI
-        from data_manager import data_manager
+        from app.data.data_manager import data_manager
         bars = data_manager.get_bars_from_memory(ticker, limit=lookback_bars + 1)
         if not bars or len(bars) < lookback_bars:
             return None, None
@@ -731,7 +731,7 @@ def check_rvol(
         return None, False
 
     try:
-        from data_manager import data_manager
+        from app.data.data_manager import data_manager
         from datetime import datetime, timedelta
         from zoneinfo import ZoneInfo
 
@@ -827,4 +827,7 @@ if __name__ == "__main__":
 
     # Cache stats
     print(f"\nCache: {get_cache_stats()}")
+
+
+
 

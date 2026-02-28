@@ -454,3 +454,5 @@ print("[MTF] Strategy: Scans 5m/3m/2m/1m for same OR breakout + FVG pattern")
 print("[MTF] Boost: +2% (2 TFs), +3% (3 TFs), +5% (4 TFs - A+ setup)")
 
 
+
+

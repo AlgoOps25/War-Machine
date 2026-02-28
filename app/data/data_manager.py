@@ -925,7 +925,7 @@ class DataManager:
         Called at EOD to prepare for new trading day.
         """
         try:
-            from signal_generator import signal_generator
+            from app.signals.signal_generator import signal_generator
             signal_generator.detector.clear_pdh_pdl_cache()
             print("[DATA] PDH/PDL cache cleared for new session")
         except Exception as e:
@@ -1047,6 +1047,9 @@ class DataManager:
 # Global singleton
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 data_manager = DataManager()
+
+
+
 
 
 

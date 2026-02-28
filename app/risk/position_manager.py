@@ -652,7 +652,7 @@ class PositionManager:
 
         if exit_reason != "STALE_EOD":
             try:
-                from ai_learning import learning_engine
+                from app.ai.ai_learning import learning_engine
                 learning_engine.record_trade({
                     "ticker":    ticker,
                     "direction": direction,
@@ -860,6 +860,9 @@ class PositionManager:
 
 # â”€â”€ Global singleton â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 position_manager = PositionManager()
+
+
+
 
 
 

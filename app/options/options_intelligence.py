@@ -179,7 +179,7 @@ class OptionsIntelligence:
         
         # Get latest price
         try:
-            from data_manager import data_manager
+            from app.data.data_manager import data_manager
             bars = data_manager.get_today_5m_bars(ticker)
             if not bars:
                 current_price = 0
@@ -1064,6 +1064,9 @@ def scan_chain_for_uoa(ticker: str, signal_direction: str, entry_price: float) -
 def clear_options_cache(ticker: Optional[str] = None):
     """Clear options cache."""
     options_intelligence.clear_cache(ticker)
+
+
+
 
 
 

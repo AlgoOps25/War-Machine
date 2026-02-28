@@ -28,12 +28,12 @@ from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 from app.discord_helpers import send_options_signal_alert, send_simple_message
 from app.validation.validation import get_options_recommendation, get_validator, get_regime_filter
-# # # from ai_learning import learning_engine  # Archived - not currently used  # ARCHIVED - Feature not currently in use  # ARCHIVED - not currently used
+# # # from app.ai.ai_learning import learning_engine  # Archived - not currently used  # ARCHIVED - Feature not currently in use  # ARCHIVED - not currently used
 from app.validation.cfw6_confirmation import wait_for_confirmation, grade_signal_with_confirmations
 from app.risk.trade_calculator import compute_stop_and_targets, get_adaptive_fvg_threshold
 from app.data.data_manager import data_manager
 from app.risk.position_manager import position_manager
-# # from ai_learning import compute_confidence  # ARCHIVED - Feature not currently in use  # ARCHIVED - not currently used
+# # from app.ai.ai_learning import compute_confidence  # ARCHIVED - Feature not currently in use  # ARCHIVED - not currently used
 from utils import config
 from app.mtf.bos_fvg_engine import scan_bos_fvg, is_force_close_time
 
@@ -183,7 +183,7 @@ def _strip_tz(dt):
 
 def log_proposed_trade(ticker, signal_type, direction, price, confidence, grade):
     try:
-        from db_connection import get_conn, ph, serial_pk
+        from app.data.db_connection import get_conn, ph, serial_pk
         conn = get_conn()
         cursor = conn.cursor()
         p = ph()
@@ -238,7 +238,7 @@ def print_validation_stats():
 def _ensure_armed_db():
     """Create armed_signals_persist table if it doesn't exist."""
     try:
-        from db_connection import get_conn
+        from app.data.db_connection import get_conn
         conn = get_conn()
         cursor = conn.cursor()
         cursor.execute("""
@@ -269,7 +269,7 @@ def _persist_armed_signal(ticker: str, data: dict):
     Serializes validation_result as JSON if present.
     """
     try:
-        from db_connection import get_conn, ph as _ph
+        from app.data.db_connection import get_conn, ph as _ph
         conn = get_conn()
         cursor = conn.cursor()
         p = _ph()
@@ -324,7 +324,7 @@ def _persist_armed_signal(ticker: str, data: dict):
 def _remove_armed_from_db(ticker: str):
     """Delete an armed signal entry from the DB."""
     try:
-        from db_connection import get_conn, ph as _ph
+        from app.data.db_connection import get_conn, ph as _ph
         conn = get_conn()
         cursor = conn.cursor()
         p = _ph()
@@ -343,7 +343,7 @@ def _cleanup_stale_armed_signals():
     This syncs the armed_signals table with position_manager state.
     """
     try:
-        from db_connection import get_conn
+        from app.data.db_connection import get_conn
         
         # Get list of open position IDs from position_manager
         open_positions = position_manager.get_open_positions()
@@ -388,7 +388,7 @@ def _load_armed_signals_from_db() -> dict:
     Stale signals (closed positions) are auto-cleaned before loading.
     """
     try:
-        from db_connection import get_conn, dict_cursor as _dc, ph as _ph, USE_POSTGRES as _USE_PG
+        from app.data.db_connection import get_conn, dict_cursor as _dc, ph as _ph, USE_POSTGRES as _USE_PG
         
         # First, clean up stale armed signals
         _cleanup_stale_armed_signals()
@@ -488,7 +488,7 @@ def _maybe_load_armed_signals():
 def _ensure_watch_db():
     """Create watching_signals_persist table if it doesn't exist."""
     try:
-        from db_connection import get_conn
+        from app.data.db_connection import get_conn
         conn = get_conn()
         cursor = conn.cursor()
         cursor.execute("""
@@ -514,7 +514,7 @@ def _persist_watch(ticker: str, data: dict):
     'data' must contain: direction, breakout_bar_dt, or_high, or_low, signal_type.
     """
     try:
-        from db_connection import get_conn, ph as _ph
+        from app.data.db_connection import get_conn, ph as _ph
         conn = get_conn()
         cursor = conn.cursor()
         p = _ph()
@@ -549,7 +549,7 @@ def _persist_watch(ticker: str, data: dict):
 def _remove_watch_from_db(ticker: str):
     """Delete a single watch entry from the DB."""
     try:
-        from db_connection import get_conn, ph as _ph
+        from app.data.db_connection import get_conn, ph as _ph
         conn = get_conn()
         cursor = conn.cursor()
         p = _ph()
@@ -569,7 +569,7 @@ def _cleanup_stale_watches():
     This runs on startup to clean up watches that expired during downtime/restarts.
     """
     try:
-        from db_connection import get_conn, ph as _ph
+        from app.data.db_connection import get_conn, ph as _ph
         
         # Calculate expiration cutoff: current time - (MAX_WATCH_BARS * 5 minutes)
         watch_window_minutes = MAX_WATCH_BARS * 5
@@ -604,7 +604,7 @@ def _load_watches_from_db() -> dict:
     Stale watches (older than MAX_WATCH_BARS window) are auto-cleaned before loading.
     """
     try:
-        from db_connection import get_conn, dict_cursor as _dc, ph as _ph, USE_POSTGRES as _USE_PG
+        from app.data.db_connection import get_conn, dict_cursor as _dc, ph as _ph, USE_POSTGRES as _USE_PG
         
         # First, clean up any stale watches
         _cleanup_stale_watches()
@@ -1342,7 +1342,7 @@ def clear_armed_signals():
     armed_signals.clear()
     _armed_loaded = False
     try:
-        from db_connection import get_conn
+        from app.data.db_connection import get_conn
         conn = get_conn()
         cursor = conn.cursor()
         cursor.execute("DELETE FROM armed_signals_persist")
@@ -1359,7 +1359,7 @@ def clear_watching_signals():
     watching_signals.clear()
     _watches_loaded = False
     try:
-        from db_connection import get_conn
+        from app.data.db_connection import get_conn
         conn = get_conn()
         cursor = conn.cursor()
         cursor.execute("DELETE FROM watching_signals_persist")
@@ -1651,6 +1651,10 @@ def send_discord(message: str):
         requests.post(config.DISCORD_WEBHOOK_URL, json={"content": message}, timeout=5)
     except Exception as e:
         print(f"[DISCORD] Error: {e}")
+
+
+
+
 
 
 

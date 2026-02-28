@@ -42,7 +42,7 @@ from utils import config
 # Import existing modules
 try:
     from ws_feed import get_current_bar
-    from data_manager import data_manager
+    from app.data.data_manager import data_manager
     WS_AVAILABLE = True
 except ImportError:
     WS_AVAILABLE = False
@@ -494,4 +494,7 @@ def print_momentum_summary(scored_tickers: List[Dict], top_n: int = 10):
         print(f"{rank:<6} {ticker:<8} {score:<8.1f} {rvol:<8.2f} ${price:<9.2f} {volume:>12,}")
     
     print(f"{'='*80}\n")
+
+
+
 

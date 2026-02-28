@@ -119,7 +119,7 @@ def wait_for_confirmation(
     while candles_waited < max_wait_candles:
         # Re-fetch bars each cycle for real-time data
         try:
-            from data_manager import data_manager
+            from app.data.data_manager import data_manager
             bars = data_manager.get_today_5m_bars(ticker)
         except Exception as e:
             print(f"[CFW6] Error fetching bars: {e}")
@@ -201,7 +201,7 @@ def check_previous_day_levels(ticker: str, current_price: float, direction: str)
     Phase 1.7 refactor: delegates to data_manager.get_previous_day_ohlc()
     for DRY single-source-of-truth PDH/PDL data.
     """
-    from data_manager import data_manager
+    from app.data.data_manager import data_manager
     
     prev_day = data_manager.get_previous_day_ohlc(ticker)
     pdh = prev_day["high"]
@@ -297,4 +297,7 @@ def grade_signal_with_confirmations(
             "institutional": inst_ok
         }
     }
+
+
+
 

@@ -350,3 +350,5 @@ print("[MTF-PRIORITY] Rule: Always trade the highest-TF FVG when conflicts exist
 print("[MTF-PRIORITY] Priority order: 5m > 3m > 2m > 1m")
 
 
+
+

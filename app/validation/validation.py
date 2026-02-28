@@ -163,7 +163,7 @@ class RegimeFilter:
     def _get_vix_level(self) -> float:
         """Get current VIX level from data manager."""
         try:
-            from data_manager import data_manager
+            from app.data.data_manager import data_manager
             try:
                 vix_level = data_manager.get_vix_level()
                 if vix_level and vix_level > 0:
@@ -184,7 +184,7 @@ class RegimeFilter:
     def _get_spy_bars(self, limit: int = 50) -> list:
         """Get recent SPY bars for trend analysis."""
         try:
-            from data_manager import data_manager
+            from app.data.data_manager import data_manager
             bars = data_manager.get_bars_from_memory("SPY", limit=limit)
             if bars and len(bars) >= 14:
                 return bars
@@ -924,7 +924,7 @@ class SignalValidator:
         vpvr_rescue_applied = False
         if self.enable_vpvr and vpvr_calculator:
             try:
-                from data_manager import data_manager
+                from app.data.data_manager import data_manager
                 bars = data_manager.get_today_session_bars(ticker)
                 
                 if bars and len(bars) >= 78:
@@ -1124,6 +1124,9 @@ if __name__ == "__main__":
     print("\n" + "=" * 70)
     print("All validation components operational!")
     print("=" * 70)
+
+
+
 
 
 

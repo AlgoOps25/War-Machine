@@ -54,7 +54,7 @@ def _get_vix_adjustment():
     Returns 0.00 if VIX data unavailable.
     """
     try:
-        from data_manager import data_manager
+        from app.data.data_manager import data_manager
         vix_data = data_manager.get_vix_level()
 
         if vix_data is None:
@@ -89,7 +89,7 @@ def _get_winrate_adjustment(signal_type, grade):
     Returns 0.00 if insufficient data (<10 trades).
     """
     try:
-        from db_connection import get_conn, dict_cursor
+        from app.data.db_connection import get_conn, dict_cursor
 
         conn = get_conn()
         cursor = dict_cursor(conn)
@@ -147,7 +147,7 @@ def _get_recent_quality_adjustment():
     Returns 0.00 if insufficient data.
     """
     try:
-        from db_connection import get_conn, dict_cursor
+        from app.data.db_connection import get_conn, dict_cursor
 
         conn = get_conn()
         cursor = dict_cursor(conn)
@@ -249,3 +249,7 @@ def get_threshold_stats():
         "vix_adj": _get_vix_adjustment(),
         "timestamp": _now_et().isoformat()
     }
+
+
+
+

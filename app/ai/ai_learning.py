@@ -346,7 +346,7 @@ class AILearningEngine:
             0.7-1.3 based on options score (0-100 scale)
         """
         try:
-            from options_data_manager import options_dm
+            from app.options.options_data_manager import options_dm
             score_data = options_dm.get_options_score(ticker)
             
             if not score_data.get('tradeable'):
@@ -417,4 +417,7 @@ class AILearningEngine:
 
 # Global instance
 learning_engine = AILearningEngine()
+
+
+
 

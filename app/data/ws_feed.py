@@ -179,7 +179,7 @@ def _on_tick(ticker: str, price: float, volume: int, epoch_ms: int):
 
 def _flush_pending():
     """Persist all completed 1m bars to DB and clear the queue."""
-    from data_manager import data_manager  # late import avoids circular dep
+    from app.data.data_manager import data_manager  # late import avoids circular dep
     with _lock:
         snapshot = {t: list(bars) for t, bars in _pending.items() if bars}
         for t in snapshot:
@@ -191,7 +191,7 @@ def _flush_pending():
 
 def _flush_open():
     """Upsert each open bar so the scanner sees live price on every poll."""
-    from data_manager import data_manager
+    from app.data.data_manager import data_manager
     today_et = datetime.now(ET).date()
     with _lock:
         snapshot = {t: dict(b) for t, b in _open_bars.items()}
@@ -376,4 +376,7 @@ def start_ws_feed(tickers: list):
     threading.Thread(target=_flush_loop,         name="ws-flush", daemon=True).start()
     print(f"[WS] Feed initializing | {len(tickers)} seed tickers | "
           f"DB flush every {FLUSH_INTERVAL}s")
+
+
+
 

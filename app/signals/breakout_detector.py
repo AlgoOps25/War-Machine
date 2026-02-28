@@ -1,4 +1,4 @@
-"""
+﻿"""
 Breakout Entry Detector - High-Probability Entry Signals
 
 Strategy:
@@ -142,7 +142,7 @@ class BreakoutDetector:
         
         # Fetch from data_manager
         try:
-            from data_manager import data_manager
+            from app.data.data_manager import data_manager
             prev_day = data_manager.get_previous_day_ohlc(ticker)
             
             if prev_day and 'high' in prev_day and 'low' in prev_day:
@@ -350,14 +350,14 @@ class BreakoutDetector:
                 # Check if resistance was broken in previous bars
                 recent_bars = bars[-(self.min_bars_since_breakout + 1):-1]
                 if recent_bars and all(bar['close'] <= resistance for bar in recent_bars):
-                    # This is the initial break — wait for confirmation
+                    # This is the initial break â€” wait for confirmation
                     return None
             
             entry = latest['close']
             stop = entry - (atr * self.atr_stop_multiplier)
             risk = entry - stop
             
-            # ⭐ Issue #2 Fix: Calculate T1 and T2 targets
+            # â­ Issue #2 Fix: Calculate T1 and T2 targets
             t1_reward = risk * self.t1_reward_ratio
             t2_reward = risk * self.t2_reward_ratio
             t1_price = entry + t1_reward
@@ -390,8 +390,8 @@ class BreakoutDetector:
                 'entry': round(entry, 2),
                 'stop': round(stop, 2),
                 'target': round(target, 2),  # T2 for backwards compatibility
-                't1': round(t1_price, 2),    # ⭐ NEW: T1 target (1.5R)
-                't2': round(t2_price, 2),    # ⭐ NEW: T2 target (2.5R)
+                't1': round(t1_price, 2),    # â­ NEW: T1 target (1.5R)
+                't2': round(t2_price, 2),    # â­ NEW: T2 target (2.5R)
                 't1_r': self.t1_reward_ratio,
                 't2_r': self.t2_reward_ratio,
                 'risk': round(risk, 2),
@@ -428,7 +428,7 @@ class BreakoutDetector:
             stop = entry + (atr * self.atr_stop_multiplier)
             risk = stop - entry
             
-            # ⭐ Issue #2 Fix: Calculate T1 and T2 targets
+            # â­ Issue #2 Fix: Calculate T1 and T2 targets
             t1_reward = risk * self.t1_reward_ratio
             t2_reward = risk * self.t2_reward_ratio
             t1_price = entry - t1_reward
@@ -460,8 +460,8 @@ class BreakoutDetector:
                 'entry': round(entry, 2),
                 'stop': round(stop, 2),
                 'target': round(target, 2),  # T2 for backwards compatibility
-                't1': round(t1_price, 2),    # ⭐ NEW: T1 target (1.5R)
-                't2': round(t2_price, 2),    # ⭐ NEW: T2 target (2.5R)
+                't1': round(t1_price, 2),    # â­ NEW: T1 target (1.5R)
+                't2': round(t2_price, 2),    # â­ NEW: T2 target (2.5R)
                 't1_r': self.t1_reward_ratio,
                 't2_r': self.t2_reward_ratio,
                 'risk': round(risk, 2),
@@ -530,7 +530,7 @@ class BreakoutDetector:
             stop = breakout_level - (atr * self.atr_stop_multiplier)
             risk = entry - stop
             
-            # ⭐ Issue #2 Fix: T1/T2 targets
+            # â­ Issue #2 Fix: T1/T2 targets
             t1_reward = risk * self.t1_reward_ratio
             t2_reward = risk * self.t2_reward_ratio
             t1_price = entry + t1_reward
@@ -584,7 +584,7 @@ class BreakoutDetector:
             stop = breakout_level + (atr * self.atr_stop_multiplier)
             risk = stop - entry
             
-            # ⭐ Issue #2 Fix: T1/T2 targets
+            # â­ Issue #2 Fix: T1/T2 targets
             t1_reward = risk * self.t1_reward_ratio
             t2_reward = risk * self.t2_reward_ratio
             t1_price = entry - t1_reward
@@ -718,9 +718,9 @@ def format_signal_message(ticker: str, signal: Dict) -> str:
     Returns:
         Formatted message string
     """
-    emoji = "📈" if signal['signal'] == 'BUY' else "📉"
+    emoji = "ðŸ“ˆ" if signal['signal'] == 'BUY' else "ðŸ“‰"
     
-    # ⭐ Issue #2 Fix: Show T1 and T2 targets
+    # â­ Issue #2 Fix: Show T1 and T2 targets
     msg = (
         f"{emoji} **{signal['signal']} {ticker}** @ ${signal['entry']}\n"
         f"Stop: ${signal['stop']}\n"
@@ -805,3 +805,4 @@ if __name__ == "__main__":
         print(f"Max Total Profit: ${shares * signal['reward']:.2f}")
     else:
         print("No breakout signal detected")
+
