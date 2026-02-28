@@ -909,3 +909,7 @@ if __name__ == "__main__":
     print("filter_params = config.get_filter_params()")
     print("filter_weights = config.get_filter_weights()")
     print("\nEnabled filters:", config.get_filter_names())
+
+# Market Hours (EST)
+MARKET_OPEN = "09:30"
+MARKET_CLOSE = "16:00"
