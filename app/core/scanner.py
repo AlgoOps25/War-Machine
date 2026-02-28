@@ -97,7 +97,7 @@ def monitor_open_positions():
 
 
 def start_scanner_loop():
-    from sniper import process_ticker, clear_armed_signals, clear_watching_signals
+    from app.core.sniper import process_ticker, clear_armed_signals, clear_watching_signals
     from discord_helpers import send_simple_message
     from ai_learning import learning_engine
 
@@ -465,6 +465,7 @@ def get_screener_tickers(min_market_cap: int = 1_000_000_000, limit: int = 50) -
 # â”€â”€ Entry point â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 if __name__ == "__main__":
     start_scanner_loop()
+
 
 
 
