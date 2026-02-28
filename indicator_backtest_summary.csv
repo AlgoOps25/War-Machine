@@ -1,0 +1,7 @@
+id,name,filters,expected_wr,total_trades,wins,losses,win_rate,profit_factor,total_pnl,avg_win,avg_loss
+1,Current Winner,"['price_range', 'bollinger_position']",90.9,0,0,0,0,0,0,0,0
+2,Triple Filter,"['price_range', 'rsi_threshold', 'bollinger_position']",94.4,0,0,0,0,0,0,0,0
+3,ATR Variant,"['price_range', 'atr_threshold', 'bollinger_position']",90.9,0,0,0,0,0,0,0,0
+4,Trend + Price,"['price_range', 'trend_alignment']",75.0,0,0,0,0,0,0,0,0
+5,RSI + Bollinger,"['rsi_threshold', 'bollinger_position']",80.0,0,0,0,0,0,0,0,0
+6,Volume + Trend,"['price_range', 'volume_surge', 'trend_alignment']",78.0,0,0,0,0,0,0,0,0

@@ -1,0 +1,95 @@
+[
+  {
+    "id": 1,
+    "name": "Current Winner",
+    "filters": [
+      "price_range",
+      "bollinger_position"
+    ],
+    "expected_wr": 90.9,
+    "total_trades": 866,
+    "wins": 644,
+    "losses": 222,
+    "win_rate": 74.364896073903,
+    "profit_factor": 7.252252252252252,
+    "total_pnl": 138800.0
+  },
+  {
+    "id": 2,
+    "name": "Triple Filter",
+    "filters": [
+      "price_range",
+      "rsi_threshold",
+      "bollinger_position"
+    ],
+    "expected_wr": 94.4,
+    "total_trades": 512,
+    "wins": 371,
+    "losses": 141,
+    "win_rate": 72.4609375,
+    "profit_factor": 6.578014184397163,
+    "total_pnl": 78650.0
+  },
+  {
+    "id": 3,
+    "name": "ATR Variant",
+    "filters": [
+      "price_range",
+      "atr_threshold",
+      "bollinger_position"
+    ],
+    "expected_wr": 90.9,
+    "total_trades": 72,
+    "wins": 58,
+    "losses": 14,
+    "win_rate": 80.55555555555556,
+    "profit_factor": 10.357142857142858,
+    "total_pnl": 13100.0
+  },
+  {
+    "id": 4,
+    "name": "Trend + Price",
+    "filters": [
+      "price_range",
+      "trend_alignment"
+    ],
+    "expected_wr": 75.0,
+    "total_trades": 813,
+    "wins": 628,
+    "losses": 185,
+    "win_rate": 77.24477244772447,
+    "profit_factor": 8.486486486486486,
+    "total_pnl": 138500.0
+  },
+  {
+    "id": 5,
+    "name": "RSI + Bollinger",
+    "filters": [
+      "rsi_threshold",
+      "bollinger_position"
+    ],
+    "expected_wr": 80.0,
+    "total_trades": 1893,
+    "wins": 1425,
+    "losses": 468,
+    "win_rate": 75.27733755942948,
+    "profit_factor": 7.612179487179487,
+    "total_pnl": 309450.0
+  },
+  {
+    "id": 6,
+    "name": "Volume + Trend",
+    "filters": [
+      "price_range",
+      "volume_surge",
+      "trend_alignment"
+    ],
+    "expected_wr": 78.0,
+    "total_trades": 768,
+    "wins": 583,
+    "losses": 185,
+    "win_rate": 75.91145833333334,
+    "profit_factor": 7.878378378378378,
+    "total_pnl": 127250.0
+  }
+]

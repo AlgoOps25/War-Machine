@@ -1,0 +1,113 @@
+[
+  {
+    "id": 1,
+    "name": "Current Winner",
+    "filters": [
+      "price_range",
+      "bollinger_position"
+    ],
+    "expected_wr": 90.9,
+    "total_trades": 0,
+    "wins": 0,
+    "losses": 0,
+    "win_rate": 0,
+    "profit_factor": 0,
+    "total_pnl": 0,
+    "avg_win": 0,
+    "avg_loss": 0,
+    "trades": []
+  },
+  {
+    "id": 2,
+    "name": "Triple Filter",
+    "filters": [
+      "price_range",
+      "rsi_threshold",
+      "bollinger_position"
+    ],
+    "expected_wr": 94.4,
+    "total_trades": 0,
+    "wins": 0,
+    "losses": 0,
+    "win_rate": 0,
+    "profit_factor": 0,
+    "total_pnl": 0,
+    "avg_win": 0,
+    "avg_loss": 0,
+    "trades": []
+  },
+  {
+    "id": 3,
+    "name": "ATR Variant",
+    "filters": [
+      "price_range",
+      "atr_threshold",
+      "bollinger_position"
+    ],
+    "expected_wr": 90.9,
+    "total_trades": 0,
+    "wins": 0,
+    "losses": 0,
+    "win_rate": 0,
+    "profit_factor": 0,
+    "total_pnl": 0,
+    "avg_win": 0,
+    "avg_loss": 0,
+    "trades": []
+  },
+  {
+    "id": 4,
+    "name": "Trend + Price",
+    "filters": [
+      "price_range",
+      "trend_alignment"
+    ],
+    "expected_wr": 75.0,
+    "total_trades": 0,
+    "wins": 0,
+    "losses": 0,
+    "win_rate": 0,
+    "profit_factor": 0,
+    "total_pnl": 0,
+    "avg_win": 0,
+    "avg_loss": 0,
+    "trades": []
+  },
+  {
+    "id": 5,
+    "name": "RSI + Bollinger",
+    "filters": [
+      "rsi_threshold",
+      "bollinger_position"
+    ],
+    "expected_wr": 80.0,
+    "total_trades": 0,
+    "wins": 0,
+    "losses": 0,
+    "win_rate": 0,
+    "profit_factor": 0,
+    "total_pnl": 0,
+    "avg_win": 0,
+    "avg_loss": 0,
+    "trades": []
+  },
+  {
+    "id": 6,
+    "name": "Volume + Trend",
+    "filters": [
+      "price_range",
+      "volume_surge",
+      "trend_alignment"
+    ],
+    "expected_wr": 78.0,
+    "total_trades": 0,
+    "wins": 0,
+    "losses": 0,
+    "win_rate": 0,
+    "profit_factor": 0,
+    "total_pnl": 0,
+    "avg_win": 0,
+    "avg_loss": 0,
+    "trades": []
+  }
+]
