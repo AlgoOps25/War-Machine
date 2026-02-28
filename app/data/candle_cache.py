@@ -1,4 +1,4 @@
-"""
+﻿"""
 Candle Cache System - PostgreSQL-backed historical data cache
 
 PHASE 1: Basic caching with startup optimization
@@ -18,8 +18,8 @@ from zoneinfo import ZoneInfo
 from typing import List, Dict, Optional, Tuple
 from collections import defaultdict
 
-import config
-import db_connection
+from utils import config
+from app.data import db_connection
 from db_connection import get_conn, ph, dict_cursor
 
 ET = ZoneInfo("America/New_York")
@@ -88,7 +88,7 @@ class CandleCache:
         
         conn.commit()
         conn.close()
-        print("[CACHE] ✅ Candle cache tables initialized")
+        print("[CACHE] âœ… Candle cache tables initialized")
     
     # =============================================================
     # PHASE 1: BASIC CACHE OPERATIONS
@@ -507,3 +507,4 @@ class CandleCache:
 
 # Global singleton
 candle_cache = CandleCache()
+

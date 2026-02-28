@@ -1,9 +1,9 @@
-"""
+﻿"""
 Data Manager - Consolidated Data Fetching, Storage, and Database Management
 
 Design principles:
   - Postgres (or SQLite locally) is the SINGLE source of truth for all bars.
-  - NO in-memory live bar accumulator — every bar is persisted to DB immediately.
+  - NO in-memory live bar accumulator â€” every bar is persisted to DB immediately.
   - TODAY's bars are supplied by ws_feed.py (EODHD WebSocket real-time feed).
     startup_backfill_today() fetches 30 days of HISTORICAL data (up to yesterday)
     so OR and prior-day context are available even after a midday restart.
@@ -20,12 +20,12 @@ Design principles:
   - WEBSOCKET-FIRST OPTIMIZATION: Live data queries check WebSocket feed before DB/API.
 
 EODHD endpoint rules:
-  - /api/intraday/ : primary bar source — prior-day data is always available;
+  - /api/intraday/ : primary bar source â€” prior-day data is always available;
     same-day data availability depends on plan (All-In-One may serve it sooner).
-  - /api/eod/ : end-of-day OHLCV historical data — used by get_daily_ohlc().
-  - /api/real-time/ : live price snapshot — used by bulk_fetch_live_snapshots().
-  - WebSocket (ws_feed.py): real-time tick stream — the primary source for today's bars.
-  - from/to MUST be Unix timestamps (int) — date strings cause 422 errors.
+  - /api/eod/ : end-of-day OHLCV historical data â€” used by get_daily_ohlc().
+  - /api/real-time/ : live price snapshot â€” used by bulk_fetch_live_snapshots().
+  - WebSocket (ws_feed.py): real-time tick stream â€” the primary source for today's bars.
+  - from/to MUST be Unix timestamps (int) â€” date strings cause 422 errors.
   - Returns ET-naive datetimes (extended hours 4 AM - 8 PM ET, ~960 bars/day).
 """
 import time
@@ -35,8 +35,8 @@ from collections import defaultdict
 from datetime import datetime, timedelta, time as dtime, date as date_type
 from zoneinfo import ZoneInfo
 from typing import List, Dict, Optional
-import config
-import db_connection
+from utils import config
+from app.data import db_connection
 from db_connection import (
     get_conn, ph, dict_cursor, serial_pk,
     upsert_bar_sql, upsert_bar_5m_sql, upsert_metadata_sql
@@ -46,7 +46,7 @@ ET = ZoneInfo("America/New_York")
 
 _logged_skip = set()  # Track tickers we've logged skip messages for
 
-# Per-ticker update TTL — prevents hammering EODHD during rapid scan cycles.
+# Per-ticker update TTL â€” prevents hammering EODHD during rapid scan cycles.
 _last_update: Dict[str, datetime] = {}
 UPDATE_TTL = timedelta(minutes=2)
 
@@ -101,7 +101,7 @@ class DataManager:
         conn = get_conn(self.db_path)
         cursor = conn.cursor()
 
-        # 1m bars — primary store
+        # 1m bars â€” primary store
         cursor.execute(f"""
             CREATE TABLE IF NOT EXISTS intraday_bars (
                 id          {serial_pk()},
@@ -166,7 +166,7 @@ class DataManager:
             cursor.execute("DELETE FROM fetch_metadata")
             cursor.execute("DELETE FROM db_version")
             cursor.execute("INSERT INTO db_version (version) VALUES (2)")
-            print("[DATA] Migration v2: Cleared UTC bars — switching to ET-naive storage")
+            print("[DATA] Migration v2: Cleared UTC bars â€” switching to ET-naive storage")
 
         conn.commit()
         conn.close()
@@ -265,7 +265,7 @@ class DataManager:
             except Exception as e:
                 print(f"[DATA] [{idx}/{len(tickers)}] {ticker} backfill error: {e}")
 
-        print("[DATA] Startup backfill complete — WebSocket feed handles today's bars\n")
+        print("[DATA] Startup backfill complete â€” WebSocket feed handles today's bars\n")
 
     def startup_intraday_backfill_today(self, tickers: List[str]):
         """
@@ -295,7 +295,7 @@ class DataManager:
         if filled:
             print(f"[DATA] Today REST backfill complete: {filled}/{len(tickers)} tickers\n")
         else:
-            print(f"[DATA] Today REST backfill: no same-day data from EODHD — WS-only session\n")
+            print(f"[DATA] Today REST backfill: no same-day data from EODHD â€” WS-only session\n")
 
     # =============================================================
     # CACHE-AWARE STARTUP & SYNC
@@ -320,7 +320,7 @@ class DataManager:
         now_et = datetime.now(ET)
         timeframe = '1m'
         
-        print(f"\n[CACHE] 🚀 Smart startup backfill: {len(tickers)} tickers | {days} days")
+        print(f"\n[CACHE] ðŸš€ Smart startup backfill: {len(tickers)} tickers | {days} days")
         
         cache_hits = 0
         cache_misses = 0
@@ -400,8 +400,8 @@ class DataManager:
                 print(f"[CACHE] [{idx}/{len(tickers)}] {ticker} error: {e}")
         
         # Print summary
-        print(f"\n[CACHE] ✅ Startup complete!")
-        print(f"[CACHE] 📊 Stats:")
+        print(f"\n[CACHE] âœ… Startup complete!")
+        print(f"[CACHE] ðŸ“Š Stats:")
         print(f"[CACHE]   - Cache hits: {cache_hits}/{len(tickers)} ({cache_hits/len(tickers)*100:.1f}%)")
         print(f"[CACHE]   - Cache misses: {cache_misses}")
         print(f"[CACHE]   - Gap fills: {gap_fills}")
@@ -451,7 +451,7 @@ class DataManager:
         if not (config.MARKET_OPEN <= now_et.time() <= dtime(17, 0)):
             return
         
-        print(f"[CACHE] 🔄 Background sync: {len(tickers)} tickers")
+        print(f"[CACHE] ðŸ”„ Background sync: {len(tickers)} tickers")
         
         synced = 0
         for ticker in tickers:
@@ -480,7 +480,7 @@ class DataManager:
                 print(f"[CACHE] Background sync error for {ticker}: {e}")
         
         if synced > 0:
-            print(f"[CACHE] ✅ Background sync complete: {synced}/{len(tickers)} updated")
+            print(f"[CACHE] âœ… Background sync complete: {synced}/{len(tickers)} updated")
 
     def warmup_cache(self, tickers: List[str], days: int = 60):
         """
@@ -491,7 +491,7 @@ class DataManager:
         """
         from candle_cache import candle_cache
         
-        print(f"[CACHE] 🔥 Cache warmup: {len(tickers)} tickers | {days} days")
+        print(f"[CACHE] ðŸ”¥ Cache warmup: {len(tickers)} tickers | {days} days")
         
         now_et = datetime.now(ET)
         today_midnight = now_et.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -509,7 +509,7 @@ class DataManager:
             except Exception as e:
                 print(f"[CACHE] [{idx}/{len(tickers)}] {ticker} error: {e}")
         
-        print(f"[CACHE] ✅ Warmup complete!\n")
+        print(f"[CACHE] âœ… Warmup complete!\n")
 
     # =============================================================
     # INCREMENTAL UPDATE
@@ -1043,7 +1043,8 @@ class DataManager:
             return None
 
 
-# ─────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Global singleton
-# ─────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 data_manager = DataManager()
+
