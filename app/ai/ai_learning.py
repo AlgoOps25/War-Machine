@@ -1,4 +1,4 @@
-"""
+﻿"""
 AI Learning Module - Improves Entry Quality Over Time
 Analyzes win/loss patterns and adjusts strategy parameters
 
@@ -11,12 +11,12 @@ from datetime import datetime, timedelta
 from typing import Dict, List
 import numpy as np
 import db_connection
-import config
+from utils import config
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # CONFIDENCE SCORING (formerly learning_policy.py)
-# ═══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 # Grade baseline confidence map (CFW6 video rules)
 _GRADE_BASE = {
@@ -81,9 +81,9 @@ def grade_to_label(confidence: float) -> str:
         return "reject"
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # AI LEARNING ENGINE
-# ═══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 class AILearningEngine:
     def __init__(self, db_path: str = "learning_data.json"):
@@ -206,7 +206,7 @@ class AILearningEngine:
         self.update_performance_metrics(trade_record)
         self.save_data()
 
-        print(f"[AI] Trade recorded: {trade['ticker']} {trade['direction']} → "
+        print(f"[AI] Trade recorded: {trade['ticker']} {trade['direction']} â†’ "
               f"{'WIN' if trade_record['win'] else 'LOSS'} ${trade['pnl']:+.2f}")
 
     def update_performance_metrics(self, trade: Dict):
@@ -353,9 +353,9 @@ class AILearningEngine:
                 return 1.0  # Neutral if not tradeable
             
             # Convert 0-100 score to 0.7-1.3 multiplier
-            # Score 50 → 1.0 (neutral)
-            # Score 0  → 0.7 (weak)
-            # Score 100 → 1.3 (strong)
+            # Score 50 â†’ 1.0 (neutral)
+            # Score 0  â†’ 0.7 (weak)
+            # Score 100 â†’ 1.3 (strong)
             score = score_data.get('score', 50)
             multiplier = 0.7 + (score / 100) * 0.6
             return round(multiplier, 2)
@@ -417,3 +417,4 @@ class AILearningEngine:
 
 # Global instance
 learning_engine = AILearningEngine()
+
