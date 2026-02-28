@@ -99,8 +99,12 @@ def monitor_open_positions():
 def start_scanner_loop():
     from app.core.sniper import process_ticker, clear_armed_signals, clear_watching_signals
     from discord_helpers import send_simple_message
-    from ai_learning import learning_engine
-
+    try:
+        from app.ai.ai_learning import learning_engine
+        HAS_AI_LEARNING = True
+    except ImportError:
+        learning_engine = None
+        HAS_AI_LEARNING = False
     print(f"\n{'='*60}")
     print("WAR MACHINE - CFW6 SCANNER + BREAKOUT DETECTOR")
     print(f"{'='*60}")
@@ -465,6 +469,8 @@ def get_screener_tickers(min_market_cap: int = 1_000_000_000, limit: int = 50) -
 # â”€â”€ Entry point â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 if __name__ == "__main__":
     start_scanner_loop()
+
+
 
 
 
