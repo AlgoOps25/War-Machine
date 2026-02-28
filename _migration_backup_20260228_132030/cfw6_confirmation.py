@@ -1,4 +1,4 @@
-﻿"""
+"""
 CFW6 Confirmation System - Consolidated Confirmation Logic
 Replaces: confirmation_layers.py, cfw6_confirmation_enhanced.py, candle_confirmation.py
 Implements exact CFW6 video rules for candle confirmation + multi-factor validation
@@ -6,11 +6,11 @@ Implements exact CFW6 video rules for candle confirmation + multi-factor validat
 from typing import Dict, List, Tuple
 from datetime import datetime
 import time
-from utils import config
+import config
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ══════════════════════════════════════════════════════════════════════════════
 # CFW6 CANDLE CONFIRMATION (From Video)
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ══════════════════════════════════════════════════════════════════════════════
 
 def analyze_confirmation_candle(
     candle: Dict,
@@ -49,19 +49,19 @@ def analyze_confirmation_candle(
         if close_price > open_price:
             wick_ratio = lower_wick / candle_range if candle_range > 0 else 0
             if wick_ratio < 0.15:
-                print(f"[CFW6] âœ… TYPE 1 (A+): Perfect green candle - minimal wick ({wick_ratio*100:.1f}%)")
+                print(f"[CFW6] ✅ TYPE 1 (A+): Perfect green candle - minimal wick ({wick_ratio*100:.1f}%)")
                 return "perfect", "A+"
             if wick_ratio >= 0.25:
-                print(f"[CFW6] âœ… TYPE 2 (A): Flip candle - strong lower wick ({wick_ratio*100:.1f}%)")
+                print(f"[CFW6] ✅ TYPE 2 (A): Flip candle - strong lower wick ({wick_ratio*100:.1f}%)")
                 return "flip", "A"
 
         elif close_price < open_price:
             wick_ratio = lower_wick / candle_range if candle_range > 0 else 0
             if wick_ratio >= 0.50:
-                print(f"[CFW6] âš ï¸ TYPE 3 (A-): Wick rejection - didn't flip green ({wick_ratio*100:.1f}%)")
+                print(f"[CFW6] ⚠️ TYPE 3 (A-): Wick rejection - didn't flip green ({wick_ratio*100:.1f}%)")
                 return "wick", "A-"
 
-        print(f"[CFW6] âŒ REJECT: No valid confirmation pattern")
+        print(f"[CFW6] ❌ REJECT: No valid confirmation pattern")
         return "reject", "reject"
 
     else:  # Bear direction
@@ -72,19 +72,19 @@ def analyze_confirmation_candle(
         if close_price < open_price:
             wick_ratio = upper_wick / candle_range if candle_range > 0 else 0
             if wick_ratio < 0.15:
-                print(f"[CFW6] âœ… TYPE 1 (A+): Perfect red candle - minimal wick ({wick_ratio*100:.1f}%)")
+                print(f"[CFW6] ✅ TYPE 1 (A+): Perfect red candle - minimal wick ({wick_ratio*100:.1f}%)")
                 return "perfect", "A+"
             if wick_ratio >= 0.25:
-                print(f"[CFW6] âœ… TYPE 2 (A): Flip candle - strong upper wick ({wick_ratio*100:.1f}%)")
+                print(f"[CFW6] ✅ TYPE 2 (A): Flip candle - strong upper wick ({wick_ratio*100:.1f}%)")
                 return "flip", "A"
 
         elif close_price > open_price:
             wick_ratio = upper_wick / candle_range if candle_range > 0 else 0
             if wick_ratio >= 0.50:
-                print(f"[CFW6] âš ï¸ TYPE 3 (A-): Wick rejection - didn't flip red ({wick_ratio*100:.1f}%)")
+                print(f"[CFW6] ⚠️ TYPE 3 (A-): Wick rejection - didn't flip red ({wick_ratio*100:.1f}%)")
                 return "wick", "A-"
 
-        print(f"[CFW6] âŒ REJECT: No valid confirmation pattern")
+        print(f"[CFW6] ❌ REJECT: No valid confirmation pattern")
         return "reject", "reject"
 
 
@@ -162,7 +162,7 @@ def wait_for_confirmation(
             if grade != "reject":
                 entry_price = latest_bar["close"]
                 candle_time = latest_bar.get("datetime", "N/A")
-                print(f"[CFW6] âœ… CONFIRMED: {grade} setup at ${entry_price:.2f} "
+                print(f"[CFW6] ✅ CONFIRMED: {grade} setup at ${entry_price:.2f} "
                       f"(candle {candles_waited}, {candle_time})")
                 return True, entry_price, grade, latest_idx, confirmation_type
         
@@ -170,13 +170,13 @@ def wait_for_confirmation(
         time.sleep(60)
         candles_waited += 1
     
-    print(f"[CFW6] âŒ TIMEOUT: No confirmation after {max_wait_candles} cycles")
+    print(f"[CFW6] ❌ TIMEOUT: No confirmation after {max_wait_candles} cycles")
     return False, 0, "reject", -1, "timeout"
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ══════════════════════════════════════════════════════════════════════════════
 # MULTI-FACTOR CONFIRMATION LAYERS
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ══════════════════════════════════════════════════════════════════════════════
 
 def calculate_vwap(bars: List[Dict]) -> float:
     """Calculate Volume-Weighted Average Price."""
@@ -244,9 +244,9 @@ def grade_signal_with_confirmations(
     (Options flow removed until real data source is wired in)
 
     Grade logic (out of 3):
-    - 3/3 aligned  â†’ upgrade
-    - 0/3 aligned  â†’ downgrade / reject
-    - 1-2/3 aligned â†’ maintain
+    - 3/3 aligned  → upgrade
+    - 0/3 aligned  → downgrade / reject
+    - 1-2/3 aligned → maintain
     """
     print(f"[CONFIRM] Checking confirmation layers for {ticker}...")
 
@@ -257,9 +257,9 @@ def grade_signal_with_confirmations(
     aligned_count = sum([vwap_ok, pd_result["aligned"], inst_ok])
 
     # Fix: define emoji outside f-string to avoid backslash escape error
-    vwap_emoji = "âœ…" if vwap_ok else "âŒ"
-    pd_emoji = "âœ…" if pd_result["aligned"] else "âŒ"
-    inst_emoji = "âœ…" if inst_ok else "âŒ"
+    vwap_emoji = "✅" if vwap_ok else "❌"
+    pd_emoji = "✅" if pd_result["aligned"] else "❌"
+    inst_emoji = "✅" if inst_ok else "❌"
 
     print(f"[CONFIRM] Aligned: {aligned_count}/3")
     print(f"  VWAP:          {vwap_emoji}")
@@ -273,7 +273,7 @@ def grade_signal_with_confirmations(
             final_grade = "A+"
         elif base_grade == "A-":
             final_grade = "A"
-        print(f"[CONFIRM] â¬†ï¸ Upgraded {base_grade} â†’ {final_grade} (perfect 3/3 alignment)")
+        print(f"[CONFIRM] ⬆️ Upgraded {base_grade} → {final_grade} (perfect 3/3 alignment)")
 
     elif aligned_count == 0:
         if base_grade == "A+":
@@ -282,7 +282,7 @@ def grade_signal_with_confirmations(
             final_grade = "A-"
         else:
             final_grade = "reject"
-        print(f"[CONFIRM] â¬‡ï¸ Downgraded {base_grade} â†’ {final_grade} (0/3 alignment)")
+        print(f"[CONFIRM] ⬇️ Downgraded {base_grade} → {final_grade} (0/3 alignment)")
 
     else:
         print(f"[CONFIRM] Grade maintained: {final_grade} ({aligned_count}/3 aligned)")
@@ -297,4 +297,3 @@ def grade_signal_with_confirmations(
             "institutional": inst_ok
         }
     }
-

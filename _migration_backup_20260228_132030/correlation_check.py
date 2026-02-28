@@ -1,4 +1,4 @@
-﻿"""
+"""
 Correlation Check - Prevents Over-Leverage to Correlated Positions
 
 Prevents taking multiple positions in highly correlated tickers that move together.
@@ -20,7 +20,7 @@ Usage:
 """
 from typing import List, Dict, Set, Optional, Tuple
 from dataclasses import dataclass
-from utils import config
+import config
 
 
 @dataclass
@@ -277,7 +277,7 @@ class CorrelationChecker:
         lines = ["Sector Exposure:"]
         for sector, pct in sorted(sector_exposure.items(), key=lambda x: x[1], reverse=True):
             tickers = self._get_tickers_in_sector(open_positions, sector)
-            status = "âš ï¸" if pct > self.max_sector_exposure_pct else "âœ…"
+            status = "⚠️" if pct > self.max_sector_exposure_pct else "✅"
             lines.append(f"  {status} {sector.upper()}: {pct:.1f}% ({', '.join(tickers)})")
         
         return "\n".join(lines)
@@ -303,30 +303,30 @@ class CorrelationChecker:
         for i, t1 in enumerate(tickers):
             for t2 in tickers[i+1:]:
                 if self._is_correlated_pair(t1, t2):
-                    found_pairs.append(f"  âš ï¸ {t1} <-> {t2} (known correlated pair)")
+                    found_pairs.append(f"  ⚠️ {t1} <-> {t2} (known correlated pair)")
                 elif self.SECTOR_GROUPS.get(t1) == self.SECTOR_GROUPS.get(t2):
-                    found_pairs.append(f"  â„¹ï¸ {t1} <-> {t2} (same sector)")
+                    found_pairs.append(f"  ℹ️ {t1} <-> {t2} (same sector)")
         
         if found_pairs:
             print("\n".join(found_pairs))
         else:
-            print("  âœ… No highly correlated pairs detected")
+            print("  ✅ No highly correlated pairs detected")
         
         # QQQ overlap
         qqq_open = "QQQ" in tickers
         qqq_constituents = [t for t in tickers if t in self.QQQ_HOLDINGS]
         
         if qqq_open and qqq_constituents:
-            print(f"\nâš ï¸ QQQ Overlap: QQQ open + {len(qqq_constituents)} constituents ({', '.join(qqq_constituents)})")
+            print(f"\n⚠️ QQQ Overlap: QQQ open + {len(qqq_constituents)} constituents ({', '.join(qqq_constituents)})")
         elif qqq_constituents:
-            print(f"\nâ„¹ï¸ QQQ Constituents: {len(qqq_constituents)} ({', '.join(qqq_constituents)})")
+            print(f"\nℹ️ QQQ Constituents: {len(qqq_constituents)} ({', '.join(qqq_constituents)})")
         
         print("=" * 70 + "\n")
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ══════════════════════════════════════════════════════════════════════════════
 # GLOBAL INSTANCE
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ══════════════════════════════════════════════════════════════════════════════
 correlation_checker = CorrelationChecker()
 
 
@@ -357,4 +357,3 @@ if __name__ == "__main__":
     print(f"Safe: {safe}")
     if warning:
         print(f"Warning: {warning.reason}\n")
-

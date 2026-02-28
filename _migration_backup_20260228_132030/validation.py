@@ -40,15 +40,15 @@ import time
 import requests
 
 from app.analytics import technical_indicators as ti
-from utils import config
+import config
 
 # Import IV/GEX modules for options filter
-from app.options.iv_tracker import store_iv_observation, compute_ivr, ivr_to_confidence_multiplier
-from app.options.gex_engine import compute_gex_levels, get_gex_signal_context
+from iv_tracker   import store_iv_observation, compute_ivr, ivr_to_confidence_multiplier
+from gex_engine   import compute_gex_levels, get_gex_signal_context
 
 # UOA now comes from options_intelligence (Phase 3C consolidation)
 try:
-    from app.options.options_intelligence import scan_chain_for_uoa
+    from options_intelligence import scan_chain_for_uoa
     from uoa_scanner import format_uoa_summary  # Still in stub for convenience
 except ImportError:
     # Fallback if options_intelligence not yet available
@@ -1124,8 +1124,5 @@ if __name__ == "__main__":
     print("\n" + "=" * 70)
     print("All validation components operational!")
     print("=" * 70)
-
-
-
 
 
