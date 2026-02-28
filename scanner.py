@@ -466,3 +466,4 @@ def get_screener_tickers(min_market_cap: int = 1_000_000_000, limit: int = 50) -
 if __name__ == "__main__":
     start_scanner_loop()
 
+

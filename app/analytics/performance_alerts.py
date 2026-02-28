@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 Performance Alert System
 
@@ -30,7 +30,7 @@ Usage:
 from typing import Dict, Optional
 from datetime import datetime, time as dtime
 from zoneinfo import ZoneInfo
-import config
+from utils import config
 
 ET = ZoneInfo("America/New_York")
 
@@ -106,11 +106,11 @@ class PerformanceAlertManager:
                 return
             
             message = (
-                f"🛑 **CIRCUIT BREAKER TRIGGERED** 🛑\n\n"
+                f"ðŸ›‘ **CIRCUIT BREAKER TRIGGERED** ðŸ›‘\n\n"
                 f"Trading halted due to daily loss limit.\n\n"
                 f"**Current Loss:** {cb_status['current_loss_pct']:.2f}%\n"
                 f"**Trigger Threshold:** {cb_status['trigger_threshold_pct']:.2f}%\n\n"
-                f"❌ **No new positions until reset**"
+                f"âŒ **No new positions until reset**"
             )
             send_simple_message(message)
             self._mark_alert_sent(alert_type)
@@ -121,11 +121,11 @@ class PerformanceAlertManager:
                 return
             
             message = (
-                f"🚨 **CIRCUIT BREAKER CRITICAL** 🚨\n\n"
+                f"ðŸš¨ **CIRCUIT BREAKER CRITICAL** ðŸš¨\n\n"
                 f"Daily loss approaching circuit breaker trigger!\n\n"
                 f"**Current Loss:** {cb_status['current_loss_pct']:.2f}%\n"
                 f"**Distance to Trigger:** {cb_status['distance_to_trigger_pct']:.2f}%\n\n"
-                f"⚠️ Reduce exposure immediately"
+                f"âš ï¸ Reduce exposure immediately"
             )
             send_simple_message(message)
             self._mark_alert_sent(alert_type)
@@ -136,11 +136,11 @@ class PerformanceAlertManager:
                 return
             
             message = (
-                f"⚠️ **Circuit Breaker Warning** ⚠️\n\n"
+                f"âš ï¸ **Circuit Breaker Warning** âš ï¸\n\n"
                 f"Daily loss approaching -3% limit.\n\n"
                 f"**Current Loss:** {cb_status['current_loss_pct']:.2f}%\n"
                 f"**Distance to Trigger:** {cb_status['distance_to_trigger_pct']:.2f}%\n\n"
-                f"👀 Monitor closely"
+                f"ðŸ‘€ Monitor closely"
             )
             send_simple_message(message)
             self._mark_alert_sent(alert_type)
@@ -162,10 +162,10 @@ class PerformanceAlertManager:
         if milestone_type == 'daily_target':
             if pnl_data['total_pnl_pct'] >= 2.0:
                 message = (
-                    f"🎯 **Daily Profit Target Hit!** 🎯\n\n"
+                    f"ðŸŽ¯ **Daily Profit Target Hit!** ðŸŽ¯\n\n"
                     f"Session P&L: ${pnl_data['total_pnl']:,.2f} (+{pnl_data['total_pnl_pct']:.2f}%)\n"
                     f"Account Value: ${pnl_data['account_value']:,.2f}\n\n"
-                    f"🎉 Excellent execution today!"
+                    f"ðŸŽ‰ Excellent execution today!"
                 )
                 send_simple_message(message)
                 self.alerted_today.add(alert_key)
@@ -174,10 +174,10 @@ class PerformanceAlertManager:
             current_value = pnl_data['account_value']
             if current_value > self.last_equity_high and self._should_send_alert('equity_high'):
                 message = (
-                    f"📈 **New Session High!** 📈\n\n"
+                    f"ðŸ“ˆ **New Session High!** ðŸ“ˆ\n\n"
                     f"Account Value: ${current_value:,.2f}\n"
                     f"Session Gain: +{pnl_data['total_pnl_pct']:.2f}%\n\n"
-                    f"👏 Keep up the momentum!"
+                    f"ðŸ‘ Keep up the momentum!"
                 )
                 send_simple_message(message)
                 self.last_equity_high = current_value
@@ -196,20 +196,20 @@ class PerformanceAlertManager:
         # Win streak alerts
         if streak >= 5 and self._should_send_alert('win_streak'):
             message = (
-                f"🎯 **EXCEPTIONAL WIN STREAK** 🎯\n\n"
+                f"ðŸŽ¯ **EXCEPTIONAL WIN STREAK** ðŸŽ¯\n\n"
                 f"Current streak: {streak} consecutive wins!\n"
                 f"Momentum: {streak_data['current_momentum']}\n\n"
-                f"🔥 You're on fire! Stay focused."
+                f"ðŸ”¥ You're on fire! Stay focused."
             )
             send_simple_message(message)
             self._mark_alert_sent('win_streak')
         
         elif streak >= 3 and self._should_send_alert('win_streak'):
             message = (
-                f"🔥 **Hot Hand Detected** 🔥\n\n"
+                f"ðŸ”¥ **Hot Hand Detected** ðŸ”¥\n\n"
                 f"Current streak: {streak} wins in a row\n"
                 f"Momentum: {streak_data['current_momentum']}\n\n"
-                f"👍 Keep executing the system!"
+                f"ðŸ‘ Keep executing the system!"
             )
             send_simple_message(message)
             self._mark_alert_sent('win_streak')
@@ -217,11 +217,11 @@ class PerformanceAlertManager:
         # Loss streak alerts
         elif streak <= -3 and self._should_send_alert('loss_streak'):
             message = (
-                f"❄️ **Loss Streak Alert** ❄️\n\n"
+                f"â„ï¸ **Loss Streak Alert** â„ï¸\n\n"
                 f"Current streak: {abs(streak)} consecutive losses\n"
                 f"Momentum: {streak_data['current_momentum']}\n\n"
-                f"👀 Review your setup and confidence gates.\n"
-                f"💪 Stick to the system - variance is normal."
+                f"ðŸ‘€ Review your setup and confidence gates.\n"
+                f"ðŸ’ª Stick to the system - variance is normal."
             )
             send_simple_message(message)
             self._mark_alert_sent('loss_streak')
@@ -239,16 +239,16 @@ class PerformanceAlertManager:
         if not self._should_send_alert('risk_warning'):
             return
         
-        warnings_text = "\n".join([f"  • {w}" for w in risk_data['approaching_limits']])
+        warnings_text = "\n".join([f"  â€¢ {w}" for w in risk_data['approaching_limits']])
         
         message = (
-            f"⚠️ **Risk Exposure Warning** ⚠️\n\n"
+            f"âš ï¸ **Risk Exposure Warning** âš ï¸\n\n"
             f"One or more risk limits approaching:\n\n"
             f"{warnings_text}\n\n"
             f"**Current Exposure:**\n"
-            f"  • Open Positions: {risk_data['open_positions']}/{config.MAX_OPEN_POSITIONS}\n"
-            f"  • Total Exposure: {risk_data['total_exposure_pct']:.2f}%\n\n"
-            f"👀 Review position sizing"
+            f"  â€¢ Open Positions: {risk_data['open_positions']}/{config.MAX_OPEN_POSITIONS}\n"
+            f"  â€¢ Total Exposure: {risk_data['total_exposure_pct']:.2f}%\n\n"
+            f"ðŸ‘€ Review position sizing"
         )
         send_simple_message(message)
         self._mark_alert_sent('risk_warning')
@@ -267,17 +267,17 @@ class PerformanceAlertManager:
         cb = performance_monitor.get_circuit_breaker_status()
         risk = performance_monitor.get_risk_exposure()
         
-        pnl_emoji = "📈" if pnl['total_pnl'] >= 0 else "📉"
-        cb_emoji = {"SAFE": "✅", "WARNING": "⚠️", "CRITICAL": "🚨", "TRIGGERED": "🛑"}[cb['warning_level']]
+        pnl_emoji = "ðŸ“ˆ" if pnl['total_pnl'] >= 0 else "ðŸ“‰"
+        cb_emoji = {"SAFE": "âœ…", "WARNING": "âš ï¸", "CRITICAL": "ðŸš¨", "TRIGGERED": "ðŸ›‘"}[cb['warning_level']]
         
         message = (
-            f"📊 **Hourly Performance Update** 📊\n\n"
+            f"ðŸ“Š **Hourly Performance Update** ðŸ“Š\n\n"
             f"{pnl_emoji} **Session P&L:** ${pnl['total_pnl']:,.2f} ({pnl['total_pnl_pct']:+.2f}%)\n"
             f"  Realized: ${pnl['realized_pnl']:,.2f} | Unrealized: ${pnl['unrealized_pnl']:,.2f}\n\n"
             f"{cb_emoji} **Risk Status:** {cb['warning_level']}\n"
             f"  Distance to CB: {cb['distance_to_trigger_pct']:.2f}%\n\n"
-            f"💼 **Positions:** {pnl['trades_closed']} closed, {pnl['trades_open']} open\n"
-            f"📍 **Exposure:** {risk['total_exposure_pct']:.2f}%"
+            f"ðŸ’¼ **Positions:** {pnl['trades_closed']} closed, {pnl['trades_open']} open\n"
+            f"ðŸ“ **Exposure:** {risk['total_exposure_pct']:.2f}%"
         )
         
         send_simple_message(message)
@@ -295,16 +295,16 @@ class PerformanceAlertManager:
         win_rates = performance_monitor.get_win_rate_by_grade(days=1)
         streak = performance_monitor.get_streak_stats(days=7)
         
-        pnl_emoji = "📈" if pnl['total_pnl'] >= 0 else "📉"
+        pnl_emoji = "ðŸ“ˆ" if pnl['total_pnl'] >= 0 else "ðŸ“‰"
         overall_wr = win_rates.get('overall', {}).get('win_rate', 0)
         
         message = (
-            f"🎆 **END OF DAY SUMMARY** 🎆\n\n"
+            f"ðŸŽ† **END OF DAY SUMMARY** ðŸŽ†\n\n"
             f"{pnl_emoji} **Daily P&L:** ${pnl['total_pnl']:,.2f} ({pnl['total_pnl_pct']:+.2f}%)\n"
-            f"🎯 **Win Rate:** {overall_wr:.1f}% ({win_rates['overall']['wins']}W-{win_rates['overall']['losses']}L)\n"
-            f"🔥 **Streak:** {abs(streak['current_streak'])} {streak['current_streak_type']}\n"
-            f"📊 **Account:** ${pnl['account_value']:,.2f}\n\n"
-            f"👉 Full report in console logs"
+            f"ðŸŽ¯ **Win Rate:** {overall_wr:.1f}% ({win_rates['overall']['wins']}W-{win_rates['overall']['losses']}L)\n"
+            f"ðŸ”¥ **Streak:** {abs(streak['current_streak'])} {streak['current_streak_type']}\n"
+            f"ðŸ“Š **Account:** ${pnl['account_value']:,.2f}\n\n"
+            f"ðŸ‘‰ Full report in console logs"
         )
         
         send_simple_message(message)
@@ -351,16 +351,16 @@ class PerformanceAlertManager:
         print("[ALERTS] Daily state reset")
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # GLOBAL INSTANCE
-# ══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 alert_manager = PerformanceAlertManager()
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # USAGE EXAMPLE
-# ══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 if __name__ == "__main__":
     print("Testing Performance Alert Manager...\n")
@@ -372,3 +372,4 @@ if __name__ == "__main__":
         print("Alert system ready. Alerts will be sent to Discord when conditions are met.")
     else:
         print("Alert system disabled - dependencies not available.")
+

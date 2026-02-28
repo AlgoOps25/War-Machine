@@ -1,4 +1,4 @@
-"""
+﻿"""
 Technical Indicators Module - EODHD API Integration
 
 Fetches pre-calculated technical indicators from EODHD API.
@@ -23,8 +23,8 @@ Cache Strategy:
   - After hours:              10-minute TTL
 
 Fine-Tuning Notes:
-  - ADX threshold raised to 25 (was 20) — filters more choppy markets
-  - Volume ratio threshold raised to 1.5 (was 1.3) — stronger confirmation
+  - ADX threshold raised to 25 (was 20) â€” filters more choppy markets
+  - Volume ratio threshold raised to 1.5 (was 1.3) â€” stronger confirmation
   - RSI replaces CCI as primary momentum oscillator (more widely tested)
   - EMA 50/200 added as macro trend filter layer
   - MACD crossover detects momentum shifts vs raw MACD value
@@ -36,14 +36,14 @@ import requests
 from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime, timedelta, time as dtime
 from zoneinfo import ZoneInfo
-import config
+from utils import config
 
 ET = ZoneInfo("America/New_York")
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # CACHING LAYER
-# ══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 class IndicatorCache:
     """Time-aware cache for technical indicators with adaptive TTL."""
@@ -91,9 +91,9 @@ class IndicatorCache:
 _indicator_cache = IndicatorCache()
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # CORE FETCH
-# ══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 def fetch_technical_indicator(
     ticker: str,
@@ -139,34 +139,34 @@ def fetch_technical_indicator(
         return None
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # EXISTING INDICATOR WRAPPERS
-# ══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 def fetch_adx(ticker: str, period: int = 14, use_cache: bool = True) -> Optional[List[Dict]]:
-    """ADX — trend strength. Values: 0-100 (>25 trending, >40 strong trend)."""
+    """ADX â€” trend strength. Values: 0-100 (>25 trending, >40 strong trend)."""
     return fetch_technical_indicator(ticker, 'adx', use_cache=use_cache, period=period)
 
 
 def fetch_bbands(ticker: str, period: int = 20, deviation: float = 2.0, use_cache: bool = True) -> Optional[List[Dict]]:
-    """Bollinger Bands — uband, mband, lband."""
+    """Bollinger Bands â€” uband, mband, lband."""
     return fetch_technical_indicator(
         ticker, 'bbands', use_cache=use_cache, period=period, deviation=deviation
     )
 
 
 def fetch_avgvol(ticker: str, period: int = 20, use_cache: bool = True) -> Optional[List[Dict]]:
-    """Average Volume — avgvol key."""
+    """Average Volume â€” avgvol key."""
     return fetch_technical_indicator(ticker, 'avgvol', use_cache=use_cache, period=period)
 
 
 def fetch_cci(ticker: str, period: int = 20, use_cache: bool = True) -> Optional[List[Dict]]:
-    """CCI — momentum oscillator. >100 overbought, <-100 oversold."""
+    """CCI â€” momentum oscillator. >100 overbought, <-100 oversold."""
     return fetch_technical_indicator(ticker, 'cci', use_cache=use_cache, period=period)
 
 
 def fetch_dmi(ticker: str, period: int = 14, use_cache: bool = True) -> Optional[List[Dict]]:
-    """DMI — plus_di vs minus_di for trend direction."""
+    """DMI â€” plus_di vs minus_di for trend direction."""
     return fetch_technical_indicator(ticker, 'dmi', use_cache=use_cache, period=period)
 
 
@@ -177,7 +177,7 @@ def fetch_macd(
     signal_period: int = 9,
     use_cache: bool = True
 ) -> Optional[List[Dict]]:
-    """MACD — macd, signal, histogram keys."""
+    """MACD â€” macd, signal, histogram keys."""
     return fetch_technical_indicator(
         ticker, 'macd', use_cache=use_cache,
         fast_period=fast_period, slow_period=slow_period, signal_period=signal_period
@@ -190,7 +190,7 @@ def fetch_sar(
     maximum: float = 0.20,
     use_cache: bool = True
 ) -> Optional[List[Dict]]:
-    """Parabolic SAR — sar key."""
+    """Parabolic SAR â€” sar key."""
     return fetch_technical_indicator(
         ticker, 'sar', use_cache=use_cache,
         acceleration=acceleration, maximum=maximum
@@ -204,20 +204,20 @@ def fetch_stochastic(
     slow_dperiod: int = 3,
     use_cache: bool = True
 ) -> Optional[List[Dict]]:
-    """Stochastic — k and d keys. >80 overbought, <20 oversold."""
+    """Stochastic â€” k and d keys. >80 overbought, <20 oversold."""
     return fetch_technical_indicator(
         ticker, 'stochastic', use_cache=use_cache,
         fast_kperiod=fast_kperiod, slow_kperiod=slow_kperiod, slow_dperiod=slow_dperiod
     )
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# NEW INDICATORS — RSI, EMA
-# ══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# NEW INDICATORS â€” RSI, EMA
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 def fetch_rsi(ticker: str, period: int = 14, use_cache: bool = True) -> Optional[List[Dict]]:
     """
-    Fetch RSI (Relative Strength Index) — preferred momentum indicator.
+    Fetch RSI (Relative Strength Index) â€” preferred momentum indicator.
 
     More reliable than CCI for day/swing trading:
       - Standard period: 14
@@ -251,9 +251,9 @@ def fetch_ema(
     return fetch_technical_indicator(ticker, 'ema', use_cache=use_cache, period=period)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # BATCH FETCHING
-# ══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 def batch_fetch_indicators(
     tickers: List[str],
@@ -294,13 +294,13 @@ def batch_fetch_indicators(
     return results
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# ANALYSIS HELPERS — existing
-# ══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ANALYSIS HELPERS â€” existing
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 def get_latest_value(indicator_data: Optional[List[Dict]], key: str) -> Optional[float]:
     """
-    Extract latest value from indicator data (descending order → index 0).
+    Extract latest value from indicator data (descending order â†’ index 0).
     """
     if not indicator_data or not isinstance(indicator_data, list):
         return None
@@ -331,7 +331,7 @@ def check_trend_strength(
 ) -> Tuple[bool, Optional[float]]:
     """
     Check trend strength via ADX.
-    Fine-tuned threshold: 25 (was 20) — filters choppy range-bound markets.
+    Fine-tuned threshold: 25 (was 20) â€” filters choppy range-bound markets.
     """
     adx_data = fetch_adx(ticker)
     if not adx_data:
@@ -347,7 +347,7 @@ def check_volume_confirmation(
 ) -> Tuple[bool, Optional[float]]:
     """
     Check volume vs 20-day average.
-    Fine-tuned threshold: 1.5x (was 1.3x) — stronger institutional confirmation.
+    Fine-tuned threshold: 1.5x (was 1.3x) â€” stronger institutional confirmation.
     """
     avgvol_data = fetch_avgvol(ticker)
     if not avgvol_data:
@@ -379,9 +379,9 @@ def get_trend_direction(ticker: str) -> Optional[str]:
     return None
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# NEW ANALYSIS HELPERS — RSI, EMA, MACD crossover, Stochastic crossover, RVOL
-# ══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# NEW ANALYSIS HELPERS â€” RSI, EMA, MACD crossover, Stochastic crossover, RVOL
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 def check_rsi_zone(
     ticker: str,
@@ -392,7 +392,7 @@ def check_rsi_zone(
     """
     Check RSI zone relative to signal direction.
 
-    Replaces CCI as the primary momentum filter — RSI is better-tested
+    Replaces CCI as the primary momentum filter â€” RSI is better-tested
     for day/swing trading setups and more universally respected.
 
     Args:
@@ -404,10 +404,10 @@ def check_rsi_zone(
     Returns:
         (zone_result, rsi_value)
         zone_result: 'FAVORABLE' | 'UNFAVORABLE' | 'NEUTRAL'
-          - BUY  + oversold  (<30) → FAVORABLE   (+confidence)
-          - BUY  + overbought(>70) → UNFAVORABLE (-confidence)
-          - SELL + overbought(>70) → FAVORABLE   (+confidence)
-          - SELL + oversold  (<30) → UNFAVORABLE (-confidence)
+          - BUY  + oversold  (<30) â†’ FAVORABLE   (+confidence)
+          - BUY  + overbought(>70) â†’ UNFAVORABLE (-confidence)
+          - SELL + overbought(>70) â†’ FAVORABLE   (+confidence)
+          - SELL + oversold  (<30) â†’ UNFAVORABLE (-confidence)
     """
     rsi_data = fetch_rsi(ticker)
     if not rsi_data:
@@ -437,17 +437,17 @@ def check_rsi_divergence(
     lookback_bars: int = 10
 ) -> Tuple[Optional[str], Optional[Dict]]:
     """
-    Detect RSI divergence — early warning of trend exhaustion/reversal.
+    Detect RSI divergence â€” early warning of trend exhaustion/reversal.
 
     Divergence occurs when price makes a new high/low but RSI does NOT confirm,
     indicating weakening momentum before the actual reversal appears in price.
 
     Types:
       - Bearish Divergence: Price makes higher high, RSI makes lower high
-        → Warns of uptrend exhaustion, favor SELL signals
+        â†’ Warns of uptrend exhaustion, favor SELL signals
       
       - Bullish Divergence: Price makes lower low, RSI makes higher low
-        → Warns of downtrend exhaustion, favor BUY signals
+        â†’ Warns of downtrend exhaustion, favor BUY signals
 
     Args:
         ticker: Stock symbol
@@ -462,10 +462,10 @@ def check_rsi_divergence(
         Use to BOOST counter-trend signals or WARN on exhausted trends.
 
     Usage in validation:
-      - BUY signal + BULLISH_DIV  → +confidence (reversal setup)
-      - BUY signal + BEARISH_DIV  → -confidence (buying into exhaustion)
-      - SELL signal + BEARISH_DIV → +confidence (reversal setup)
-      - SELL signal + BULLISH_DIV → -confidence (selling into exhaustion)
+      - BUY signal + BULLISH_DIV  â†’ +confidence (reversal setup)
+      - BUY signal + BEARISH_DIV  â†’ -confidence (buying into exhaustion)
+      - SELL signal + BEARISH_DIV â†’ +confidence (reversal setup)
+      - SELL signal + BULLISH_DIV â†’ -confidence (selling into exhaustion)
     """
     try:
         # Need price data to compare with RSI
@@ -585,7 +585,7 @@ def check_macd_crossover(
     """
     Detect recent MACD signal-line crossover within lookback bars.
 
-    More actionable than raw MACD value — crossovers mark the actual
+    More actionable than raw MACD value â€” crossovers mark the actual
     momentum shift that precedes directional moves.
 
     Args:
@@ -653,7 +653,7 @@ def check_stochastic_crossover(
     """
     Detect Stochastic K/D crossover in overbought/oversold zones.
 
-    More precise than raw stochastic values — crossovers inside extreme
+    More precise than raw stochastic values â€” crossovers inside extreme
     zones identify high-probability reversal or continuation entries.
 
     Args:
@@ -713,7 +713,7 @@ def check_rvol(
     min_rvol: float = 1.2
 ) -> Tuple[Optional[float], bool]:
     """
-    Calculate Relative Volume (RVOL) — today's volume vs same time yesterday.
+    Calculate Relative Volume (RVOL) â€” today's volume vs same time yesterday.
 
     RVOL > 1.0 = more active than usual at this time of day
     RVOL > 1.5 = significantly elevated (institutional interest)
@@ -764,9 +764,9 @@ def check_rvol(
         return None, False
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # CACHE MANAGEMENT
-# ══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 def clear_indicator_cache():
     """Clear all cached indicators. Call at EOD."""
@@ -778,9 +778,9 @@ def get_cache_stats() -> Dict:
     return _indicator_cache.get_stats()
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # USAGE EXAMPLE
-# ══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 if __name__ == "__main__":
     test_ticker = "AAPL"
@@ -789,7 +789,7 @@ if __name__ == "__main__":
 
     # ADX
     is_trending, adx = check_trend_strength(test_ticker)
-    print(f"ADX: {adx} | {'✅ TRENDING' if is_trending else '❌ WEAK'} (threshold: 25)")
+    print(f"ADX: {adx} | {'âœ… TRENDING' if is_trending else 'âŒ WEAK'} (threshold: 25)")
 
     # RSI
     rsi_zone, rsi_val = check_rsi_zone(test_ticker, 'BUY')
@@ -827,3 +827,4 @@ if __name__ == "__main__":
 
     # Cache stats
     print(f"\nCache: {get_cache_stats()}")
+

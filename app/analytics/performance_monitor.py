@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 Performance Monitor System
 
@@ -23,7 +23,7 @@ Usage:
   # Check circuit breaker status
   cb_status = performance_monitor.get_circuit_breaker_status()
   if cb_status['triggered']:
-      print("🚨 Circuit breaker triggered! Stop trading.")
+      print("ðŸš¨ Circuit breaker triggered! Stop trading.")
   
   # Get win rate breakdown
   win_rates = performance_monitor.get_win_rate_by_grade()
@@ -36,8 +36,8 @@ from datetime import datetime, timedelta, time as dtime
 from zoneinfo import ZoneInfo
 import statistics
 from collections import defaultdict
-from db_connection import get_conn, ph, dict_cursor
-import config
+from app.data.db_connection import get_conn, ph, dict_cursor
+from utils import config
 
 ET = ZoneInfo("America/New_York")
 
@@ -307,7 +307,7 @@ class PerformanceMonitor:
         # Check limits
         warnings = []
         if len(positions) >= config.MAX_OPEN_POSITIONS:
-            warnings.append(f"⚠️ Max positions reached ({len(positions)}/{config.MAX_OPEN_POSITIONS})")
+            warnings.append(f"âš ï¸ Max positions reached ({len(positions)}/{config.MAX_OPEN_POSITIONS})")
         
         return {
             'open_positions': len(positions),
@@ -552,36 +552,36 @@ class PerformanceMonitor:
         lines.append(f"Time: {datetime.now(ET).strftime('%Y-%m-%d %H:%M:%S ET')}\n")
         
         # P&L Section
-        lines.append("── P&L " + "─"*72)
-        pnl_emoji = "📈" if pnl['total_pnl'] >= 0 else "📉"
+        lines.append("â”€â”€ P&L " + "â”€"*72)
+        pnl_emoji = "ðŸ“ˆ" if pnl['total_pnl'] >= 0 else "ðŸ“‰"
         lines.append(f"  {pnl_emoji} Session P&L:     ${pnl['total_pnl']:>10,.2f}  ({pnl['total_pnl_pct']:>+6.2f}%)")
         lines.append(f"     Realized:       ${pnl['realized_pnl']:>10,.2f}")
         lines.append(f"     Unrealized:     ${pnl['unrealized_pnl']:>10,.2f}")
-        lines.append(f"  💰 Account Value:  ${pnl['account_value']:>10,.2f}")
-        lines.append(f"  📊 Trades:         {pnl['trades_closed']} closed, {pnl['trades_open']} open\n")
+        lines.append(f"  ðŸ’° Account Value:  ${pnl['account_value']:>10,.2f}")
+        lines.append(f"  ðŸ“Š Trades:         {pnl['trades_closed']} closed, {pnl['trades_open']} open\n")
         
         # Circuit Breaker
-        lines.append("── Circuit Breaker " + "─"*60)
-        cb_emoji = {"SAFE": "✅", "WARNING": "⚠️", "CRITICAL": "🚨", "TRIGGERED": "🛑"}[cb['warning_level']]
+        lines.append("â”€â”€ Circuit Breaker " + "â”€"*60)
+        cb_emoji = {"SAFE": "âœ…", "WARNING": "âš ï¸", "CRITICAL": "ðŸš¨", "TRIGGERED": "ðŸ›‘"}[cb['warning_level']]
         lines.append(f"  {cb_emoji} Status:           {cb['warning_level']}")
         lines.append(f"     Current Loss:   {cb['current_loss_pct']:>6.2f}%")
         lines.append(f"     Trigger:        {cb['trigger_threshold_pct']:>6.2f}%")
         lines.append(f"     Distance:       {cb['distance_to_trigger_pct']:>6.2f}%\n")
         
         # Risk Exposure
-        lines.append("── Risk Exposure " + "─"*62)
-        lines.append(f"  📍 Open Positions:  {risk['open_positions']}/{config.MAX_OPEN_POSITIONS}")
-        lines.append(f"  💼 Total Exposure:  {risk['total_exposure_pct']:.2f}%")
-        lines.append(f"  🎯 Largest Position: {risk['max_single_position_pct']:.2f}%")
+        lines.append("â”€â”€ Risk Exposure " + "â”€"*62)
+        lines.append(f"  ðŸ“ Open Positions:  {risk['open_positions']}/{config.MAX_OPEN_POSITIONS}")
+        lines.append(f"  ðŸ’¼ Total Exposure:  {risk['total_exposure_pct']:.2f}%")
+        lines.append(f"  ðŸŽ¯ Largest Position: {risk['max_single_position_pct']:.2f}%")
         if risk['approaching_limits']:
             for warning in risk['approaching_limits']:
                 lines.append(f"  {warning}")
         lines.append("")
         
         # Win Rates
-        lines.append("── Win Rates (Last 7 Days) " + "─"*51)
+        lines.append("â”€â”€ Win Rates (Last 7 Days) " + "â”€"*51)
         overall = win_rates.get('overall', {})
-        lines.append(f"  🎯 Overall:  {overall.get('win_rate', 0):>5.1f}%  ({overall.get('wins', 0)}W-{overall.get('losses', 0)}L)")
+        lines.append(f"  ðŸŽ¯ Overall:  {overall.get('win_rate', 0):>5.1f}%  ({overall.get('wins', 0)}W-{overall.get('losses', 0)}L)")
         for grade in ['A+', 'A', 'A-']:
             grade_data = win_rates.get(grade, {})
             if grade_data.get('total', 0) > 0:
@@ -589,19 +589,19 @@ class PerformanceMonitor:
         lines.append("")
         
         # Streak
-        lines.append("── Momentum " + "─"*66)
-        streak_emoji = "🔥" if streak['current_streak'] > 0 else "❄️" if streak['current_streak'] < 0 else "➖"
+        lines.append("â”€â”€ Momentum " + "â”€"*66)
+        streak_emoji = "ðŸ”¥" if streak['current_streak'] > 0 else "â„ï¸" if streak['current_streak'] < 0 else "âž–"
         lines.append(f"  {streak_emoji} Current Streak:  {abs(streak['current_streak'])} {streak['current_streak_type']}")
-        lines.append(f"  📊 Momentum:       {streak['current_momentum']}")
-        lines.append(f"  🏆 Best Win Streak: {streak['longest_win_streak']}")
-        lines.append(f"  💀 Worst Loss Run:  {streak['longest_loss_streak']}\n")
+        lines.append(f"  ðŸ“Š Momentum:       {streak['current_momentum']}")
+        lines.append(f"  ðŸ† Best Win Streak: {streak['longest_win_streak']}")
+        lines.append(f"  ðŸ’€ Worst Loss Run:  {streak['longest_loss_streak']}\n")
         
         # Advanced Metrics
-        lines.append("── Advanced Metrics " + "─"*58)
+        lines.append("â”€â”€ Advanced Metrics " + "â”€"*58)
         if sharpe is not None:
-            lines.append(f"  📐 Sharpe Ratio (30d): {sharpe:>6.2f}")
-        lines.append(f"  📉 Max Drawdown:       {dd['max_drawdown_pct']:>6.2f}%")
-        lines.append(f"  🎢 Current Drawdown:   {dd['current_drawdown_pct']:>6.2f}%")
+            lines.append(f"  ðŸ“ Sharpe Ratio (30d): {sharpe:>6.2f}")
+        lines.append(f"  ðŸ“‰ Max Drawdown:       {dd['max_drawdown_pct']:>6.2f}%")
+        lines.append(f"  ðŸŽ¢ Current Drawdown:   {dd['current_drawdown_pct']:>6.2f}%")
         
         lines.append("="*80 + "\n")
         
@@ -648,14 +648,14 @@ class PerformanceMonitor:
         lines = [dashboard]
         
         if best_trades:
-            lines.append("\n🏆 BEST TRADES OF THE DAY")
-            lines.append("─"*80)
+            lines.append("\nðŸ† BEST TRADES OF THE DAY")
+            lines.append("â”€"*80)
             for i, trade in enumerate(best_trades, 1):
                 lines.append(f"  {i}. {trade['ticker']:<6} {trade['grade']:<3}  ${trade['pnl']:>8,.2f}")
         
         if worst_trades:
-            lines.append("\n💀 WORST TRADES OF THE DAY")
-            lines.append("─"*80)
+            lines.append("\nðŸ’€ WORST TRADES OF THE DAY")
+            lines.append("â”€"*80)
             for i, trade in enumerate(worst_trades, 1):
                 lines.append(f"  {i}. {trade['ticker']:<6} {trade['grade']:<3}  ${trade['pnl']:>8,.2f}")
         
@@ -664,17 +664,18 @@ class PerformanceMonitor:
         return "\n".join(lines)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # GLOBAL INSTANCE
-# ══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 performance_monitor = PerformanceMonitor()
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # USAGE EXAMPLE
-# ══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 if __name__ == "__main__":
     print("Testing Performance Monitor...\n")
     print(performance_monitor.get_live_dashboard())
+
