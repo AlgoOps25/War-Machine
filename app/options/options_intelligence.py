@@ -1,4 +1,4 @@
-"""
+﻿"""
 Options Intelligence Layer
 Consolidated options data management and unusual activity detection.
 
@@ -40,17 +40,17 @@ import time
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 from collections import defaultdict
-import config
+from utils import config
 
 # Import existing modules
-from options_filter import OptionsFilter
-from gex_engine import compute_gex_levels, get_gex_signal_context
-from iv_tracker import compute_ivr, store_iv_observation
+from .options_filter import OptionsFilter
+from .gex_engine import compute_gex_levels, get_gex_signal_context
+from .iv_tracker import compute_ivr, store_iv_observation
 
 
-# ═══════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # UOA DETECTION CONSTANTS
-# ═══════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 # UOA detection thresholds
 MIN_VOLUME_RATIO = 2.0      # Volume must be 2x+ average to qualify as unusual
@@ -88,9 +88,9 @@ class OptionsIntelligence:
         
         print("[OPTIONS-DM] Initialized with 5-minute cache TTL")
     
-    # ═══════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     # CORE: CHAIN FETCHING & CACHING
-    # ═══════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     
     def get_chain(self, ticker: str, force_refresh: bool = False) -> Optional[Dict]:
         """
@@ -136,9 +136,9 @@ class OptionsIntelligence:
             
             return None
     
-    # ═══════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     # SCANNER INTEGRATION: Fast Options Scoring
-    # ═══════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     
     def get_options_score(self, ticker: str) -> Dict:
         """
@@ -243,9 +243,9 @@ class OptionsIntelligence:
         
         return result
     
-    # ═══════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     # SIGNAL VALIDATION: Pre-Filter Gate (Step 6.5)
-    # ═══════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     
     def validate_for_trading(self, ticker: str, direction: str,
                              entry_price: float) -> Dict:
@@ -253,13 +253,13 @@ class OptionsIntelligence:
         Fast pre-validation for signal generation (Step 6.5, before confirmation).
 
         Checks (in order of severity):
-          1. Chain availability   → hard fail if no chain
-          2. Liquidity            → hard fail if OI/vol/spread below thresholds
-          3a. GEX flip zone       → soft warn when price is in positive GEX
+          1. Chain availability   â†’ hard fail if no chain
+          2. Liquidity            â†’ hard fail if OI/vol/spread below thresholds
+          3a. GEX flip zone       â†’ soft warn when price is in positive GEX
                                     (mean-reverting) and pushing against the flip
-          3b. Gamma pin drag      → hard fail when pin is >2% on the wrong side
+          3b. Gamma pin drag      â†’ hard fail when pin is >2% on the wrong side
                                     of entry (gravitational drag opposes direction)
-          3c. Pin-near-cap        → soft warn when pin is within 3% and likely
+          3c. Pin-near-cap        â†’ soft warn when pin is within 3% and likely
                                     to cap the move before target
 
         Return schema:
@@ -275,7 +275,7 @@ class OptionsIntelligence:
         """
         warnings = []
 
-        # ── 1. Chain availability ───────────────────────────────────────────────────────
+        # â”€â”€ 1. Chain availability â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         chain = self.get_chain(ticker)
 
         if not chain or not chain.get('data'):
@@ -288,7 +288,7 @@ class OptionsIntelligence:
                 'ivr_data': None
             }
 
-        # ── 2. Liquidity check ─────────────────────────────────────────────────────────
+        # â”€â”€ 2. Liquidity check â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         liquidity = self._compute_liquidity_score(chain, entry_price)
 
         # Fetch GEX now regardless of liquidity result so the zone is always
@@ -305,7 +305,7 @@ class OptionsIntelligence:
                 'ivr_data': None
             }
 
-        # ── 3. GEX headwind checks ─────────────────────────────────────────────────────
+        # â”€â”€ 3. GEX headwind checks â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         gex_context_parts = []
 
         if gex_data.get('has_data'):
@@ -320,9 +320,9 @@ class OptionsIntelligence:
             if flip:
                 gex_context_parts.append(f'FLIP-${flip:.2f}')
 
-            # ── 3a. Gamma flip zone ────────────────────────────────────────────────
-            # Negative GEX zone = vol expands, trends run → GOOD for directional
-            # Positive GEX zone = vol compresses, mean-reverts → soft warning
+            # â”€â”€ 3a. Gamma flip zone â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            # Negative GEX zone = vol expands, trends run â†’ GOOD for directional
+            # Positive GEX zone = vol compresses, mean-reverts â†’ soft warning
             if flip and not neg_zone:
                 if direction == 'bull' and flip > entry_price:
                     # Trying to push up through gamma flip ceiling
@@ -339,9 +339,9 @@ class OptionsIntelligence:
                     else:
                         warnings.append(f'POS-GEX-ZONE|FLIP-FLOOR@${flip:.2f}')
 
-            # ── 3b. Gamma pin drag (hard gate) ──────────────────────────────────────
+            # â”€â”€ 3b. Gamma pin drag (hard gate) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             # If the gamma pin is >2% on the WRONG side of entry, market maker
-            # hedging exerts gravitational pull back toward the pin — the trade
+            # hedging exerts gravitational pull back toward the pin â€” the trade
             # is working against MM delta hedging flow.
             if pin:
                 if direction == 'bull':
@@ -380,7 +380,7 @@ class OptionsIntelligence:
                     elif 0.0 < pin_pct < 0.03:    # pin just below entry (support floor)
                         warnings.append(f'PIN-FLOOR-NEAR@${pin:.2f}({pin_pct * 100:.1f}%-below)')
 
-        # ── 4. IVR context ───────────────────────────────────────────────────────────
+        # â”€â”€ 4. IVR context â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         ivr_data = self._get_ivr_data(ticker, chain)
 
         # Build IVR label for the reason string
@@ -412,9 +412,9 @@ class OptionsIntelligence:
             'ivr_data': ivr_data
         }
     
-    # ═══════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     # LIVE MONITORING: Real-Time GEX Updates
-    # ═══════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     
     def get_live_gex(self, ticker: str, current_price: float, 
                      force_refresh: bool = False) -> Dict:
@@ -482,9 +482,9 @@ class OptionsIntelligence:
         
         return result
     
-    # ═══════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     # INTERNAL: Scoring Components
-    # ═══════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     
     def _compute_liquidity_score(self, chain: Dict, current_price: float) -> Dict:
         """
@@ -501,7 +501,7 @@ class OptionsIntelligence:
         if not data:
             return {'score': 0.0, 'tradeable': False, 'reason': 'No chain data'}
         
-        # Find ATM strikes (within ±2% of current price)
+        # Find ATM strikes (within Â±2% of current price)
         atm_calls = []
         atm_puts = []
         
@@ -698,7 +698,7 @@ class OptionsIntelligence:
         # Spread quality: 1.0 for tight spreads (1%), 0.5 for wide spreads (10%)
         spread_quality = max(0, 1.0 - (spread_pct / MAX_SPREAD_PCT))
         
-        # UOA Score = Volume × OI × Quality
+        # UOA Score = Volume Ã— OI Ã— Quality
         uoa_score = volume_ratio * oi_ratio * spread_quality
         
         metadata = {
@@ -821,9 +821,9 @@ class OptionsIntelligence:
         
         return None
     
-    # ═══════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     # UOA DETECTION: Full Chain Scan
-    # ═══════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     
     def scan_chain_for_uoa(self, ticker: str, signal_direction: str,
                           entry_price: float, max_strikes: int = 10) -> Dict:
@@ -834,7 +834,7 @@ class OptionsIntelligence:
             ticker: Stock ticker
             signal_direction: "bull" or "bear"
             entry_price: Current stock price
-            max_strikes: Maximum strikes to scan around ATM (default 10 = ±5 strikes)
+            max_strikes: Maximum strikes to scan around ATM (default 10 = Â±5 strikes)
         
         Returns:
             {
@@ -991,9 +991,9 @@ class OptionsIntelligence:
             'uoa_top_opposing': opposing_strikes[:3]
         }
     
-    # ═══════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     # CACHE MANAGEMENT
-    # ═══════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     
     def clear_cache(self, ticker: Optional[str] = None):
         """Clear cache for specific ticker or all tickers."""
@@ -1028,18 +1028,18 @@ class OptionsIntelligence:
             }
 
 
-# ═══════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # GLOBAL INSTANCE
-# ═══════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 options_intelligence = OptionsIntelligence(cache_ttl_seconds=300)
 
 # Backward compatibility aliases
 options_dm = options_intelligence
 
 
-# ═══════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # CONVENIENCE FUNCTIONS
-# ═══════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 def get_options_score(ticker: str) -> Dict:
     """Get options score for ticker (scanner integration)."""
@@ -1064,3 +1064,6 @@ def scan_chain_for_uoa(ticker: str, signal_direction: str, entry_price: float) -
 def clear_options_cache(ticker: Optional[str] = None):
     """Clear options cache."""
     options_intelligence.clear_cache(ticker)
+
+
+
