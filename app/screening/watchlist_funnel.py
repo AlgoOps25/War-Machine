@@ -1,4 +1,4 @@
-"""
+﻿"""
 Adaptive Watchlist Funnel
 Orchestrates dynamic watchlist narrowing from pre-market through market open.
 
@@ -14,10 +14,10 @@ Integration:
 """
 from datetime import datetime, time
 from typing import List, Dict, Optional
-import premarket_scanner as momentum_screener  # ✅ PHASE 1: Unified professional scanner
+import premarket_scanner as momentum_screener  # âœ… PHASE 1: Unified professional scanner
 import volume_analyzer
 import dynamic_screener
-import config
+from utils import config
 
 
 class WatchlistFunnel:
@@ -141,7 +141,7 @@ class WatchlistFunnel:
                 self.volume_analyzer.track_ticker(ticker, lookback_bars=20)
                 self.volume_analyzer.load_historical_bars(ticker, lookback_minutes=60)
         
-        print(f"\n✅ Watchlist: {len(watchlist)} tickers")
+        print(f"\nâœ… Watchlist: {len(watchlist)} tickers")
         print(f"{', '.join(watchlist[:15])}{'...' if len(watchlist) > 15 else ''}\n")
         
         return watchlist
@@ -259,7 +259,7 @@ class WatchlistFunnel:
                 filtered_tickers.append(scored_ticker)
         
         if not filtered_tickers:
-            print("[FUNNEL] ⚠️  No tickers passed final volume filter, using top scorers")
+            print("[FUNNEL] âš ï¸  No tickers passed final volume filter, using top scorers")
             filtered_tickers = self.scored_tickers
         
         watchlist = momentum_screener.get_top_n_movers(
@@ -268,7 +268,7 @@ class WatchlistFunnel:
         )
         
         print("\n" + "="*80)
-        print("🎯 FINAL TOP 3 FOR MARKET OPEN")
+        print("ðŸŽ¯ FINAL TOP 3 FOR MARKET OPEN")
         print("="*80)
         momentum_screener.print_momentum_summary(filtered_tickers, top_n=3)
         
@@ -374,10 +374,11 @@ if __name__ == "__main__":
     # Force wide scan
     watchlist = funnel.build_watchlist(force_refresh=True)
     
-    print(f"\n📦 Current Stage: {funnel.current_stage}")
-    print(f"🎯 Watchlist: {len(watchlist)} tickers")
-    print(f"📈 Top 5: {watchlist[:5]}")
+    print(f"\nðŸ“¦ Current Stage: {funnel.current_stage}")
+    print(f"ðŸŽ¯ Watchlist: {len(watchlist)} tickers")
+    print(f"ðŸ“ˆ Top 5: {watchlist[:5]}")
     
     # Get metadata
     metadata = funnel.get_watchlist_metadata()
-    print(f"\n📊 Metadata: {metadata}")
+    print(f"\nðŸ“Š Metadata: {metadata}")
+

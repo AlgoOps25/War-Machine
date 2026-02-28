@@ -1,4 +1,4 @@
-"""
+﻿"""
 Dynamic Stock Screener
 Replaces static watchlist with EODHD screener API to find best tickers daily.
 
@@ -23,13 +23,13 @@ import requests
 import json
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
-import config
+from utils import config
 
 # Cache to avoid redundant API calls
 _screener_cache = {}  # {"date": datetime, "results": [...]}
 _CACHE_TTL_HOURS = 6
 
-# Default screening criteria — US stocks, $1B+ market cap, $5-$1000 price
+# Default screening criteria â€” US stocks, $1B+ market cap, $5-$1000 price
 # Field names from EODHD docs: avgvol_1d, adjusted_close, market_capitalization
 DEFAULT_FILTERS = [
     ["market_capitalization", ">", 1000000000],    # Market cap > $1B
@@ -55,7 +55,7 @@ CORE_TICKERS = [
     "TSLA", "META", "AMD",
 ]
 
-# Expanded fallback — used when screener returns no live results
+# Expanded fallback â€” used when screener returns no live results
 FALLBACK_WATCHLIST = [
     "SPY", "QQQ", "IWM", "DIA", "XLF", "XLK", "XLE", "XLV",
     "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA",
@@ -102,7 +102,7 @@ def run_screener(
     if filters is None:
         filters = DEFAULT_FILTERS
 
-    # Compact JSON — no spaces (spaces become + in URLs, also rejected)
+    # Compact JSON â€” no spaces (spaces become + in URLs, also rejected)
     filter_json = json.dumps(filters, separators=(',', ':'))
 
     # Build URL manually to keep [ ] " as raw characters
@@ -121,17 +121,17 @@ def run_screener(
         print(f"[SCREENER] HTTP {response.status_code}")
 
         if response.status_code == 422:
-            print(f"[SCREENER] ❌ 422 — filter format rejected")
+            print(f"[SCREENER] âŒ 422 â€” filter format rejected")
             try:
                 print(f"[SCREENER] API error: {response.text[:400]}")
             except Exception:
                 pass
             return []
         if response.status_code == 403:
-            print("[SCREENER] ❌ 403 — screener not in your EODHD plan")
+            print("[SCREENER] âŒ 403 â€” screener not in your EODHD plan")
             return []
         if response.status_code == 401:
-            print("[SCREENER] ❌ 401 — check EODHD_API_KEY in config.py")
+            print("[SCREENER] âŒ 401 â€” check EODHD_API_KEY in config.py")
             return []
 
         response.raise_for_status()
@@ -139,14 +139,14 @@ def run_screener(
 
         if isinstance(data, dict):
             total = data.get("total", "?")
-            print(f"[SCREENER] ✅ Total results from API: {total}")
+            print(f"[SCREENER] âœ… Total results from API: {total}")
         else:
             print(f"[SCREENER] Unexpected response: {type(data)} | {str(data)[:200]}")
             return []
 
         results = data.get("data", [])
         if not results:
-            print("[SCREENER] ⚠️  0 results — filters may be too strict or market is closed")
+            print("[SCREENER] âš ï¸  0 results â€” filters may be too strict or market is closed")
             return []
 
         tickers = []
@@ -158,7 +158,7 @@ def run_screener(
             if ticker and ticker not in tickers:
                 tickers.append(ticker)
 
-        print(f"[SCREENER] ✅ {len(tickers)} tickers returned")
+        print(f"[SCREENER] âœ… {len(tickers)} tickers returned")
         return tickers[:limit]
 
     except requests.exceptions.HTTPError as e:
@@ -179,7 +179,7 @@ def get_dynamic_watchlist(
     """
     Generate dynamic watchlist using EODHD screener.
     Falls back to FALLBACK_WATCHLIST (50 tickers) if API returns no results.
-    Does NOT cache fallback — retries API on next call.
+    Does NOT cache fallback â€” retries API on next call.
     """
     if not force_refresh and _is_cache_valid():
         cached_results = _screener_cache.get("results", [])
@@ -221,17 +221,17 @@ def get_dynamic_watchlist(
             if ticker not in watchlist:
                 watchlist.append(ticker)
 
-    # Fallback — don't cache so next call retries the live API
+    # Fallback â€” don't cache so next call retries the live API
     if not screener_success:
-        print("[SCREENER] ⚠️  No live screener data — using FALLBACK_WATCHLIST")
-        print("[SCREENER] ⚠️  Cache NOT saved (will retry next call)")
+        print("[SCREENER] âš ï¸  No live screener data â€” using FALLBACK_WATCHLIST")
+        print("[SCREENER] âš ï¸  Cache NOT saved (will retry next call)")
         return list(dict.fromkeys(FALLBACK_WATCHLIST))[:max_tickers]
 
     final_watchlist = watchlist[:max_tickers]
     _screener_cache["date"] = datetime.now()
     _screener_cache["results"] = final_watchlist
 
-    print(f"[SCREENER] ✅ Watchlist: {len(final_watchlist)} tickers")
+    print(f"[SCREENER] âœ… Watchlist: {len(final_watchlist)} tickers")
     print(f"[SCREENER] Top 10: {', '.join(final_watchlist[:10])}")
     return final_watchlist
 
@@ -288,3 +288,4 @@ def get_cache_stats() -> Dict:
         "tickers_count": results_count,
         "age_hours": (datetime.now() - cached_time).total_seconds() / 3600 if cached_time else None
     }
+
