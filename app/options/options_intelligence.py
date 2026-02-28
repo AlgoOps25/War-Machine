@@ -43,7 +43,6 @@ from collections import defaultdict
 from utils import config
 
 # Import existing modules
-from .options_filter import OptionsFilter
 from .gex_engine import compute_gex_levels, get_gex_signal_context
 from .iv_tracker import compute_ivr, store_iv_observation
 
@@ -73,7 +72,7 @@ class OptionsIntelligence:
             cache_ttl_seconds: Time-to-live for cached data (default: 5 minutes)
         """
         self.cache_ttl = cache_ttl_seconds
-        self.options_filter = OptionsFilter()
+        # self.options_filter = OptionsFilter()  # Merged into validation.py
         
         # Thread-safe caches
         self._lock = threading.RLock()
@@ -114,7 +113,8 @@ class OptionsIntelligence:
                     return cached['data']
             
             # Fetch fresh chain
-            chain = self.options_filter.get_options_chain(ticker)
+            # chain = self.options_filter.get_options_chain(ticker)  # Merged into validation.py
+            chain = None  # TODO: Implement via validation.py if needed
             
             if chain:
                 # Store previous chain for change detection
@@ -1064,6 +1064,7 @@ def scan_chain_for_uoa(ticker: str, signal_direction: str, entry_price: float) -
 def clear_options_cache(ticker: Optional[str] = None):
     """Clear options cache."""
     options_intelligence.clear_cache(ticker)
+
 
 
 
