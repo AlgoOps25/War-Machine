@@ -13,7 +13,7 @@ from utils import config
 from app.data.data_manager import data_manager
 from app.risk.position_manager import position_manager
 from app.data.ws_feed import start_ws_feed, subscribe_tickers, set_backfill_complete
-from scanner_optimizer import (
+from app.core.scanner_optimizer import (
     get_adaptive_scan_interval,
     should_scan_now,
     calculate_optimal_watchlist_size
@@ -465,6 +465,7 @@ def get_screener_tickers(min_market_cap: int = 1_000_000_000, limit: int = 50) -
 # â”€â”€ Entry point â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 if __name__ == "__main__":
     start_scanner_loop()
+
 
 
 
