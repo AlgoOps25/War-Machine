@@ -1,4 +1,4 @@
-"""
+﻿"""
 MTF Timeframe Compression Module
 Unified compression logic for multi-timeframe analysis
 
