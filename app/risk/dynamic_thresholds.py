@@ -1,4 +1,4 @@
-"""
+﻿"""
 Dynamic Confidence Threshold Manager
 Optimization #3: Adaptive thresholds based on performance and market conditions
 
@@ -11,7 +11,7 @@ Replaces static config thresholds with dynamic adjustments based on:
 
 from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
-import config
+from utils import config
 
 
 def _now_et():
@@ -198,10 +198,10 @@ def get_dynamic_threshold(signal_type, grade):
 
     Formula:
         baseline (from config)
-        + time_of_day_adj (±0.05)
-        + vix_adj (±0.05)
-        + winrate_adj (±0.07)
-        + quality_adj (±0.04)
+        + time_of_day_adj (Â±0.05)
+        + vix_adj (Â±0.05)
+        + winrate_adj (Â±0.07)
+        + quality_adj (Â±0.04)
 
         Clamped to: [ABSOLUTE_FLOOR, 0.85]
     """

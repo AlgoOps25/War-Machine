@@ -1,4 +1,4 @@
-"""
+﻿"""
 Position Manager - Consolidated Position Tracking, Sizing, and Win Rate Analysis
 Replaces: position_tracker.py, position_sizing.py, win_rate_tracker.py
 
@@ -10,20 +10,20 @@ Features:
   - Circuit breaker (daily loss limits)
   - Signal tracking when trades execute (links signals to positions)
 """
-import config
+from utils import config
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
-import db_connection
+from app.data import db_connection
 from db_connection import get_conn, ph, dict_cursor, serial_pk
 
 try:
     from signal_analytics import signal_tracker
     SIGNAL_TRACKING_ENABLED = True
-    print("[POSITION] ✅ Signal trade tracking enabled (signal_analytics)")
+    print("[POSITION] âœ… Signal trade tracking enabled (signal_analytics)")
 except ImportError:
     signal_tracker = None
     SIGNAL_TRACKING_ENABLED = False
-    print("[POSITION] ⚠️  Signal trade tracking disabled (signal_analytics not available)")
+    print("[POSITION] âš ï¸  Signal trade tracking disabled (signal_analytics not available)")
 
 
 # Sector/ticker correlation mapping used to prevent over-concentration in correlated assets
@@ -154,7 +154,7 @@ class PositionManager:
         if drawdown <= -max_drawdown_pct:
             reason = (
                 f"MAX DRAWDOWN EXCEEDED: {drawdown:.1f}% from peak "
-                f"(${self.intraday_high_water_mark:,.0f} → ${current_balance:,.0f})"
+                f"(${self.intraday_high_water_mark:,.0f} â†’ ${current_balance:,.0f})"
             )
             return True, reason
         
@@ -334,11 +334,11 @@ class PositionManager:
             print("[POSITION] No stale positions from prior sessions")
             return
 
-        print(f"[POSITION] ⚠️  Found {len(stale)} stale position(s) — force closing before session")
+        print(f"[POSITION] âš ï¸  Found {len(stale)} stale position(s) â€” force closing before session")
         for pos in stale:
             pos = dict(pos)
             print(f"[POSITION] Force closing {pos['ticker']} {pos['direction'].upper()} "
-                  f"(ID: {pos['id']}) entered @ ${pos['entry_price']:.2f} — STALE EOD")
+                  f"(ID: {pos['id']}) entered @ ${pos['entry_price']:.2f} â€” STALE EOD")
             self.close_position(pos["id"], pos["entry_price"], "STALE_EOD")
 
 
@@ -397,7 +397,7 @@ class PositionManager:
 
         is_valid_rr, risk_reward = self.validate_risk_reward(entry_price, stop_price, t2)
         if not is_valid_rr:
-            print(f"[RISK] ❌ {ticker} rejected - R:R {risk_reward:.2f} < {self.min_risk_reward_ratio:.2f} minimum")
+            print(f"[RISK] âŒ {ticker} rejected - R:R {risk_reward:.2f} < {self.min_risk_reward_ratio:.2f} minimum")
             return -1
 
         risk_per_share = round(abs(entry_price - stop_price), 4) or 1.0
@@ -408,7 +408,7 @@ class PositionManager:
 
         can_open, reason = self.can_open_position(ticker, risk_dollars)
         if not can_open:
-            print(f"[RISK] ❌ {ticker} rejected - {reason}")
+            print(f"[RISK] âŒ {ticker} rejected - {reason}")
             return -1
 
         # Extract options data if provided
@@ -585,9 +585,9 @@ class PositionManager:
                 cached["pnl"]                = cached.get("pnl", 0) + partial_pnl
                 break
 
-        print(f"[POSITION] ⚡ SCALE OUT {ticker} @ {exit_price:.2f}")
+        print(f"[POSITION] âš¡ SCALE OUT {ticker} @ {exit_price:.2f}")
         print(f"  Closed {contracts_to_close} contracts | Remaining: {contracts_left}")
-        print(f"  Partial P&L: ${partial_pnl:.2f} | Stop → BE: {entry_price:.2f}")
+        print(f"  Partial P&L: ${partial_pnl:.2f} | Stop â†’ BE: {entry_price:.2f}")
 
         try:
             from discord_helpers import send_scaling_alert
@@ -646,7 +646,7 @@ class PositionManager:
             closed_trades = self.get_todays_closed_trades()
             self._update_performance_streak(closed_trades)
 
-        emoji = "✅" if final_pnl > 0 else "❌"
+        emoji = "âœ…" if final_pnl > 0 else "âŒ"
         print(f"[POSITION] {emoji} CLOSED {ticker} @ {exit_price:.2f} | {exit_reason}")
         print(f"  Total P&L: ${final_pnl:.2f}  Streak: {self._format_streak()}")
 
@@ -673,7 +673,7 @@ class PositionManager:
         
         breached, reason = self.check_circuit_breaker()
         if breached:
-            print(f"\n[RISK] 🚨 {reason}")
+            print(f"\n[RISK] ðŸš¨ {reason}")
             print("[RISK] No new positions will be opened until next session\n")
 
 
@@ -777,7 +777,7 @@ class PositionManager:
 
         lines = [
             "=" * 50,
-            "WAR MACHINE — END OF DAY REPORT",
+            "WAR MACHINE â€” END OF DAY REPORT",
             "=" * 50,
             f"Date:         {datetime.now().strftime('%A, %B %d, %Y')}",
             f"Total Trades: {trades}",
@@ -788,7 +788,7 @@ class PositionManager:
             f"Max Drawdown: {max_dd_pct:.2f}%",
             f"Final Streak: {self._format_streak()}",
             "",
-            "— 30-Day Grade Breakdown —"
+            "â€” 30-Day Grade Breakdown â€”"
         ]
 
         if win_rate_data:
@@ -852,11 +852,12 @@ class PositionManager:
         summary += f"Open Positions:   {len(open_positions)} / {self.max_open_positions} max\n"
         summary += f"Total Exposure:   ${total_exposure:,.0f} ({exposure_pct:.1f}%)\n"
         summary += f"Performance:      {self._format_streak()}\n"
-        summary += f"Circuit Breaker:  {'🚨 TRIGGERED' if circuit_breached else '✅ OK'}\n"
+        summary += f"Circuit Breaker:  {'ðŸš¨ TRIGGERED' if circuit_breached else 'âœ… OK'}\n"
         summary += "="*60 + "\n"
         
         return summary
 
 
-# ── Global singleton ────────────────────────────────────────────────────────────────────────────────
+# â”€â”€ Global singleton â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 position_manager = PositionManager()
+
