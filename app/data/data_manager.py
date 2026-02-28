@@ -315,7 +315,7 @@ class DataManager:
         - API calls from ~160,000 to <500 per deploy
         - Startup time from 5-10 min to 10-30 seconds
         """
-        from candle_cache import candle_cache
+        from app.data.candle_cache import candle_cache
         
         now_et = datetime.now(ET)
         timeframe = '1m'
@@ -429,7 +429,7 @@ class DataManager:
         # Also cache to candle_cache
         if result > 0:
             try:
-                from candle_cache import candle_cache
+                from app.data.candle_cache import candle_cache
                 candle_cache.cache_candles(ticker, '1m', bars, quiet=True)
             except Exception as e:
                 print(f"[CACHE] Auto-cache failed for {ticker}: {e}")
@@ -443,7 +443,7 @@ class DataManager:
         Run this every 60 minutes to keep cache fresh without
         impacting real-time scanning performance.
         """
-        from candle_cache import candle_cache
+        from app.data.candle_cache import candle_cache
         
         now_et = datetime.now(ET)
         
@@ -489,7 +489,7 @@ class DataManager:
         Use this to pre-populate cache with 60 days of data
         for better backtesting capabilities.
         """
-        from candle_cache import candle_cache
+        from app.data.candle_cache import candle_cache
         
         print(f"[CACHE] ðŸ”¥ Cache warmup: {len(tickers)} tickers | {days} days")
         
@@ -1047,5 +1047,6 @@ class DataManager:
 # Global singleton
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 data_manager = DataManager()
+
 
 
