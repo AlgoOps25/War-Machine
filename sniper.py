@@ -42,7 +42,7 @@ from bos_fvg_engine import scan_bos_fvg, is_force_close_time
 # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 try:
     from signal_analytics import signal_tracker
-    from performance_monitor from app.analytics import performance_monitor
+    from app.analytics import performance_monitor
     from app.analytics.performance_alerts import alert_manager
     PHASE_4_ENABLED = True
     print("[SIGNALS] âœ… Phase 4 monitoring enabled (analytics + performance + alerts)")
@@ -1651,4 +1651,5 @@ def send_discord(message: str):
         requests.post(config.DISCORD_WEBHOOK_URL, json={"content": message}, timeout=5)
     except Exception as e:
         print(f"[DISCORD] Error: {e}")
+
 
