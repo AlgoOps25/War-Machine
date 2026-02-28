@@ -37,7 +37,7 @@ from zoneinfo import ZoneInfo
 from typing import List, Dict, Optional
 from utils import config
 from app.data import db_connection
-from db_connection import (
+from app.data.db_connection import (
     get_conn, ph, dict_cursor, serial_pk,
     upsert_bar_sql, upsert_bar_5m_sql, upsert_metadata_sql
 )
@@ -1047,4 +1047,5 @@ class DataManager:
 # Global singleton
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 data_manager = DataManager()
+
 

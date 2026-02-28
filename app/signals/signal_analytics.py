@@ -1,4 +1,4 @@
-"""
+﻿"""
 Signal Analytics Tracking System
 
 Tracks the complete lifecycle of every CFW6 signal from generation through execution.
@@ -12,7 +12,7 @@ Signal Lifecycle:
   5. CLOSED      - Position closed (stop/T1/T2/EOD)
 
 Key Metrics:
-  - Signal funnel conversion rates (generated → validated → armed → traded)
+  - Signal funnel conversion rates (generated â†’ validated â†’ armed â†’ traded)
   - Grade distribution (A+ vs A vs A-)
   - Confidence distribution before/after multipliers
   - Multiplier impact analysis (IVR/UOA/GEX/MTF average effects)
@@ -43,7 +43,7 @@ from datetime import datetime, timedelta, time as dtime
 from zoneinfo import ZoneInfo
 import statistics
 from collections import defaultdict
-from db_connection import get_conn, ph, dict_cursor, serial_pk
+from app.data.db_connection import get_conn, ph, dict_cursor, serial_pk
 
 ET = ZoneInfo("America/New_York")
 
@@ -583,25 +583,25 @@ class SignalTracker:
         lines.append("="*80)
         lines.append(f"Session Date: {session_date}\n")
         
-        lines.append("── Signal Funnel " + "─"*62)
+        lines.append("â”€â”€ Signal Funnel " + "â”€"*62)
         lines.append(f"  Generated:  {funnel['generated']:>3}")
         lines.append(f"  Validated:  {funnel['validated']:>3}  ({funnel['validation_rate']:>5.1f}% pass rate)")
         lines.append(f"  Armed:      {funnel['armed']:>3}  ({funnel['arming_rate']:>5.1f}% confirmation rate)")
         lines.append(f"  Traded:     {funnel['traded']:>3}  ({funnel['execution_rate']:>5.1f}% execution rate)\n")
         
-        lines.append("── Grade Distribution " + "─"*57)
+        lines.append("â”€â”€ Grade Distribution " + "â”€"*57)
         for grade in ['A+', 'A', 'A-']:
             count = grades['counts'].get(grade, 0)
             pct = grades['percentages'].get(grade, 0)
             lines.append(f"  {grade:<3}: {count:>3}  ({pct:>5.1f}%)")
         lines.append("")
         
-        lines.append("── Multiplier Impact " + "─"*58)
+        lines.append("â”€â”€ Multiplier Impact " + "â”€"*58)
         lines.append(f"  IVR Multiplier:  {mults['ivr_avg']:.3f}x")
         lines.append(f"  UOA Multiplier:  {mults['uoa_avg']:.3f}x")
         lines.append(f"  GEX Multiplier:  {mults['gex_avg']:.3f}x")
         lines.append(f"  MTF Boost:       +{mults['mtf_avg']:.3f}")
-        lines.append(f"  Base → Final:    {mults['base_avg']:.3f} → {mults['final_avg']:.3f}  ({mults['total_boost_pct']:+.1f}%)")
+        lines.append(f"  Base â†’ Final:    {mults['base_avg']:.3f} â†’ {mults['final_avg']:.3f}  ({mults['total_boost_pct']:+.1f}%)")
         lines.append("="*80 + "\n")
         
         return "\n".join(lines)
@@ -613,16 +613,16 @@ class SignalTracker:
         print("[ANALYTICS] Session cache cleared")
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # GLOBAL INSTANCE
-# ══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 signal_tracker = SignalTracker()
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # USAGE EXAMPLE
-# ══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 if __name__ == "__main__":
     print("Testing Signal Analytics System...\n")
@@ -677,7 +677,8 @@ if __name__ == "__main__":
     # Test funnel stats
     funnel = signal_tracker.get_funnel_stats()
     print("\nFunnel Visualization:")
-    print(f"{funnel['generated']} generated → "
-          f"{funnel['validated']} validated ({funnel['validation_rate']:.0f}%) → "
-          f"{funnel['armed']} armed ({funnel['arming_rate']:.0f}%) → "
+    print(f"{funnel['generated']} generated â†’ "
+          f"{funnel['validated']} validated ({funnel['validation_rate']:.0f}%) â†’ "
+          f"{funnel['armed']} armed ({funnel['arming_rate']:.0f}%) â†’ "
           f"{funnel['traded']} traded ({funnel['execution_rate']:.0f}%)")
+
