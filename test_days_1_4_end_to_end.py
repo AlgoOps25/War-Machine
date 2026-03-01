@@ -24,9 +24,9 @@ from zoneinfo import ZoneInfo
 
 ET = ZoneInfo("America/New_York")
 
-# ═══════════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 # TEST HARNESS
-# ═══════════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 
 PASS_COUNT = 0
 FAIL_COUNT = 0
@@ -63,9 +63,9 @@ def subsection(title: str):
     print(f"\n\033[1m  {title}\033[0m")
     print(f"  {'-'*68}")
 
-# ═══════════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 # PREFLIGHT CHECKS
-# ═══════════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 
 section("PREFLIGHT: Environment & Dependencies")
 
@@ -110,9 +110,9 @@ except ImportError:
     fail("requests package", "not installed")
     sys.exit(1)
 
-# ═══════════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 # DAY 1: VIX POSITION SIZING + RTH GUARD
-# ═══════════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 
 section("DAY 1: VIX Position Sizing + RTH Guard")
 
@@ -129,16 +129,20 @@ try:
     assert hasattr(position_manager, 'calculate_position_size'), "Missing calculate_position_size()"
     ok("calculate_position_size() method exists")
     
-    # Test call with mock data
-    size = position_manager.calculate_position_size(
-        ticker="SPY",
-        entry_price=580.0,
-        stop_price=575.0,
-        vix=15.0
+    # Test call with correct signature: (confidence, grade, account_size=None, risk_per_share=1.0)
+    sizing = position_manager.calculate_position_size(
+        confidence=0.75,
+        grade="A",
+        risk_per_share=5.0
     )
-    assert isinstance(size, (int, float)), f"Expected numeric size, got {type(size)}"
-    assert size > 0, f"Position size should be positive, got {size}"
-    ok("VIX-scaled position sizing works", f"size={size} shares @ VIX=15")
+    assert isinstance(sizing, dict), f"Expected dict, got {type(sizing)}"
+    assert "contracts" in sizing, "Missing 'contracts' key"
+    assert sizing["contracts"] > 0, f"Contracts should be positive, got {sizing['contracts']}"
+    ok(
+        "VIX-scaled position sizing works", 
+        f"contracts={sizing['contracts']} risk=${sizing['risk_dollars']:.0f} "
+        f"perf_adj={sizing['performance_adj']:.2f} vix={sizing['vix_mult']:.2f}"
+    )
 except AssertionError as e:
     fail("calculate_position_size()", str(e))
 except Exception as e:
@@ -148,27 +152,33 @@ except Exception as e:
 
 subsection("Test 1.3: RTH Guard")
 try:
-    # Check if is_regular_trading_hours exists
-    now_et = datetime.now(ET)
-    if hasattr(position_manager, 'is_regular_trading_hours'):
-        is_rth = position_manager.is_regular_trading_hours(now_et)
-        ok("is_regular_trading_hours() exists", f"current={is_rth}")
+    # Convert config.MARKET_OPEN from string "HH:MM" to time object if needed
+    from utils import config
+    from datetime import time as dtime_obj
+    
+    if isinstance(config.MARKET_OPEN, str):
+        h, m = map(int, config.MARKET_OPEN.split(":"))
+        market_open = dtime_obj(h, m)
     else:
-        # RTH might be in config or elsewhere
-        from utils import config
-        if hasattr(config, 'MARKET_OPEN') and hasattr(config, 'MARKET_CLOSE'):
-            is_rth = config.MARKET_OPEN <= now_et.time() <= config.MARKET_CLOSE
-            ok("RTH guard via config.MARKET_OPEN/CLOSE", f"current={is_rth}")
-        else:
-            warn("RTH guard", "Could not locate RTH check — verify manually")
+        market_open = config.MARKET_OPEN
+    
+    if isinstance(config.MARKET_CLOSE, str):
+        h, m = map(int, config.MARKET_CLOSE.split(":"))
+        market_close = dtime_obj(h, m)
+    else:
+        market_close = config.MARKET_CLOSE
+    
+    now_et = datetime.now(ET)
+    is_rth = market_open <= now_et.time() <= market_close
+    ok("RTH guard via config.MARKET_OPEN/CLOSE", f"current={is_rth} ({now_et.strftime('%H:%M ET')})")
 except Exception as e:
     fail("RTH guard", str(e))
     import traceback
     traceback.print_exc()
 
-# ═══════════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 # DAY 2: BID/ASK SPREAD FILTER (us-quote WebSocket)
-# ═══════════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 
 section("DAY 2: Bid/Ask Spread Filter (us-quote WebSocket)")
 
@@ -178,15 +188,16 @@ try:
     ok("ws_quote_feed module imports cleanly")
 except ImportError as e:
     fail("ws_quote_feed import", str(e))
-    # Non-fatal for now
 
 subsection("Test 2.2: Quote Feed Functions Exist")
 try:
+    # Correct API: get_quote() instead of get_current_quote()
     from app.data.ws_quote_feed import (
         start_quote_feed,
         subscribe_quote_tickers,
-        get_current_quote,
-        is_quote_connected
+        get_quote,
+        is_quote_connected,
+        is_spread_acceptable
     )
     ok("All quote feed symbols importable")
     
@@ -196,9 +207,9 @@ try:
     ok("is_quote_connected() returns False (expected)", f"connected={connected}")
     
     # Try to get a quote (should return None since feed is not running)
-    quote = get_current_quote("SPY")
+    quote = get_quote("SPY")
     assert quote is None, f"Expected None when feed not running, got {quote}"
-    ok("get_current_quote() returns None when feed not running")
+    ok("get_quote() returns None when feed not running")
     
 except ImportError as e:
     fail("Quote feed symbols import", str(e))
@@ -228,9 +239,9 @@ try:
 except Exception as e:
     fail("Spread calculation", str(e))
 
-# ═══════════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 # DAY 3: REST API FAILOVER FOR WEBSOCKET OUTAGES
-# ═══════════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 
 section("DAY 3: REST API Failover for WebSocket Outages")
 
@@ -319,9 +330,9 @@ except AssertionError as e:
 except Exception as e:
     fail("REST cache TTL exception", str(e))
 
-# ═══════════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 # DAY 4: DB-BACKED CANDLE CACHE WITH 95%+ API REDUCTION
-# ═══════════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 
 section("DAY 4: DB-Backed Candle Cache with 95%+ API Reduction")
 
@@ -388,9 +399,9 @@ try:
     )
     ok("data_manager.startup_backfill_with_cache() exists")
     
-    # Verify it's called in scanner.py
-    import app.core.scanner as scanner_module
-    scanner_src = open("app/core/scanner.py").read()
+    # Verify it's called in scanner.py (read with explicit encoding)
+    with open("app/core/scanner.py", encoding="utf-8") as f:
+        scanner_src = f.read()
     assert "startup_backfill_with_cache" in scanner_src, (
         "startup_backfill_with_cache not called in scanner.py"
     )
@@ -415,9 +426,9 @@ try:
 except Exception as e:
     warn("Cache stats", str(e))
 
-# ═══════════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 # INTEGRATION TEST: Simulated Startup Sequence
-# ═══════════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 
 section("INTEGRATION: Simulated Startup Sequence")
 
@@ -460,9 +471,9 @@ except Exception as e:
     import traceback
     traceback.print_exc()
 
-# ═══════════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 # FINAL SUMMARY
-# ═══════════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 
 print(f"\n\033[1m{'='*70}\033[0m")
 print(f"\033[1m  FINAL RESULTS\033[0m")
