@@ -11,6 +11,7 @@ Analysis:
   - Measures: peak R achieved, drawdown, time to peak, actual exit point
   - Identifies natural profit-taking zones (70th/90th percentile clusters)
   - Generates T1/T2 recommendations by ticker group and time-of-day
+  - FILTERS: Regular trading hours only (9:30-16:00 ET, Mon-Fri, no holidays)
 
 Output:
   1. signal_outcomes.csv - Every signal with actual peak/trough/reversal
@@ -26,6 +27,7 @@ Configuration:
   - Tickers: SPY, QQQ, AAPL, TSLA, NVDA, MSFT, AMD, META, GOOGL, AMZN, NFLX, COIN
   - Forward tracking: Until reversal, FVG invalidation, or EOD
   - Caching: Saves data to data_cache/ for instant re-runs
+  - RTH Only: 9:30 AM - 4:00 PM ET, Mon-Fri, no holidays
 """
 
 import sys
@@ -34,10 +36,11 @@ import json
 import requests
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 from typing import List, Dict, Tuple, Optional
 from collections import defaultdict
 from pathlib import Path
+import pandas_market_calendars as mcal
 
 print("\n" + "="*80)
 print(" TARGET DISCOVERY SYSTEM - Historical Outcome Analysis")
@@ -49,12 +52,12 @@ if not EODHD_API_KEY:
     print("❌ EODHD_API_KEY not found!")
     sys.exit(1)
 
-print(f"\n[1/7] ✅ EODHD API Ready")
+print(f"\n[1/8] ✅ EODHD API Ready")
 
 # Import BOS+FVG detector
 try:
     from app.signals.breakout_detector import BreakoutDetector
-    print("[2/7] ✅ BreakoutDetector loaded")
+    print("[2/8] ✅ BreakoutDetector loaded")
 except Exception as e:
     print(f"❌ Failed to load BreakoutDetector: {e}")
     sys.exit(1)
@@ -70,29 +73,76 @@ CONFIG = {
     'forward_bars': 120,  # Track 2 hours forward (120 x 1-min bars)
     'reversal_threshold': 0.5,  # 50% retracement from peak = reversal
     'cache_dir': 'data_cache',  # Cache directory
+    'rth_start': time(9, 30),  # Regular trading hours start
+    'rth_end': time(16, 0),    # Regular trading hours end
 }
 
 # Create cache directory
 Path(CONFIG['cache_dir']).mkdir(exist_ok=True)
 
-print(f"[3/7] ✅ Configuration loaded")
+print(f"[3/8] ✅ Configuration loaded")
 print(f"   📅 Period: {CONFIG['start_date'].date()} to {CONFIG['end_date'].date()}")
 print(f"   📊 Tickers: {len(CONFIG['watchlist'])}")
 print(f"   ⏱️  Forward tracking: {CONFIG['forward_bars']} bars (2 hours)")
 print(f"   💾 Cache: {CONFIG['cache_dir']}/")
+print(f"   🕒 RTH Only: 9:30 AM - 4:00 PM ET (Mon-Fri, no holidays)")
+
+# Setup market calendar
+print(f"\n[4/8] 🗓️  Loading NYSE calendar...")
+try:
+    nyse = mcal.get_calendar('NYSE')
+    market_days = nyse.schedule(
+        start_date=CONFIG['start_date'], 
+        end_date=CONFIG['end_date']
+    )
+    trading_days = set(market_days.index.date)
+    print(f"   ✅ {len(trading_days)} trading days identified")
+except Exception as e:
+    print(f"   ⚠️  Calendar load failed: {e}")
+    print("   ⚠️  Falling back to simple weekday filter")
+    trading_days = None
+
+def is_regular_trading_hours(dt: datetime, trading_days_set: Optional[set] = None) -> bool:
+    """
+    Check if datetime is during regular trading hours.
+    
+    Rules:
+    - Monday-Friday only
+    - 9:30 AM - 4:00 PM ET
+    - Not a market holiday (if calendar available)
+    """
+    # Check if datetime object
+    if not hasattr(dt, 'weekday'):
+        return False
+    
+    # Check weekday (0=Monday, 6=Sunday)
+    if dt.weekday() > 4:  # Saturday or Sunday
+        return False
+    
+    # Check if market holiday (if calendar available)
+    if trading_days_set is not None:
+        if dt.date() not in trading_days_set:
+            return False
+    
+    # Check time range (9:30 AM - 4:00 PM)
+    bar_time = dt.time()
+    if bar_time < CONFIG['rth_start'] or bar_time >= CONFIG['rth_end']:
+        return False
+    
+    return True
 
 # Fetch historical data with caching
 def fetch_eodhd_intraday(ticker: str, from_date: datetime, to_date: datetime) -> pd.DataFrame:
-    """Fetch 1-min bars from EODHD with local caching"""
+    """Fetch 1-min bars from EODHD with local caching and RTH filtering"""
     
     # Check cache first
-    cache_file = Path(CONFIG['cache_dir']) / f"{ticker}_{from_date.strftime('%Y%m%d')}_{to_date.strftime('%Y%m%d')}.parquet"
+    cache_file = Path(CONFIG['cache_dir']) / f"{ticker}_{from_date.strftime('%Y%m%d')}_{to_date.strftime('%Y%m%d')}_RTH.parquet"
     
     if cache_file.exists():
         print(f"      💾 Loading from cache...", end="", flush=True)
         try:
             df = pd.read_parquet(cache_file)
-            print(f" ✅ {len(df)} bars (cached)", flush=True)
+            print(f" ✅ {len(df)} bars (cached, RTH only)", flush=True)
             return df
         except Exception as e:
             print(f" ⚠️  Cache corrupted, re-fetching", flush=True)
@@ -121,14 +171,20 @@ def fetch_eodhd_intraday(ticker: str, from_date: datetime, to_date: datetime) ->
                 df = pd.DataFrame(data)
                 df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
                 df['datetime'] = df['timestamp']  # Add datetime column for compatibility
+                
+                # Filter to RTH only
+                original_count = len(df)
+                df = df[df['timestamp'].apply(lambda x: is_regular_trading_hours(x, trading_days))].copy()
+                rth_count = len(df)
+                
                 df.set_index('timestamp', inplace=True)
                 
                 # Save to cache
                 try:
                     df.to_parquet(cache_file)
-                    print(f" ✅ {len(df)} bars (saved to cache)", flush=True)
+                    print(f" ✅ {rth_count} bars RTH ({original_count} total, {original_count-rth_count} filtered)", flush=True)
                 except Exception as e:
-                    print(f" ✅ {len(df)} bars (cache write failed)", flush=True)
+                    print(f" ✅ {rth_count} bars RTH (cache write failed)", flush=True)
                 
                 return df
             else:
@@ -142,7 +198,7 @@ def fetch_eodhd_intraday(ticker: str, from_date: datetime, to_date: datetime) ->
     
     return pd.DataFrame()
 
-print("[4/7] ✅ Data fetcher ready (with caching)")
+print("[5/8] ✅ Data fetcher ready (with RTH filtering + caching)")
 
 # Outcome analyzer
 def analyze_signal_outcome(signal: Dict, forward_bars: List[Dict], 
@@ -248,10 +304,10 @@ def analyze_signal_outcome(signal: Dict, forward_bars: List[Dict],
         'stopped_out': stopped_out
     }
 
-print("[5/7] ✅ Outcome analyzer ready")
+print("[6/8] ✅ Outcome analyzer ready")
 
 # Main analysis loop
-print(f"\n[6/7] 🔄 Running target discovery...")
+print(f"\n[7/8] 🔄 Running target discovery...")
 print(f"   ⏰ Start: {datetime.now().strftime('%I:%M %p')}")
 print(f"   ⏱️  Est. completion: {(datetime.now() + timedelta(minutes=20)).strftime('%I:%M %p')}")
 
@@ -267,7 +323,7 @@ for ticker_idx, ticker in enumerate(CONFIG['watchlist'], 1):
     print(f"\n   [{ticker_idx}/{len(CONFIG['watchlist'])}] {ticker}...")
     
     try:
-        # Fetch data (from cache or API)
+        # Fetch data (from cache or API) - RTH only
         df = fetch_eodhd_intraday(ticker, CONFIG['start_date'], CONFIG['end_date'])
         
         if df.empty or len(df) < 100:
@@ -349,7 +405,7 @@ print(f"\n   ✅ Complete! {datetime.now().strftime('%I:%M %p')}")
 print(f"   📊 Total outcomes analyzed: {len(all_outcomes)}")
 
 # Save raw outcomes
-print(f"\n[7/7] 💾 Saving results...")
+print(f"\n[8/8] 💾 Saving results...")
 
 if not all_outcomes:
     print("   ❌ No outcomes to analyze!")
@@ -433,6 +489,7 @@ with open('target_discovery_summary.txt', 'w') as f:
     f.write("TARGET DISCOVERY SUMMARY\n")
     f.write("="*80 + "\n\n")
     f.write(f"Analysis Period: {CONFIG['start_date'].date()} to {CONFIG['end_date'].date()}\n")
+    f.write(f"Regular Trading Hours Only: 9:30 AM - 4:00 PM ET (Mon-Fri, no holidays)\n")
     f.write(f"Total Signals Analyzed: {len(all_outcomes)}\n")
     f.write(f"Win Rate: {len(winners)/len(all_outcomes)*100:.1f}%\n\n")
     
@@ -458,4 +515,5 @@ print(f"   3. Re-run production_indicator_backtest.py with new targets")
 print(f"\n💾 Cache Info:")
 print(f"   - Next run will use cached data (30 seconds vs 20 minutes)")
 print(f"   - To refresh data: Delete data_cache/ folder")
+print(f"   - NOTE: Old cache files without RTH filter should be deleted")
 print("\n" + "="*80 + "\n")
