@@ -1,4 +1,4 @@
-﻿"""
+"""
 Scanner Module - Intelligent Watchlist Builder & Scanner Loop
 INTEGRATED: Adaptive Watchlist Funnel, Pre-Market Scanner, Position Monitoring, Database Cleanup
 CANDLE CACHE: Cache-aware startup with 95%+ API reduction
@@ -13,6 +13,7 @@ from utils import config
 from app.data.data_manager import data_manager
 from app.risk.position_manager import position_manager
 from app.data.ws_feed import start_ws_feed, subscribe_tickers, set_backfill_complete
+from app.data.ws_quote_feed import start_quote_feed, subscribe_quote_tickers
 from app.core.scanner_optimizer import (
     get_adaptive_scan_interval,
     should_scan_now,
@@ -30,17 +31,17 @@ from app.screening.watchlist_funnel import (
     get_funnel
 )
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ────────────────────────────────────────────────────────────────────────────────────
 # OPTIONAL: SIGNAL ANALYTICS
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ────────────────────────────────────────────────────────────────────────────────────
 try:
     from signal_analytics import signal_tracker
     ANALYTICS_ENABLED = True
-    print("[SCANNER] âœ… Signal analytics enabled")
+    print("[SCANNER] ✅ Signal analytics enabled")
 except ImportError:
     ANALYTICS_ENABLED = False
     signal_tracker = None
-    print("[SCANNER] âš ï¸  signal_analytics not available â€” analytics disabled")
+    print("[SCANNER] ⚠️  signal_analytics not available — analytics disabled")
 
 API_KEY = os.getenv("EODHD_API_KEY", "")
 
@@ -111,12 +112,12 @@ def start_scanner_loop():
     print(f"Market Hours: {config.MARKET_OPEN} - {config.MARKET_CLOSE}")
     print(f"Adaptive intervals + watchlist funnel + breakout signals active")
     if ANALYTICS_ENABLED:
-        print(f"Analytics:     âœ… ENABLED (quality scoring, Sharpe, expectancy)")
-    print(f"Candle Cache:  âœ… ENABLED (95%+ API reduction on redeploy)")
+        print(f"Analytics:     ✅ ENABLED (quality scoring, Sharpe, expectancy)")
+    print(f"Candle Cache:  ✅ ENABLED (95%+ API reduction on redeploy)")
     print(f"{'='*60}\n")
 
     try:
-        send_simple_message("ðŸŽ¯ WAR MACHINE ONLINE - CFW6 Scanner + Breakout Detector Started")
+        send_simple_message("🎯 WAR MACHINE ONLINE - CFW6 Scanner + Breakout Detector Started")
     except Exception as e:
         print(f"[SCANNER] Discord unavailable: {e}")
 
@@ -126,7 +127,7 @@ def start_scanner_loop():
     last_report_day     = None
     loss_streak_alerted = False
 
-    # â”€â”€ STARTUP SEQUENCE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── STARTUP SEQUENCE ─────────────────────────────────────────────────────
     startup_watchlist = list(EMERGENCY_FALLBACK)
     try:
         start_ws_feed(startup_watchlist)
@@ -134,10 +135,16 @@ def start_scanner_loop():
     except Exception as e:
         print(f"[WS] ERROR starting WebSocket feed: {e}")
 
+    try:
+        start_quote_feed(startup_watchlist)
+        print(f"[QUOTE] Quote feed started for {len(startup_watchlist)} tickers")
+    except Exception as e:
+        print(f"[QUOTE] ERROR starting quote feed: {e}")
+
     data_manager.startup_backfill_with_cache(startup_watchlist, days=30)
     data_manager.startup_intraday_backfill_today(startup_watchlist)
     set_backfill_complete()
-    # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ──────────────────────────────────────────────────────────────────────────
 
     while True:
         try:
@@ -156,6 +163,7 @@ def start_scanner_loop():
 
                         premarket_built = True
                         subscribe_tickers(premarket_watchlist)
+                        subscribe_quote_tickers(premarket_watchlist)
 
                         print(
                             f"[WS] Subscribed premarket watchlist "
@@ -163,20 +171,20 @@ def start_scanner_loop():
                         )
 
                         stage_emoji = {
-                            'wide': 'ðŸ“¡', 'narrow': 'ðŸŽ¯',
-                            'final': 'ðŸ”¥', 'live': 'âš¡'
+                            'wide': '📡', 'narrow': '🎯',
+                            'final': '🔥', 'live': '⚡'
                         }
-                        emoji = stage_emoji.get(metadata['stage'], 'ðŸ“Š')
+                        emoji = stage_emoji.get(metadata['stage'], '📊')
 
                         msg = (
                             f"{emoji} **{metadata['stage_description']}**\n"
-                            f"âœ… Watchlist: {len(premarket_watchlist)} tickers\n"
+                            f"✅ Watchlist: {len(premarket_watchlist)} tickers\n"
                             f"{', '.join(premarket_watchlist[:20])}"
                             f"{'...' if len(premarket_watchlist) > 20 else ''}"
                         )
 
                         if volume_signals:
-                            msg += f"\n\nâš ï¸ {len(volume_signals)} volume signals active"
+                            msg += f"\n\n⚠️ {len(volume_signals)} volume signals active"
 
                         send_simple_message(msg)
 
@@ -203,6 +211,7 @@ def start_scanner_loop():
                             watchlist_data      = get_watchlist_with_metadata(force_refresh=True)
                             premarket_watchlist = watchlist_data['watchlist']
                             subscribe_tickers(premarket_watchlist)
+                            subscribe_quote_tickers(premarket_watchlist)
 
                             metadata = watchlist_data['metadata']
                             print(
@@ -238,7 +247,7 @@ def start_scanner_loop():
                 if position_manager.has_loss_streak(max_consecutive_losses=3):
                     if not loss_streak_alerted:
                         msg = (
-                            "ðŸ›‘ **CIRCUIT BREAKER** â€” 3 consecutive losses today. "
+                            "🛑 **CIRCUIT BREAKER** — 3 consecutive losses today. "
                             "New scans halted for the rest of the session. "
                             "Open positions still monitored."
                         )
@@ -247,7 +256,7 @@ def start_scanner_loop():
                         except Exception:
                             pass
                         loss_streak_alerted = True
-                        print("[RISK] Daily loss streak reached â€” halting new scans.")
+                        print("[RISK] Daily loss streak reached — halting new scans.")
                     monitor_open_positions()
                     time.sleep(60)
                     continue
@@ -354,7 +363,7 @@ def start_scanner_loop():
                     try:
                         daily_stats = position_manager.get_daily_stats()
                         eod_report  = (
-                            f"ðŸ“Š **EOD Report {current_day}**\n"
+                            f"📊 **EOD Report {current_day}**\n"
                             f"Trades: {daily_stats['trades']} | "
                             f"WR: {daily_stats['win_rate']:.1f}% | "
                             f"P&L: ${daily_stats['total_pnl']:+.2f}"
@@ -418,7 +427,7 @@ def start_scanner_loop():
             import traceback
             traceback.print_exc()
             try:
-                send_simple_message(f"âš ï¸ Scanner Error: {str(e)}")
+                send_simple_message(f"⚠️ Scanner Error: {str(e)}")
             except Exception:
                 pass
             time.sleep(30)
@@ -460,28 +469,12 @@ def get_screener_tickers(min_market_cap: int = 1_000_000_000, limit: int = 50) -
             code = item.get("code")
             if code:
                 tickers.append(code.replace(".US", "").replace(".us", ""))
-        print(f"[SCREENER] âœ… Fetched {len(tickers)} tickers (total available: {data.get('total', '?')})")
+        print(f"[SCREENER] ✅ Fetched {len(tickers)} tickers (total available: {data.get('total', '?')})")
         return tickers[:limit]
     except Exception as e:
         print(f"[SCREENER] Error: {e}")
         return []
 
-# â”€â”€ Entry point â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Entry point ──────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     start_scanner_loop()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
