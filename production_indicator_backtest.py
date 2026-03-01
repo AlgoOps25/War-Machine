@@ -1,4 +1,4 @@
-﻿"""
+"""
 Production Indicator Backtest - FIXED WITH EODHD
 Tests 6 combinations using direct EODHD historical data
 """
@@ -44,9 +44,9 @@ COMBINATIONS = [
                     'vwap_position', 'ema_200_alignment', 'atr_threshold', 'time_filter'],
         'params': {
             'price_min': 10, 'price_max': 1000,
-            'rsi_oversold': 35, 'rsi_overbought': 65,
+            'rsi_min': 35, 'rsi_max': 65, 'rsi_period': 20,
             'bb_lower_pct': 0.3, 'bb_upper_pct': 0.7,
-            'atr_min': 0.5, 'atr_max': 20,
+            'atr_min': 0.5, 'atr_max': 20, 'atr_period': 14,
             'ema_fast': 9, 'ema_slow': 21,
             'vol_multiplier': 2.0, 'vol_period': 20
         }
@@ -58,7 +58,7 @@ COMBINATIONS = [
                     'atr_threshold', 'time_filter'],
         'params': {
             'price_min': 10, 'price_max': 1000,
-            'atr_min': 0.5, 'atr_max': 20,
+            'atr_min': 0.5, 'atr_max': 20, 'atr_period': 14,
             'vol_multiplier': 2.0, 'vol_period': 20
         }
     },
@@ -383,7 +383,7 @@ for combo_idx, combo in enumerate(COMBINATIONS, 1):
         'id': combo['id'],
         'name': combo['name'],
         'filters': combo['filters'],
-        'expected_wr': combo['expected_wr'],
+        'expected_wr': combo.get('expected_wr', 0),
         'total_trades': total,
         'wins': wins,
         'losses': losses,
@@ -428,5 +428,4 @@ else:
     print(f"\n  Only {winner['total_trades']} trades - need 30+ for confidence")
 
 print("\n" + "="*70)
-
 
