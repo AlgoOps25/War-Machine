@@ -25,6 +25,7 @@ Configuration:
   - Data period: Last 3 months (Dec 2025 - Feb 2026)
   - Tickers: SPY, QQQ, AAPL, TSLA, NVDA, MSFT, AMD, META, GOOGL, AMZN, NFLX, COIN
   - Forward tracking: Until reversal, FVG invalidation, or EOD
+  - Caching: Saves data to data_cache/ for instant re-runs
 """
 
 import sys
@@ -36,6 +37,7 @@ import numpy as np
 from datetime import datetime, timedelta
 from typing import List, Dict, Tuple, Optional
 from collections import defaultdict
+from pathlib import Path
 
 print("\n" + "="*80)
 print(" TARGET DISCOVERY SYSTEM - Historical Outcome Analysis")
@@ -67,16 +69,36 @@ CONFIG = {
     ],
     'forward_bars': 120,  # Track 2 hours forward (120 x 1-min bars)
     'reversal_threshold': 0.5,  # 50% retracement from peak = reversal
+    'cache_dir': 'data_cache',  # Cache directory
 }
+
+# Create cache directory
+Path(CONFIG['cache_dir']).mkdir(exist_ok=True)
 
 print(f"[3/7] ✅ Configuration loaded")
 print(f"   📅 Period: {CONFIG['start_date'].date()} to {CONFIG['end_date'].date()}")
 print(f"   📊 Tickers: {len(CONFIG['watchlist'])}")
 print(f"   ⏱️  Forward tracking: {CONFIG['forward_bars']} bars (2 hours)")
+print(f"   💾 Cache: {CONFIG['cache_dir']}/")
 
-# Fetch historical data
+# Fetch historical data with caching
 def fetch_eodhd_intraday(ticker: str, from_date: datetime, to_date: datetime) -> pd.DataFrame:
-    """Fetch 1-min bars from EODHD using Unix timestamps"""
+    """Fetch 1-min bars from EODHD with local caching"""
+    
+    # Check cache first
+    cache_file = Path(CONFIG['cache_dir']) / f"{ticker}_{from_date.strftime('%Y%m%d')}_{to_date.strftime('%Y%m%d')}.parquet"
+    
+    if cache_file.exists():
+        print(f"      💾 Loading from cache...", end="", flush=True)
+        try:
+            df = pd.read_parquet(cache_file)
+            print(f" ✅ {len(df)} bars (cached)", flush=True)
+            return df
+        except Exception as e:
+            print(f" ⚠️  Cache corrupted, re-fetching", flush=True)
+            cache_file.unlink()  # Delete corrupted cache
+    
+    # Fetch from API
     from_ts = int(from_date.timestamp())
     to_ts = int(to_date.timestamp())
     
@@ -89,7 +111,7 @@ def fetch_eodhd_intraday(ticker: str, from_date: datetime, to_date: datetime) ->
         'fmt': 'json'
     }
     
-    print(f"      🔄 Fetching data...", end="", flush=True)
+    print(f"      🔄 Fetching from EODHD...", end="", flush=True)
     
     try:
         response = requests.get(url, params=params, timeout=60)
@@ -100,7 +122,14 @@ def fetch_eodhd_intraday(ticker: str, from_date: datetime, to_date: datetime) ->
                 df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
                 df['datetime'] = df['timestamp']  # Add datetime column for compatibility
                 df.set_index('timestamp', inplace=True)
-                print(f" ✅ {len(df)} bars", flush=True)
+                
+                # Save to cache
+                try:
+                    df.to_parquet(cache_file)
+                    print(f" ✅ {len(df)} bars (saved to cache)", flush=True)
+                except Exception as e:
+                    print(f" ✅ {len(df)} bars (cache write failed)", flush=True)
+                
                 return df
             else:
                 print(f" ⚠️  Empty response", flush=True)
@@ -113,7 +142,7 @@ def fetch_eodhd_intraday(ticker: str, from_date: datetime, to_date: datetime) ->
     
     return pd.DataFrame()
 
-print("[4/7] ✅ Data fetcher ready")
+print("[4/7] ✅ Data fetcher ready (with caching)")
 
 # Outcome analyzer
 def analyze_signal_outcome(signal: Dict, forward_bars: List[Dict], 
@@ -238,7 +267,7 @@ for ticker_idx, ticker in enumerate(CONFIG['watchlist'], 1):
     print(f"\n   [{ticker_idx}/{len(CONFIG['watchlist'])}] {ticker}...")
     
     try:
-        # Fetch data
+        # Fetch data (from cache or API)
         df = fetch_eodhd_intraday(ticker, CONFIG['start_date'], CONFIG['end_date'])
         
         if df.empty or len(df) < 100:
@@ -426,4 +455,7 @@ print(f"\n💡 Next Steps:")
 print(f"   1. Review signal_outcomes.csv for detailed analysis")
 print(f"   2. Update BreakoutDetector T1/T2 parameters based on recommendations")
 print(f"   3. Re-run production_indicator_backtest.py with new targets")
+print(f"\n💾 Cache Info:")
+print(f"   - Next run will use cached data (30 seconds vs 20 minutes)")
+print(f"   - To refresh data: Delete data_cache/ folder")
 print("\n" + "="*80 + "\n")
