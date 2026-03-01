@@ -11,6 +11,7 @@ Responsibilities:
   - [Phase 1.8] PDH/PDL-aware breakout detection via ticker parameter
   - [FIX] Cooldown only triggers AFTER validation passes (Issue #3)
   - [Phase 1.9] Data-driven DTE selection with EODHD options intelligence
+  - [Day 5] Adaptive target discovery using 90-day cached data
 """
 from typing import Dict, List, Optional
 from datetime import datetime, timedelta
@@ -25,11 +26,11 @@ from app.discord_helpers import send_simple_message
 try:
     from signal_analytics import signal_tracker
     ANALYTICS_ENABLED = True
-    print("[SIGNALS] âœ… Phase 4 tracking enabled (signal_analytics + performance_alerts)")
+    print("[SIGNALS] ✅ Phase 4 tracking enabled (signal_analytics + performance_alerts)")
 except ImportError:
     ANALYTICS_ENABLED = False
     signal_tracker = None
-    print("[SIGNALS] âš ï¸  signal_analytics not available - performance tracking disabled")
+    print("[SIGNALS] ⚠️  signal_analytics not available - performance tracking disabled")
 
 # Import signal validator for multi-indicator confirmation
 try:
@@ -38,17 +39,29 @@ try:
     VALIDATOR_TEST_MODE = False  # Set to False to enable filtering
 except ImportError:
     VALIDATOR_ENABLED = False
-    print("[SIGNALS] âš ï¸  signal_validator not available - multi-indicator validation disabled")
+    print("[SIGNALS] ⚠️  signal_validator not available - multi-indicator validation disabled")
 
 # Import DTE selector for data-driven options expiration logic
 try:
     from options_dte_selector import dte_selector, get_optimal_dte
     DTE_SELECTOR_ENABLED = True
-    print("[SIGNALS] âœ… Options DTE selector enabled (data-driven expiration logic)")
+    print("[SIGNALS] ✅ Options DTE selector enabled (data-driven expiration logic)")
 except ImportError:
     DTE_SELECTOR_ENABLED = False
     dte_selector = None
-    print("[SIGNALS] âš ï¸  options_dte_selector not available - using time-based fallback")
+    print("[SIGNALS] ⚠️  options_dte_selector not available - using time-based fallback")
+
+# Import Day 5 adaptive target discovery
+try:
+    from app.analytics.target_discovery import get_target_discovery
+    from app.data.candle_cache import candle_cache
+    target_discovery = get_target_discovery(candle_cache)
+    TARGET_DISCOVERY_ENABLED = True
+    print("[SIGNALS] ✅ Adaptive target discovery enabled (90-day historical analysis)")
+except ImportError as e:
+    TARGET_DISCOVERY_ENABLED = False
+    target_discovery = None
+    print(f"[SIGNALS] ⚠️  target_discovery not available ({e}) - using fixed R-multiples")
 
 ET = ZoneInfo("America/New_York")
 
@@ -111,9 +124,9 @@ class SignalGenerator:
             try:
                 self.validator = get_validator()
                 mode = "TEST MODE (no filtering)" if VALIDATOR_TEST_MODE else "FULL MODE (filtering enabled)"
-                print(f"[SIGNALS] âœ… Multi-indicator validator ACTIVE ({mode})")
+                print(f"[SIGNALS] ✅ Multi-indicator validator ACTIVE ({mode})")
             except Exception as e:
-                print(f"[SIGNALS] âš ï¸  Validator initialization error: {e}")
+                print(f"[SIGNALS] ⚠️  Validator initialization error: {e}")
                 self.validator = None
         
         # Validation statistics
@@ -130,9 +143,9 @@ class SignalGenerator:
               f"Cooldown: {cooldown_minutes}m | Min Confidence: {min_confidence}%")
         
         if ANALYTICS_ENABLED:
-            print("[SIGNALS] âœ… Performance tracking enabled with database-backed cooldown")
+            print("[SIGNALS] ✅ Performance tracking enabled with database-backed cooldown")
         
-        print("[SIGNALS] âœ… Cooldown only triggers after validation passes (Issue #3 fix)")
+        print("[SIGNALS] ✅ Cooldown only triggers after validation passes (Issue #3 fix)")
     
     def check_ticker(self, ticker: str, use_5m: bool = True) -> Optional[Dict]:
         """
@@ -141,6 +154,7 @@ class SignalGenerator:
         Phase 1.8: Now passes ticker to detector for PDH/PDL-aware analysis.
         Issue #3 Fix: Cooldown check moved AFTER validation - only validated signals trigger cooldown.
         Phase 1.9: Adds data-driven DTE selection for options recommendations.
+        Day 5: Adaptive profit targets using 90-day cached historical data.
         
         Args:
             ticker: Stock ticker to check
@@ -166,6 +180,50 @@ class SignalGenerator:
         
         # Add ticker to signal
         signal['ticker'] = ticker
+        
+        # === DAY 5: ADAPTIVE TARGET DISCOVERY ===
+        if TARGET_DISCOVERY_ENABLED and target_discovery:
+            try:
+                direction = 'bull' if signal['signal'] == 'BUY' else 'bear'
+                
+                targets = target_discovery.get_adaptive_targets(
+                    ticker=ticker,
+                    direction=direction,
+                    entry=signal['entry'],
+                    stop=signal['stop'],
+                    confidence=signal['confidence'] / 100.0
+                )
+                
+                # Replace fixed targets with adaptive targets
+                signal['t1'] = targets['t1']
+                signal['t2'] = targets['t2']
+                signal['target'] = targets['t2']  # Keep legacy field
+                signal['target_method'] = targets['method']
+                signal['target_confidence'] = targets['confidence']
+                signal['target_levels'] = targets['levels']
+                signal['target_debug'] = targets.get('debug', {})
+                
+                # Log adaptive targets
+                risk = abs(signal['entry'] - signal['stop'])
+                t1_r = abs(targets['t1'] - signal['entry']) / risk
+                t2_r = abs(targets['t2'] - signal['entry']) / risk
+                
+                print(f"[TARGETS] {ticker} {direction} | method={targets['method']} | "
+                      f"t1=${targets['t1']:.2f} ({t1_r:.1f}R) | "
+                      f"t2=${targets['t2']:.2f} ({t2_r:.1f}R) | "
+                      f"conf={targets['confidence']:.0%}")
+                
+                if targets.get('debug'):
+                    debug = targets['debug']
+                    if 'levels_found' in debug:
+                        print(f"[TARGETS]   {debug['levels_found']} volume zones detected | "
+                              f"T1: {debug.get('t1_touches', 'N/A')} touches | "
+                              f"T2: {debug.get('t2_touches', 'N/A')} touches")
+            
+            except Exception as e:
+                print(f"[TARGETS] {ticker} error ({e}) - using fixed R-multiples")
+                # Fallback: Keep detector's original targets
+                pass
         
         # === MULTI-INDICATOR VALIDATION (TEST MODE) ===
         if self.validator and bars:
@@ -205,12 +263,12 @@ class SignalGenerator:
                 }
                 
                 # Log validation result
-                status_emoji = "âœ…" if should_pass else "âŒ"
+                status_emoji = "✅" if should_pass else "❌"
                 conf_change = signal['validation_test']['confidence_delta']
-                conf_emoji = "ðŸ“ˆ" if conf_change > 0 else "ðŸ“‰" if conf_change < 0 else "âž¡ï¸"
+                conf_emoji = "📈" if conf_change > 0 else "📉" if conf_change < 0 else "➡️"
                 
                 print(f"[VALIDATOR TEST] {ticker} {status_emoji} | "
-                      f"Conf: {signal['confidence']:.0f}% â†’ {adjusted_conf*100:.0f}% "
+                      f"Conf: {signal['confidence']:.0f}% → {adjusted_conf*100:.0f}% "
                       f"{conf_emoji} ({conf_change:+.0f}%) | "
                       f"Score: {metadata['summary']['check_score']}")
                 
@@ -224,7 +282,7 @@ class SignalGenerator:
                     # FULL MODE: Apply validation filter
                     if not should_pass:
                         print(f"[VALIDATOR] {ticker} FILTERED - weak confirmation")
-                        # â­ CRITICAL FIX: Do NOT update cooldown for filtered signals
+                        # ⭐ CRITICAL FIX: Do NOT update cooldown for filtered signals
                         return None
                     
                     # Update signal with boosted confidence
@@ -234,7 +292,7 @@ class SignalGenerator:
                 print(f"[VALIDATOR] Error validating {ticker}: {e}")
                 # Continue without validation on error
         
-        # â­ CRITICAL FIX: Cooldown check AFTER validation passes
+        # ⭐ CRITICAL FIX: Cooldown check AFTER validation passes
         # Only signals that pass validation trigger cooldown
         if self._is_in_cooldown(ticker):
             print(f"[SIGNALS] {ticker} in cooldown (validated signal already exists)")
@@ -316,6 +374,7 @@ class SignalGenerator:
         Send alert for detected signal with enhanced Discord formatting.
         
         Phase 1.9: Now includes options DTE recommendation in Discord alert.
+        Day 5: Includes adaptive target method and confidence in alerts.
         
         Args:
             signal: Signal dict from detector
@@ -325,16 +384,29 @@ class SignalGenerator:
         
         # Console output
         print("\n" + "="*70)
-        print(f"ðŸš¨ BREAKOUT SIGNAL DETECTED: {ticker}")
+        print(f"🚨 BREAKOUT SIGNAL DETECTED: {ticker}")
         print("="*70)
         print(format_signal_message(ticker, signal))
+        
+        # Add adaptive target info if available
+        if 'target_method' in signal:
+            print(f"\nAdaptive Targets:")
+            print(f"  Method: {signal['target_method']}")
+            print(f"  Confidence: {signal.get('target_confidence', 0):.0%}")
+            if signal.get('target_levels'):
+                print(f"  Levels Found: {len(signal['target_levels'])}")
+            if signal.get('target_debug'):
+                debug = signal['target_debug']
+                for key, val in debug.items():
+                    if key not in ['levels_found']:  # Already shown
+                        print(f"  {key}: {val}")
         
         # Add validation summary if available
         if 'validation_test' in signal:
             val = signal['validation_test']
             print(f"\nValidation Test:")
-            print(f"  Status: {'âœ… Would Pass' if val['should_pass'] else 'âŒ Would Filter'}")
-            print(f"  Confidence: {val['original_confidence']}% â†’ {val['adjusted_confidence']}% ({val['confidence_delta']:+.0f}%)")
+            print(f"  Status: {'✅ Would Pass' if val['should_pass'] else '❌ Would Filter'}")
+            print(f"  Confidence: {val['original_confidence']}% → {val['adjusted_confidence']}% ({val['confidence_delta']:+.0f}%)")
             print(f"  Checks: {val['check_score']}")
             if val['checks_failed']:
                 print(f"  Failed: {', '.join(val['checks_failed'])}")
@@ -363,7 +435,7 @@ class SignalGenerator:
     
     def _format_discord_alert(self, signal: Dict) -> str:
         """
-        Format enhanced Discord alert message with DTE recommendations.
+        Format enhanced Discord alert message with DTE and adaptive targets.
         
         Args:
             signal: Signal dict
@@ -375,7 +447,8 @@ class SignalGenerator:
         direction = signal['signal']
         entry = signal['entry']
         stop = signal['stop']
-        target = signal['target']
+        target = signal.get('t2', signal['target'])  # Use T2 as main target
+        t1 = signal.get('t1', signal['target'])
         confidence = signal['confidence']
         
         # Calculate risk/reward
@@ -384,24 +457,33 @@ class SignalGenerator:
         rr_ratio = reward / risk if risk > 0 else 0
         
         # Build message
-        msg = f"ðŸš¨ **{ticker} {direction} BREAKOUT** ðŸš¨\n\n"
+        msg = f"🚨 **{ticker} {direction} BREAKOUT** 🚨\n\n"
         
         # Entry guidance
         entry_range_low = entry * 0.9985
         entry_range_high = entry * 1.0015
-        msg += f"ðŸ“ **ENTRY GUIDANCE:**\n"
+        msg += f"🎯 **ENTRY GUIDANCE:**\n"
         msg += f"   Limit Range: ${entry_range_low:.2f} - ${entry_range_high:.2f}\n"
         msg += f"   Current Price: ${entry:.2f}\n"
         msg += f"   Entry Window: Next 2-5 minutes\n\n"
         
-        # Risk management
-        msg += f"ðŸ›¡ï¸ **RISK MANAGEMENT:**\n"
+        # Risk management with adaptive targets
+        msg += f"🛡️ **RISK MANAGEMENT:**\n"
         msg += f"   Stop Loss: ${stop:.2f} ({((stop - entry) / entry * 100):+.2f}%)\n"
-        msg += f"   Target: ${target:.2f} ({((target - entry) / entry * 100):+.2f}%)\n"
-        msg += f"   R:R Ratio: {rr_ratio:.2f}:1\n\n"
+        msg += f"   T1 (50%): ${t1:.2f} ({((t1 - entry) / entry * 100):+.2f}%)\n"
+        msg += f"   T2 (50%): ${target:.2f} ({((target - entry) / entry * 100):+.2f}%)\n"
+        msg += f"   R:R Ratio: {rr_ratio:.2f}:1\n"
+        
+        # Add target method if adaptive
+        if 'target_method' in signal and signal['target_method'] != 'fixed_rmultiples':
+            method_name = signal['target_method'].replace('_', ' ').title()
+            target_conf = signal.get('target_confidence', 0)
+            msg += f"   📊 Targets: {method_name} ({target_conf:.0%} confidence)\n"
+        
+        msg += "\n"
         
         # Signal quality
-        msg += f"ðŸ“Š **SIGNAL QUALITY:**\n"
+        msg += f"📊 **SIGNAL QUALITY:**\n"
         msg += f"   Confidence: {confidence}%\n"
         msg += f"   Pattern: {signal.get('pattern', 'BOS/FVG Breakout')}\n"
         msg += f"   Timeframe: Multi-TF Convergence\n\n"
@@ -412,19 +494,19 @@ class SignalGenerator:
             selected_dte = dte_info.get('dte')
             
             if selected_dte is not None:
-                msg += f"ðŸ“ˆ **OPTIONS RECOMMENDATION:**\n"
-                msg += f"   âœ… **SELECTED: {selected_dte}DTE** (Expires {'Today' if selected_dte == 0 else 'Tomorrow'} 4:00 PM)\n\n"
+                msg += f"📈 **OPTIONS RECOMMENDATION:**\n"
+                msg += f"   ✅ **SELECTED: {selected_dte}DTE** (Expires {'Today' if selected_dte == 0 else 'Tomorrow'} 4:00 PM)\n\n"
                 
                 # Data analysis summary
                 factors = dte_info.get('data_factors', {})
                 time_hrs = dte_info.get('time_remaining_hours', 0)
                 
                 msg += f"   **Data Analysis:**\n"
-                msg += f"   {'âœ…' if factors.get('time_adequate') else 'âŒ'} Time Adequate: {time_hrs:.1f} hours remaining\n"
-                msg += f"   {'âœ…' if factors.get('dte_0_liquid') else 'âŒ'} Liquidity {'Strong' if factors.get('dte_0_liquid') else 'Weak'}\n"
-                msg += f"   {'âœ…' if factors.get('dte_0_theta_acceptable') else 'âŒ'} Theta {'Acceptable' if factors.get('dte_0_theta_acceptable') else 'Aggressive'}\n"
-                msg += f"   {'âœ…' if factors.get('dte_0_spread_tight') else 'âŒ'} Spread {'Tight' if factors.get('dte_0_spread_tight') else 'Wide'}\n"
-                msg += f"   {'âœ…' if factors.get('iv_favorable') else 'âŒ'} IV {'Fair' if factors.get('iv_favorable') else 'Inflated'}\n\n"
+                msg += f"   {'✅' if factors.get('time_adequate') else '❌'} Time Adequate: {time_hrs:.1f} hours remaining\n"
+                msg += f"   {'✅' if factors.get('dte_0_liquid') else '❌'} Liquidity {'Strong' if factors.get('dte_0_liquid') else 'Weak'}\n"
+                msg += f"   {'✅' if factors.get('dte_0_theta_acceptable') else '❌'} Theta {'Acceptable' if factors.get('dte_0_theta_acceptable') else 'Aggressive'}\n"
+                msg += f"   {'✅' if factors.get('dte_0_spread_tight') else '❌'} Spread {'Tight' if factors.get('dte_0_spread_tight') else 'Wide'}\n"
+                msg += f"   {'✅' if factors.get('iv_favorable') else '❌'} IV {'Fair' if factors.get('iv_favorable') else 'Inflated'}\n\n"
                 
                 # Strike recommendations
                 strikes = dte_info.get('recommended_strikes', [])
@@ -438,7 +520,7 @@ class SignalGenerator:
                         msg += f"   - OI: {strike['open_interest']:,} | Volume: {strike['volume']:,}\n\n"
             else:
                 # Skip signal
-                msg += f"ðŸš« **OPTIONS:** {dte_info.get('reasoning', 'No recommendation available')}\n\n"
+                msg += f"🚫 **OPTIONS:** {dte_info.get('reasoning', 'No recommendation available')}\n\n"
         else:
             # Fallback time-based
             now_et = datetime.now(ET)
@@ -446,26 +528,26 @@ class SignalGenerator:
             hours_left = (market_close - now_et).total_seconds() / 3600
             
             if hours_left >= 2.5:
-                msg += f"ðŸ“ˆ **OPTIONS RECOMMENDATION:**\n"
-                msg += f"   â° 0DTE (Expires Today 4:00 PM)\n"
+                msg += f"📈 **OPTIONS RECOMMENDATION:**\n"
+                msg += f"   ⏰ 0DTE (Expires Today 4:00 PM)\n"
                 msg += f"   Time Remaining: {hours_left:.1f} hours\n\n"
             elif hours_left >= 1.5:
-                msg += f"ðŸ“… **OPTIONS RECOMMENDATION:**\n"
-                msg += f"   ðŸ“† 1DTE (Expires Tomorrow 4:00 PM)\n"
+                msg += f"📅 **OPTIONS RECOMMENDATION:**\n"
+                msg += f"   📆 1DTE (Expires Tomorrow 4:00 PM)\n"
                 msg += f"   Reason: Limited time today ({hours_left:.1f} hrs)\n\n"
             else:
-                msg += f"ðŸš« **OPTIONS:** Too close to market close\n\n"
+                msg += f"🚫 **OPTIONS:** Too close to market close\n\n"
         
         # Timestamp and holding guidance
-        msg += f"â° **Signal Time:** {datetime.now(ET).strftime('%I:%M:%S %p ET')}\n"
-        msg += f"â³ **Hold Time:** 15-30 minutes max"
+        msg += f"⏰ **Signal Time:** {datetime.now(ET).strftime('%I:%M:%S %p ET')}\n"
+        msg += f"⏳ **Hold Time:** 15-30 minutes max"
         
         # Add validation test info if available
         if 'validation_test' in signal:
             val = signal['validation_test']
-            status_emoji = "âœ…" if val['should_pass'] else "âš ï¸"
+            status_emoji = "✅" if val['should_pass'] else "⚠️"
             msg += f"\n\n{status_emoji} **Validation:** {val['check_score']} checks | "
-            msg += f"Conf: {val['original_confidence']}% â†’ {val['adjusted_confidence']}%"
+            msg += f"Conf: {val['original_confidence']}% → {val['adjusted_confidence']}%"
         
         return msg
     
@@ -486,7 +568,7 @@ class SignalGenerator:
         signal = self.active_signals[ticker]
         entry = signal['entry']
         stop = signal['stop']
-        target = signal['target']
+        target = signal.get('t2', signal['target'])  # Use T2 as final target
         signal_type = signal['signal']
         
         # Check if stopped out
@@ -579,14 +661,14 @@ class SignalGenerator:
             pnl_pct = (pnl / entry) * 100
         
         # Console output
-        emoji = "âœ…" if status == 'HIT_TARGET' else "âŒ"
+        emoji = "✅" if status == 'HIT_TARGET' else "❌"
         print(f"\n{emoji} {ticker} {status}: ${exit_price:.2f} | P&L: ${pnl:.2f} ({pnl_pct:+.2f}%)\n")
         
         # Discord alert
         try:
             msg = (
                 f"{emoji} **{ticker} {status}**\n"
-                f"Entry: ${entry:.2f} â†’ Exit: ${exit_price:.2f}\n"
+                f"Entry: ${entry:.2f} → Exit: ${exit_price:.2f}\n"
                 f"P&L: ${pnl:.2f} ({pnl_pct:+.2f}%)"
             )
             send_simple_message(msg)
@@ -613,12 +695,13 @@ class SignalGenerator:
         summary += "-"*70 + "\n"
         
         for ticker, signal in self.active_signals.items():
+            target = signal.get('t2', signal['target'])
             summary += (
                 f"{ticker:<8} "
                 f"{signal['signal']:<6} "
                 f"${signal['entry']:<7.2f} "
                 f"${signal['stop']:<7.2f} "
-                f"${signal['target']:<7.2f} "
+                f"${target:<7.2f} "
                 f"{signal['confidence']:<5}%\n"
             )
         
@@ -653,10 +736,10 @@ class SignalGenerator:
         summary += "="*70 + "\n"
         
         if VALIDATOR_TEST_MODE:
-            summary += "âš ï¸  TEST MODE ACTIVE - Signals NOT being filtered\n"
+            summary += "⚠️  TEST MODE ACTIVE - Signals NOT being filtered\n"
             summary += "Switch VALIDATOR_TEST_MODE to False to enable filtering\n"
         else:
-            summary += "âœ… FULL MODE ACTIVE - Weak signals being filtered\n"
+            summary += "✅ FULL MODE ACTIVE - Weak signals being filtered\n"
         
         summary += "="*70 + "\n"
         
@@ -780,7 +863,7 @@ def print_performance_report(days: int = 30) -> None:
         except Exception as e:
             print(f"[SIGNALS] Performance report error: {e}")
     else:
-        print("[SIGNALS] âš ï¸  Analytics not enabled - cannot generate report")
+        print("[SIGNALS] ⚠️  Analytics not enabled - cannot generate report")
 
 
 # ========================================
