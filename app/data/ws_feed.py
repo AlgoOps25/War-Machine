@@ -35,6 +35,14 @@ Design:
   - _started guard prevents double thread creation if start_ws_feed() is
     called more than once (e.g. from both main.py and scanner.py).
 
+REST Failover (get_current_bar_with_fallback):
+  - When WS is disconnected, falls back to EODHD REST intraday API.
+  - 3-tier priority: WS bar → REST API bar → None (caller falls back to DB).
+  - REST results cached per-ticker for REST_CACHE_TTL seconds to avoid
+    hammering the API during the 5s reconnect window.
+  - 'source' key added to bar dict: 'ws' or 'rest'.
+  - get_failover_stats() returns session-level REST usage for monitoring.
+
 Log behaviour:
   - Single-bar WS flushes are suppressed at DEBUG level during the startup
     backfill window (_backfill_active = True) to keep the console clean.
@@ -43,10 +51,14 @@ Log behaviour:
     startup_backfill_today() and startup_intraday_backfill_today() finish.
 
 Usage:
-    from ws_feed import start_ws_feed, subscribe_tickers, set_backfill_complete
-    start_ws_feed(fallback_watchlist)       # once, before scanner loop
-    subscribe_tickers(premarket_watchlist)  # after premarket build
-    set_backfill_complete()                 # after both backfills finish
+    from app.data.ws_feed import (
+        start_ws_feed, subscribe_tickers, set_backfill_complete,
+        get_current_bar, get_current_bar_with_fallback, get_failover_stats
+    )
+    start_ws_feed(fallback_watchlist)           # once, before scanner loop
+    subscribe_tickers(premarket_watchlist)      # after premarket build
+    set_backfill_complete()                     # after both backfills finish
+    bar = get_current_bar_with_fallback(ticker) # preferred over get_current_bar()
 """
 import asyncio
 import json
@@ -89,7 +101,7 @@ ENFORCE_RTH_ONLY = False     # Set True to reject pre/post-market ticks
                              # NOTE: Your RTH filter in scanner.py will still
                              # block signals outside RTH - this is a data-level filter
 
-# ── Shared state ────────────────────────────────────────────────────────────────────────────────
+# ── Shared state ────────────────────────────────────────────────────────────────────────────────────
 _lock               = threading.Lock()
 _open_bars          = {}                 # ticker -> current open bar dict
 _pending            = defaultdict(list)  # ticker -> completed bars not yet in DB
@@ -102,7 +114,7 @@ _subscribed: set    = set()              # tickers currently subscribed on activ
 _event_loop         = None               # background asyncio loop (set before connect)
 _ws_connection      = None               # active websockets connection object
 
-# FIX #3: guard against double-start when main.py and scanner.py both call start_ws_feed()
+# Guard against double-start when main.py and scanner.py both call start_ws_feed()
 _started            = False
 
 # Backfill log suppression: while True, single-bar WS stores are silent (DEBUG-level).
@@ -117,7 +129,7 @@ def set_backfill_complete():
     _backfill_active = False
 
 
-# ── Public read API ────────────────────────────────────────────────────────────────────────────
+# ── Public read API ───────────────────────────────────────────────────────────────────────
 
 def is_connected() -> bool:
     """Return True if the WebSocket is currently connected and subscribed."""
@@ -131,7 +143,7 @@ def get_current_bar(ticker: str):
         return dict(bar) if bar else None
 
 
-# ── Tick aggregation ───────────────────────────────────────────────────────────────────────────
+# ── Tick aggregation ─────────────────────────────────────────────────────────────────────────
 
 def _minute_floor(epoch_ms: int) -> datetime:
     """Convert ms epoch -> ET-naive datetime floored to the minute."""
@@ -147,41 +159,31 @@ def _on_tick(ticker: str, price: float, volume: int, epoch_ms: int, msg: dict = 
 
     Sanity gates (applied before any bar state is touched):
       1. Basic bounds — price must be > 0 and <= 100,000; volume must be >= 0.
-         Catches zero-price fills, negative volumes, and obviously corrupt ticks.
       2. Dark pool filter — reject off-exchange trades (dp: true)
       3. Trade condition filter — reject invalid condition codes
       4. Market status filter (optional) — reject non-RTH ticks if ENFORCE_RTH_ONLY=True
-      5. Spike filter — if a bar already exists for this ticker, reject any tick
-         that moves more than SPIKE_THRESHOLD (10%) from the current close.
-         Protects against bad prints that would generate false breakout signals.
-         Applied inside the lock so the reference close is the exact same value
-         the bar logic would use.
+      5. Spike filter — reject ticks that move > SPIKE_THRESHOLD from current close
     """
     # Gate 1: basic bounds (fast path, no lock needed)
     if price <= 0 or volume < 0 or price > 100_000:
         print(f"[WS] ⚠️ Bad tick rejected: {ticker} p={price} v={volume}")
         return
-    
-    # NEW Gates 2-4: Message-based filters (if msg dict provided)
+
     if msg:
         # Gate 2: Dark pool filter
         if msg.get("dp", False):
-            # Silent reject - dark pools are common, don't spam logs
-            # Uncomment for debugging: print(f"[WS] 🚫 Dark pool: {ticker} p={price:.2f} v={volume}")
             return
-        
+
         # Gate 3: Trade condition filter
         condition = msg.get("c", 0)
         if condition in INVALID_TRADE_CONDITIONS:
             print(f"[WS] 🚫 Condition {condition}: {ticker} p={price:.2f} v={volume}")
             return
-        
+
         # Gate 4: Market status filter (optional RTH enforcement)
         if ENFORCE_RTH_ONLY:
             market_status = msg.get("ms", "")
             if market_status != MARKET_STATUS_RTH:
-                # Silent reject - extended hours ticks are common
-                # Uncomment for debugging: print(f"[WS] 🚫 Non-RTH: {ticker} ms={market_status}")
                 return
 
     bar_dt = _minute_floor(epoch_ms)
@@ -221,7 +223,7 @@ def _on_tick(ticker: str, price: float, volume: int, epoch_ms: int, msg: dict = 
             cur["volume"] += volume
 
 
-# ── DB flush helpers ───────────────────────────────────────────────────────────────────────────
+# ── DB flush helpers ─────────────────────────────────────────────────────────────────────────
 
 def _flush_pending():
     """Persist all completed 1m bars to DB and clear the queue."""
@@ -243,7 +245,6 @@ def _flush_open():
         snapshot = {t: dict(b) for t, b in _open_bars.items()}
     for ticker, bar in snapshot.items():
         if bar["datetime"].date() == today_et:
-            # Suppress log noise during backfill for single-bar open-bar flushes
             data_manager.store_bars(ticker, [bar], quiet=_backfill_active)
 
 
@@ -258,14 +259,12 @@ def _flush_loop():
             print(f"[WS] Flush error: {exc}")
 
 
-# ── Dynamic subscription (async, runs inside WS event loop) ──────────────────
+# ── Dynamic subscription (async, runs inside WS event loop) ──────────────────────
 
 async def _do_subscribe(ws, tickers: list):
     """
     Send subscribe messages for any tickers not already in _subscribed.
     Sends in chunks of SUBSCRIBE_CHUNK to respect EODHD's per-message limit.
-    Must be called from within the WS event loop (use asyncio.run_coroutine_threadsafe
-    when calling from the main thread).
     """
     global _subscribed
     with _sub_lock:
@@ -285,13 +284,6 @@ def subscribe_tickers(tickers: list):
     """
     Subscribe additional tickers to the running WS session (thread-safe).
     Safe to call from the main scanner thread at any point after start_ws_feed().
-
-    - New tickers are merged into _all_tickers (master list) so they are
-      automatically re-subscribed on any future reconnect.
-    - If the WS is already connected, the subscribe message is sent immediately
-      via asyncio.run_coroutine_threadsafe.
-    - If the WS is not yet connected, the tickers sit in _all_tickers and will
-      be sent when _ws_run establishes the first connection.
     """
     global _all_tickers
     with _sub_lock:
@@ -300,7 +292,7 @@ def subscribe_tickers(tickers: list):
             _all_tickers.extend(new)
 
     if not new:
-        return  # nothing novel to subscribe
+        return
 
     if _event_loop is None or _ws_connection is None:
         print(f"[WS] subscribe_tickers: WS not ready — "
@@ -315,7 +307,7 @@ def subscribe_tickers(tickers: list):
         print(f"[WS] subscribe_tickers error: {e}")
 
 
-# ── WebSocket coroutine ────────────────────────────────────────────────────────────────────────
+# ── WebSocket coroutine ───────────────────────────────────────────────────────────────────────────
 
 async def _ws_run():
     """Main WebSocket coroutine. Runs in a dedicated asyncio event loop thread."""
@@ -331,12 +323,9 @@ async def _ws_run():
             ) as ws:
                 _ws_connection = ws
 
-                # Clear subscribed set so _do_subscribe re-sends everything
-                # (covers both initial connect and reconnect after drop).
                 with _sub_lock:
                     _subscribed.clear()
 
-                # Subscribe to full master list (startup + any added tickers)
                 with _sub_lock:
                     master = list(_all_tickers)
                 await _do_subscribe(ws, master)
@@ -350,24 +339,20 @@ async def _ws_run():
                     try:
                         msg = json.loads(raw)
 
-                        # Status / confirmation messages (not ticks)
                         if "status_code" in msg or "status" in msg:
                             print(f"[WS] Server msg: {msg}")
                             continue
 
-                        # Trade tick: {"s":"AAPL","p":227.31,"v":100,"t":1725198451165,"c":0,"dp":false,"ms":"open"}
                         ticker = msg.get("s", "")
                         price  = msg.get("p")
                         volume = int(msg.get("v", 0))
                         ts_ms  = msg.get("t")
 
                         if ticker and price and ts_ms:
-                            # MODIFIED: Pass full msg dict for condition filtering
                             _on_tick(ticker, float(price), volume, int(ts_ms), msg=msg)
                     except Exception as exc:
                         print(f"[WS] Tick error: {exc}")
 
-                # Clean server-side close — reset state before next reconnect attempt.
                 _connected     = False
                 _ws_connection = None
 
@@ -378,7 +363,7 @@ async def _ws_run():
             await asyncio.sleep(RECONNECT_DELAY)
 
 
-# ── Public API ─────────────────────────────────────────────────────────────────────────────────
+# ── Public API ───────────────────────────────────────────────────────────────────────────
 
 def start_ws_feed(tickers: list):
     """
@@ -390,8 +375,7 @@ def start_ws_feed(tickers: list):
         tickers: list of plain ticker symbols (no .US suffix), e.g. ['AAPL','MSFT']
 
     If called a second time (e.g. from both main.py and scanner.py), the guard
-    below merges any new tickers via subscribe_tickers() and returns immediately
-    — no duplicate threads are created.
+    below merges any new tickers via subscribe_tickers() and returns immediately.
     """
     global _event_loop, _all_tickers, _started
 
@@ -400,14 +384,12 @@ def start_ws_feed(tickers: list):
               "install with: pip install 'websockets>=12.0'")
         return
 
-    # FIX #3: guard — already running; just subscribe any new tickers and exit
     if _started:
         subscribe_tickers(tickers)
         print(f"[WS] Already running — merged {len(tickers)} tickers into active session")
         return
     _started = True
 
-    # Seed master list before thread starts so reconnects work immediately
     with _sub_lock:
         for t in tickers:
             if t not in _all_tickers:
@@ -417,10 +399,151 @@ def start_ws_feed(tickers: list):
         global _event_loop
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        _event_loop = loop   # expose before run_until_complete so subscribe_tickers works
+        _event_loop = loop
         loop.run_until_complete(_ws_run())
 
     threading.Thread(target=_event_loop_thread, name="ws-feed",  daemon=True).start()
     threading.Thread(target=_flush_loop,         name="ws-flush", daemon=True).start()
     print(f"[WS] Feed initializing | {len(tickers)} seed tickers | "
           f"DB flush every {FLUSH_INTERVAL}s")
+
+
+# ── REST Failover ─────────────────────────────────────────────────────────────────────────────
+#
+# When the WebSocket is disconnected, get_current_bar_with_fallback() fetches
+# the latest 1m bar via EODHD REST intraday API instead of returning None.
+#
+# 3-tier fallback chain (transparent to scanner/sniper):
+#   Tier 1: WS live bar       — always preferred, in-memory, zero latency
+#   Tier 2: REST intraday API — only when _connected=False, 5s timeout
+#   Tier 3: None              — caller falls back to DB last bar (unchanged)
+#
+# REST results are cached per-ticker for REST_CACHE_TTL seconds so a
+# 5-second reconnect window generates at most 1 REST call per ticker.
+#
+# 'source' key added to returned bar dict:
+#   bar['source'] == 'ws'   → live WS data
+#   bar['source'] == 'rest' → REST failover (WS was disconnected)
+# ─────────────────────────────────────────────────────────────────────────────
+
+REST_CACHE_TTL = 15      # seconds — REST results cached to avoid API hammering
+_rest_lock     = threading.Lock()
+_rest_cache    = {}      # ticker -> {"bar": dict|None, "fetched_at": float}
+_rest_hits     = 0       # total REST failover fetches this session (for monitoring)
+
+
+def _fetch_bar_rest(ticker: str) -> dict | None:
+    """
+    Fetch the most recent 1m bar via EODHD REST intraday API.
+    Returns a bar dict matching get_current_bar() format + 'source':'rest'.
+    Only called when WS is disconnected. Hard timeout: 5s.
+
+    EODHD endpoint:
+      GET https://eodhd.com/api/intraday/{ticker}.US
+          ?interval=1m&api_token=KEY&fmt=json&limit=2
+    """
+    import requests  # lazy import — only needed during WS outages
+    global _rest_hits
+
+    url    = f"https://eodhd.com/api/intraday/{ticker}.US"
+    params = {
+        "interval":  "1m",
+        "api_token": config.EODHD_API_KEY,
+        "fmt":       "json",
+        "limit":     2,
+    }
+    try:
+        resp = requests.get(url, params=params, timeout=5)
+        if resp.status_code != 200:
+            print(f"[WS-FAILOVER] REST HTTP {resp.status_code} for {ticker}")
+            return None
+        data = resp.json()
+        if not data or not isinstance(data, list):
+            return None
+        row = data[-1]  # last element = most recent completed bar
+        _rest_hits += 1
+        return {
+            "datetime": datetime.strptime(row["datetime"], "%Y-%m-%d %H:%M:%S"),
+            "open":     float(row["open"]),
+            "high":     float(row["high"]),
+            "low":      float(row["low"]),
+            "close":    float(row["close"]),
+            "volume":   int(row["volume"]),
+            "source":   "rest",
+        }
+    except Exception as exc:
+        print(f"[WS-FAILOVER] REST fetch failed for {ticker}: {exc}")
+        return None
+
+
+def get_current_bar_with_fallback(ticker: str) -> dict | None:
+    """
+    Get the current 1m bar for a ticker with automatic REST failover.
+
+    Priority:
+      1. Live WS bar  — if WebSocket is up and a bar exists (zero latency)
+      2. REST API bar — if WS is disconnected, cached for REST_CACHE_TTL seconds
+      3. None         — if both fail (caller should fall back to DB last bar)
+
+    The 'source' key in the returned dict indicates which path was used:
+      bar['source'] == 'ws'   → live WebSocket data
+      bar['source'] == 'rest' → REST failover (WS was disconnected)
+
+    REST results cached per-ticker for REST_CACHE_TTL seconds: a 5s reconnect
+    window generates at most 1 REST call per ticker, not 1 per scanner cycle.
+    """
+    # ── Tier 1: live WS bar (fast path — in-memory, no network) ──────────────
+    bar = get_current_bar(ticker)
+    if bar is not None:
+        bar["source"] = "ws"
+        return bar
+
+    # ── Tier 2: REST fallback (only when WS is disconnected) ─────────────────
+    if _connected:
+        # WS is up but no bar for this ticker yet (just subscribed / no ticks)
+        # Don't waste a REST call — let caller fall back to DB
+        return None
+
+    now = time.monotonic()
+
+    with _rest_lock:
+        cached = _rest_cache.get(ticker)
+        if cached is not None and (now - cached["fetched_at"]) < REST_CACHE_TTL:
+            return cached["bar"]  # may be None if last REST call also failed
+
+    # Cache miss or TTL expired — fetch from REST
+    print(
+        f"[WS-FAILOVER] WS down — fetching {ticker} via REST "
+        f"(session fetches so far: {_rest_hits + 1})"
+    )
+    bar = _fetch_bar_rest(ticker)
+
+    with _rest_lock:
+        _rest_cache[ticker] = {"bar": bar, "fetched_at": now}
+
+    return bar
+
+
+def get_failover_stats() -> dict:
+    """
+    Return REST failover statistics for monitoring / EOD reporting.
+
+    Returns:
+        {
+            'rest_hits':    int   — total REST API calls made this session
+            'cache_active': int   — tickers with a live (non-expired) REST cache entry
+            'ws_connected': bool  — current WS connection state
+        }
+    """
+    now = time.monotonic()
+    with _rest_lock:
+        cache_active = sum(
+            1 for c in _rest_cache.values()
+            if c["bar"] is not None
+            and (now - c["fetched_at"]) < REST_CACHE_TTL
+        )
+    return {
+        "rest_hits":    _rest_hits,
+        "cache_active": cache_active,
+        "ws_connected": _connected,
+    }

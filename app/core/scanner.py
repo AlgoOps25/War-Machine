@@ -79,21 +79,40 @@ def build_watchlist(force_refresh: bool = False) -> list:
 
 
 def monitor_open_positions():
+    """
+    Check all open positions against current price.
+    Fallback chain: WS live bar → REST API bar (if WS down) → DB last bar.
+    """
     from app.data.data_manager import data_manager
-    from app.data.ws_feed import get_current_bar, is_connected
+    from app.data.ws_feed import get_current_bar_with_fallback
+
     open_positions = position_manager.get_open_positions()
     if not open_positions:
         return
+
     print(f"\n[MONITOR] Checking {len(open_positions)} open positions...")
     current_prices = {}
+
     for pos in open_positions:
         ticker = pos["ticker"]
-        bar = get_current_bar(ticker) if is_connected() else None
-        if bar is None:
+
+        # Tier 1+2: WS live bar, or REST API if WS is down
+        bar = get_current_bar_with_fallback(ticker)
+
+        if bar is not None:
+            source = bar.get("source", "ws")
+            if source == "rest":
+                print(f"[WS-FAILOVER] {ticker}: position monitoring via REST bar")
+        else:
+            # Tier 3: DB last bar (unchanged final safety net)
             bars = data_manager.get_bars_from_memory(ticker, limit=1)
             bar  = bars[-1] if bars else None
+            if bar:
+                print(f"[MONITOR] {ticker}: using DB last bar (WS+REST unavailable)")
+
         if bar:
             current_prices[ticker] = bar["close"]
+
     position_manager.check_exits(current_prices)
 
 
@@ -114,6 +133,8 @@ def start_scanner_loop():
     if ANALYTICS_ENABLED:
         print(f"Analytics:     ✅ ENABLED (quality scoring, Sharpe, expectancy)")
     print(f"Candle Cache:  ✅ ENABLED (95%+ API reduction on redeploy)")
+    print(f"WS Failover:   ✅ ENABLED (REST API fallback on disconnect)")
+    print(f"Spread Gate:   ✅ ENABLED (us-quote bid/ask filter active)")
     print(f"{'='*60}\n")
 
     try:
@@ -384,17 +405,29 @@ def start_scanner_loop():
                     except Exception as e:
                         print(f"[AI] Optimization error: {e}")
 
-                    # 4. DATABASE CLEANUP
+                    # 4. WS FAILOVER STATS
+                    try:
+                        from app.data.ws_feed import get_failover_stats
+                        stats = get_failover_stats()
+                        if stats["rest_hits"] > 0:
+                            print(
+                                f"[WS-FAILOVER] Session REST hits: {stats['rest_hits']} "
+                                f"(WS outage fallbacks)"
+                            )
+                    except Exception as e:
+                        print(f"[WS-FAILOVER] Stats error: {e}")
+
+                    # 5. DATABASE CLEANUP
                     try:
                         data_manager.cleanup_old_bars(days_to_keep=60)
                     except Exception as e:
                         print(f"[CLEANUP] Error: {e}")
 
-                    # 5. DAILY RESET
+                    # 6. DAILY RESET
                     signal_generator.reset_daily()
                     print("[SIGNALS] Daily reset complete")
 
-                    # 6. STATE RESET
+                    # 7. STATE RESET
                     last_report_day     = current_day
                     premarket_watchlist = []
                     premarket_built     = False
@@ -404,7 +437,7 @@ def start_scanner_loop():
                     clear_armed_signals()
                     clear_watching_signals()
 
-                    # 7. PDH/PDL CACHE CLEAR
+                    # 8. PDH/PDL CACHE CLEAR
                     try:
                         data_manager.clear_prev_day_cache()
                     except Exception as e:
@@ -451,7 +484,7 @@ def get_screener_tickers(min_market_cap: int = 1_000_000_000, limit: int = 50) -
             ["avgvol_1d",            ">=", 1_000_000],
             ["exchange",             "=",  "us"]        # lowercase required
         ]),
-        "sort":   "avgvol_1d.desc",  # valid field, plain string (NOT JSON-encoded)
+        "sort":   "avgvol_1d.desc",
         "limit":  limit,
         "offset": 0
     }
