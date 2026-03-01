@@ -1,14 +1,15 @@
-﻿"""
+"""
 Position Manager - Consolidated Position Tracking, Sizing, and Win Rate Analysis
 Replaces: position_tracker.py, position_sizing.py, win_rate_tracker.py
 
 Features:
   - Portfolio-level risk tracking (max drawdown, exposure limits)
   - Correlation-based position limits (sector/ticker concentration)
-  - Dynamic position sizing (performance-based adjustment)
+  - Dynamic position sizing (performance-based + VIX-based adjustment)
   - Risk/reward validation (minimum R:R requirements)
   - Circuit breaker (daily loss limits)
   - Signal tracking when trades execute (links signals to positions)
+  - RTH guard: blocks new positions outside 9:30 AM - 4:00 PM ET
 """
 from utils import config
 from datetime import datetime, timedelta
@@ -16,14 +17,30 @@ from typing import Dict, List, Optional, Tuple
 from app.data import db_connection
 from app.data.db_connection import get_conn, ph, dict_cursor, serial_pk
 
+# ── VIX sizing (graceful fallback if module unavailable) ─────────────────────
+try:
+    from app.risk.vix_sizing import get_vix_multiplier as _get_vix_mult
+    _VIX_SIZING_ENABLED = True
+except ImportError:
+    _VIX_SIZING_ENABLED = False
+    def _get_vix_mult(): return 1.0
+
+# ── RTH guard (graceful fallback if module unavailable) ─────────────────────
+try:
+    from app.analytics.rth_filter import is_rth_now as _is_rth_now
+    _RTH_GUARD_ENABLED = True
+except ImportError:
+    _RTH_GUARD_ENABLED = False
+    def _is_rth_now(): return True  # Assume RTH if filter unavailable
+
 try:
     from signal_analytics import signal_tracker
     SIGNAL_TRACKING_ENABLED = True
-    print("[POSITION] âœ… Signal trade tracking enabled (signal_analytics)")
+    print("[POSITION] ✅ Signal trade tracking enabled (signal_analytics)")
 except ImportError:
     signal_tracker = None
     SIGNAL_TRACKING_ENABLED = False
-    print("[POSITION] âš ï¸  Signal trade tracking disabled (signal_analytics not available)")
+    print("[POSITION] ⚠️  Signal trade tracking disabled (signal_analytics not available)")
 
 
 # Sector/ticker correlation mapping used to prevent over-concentration in correlated assets
@@ -154,7 +171,7 @@ class PositionManager:
         if drawdown <= -max_drawdown_pct:
             reason = (
                 f"MAX DRAWDOWN EXCEEDED: {drawdown:.1f}% from peak "
-                f"(${self.intraday_high_water_mark:,.0f} â†’ ${current_balance:,.0f})"
+                f"(${self.intraday_high_water_mark:,.0f} → ${current_balance:,.0f})"
             )
             return True, reason
         
@@ -165,6 +182,10 @@ class PositionManager:
         Validate if a new position can be opened based on risk limits.
         Returns (can_open, reason) tuple.
         """
+        # RTH guard: block new positions outside regular trading hours
+        if _RTH_GUARD_ENABLED and not _is_rth_now():
+            return False, "Outside RTH (9:30 AM - 4:00 PM ET) — no new positions"
+
         breached, reason = self.check_circuit_breaker()
         if breached:
             return False, reason
@@ -334,18 +355,27 @@ class PositionManager:
             print("[POSITION] No stale positions from prior sessions")
             return
 
-        print(f"[POSITION] âš ï¸  Found {len(stale)} stale position(s) â€” force closing before session")
+        print(f"[POSITION] ⚠️  Found {len(stale)} stale position(s) — force closing before session")
         for pos in stale:
             pos = dict(pos)
             print(f"[POSITION] Force closing {pos['ticker']} {pos['direction'].upper()} "
-                  f"(ID: {pos['id']}) entered @ ${pos['entry_price']:.2f} â€” STALE EOD")
+                  f"(ID: {pos['id']}) entered @ ${pos['entry_price']:.2f} — STALE EOD")
             self.close_position(pos["id"], pos["entry_price"], "STALE_EOD")
 
 
     def calculate_position_size(self, confidence: float, grade: str,
                                 account_size: float = None,
                                 risk_per_share: float = 1.0) -> Dict:
-        """Calculate contract size based on confidence, grade, and risk. Applies performance multiplier."""
+        """
+        Calculate contract size based on confidence, grade, and risk.
+        Applies performance multiplier and VIX volatility multiplier.
+        
+        Sizing stack (multiplicative):
+          base_risk_pct  (from grade/confidence tier)
+          × performance_multiplier  (win/loss streak: 0.5–1.25)
+          × vix_multiplier          (volatility regime: 0.3–1.3)
+          = final_risk_pct
+        """
         account_size = account_size or self.account_size
 
         if confidence >= 0.85 and grade == "A+":
@@ -357,8 +387,19 @@ class PositionManager:
         else:
             risk_pct = config.POSITION_RISK["conservative"]
 
+        # Layer 1: performance streak adjustment
         adjusted_risk_pct = risk_pct * self.performance_multiplier
-        
+
+        # Layer 2: VIX volatility adjustment
+        vix_mult = _get_vix_mult()
+        adjusted_risk_pct = adjusted_risk_pct * vix_mult
+
+        # Log when VIX is moving the size meaningfully
+        if abs(vix_mult - 1.0) >= 0.10:
+            direction = "reduced" if vix_mult < 1.0 else "increased"
+            print(f"[VIX] Sizing {direction}: {risk_pct*100:.1f}% base → "
+                  f"{adjusted_risk_pct*100:.1f}% adjusted ({vix_mult:.2f}×)")
+
         position_risk = account_size * adjusted_risk_pct
         contracts     = max(1, int(position_risk / (risk_per_share * 100)))
         if contracts > 1 and contracts % 2 != 0:
@@ -372,7 +413,8 @@ class PositionManager:
             "risk_dollars":    round(position_risk, 2),
             "risk_percentage": round(adjusted_risk_pct * 100, 2),
             "allocation_type": f"{round(adjusted_risk_pct * 100, 1)}% risk",
-            "performance_adj": self.performance_multiplier
+            "performance_adj": self.performance_multiplier,
+            "vix_mult":        round(vix_mult, 2),
         }
 
 
@@ -397,7 +439,7 @@ class PositionManager:
 
         is_valid_rr, risk_reward = self.validate_risk_reward(entry_price, stop_price, t2)
         if not is_valid_rr:
-            print(f"[RISK] âŒ {ticker} rejected - R:R {risk_reward:.2f} < {self.min_risk_reward_ratio:.2f} minimum")
+            print(f"[RISK] ❌ {ticker} rejected - R:R {risk_reward:.2f} < {self.min_risk_reward_ratio:.2f} minimum")
             return -1
 
         risk_per_share = round(abs(entry_price - stop_price), 4) or 1.0
@@ -408,7 +450,7 @@ class PositionManager:
 
         can_open, reason = self.can_open_position(ticker, risk_dollars)
         if not can_open:
-            print(f"[RISK] âŒ {ticker} rejected - {reason}")
+            print(f"[RISK] ❌ {ticker} rejected - {reason}")
             return -1
 
         # Extract options data if provided
@@ -491,7 +533,8 @@ class PositionManager:
               f"T1: {t1:.2f}  T2: {t2:.2f}  R:R: {risk_reward:.2f}:1")
         print(f"  Contracts: {contracts}  Grade: {grade}  "
               f"Confidence: {confidence:.1%}  Risk: ${risk_dollars:.0f} "
-              f"({sizing['risk_percentage']:.1f}%)")
+              f"({sizing['risk_percentage']:.1f}%)  "
+              f"Perf: x{sizing['performance_adj']:.2f}  VIX: x{sizing['vix_mult']:.2f}")
         print(f"  Sector: {sector}  Streak: {self._format_streak()}")
         
         if options_rec:
@@ -585,9 +628,9 @@ class PositionManager:
                 cached["pnl"]                = cached.get("pnl", 0) + partial_pnl
                 break
 
-        print(f"[POSITION] âš¡ SCALE OUT {ticker} @ {exit_price:.2f}")
+        print(f"[POSITION] ⚡ SCALE OUT {ticker} @ {exit_price:.2f}")
         print(f"  Closed {contracts_to_close} contracts | Remaining: {contracts_left}")
-        print(f"  Partial P&L: ${partial_pnl:.2f} | Stop â†’ BE: {entry_price:.2f}")
+        print(f"  Partial P&L: ${partial_pnl:.2f} | Stop → BE: {entry_price:.2f}")
 
         try:
             from app.discord_helpers import send_scaling_alert
@@ -646,7 +689,7 @@ class PositionManager:
             closed_trades = self.get_todays_closed_trades()
             self._update_performance_streak(closed_trades)
 
-        emoji = "âœ…" if final_pnl > 0 else "âŒ"
+        emoji = "✅" if final_pnl > 0 else "❌"
         print(f"[POSITION] {emoji} CLOSED {ticker} @ {exit_price:.2f} | {exit_reason}")
         print(f"  Total P&L: ${final_pnl:.2f}  Streak: {self._format_streak()}")
 
@@ -673,7 +716,7 @@ class PositionManager:
         
         breached, reason = self.check_circuit_breaker()
         if breached:
-            print(f"\n[RISK] ðŸš¨ {reason}")
+            print(f"\n[RISK] 🚨 {reason}")
             print("[RISK] No new positions will be opened until next session\n")
 
 
@@ -777,7 +820,7 @@ class PositionManager:
 
         lines = [
             "=" * 50,
-            "WAR MACHINE â€” END OF DAY REPORT",
+            "WAR MACHINE — END OF DAY REPORT",
             "=" * 50,
             f"Date:         {datetime.now().strftime('%A, %B %d, %Y')}",
             f"Total Trades: {trades}",
@@ -788,7 +831,7 @@ class PositionManager:
             f"Max Drawdown: {max_dd_pct:.2f}%",
             f"Final Streak: {self._format_streak()}",
             "",
-            "â€” 30-Day Grade Breakdown â€”"
+            "─ 30-Day Grade Breakdown ─"
         ]
 
         if win_rate_data:
@@ -852,17 +895,11 @@ class PositionManager:
         summary += f"Open Positions:   {len(open_positions)} / {self.max_open_positions} max\n"
         summary += f"Total Exposure:   ${total_exposure:,.0f} ({exposure_pct:.1f}%)\n"
         summary += f"Performance:      {self._format_streak()}\n"
-        summary += f"Circuit Breaker:  {'ðŸš¨ TRIGGERED' if circuit_breached else 'âœ… OK'}\n"
+        summary += f"Circuit Breaker:  {'🚨 TRIGGERED' if circuit_breached else '✅ OK'}\n"
         summary += "="*60 + "\n"
         
         return summary
 
 
-# â”€â”€ Global singleton â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Global singleton ────────────────────────────────────────────────────────────────────────────────
 position_manager = PositionManager()
-
-
-
-
-
-
