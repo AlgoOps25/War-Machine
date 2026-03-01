@@ -30,6 +30,19 @@ ACCOUNT_SIZE = 5000  # Your trading account size in USD
 MAX_SECTOR_EXPOSURE_PCT = 30.0  # Maximum exposure to any single sector (%)
 MAX_POSITION_SIZE_PCT = 5.0     # Maximum % of account per position
 MAX_DAILY_LOSS_PCT = 2.0        # Stop trading if daily loss exceeds this %
+MAX_INTRADAY_DRAWDOWN_PCT = 5.0 # Max drawdown from intraday high water mark
+MAX_OPEN_POSITIONS = 5          # Maximum concurrent positions
+MAX_CONTRACTS = 10              # Maximum contracts per position
+MIN_RISK_REWARD_RATIO = 1.5     # Minimum R:R for new positions
+
+# Position Sizing Tiers (% of account risk per trade)
+# These are BASE values before performance/VIX multipliers
+POSITION_RISK = {
+    "A+_high_confidence": 0.04,  # 4% risk for A+ grade + 85%+ confidence
+    "A_high_confidence":  0.03,  # 3% risk for A/A+ grade + 75%+ confidence
+    "standard":           0.02,  # 2% risk for 65%+ confidence
+    "conservative":       0.01,  # 1% risk for lower confidence (<65%)
+}
 
 # Database Configuration (optional - uses SQLite if not set)
 DATABASE_URL = None  # Set to PostgreSQL URL if using Railway/Heroku
