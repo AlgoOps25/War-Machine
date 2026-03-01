@@ -89,8 +89,10 @@ def fetch_eodhd_intraday(ticker: str, from_date: datetime, to_date: datetime) ->
         'fmt': 'json'
     }
     
+    print(f"      🔄 Fetching data...", end="", flush=True)
+    
     try:
-        response = requests.get(url, params=params, timeout=30)
+        response = requests.get(url, params=params, timeout=60)
         if response.status_code == 200:
             data = response.json()
             if data:
@@ -98,9 +100,16 @@ def fetch_eodhd_intraday(ticker: str, from_date: datetime, to_date: datetime) ->
                 df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
                 df['datetime'] = df['timestamp']  # Add datetime column for compatibility
                 df.set_index('timestamp', inplace=True)
+                print(f" ✅ {len(df)} bars", flush=True)
                 return df
+            else:
+                print(f" ⚠️  Empty response", flush=True)
+        else:
+            print(f" ❌ HTTP {response.status_code}", flush=True)
+    except requests.exceptions.Timeout:
+        print(f" ❌ Timeout (60s)", flush=True)
     except Exception as e:
-        print(f"      ❌ Error fetching {ticker}: {e}")
+        print(f" ❌ Error: {str(e)[:30]}", flush=True)
     
     return pd.DataFrame()
 
@@ -233,8 +242,10 @@ for ticker_idx, ticker in enumerate(CONFIG['watchlist'], 1):
         df = fetch_eodhd_intraday(ticker, CONFIG['start_date'], CONFIG['end_date'])
         
         if df.empty or len(df) < 100:
-            print(f"      ⚠️  No data")
+            print(f"      ⚠️  Insufficient data")
             continue
+        
+        print(f"      🔄 Detecting signals...", end="", flush=True)
         
         # Convert to list for bar-by-bar processing
         bars_list = df.to_dict('records')
@@ -300,7 +311,7 @@ for ticker_idx, ticker in enumerate(CONFIG['watchlist'], 1):
                         'stopped_out': outcome['stopped_out']
                     })
         
-        print(f"      ✅ {signals_detected} signals | {outcomes_analyzed} outcomes analyzed")
+        print(f" ✅ {signals_detected} signals | {outcomes_analyzed} analyzed")
     
     except Exception as e:
         print(f"      ❌ Error: {str(e)[:50]}")
