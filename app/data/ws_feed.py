@@ -1,5 +1,5 @@
-﻿"""
-ws_feed.py â€” EODHD WebSocket Real-Time Bar Builder
+"""
+ws_feed.py — EODHD WebSocket Real-Time Bar Builder
 
 Connects to wss://ws.eodhistoricaldata.com/ws/us?api_token=KEY and aggregates
 live trade ticks into 1m OHLCV bars persisted to the DB via data_manager.store_bars().
@@ -28,6 +28,8 @@ Design:
     New tickers are merged into the master list and sent live if connected.
   - _on_tick() rejects bad prints (price <= 0, volume < 0, price > 100k) and
     intra-bar spikes > 10% from the current close before touching bar state.
+  - NEW: Filters dark pool trades (dp: true) and invalid condition codes
+    (Form T, odd lots, derivative pricing) to improve bar quality.
   - Gracefully skips startup if 'websockets' package is not installed.
   - _started guard prevents double thread creation if start_ws_feed() is
     called more than once (e.g. from both main.py and scanner.py).
@@ -68,7 +70,21 @@ FLUSH_INTERVAL  = 10    # seconds between open-bar DB flushes
 SUBSCRIBE_CHUNK = 50    # max tickers per subscribe message (EODHD limit)
 SPIKE_THRESHOLD = 0.10  # reject ticks that move > 10% from current bar close
 
-# â”€â”€ Shared state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# Trade condition codes to reject (EODHD WebSocket feed)
+# Reference: https://eodhd.com/financial-apis/new-real-time-data-api-websockets
+INVALID_TRADE_CONDITIONS = {
+    12,  # Form T - Late report (dark pool/off-exchange)
+    37,  # Odd lot (< 100 shares) - illiquid, not representative
+    52,  # Derivative priced
+    53,  # Re-opening trade
+    80,  # Sold out of sequence
+    81,  # Sold (out of sequence, reg NMS exempt)
+}
+
+# Market status values (for future RTH filtering)
+MARKET_STATUS_RTH = "open"  # Regular trading hours
+
+# ── Shared state ────────────────────────────────────────────────────────────────────────────────
 _lock               = threading.Lock()
 _open_bars          = {}                 # ticker -> current open bar dict
 _pending            = defaultdict(list)  # ticker -> completed bars not yet in DB
@@ -76,7 +92,7 @@ _connected          = False
 
 # Dynamic subscription state (thread-safe via _sub_lock)
 _sub_lock           = threading.Lock()
-_all_tickers: list  = []                 # master list â€” startup + premarket additions
+_all_tickers: list  = []                 # master list — startup + premarket additions
 _subscribed: set    = set()              # tickers currently subscribed on active WS
 _event_loop         = None               # background asyncio loop (set before connect)
 _ws_connection      = None               # active websockets connection object
@@ -96,7 +112,7 @@ def set_backfill_complete():
     _backfill_active = False
 
 
-# â”€â”€ Public read API â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Public read API ────────────────────────────────────────────────────────────────────────────
 
 def is_connected() -> bool:
     """Return True if the WebSocket is currently connected and subscribed."""
@@ -110,7 +126,7 @@ def get_current_bar(ticker: str):
         return dict(bar) if bar else None
 
 
-# â”€â”€ Tick aggregation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Tick aggregation ───────────────────────────────────────────────────────────────────────────
 
 def _minute_floor(epoch_ms: int) -> datetime:
     """Convert ms epoch -> ET-naive datetime floored to the minute."""
@@ -120,14 +136,16 @@ def _minute_floor(epoch_ms: int) -> datetime:
     )
 
 
-def _on_tick(ticker: str, price: float, volume: int, epoch_ms: int):
+def _on_tick(ticker: str, price: float, volume: int, epoch_ms: int, msg: dict = None):
     """
     Merge one trade tick into the current open bar; close bar on minute rollover.
 
     Sanity gates (applied before any bar state is touched):
-      1. Basic bounds  â€” price must be > 0 and <= 100,000; volume must be >= 0.
+      1. Basic bounds — price must be > 0 and <= 100,000; volume must be >= 0.
          Catches zero-price fills, negative volumes, and obviously corrupt ticks.
-      2. Spike filter  â€” if a bar already exists for this ticker, reject any tick
+      2. Dark pool filter — reject off-exchange trades (dp: true)
+      3. Trade condition filter — reject invalid condition codes
+      4. Spike filter — if a bar already exists for this ticker, reject any tick
          that moves more than SPIKE_THRESHOLD (10%) from the current close.
          Protects against bad prints that would generate false breakout signals.
          Applied inside the lock so the reference close is the exact same value
@@ -135,20 +153,34 @@ def _on_tick(ticker: str, price: float, volume: int, epoch_ms: int):
     """
     # Gate 1: basic bounds (fast path, no lock needed)
     if price <= 0 or volume < 0 or price > 100_000:
-        print(f"[WS] \u26a0\ufe0f Bad tick rejected: {ticker} p={price} v={volume}")
+        print(f"[WS] ⚠️ Bad tick rejected: {ticker} p={price} v={volume}")
         return
+    
+    # NEW Gates 2-3: Message-based filters (if msg dict provided)
+    if msg:
+        # Gate 2: Dark pool filter
+        if msg.get("dp", False):
+            # Silent reject - dark pools are common, don't spam logs
+            # Uncomment for debugging: print(f"[WS] 🚫 Dark pool: {ticker} p={price:.2f} v={volume}")
+            return
+        
+        # Gate 3: Trade condition filter
+        condition = msg.get("c", 0)
+        if condition in INVALID_TRADE_CONDITIONS:
+            print(f"[WS] 🚫 Condition {condition}: {ticker} p={price:.2f} v={volume}")
+            return
 
     bar_dt = _minute_floor(epoch_ms)
 
     with _lock:
         cur = _open_bars.get(ticker)
 
-        # Gate 2: spike filter (inside lock â€” cur['close'] is the authoritative reference)
+        # Gate 4: spike filter (inside lock — cur['close'] is the authoritative reference)
         if cur is not None:
             deviation = abs(price - cur["close"]) / cur["close"]
             if deviation > SPIKE_THRESHOLD:
                 print(
-                    f"[WS] \u26a0\ufe0f Spike rejected: {ticker} "
+                    f"[WS] ⚠️ Spike rejected: {ticker} "
                     f"p={price:.2f} vs close={cur['close']:.2f} "
                     f"({deviation:.1%} > {SPIKE_THRESHOLD:.0%})"
                 )
@@ -162,7 +194,7 @@ def _on_tick(ticker: str, price: float, volume: int, epoch_ms: int):
             return
 
         if bar_dt > cur["datetime"]:
-            # Minute rolled â€” close old bar, open new one
+            # Minute rolled — close old bar, open new one
             _pending[ticker].append(dict(cur))
             _open_bars[ticker] = {
                 "datetime": bar_dt, "open": price, "high": price,
@@ -175,7 +207,7 @@ def _on_tick(ticker: str, price: float, volume: int, epoch_ms: int):
             cur["volume"] += volume
 
 
-# â”€â”€ DB flush helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── DB flush helpers ───────────────────────────────────────────────────────────────────────────
 
 def _flush_pending():
     """Persist all completed 1m bars to DB and clear the queue."""
@@ -202,7 +234,7 @@ def _flush_open():
 
 
 def _flush_loop():
-    """Background thread â€” runs every FLUSH_INTERVAL seconds."""
+    """Background thread — runs every FLUSH_INTERVAL seconds."""
     while True:
         time.sleep(FLUSH_INTERVAL)
         try:
@@ -212,7 +244,7 @@ def _flush_loop():
             print(f"[WS] Flush error: {exc}")
 
 
-# â”€â”€ Dynamic subscription (async, runs inside WS event loop) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Dynamic subscription (async, runs inside WS event loop) ──────────────────
 
 async def _do_subscribe(ws, tickers: list):
     """
@@ -257,7 +289,7 @@ def subscribe_tickers(tickers: list):
         return  # nothing novel to subscribe
 
     if _event_loop is None or _ws_connection is None:
-        print(f"[WS] subscribe_tickers: WS not ready â€” "
+        print(f"[WS] subscribe_tickers: WS not ready — "
               f"{len(new)} ticker(s) queued for next connect")
         return
 
@@ -269,7 +301,7 @@ def subscribe_tickers(tickers: list):
         print(f"[WS] subscribe_tickers error: {e}")
 
 
-# â”€â”€ WebSocket coroutine â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── WebSocket coroutine ────────────────────────────────────────────────────────────────────────
 
 async def _ws_run():
     """Main WebSocket coroutine. Runs in a dedicated asyncio event loop thread."""
@@ -308,29 +340,30 @@ async def _ws_run():
                             print(f"[WS] Server msg: {msg}")
                             continue
 
-                        # Trade tick: {"s":"AAPL","p":227.31,"v":100,"t":1725198451165}
+                        # Trade tick: {"s":"AAPL","p":227.31,"v":100,"t":1725198451165,"c":0,"dp":false,"ms":"open"}
                         ticker = msg.get("s", "")
                         price  = msg.get("p")
                         volume = int(msg.get("v", 0))
                         ts_ms  = msg.get("t")
 
                         if ticker and price and ts_ms:
-                            _on_tick(ticker, float(price), volume, int(ts_ms))
+                            # MODIFIED: Pass full msg dict for condition filtering
+                            _on_tick(ticker, float(price), volume, int(ts_ms), msg=msg)
                     except Exception as exc:
                         print(f"[WS] Tick error: {exc}")
 
-                # Clean server-side close â€” reset state before next reconnect attempt.
+                # Clean server-side close — reset state before next reconnect attempt.
                 _connected     = False
                 _ws_connection = None
 
         except Exception as exc:
             _connected     = False
             _ws_connection = None
-            print(f"[WS] Disconnected ({exc}) â€” reconnecting in {RECONNECT_DELAY}s")
+            print(f"[WS] Disconnected ({exc}) — reconnecting in {RECONNECT_DELAY}s")
             await asyncio.sleep(RECONNECT_DELAY)
 
 
-# â”€â”€ Public API â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Public API ─────────────────────────────────────────────────────────────────────────────────
 
 def start_ws_feed(tickers: list):
     """
@@ -343,19 +376,19 @@ def start_ws_feed(tickers: list):
 
     If called a second time (e.g. from both main.py and scanner.py), the guard
     below merges any new tickers via subscribe_tickers() and returns immediately
-    â€” no duplicate threads are created.
+    — no duplicate threads are created.
     """
     global _event_loop, _all_tickers, _started
 
     if not _HAS_WEBSOCKETS:
-        print("[WS] WARNING: 'websockets' package missing â€” "
+        print("[WS] WARNING: 'websockets' package missing — "
               "install with: pip install 'websockets>=12.0'")
         return
 
-    # FIX #3: guard â€” already running; just subscribe any new tickers and exit
+    # FIX #3: guard — already running; just subscribe any new tickers and exit
     if _started:
         subscribe_tickers(tickers)
-        print(f"[WS] Already running â€” merged {len(tickers)} tickers into active session")
+        print(f"[WS] Already running — merged {len(tickers)} tickers into active session")
         return
     _started = True
 
@@ -376,7 +409,3 @@ def start_ws_feed(tickers: list):
     threading.Thread(target=_flush_loop,         name="ws-flush", daemon=True).start()
     print(f"[WS] Feed initializing | {len(tickers)} seed tickers | "
           f"DB flush every {FLUSH_INTERVAL}s")
-
-
-
-
