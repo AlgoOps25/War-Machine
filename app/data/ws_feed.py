@@ -30,6 +30,7 @@ Design:
     intra-bar spikes > 10% from the current close before touching bar state.
   - NEW: Filters dark pool trades (dp: true) and invalid condition codes
     (Form T, odd lots, derivative pricing) to improve bar quality.
+  - NEW: Optional market status (ms) filtering to enforce RTH-only bar building.
   - Gracefully skips startup if 'websockets' package is not installed.
   - _started guard prevents double thread creation if start_ws_feed() is
     called more than once (e.g. from both main.py and scanner.py).
@@ -81,8 +82,12 @@ INVALID_TRADE_CONDITIONS = {
     81,  # Sold (out of sequence, reg NMS exempt)
 }
 
-# Market status values (for future RTH filtering)
-MARKET_STATUS_RTH = "open"  # Regular trading hours
+# Market status filtering (optional RTH enforcement)
+MARKET_STATUS_RTH = "open"  # Regular trading hours (9:30 AM - 4:00 PM ET)
+ENFORCE_RTH_ONLY = False     # Set True to reject pre/post-market ticks
+                             # Set False to allow all ticks (default)
+                             # NOTE: Your RTH filter in scanner.py will still
+                             # block signals outside RTH - this is a data-level filter
 
 # ── Shared state ────────────────────────────────────────────────────────────────────────────────
 _lock               = threading.Lock()
@@ -145,7 +150,8 @@ def _on_tick(ticker: str, price: float, volume: int, epoch_ms: int, msg: dict = 
          Catches zero-price fills, negative volumes, and obviously corrupt ticks.
       2. Dark pool filter — reject off-exchange trades (dp: true)
       3. Trade condition filter — reject invalid condition codes
-      4. Spike filter — if a bar already exists for this ticker, reject any tick
+      4. Market status filter (optional) — reject non-RTH ticks if ENFORCE_RTH_ONLY=True
+      5. Spike filter — if a bar already exists for this ticker, reject any tick
          that moves more than SPIKE_THRESHOLD (10%) from the current close.
          Protects against bad prints that would generate false breakout signals.
          Applied inside the lock so the reference close is the exact same value
@@ -156,7 +162,7 @@ def _on_tick(ticker: str, price: float, volume: int, epoch_ms: int, msg: dict = 
         print(f"[WS] ⚠️ Bad tick rejected: {ticker} p={price} v={volume}")
         return
     
-    # NEW Gates 2-3: Message-based filters (if msg dict provided)
+    # NEW Gates 2-4: Message-based filters (if msg dict provided)
     if msg:
         # Gate 2: Dark pool filter
         if msg.get("dp", False):
@@ -169,13 +175,21 @@ def _on_tick(ticker: str, price: float, volume: int, epoch_ms: int, msg: dict = 
         if condition in INVALID_TRADE_CONDITIONS:
             print(f"[WS] 🚫 Condition {condition}: {ticker} p={price:.2f} v={volume}")
             return
+        
+        # Gate 4: Market status filter (optional RTH enforcement)
+        if ENFORCE_RTH_ONLY:
+            market_status = msg.get("ms", "")
+            if market_status != MARKET_STATUS_RTH:
+                # Silent reject - extended hours ticks are common
+                # Uncomment for debugging: print(f"[WS] 🚫 Non-RTH: {ticker} ms={market_status}")
+                return
 
     bar_dt = _minute_floor(epoch_ms)
 
     with _lock:
         cur = _open_bars.get(ticker)
 
-        # Gate 4: spike filter (inside lock — cur['close'] is the authoritative reference)
+        # Gate 5: spike filter (inside lock — cur['close'] is the authoritative reference)
         if cur is not None:
             deviation = abs(price - cur["close"]) / cur["close"]
             if deviation > SPIKE_THRESHOLD:
@@ -328,8 +342,9 @@ async def _ws_run():
                 await _do_subscribe(ws, master)
 
                 _connected = True
+                rth_status = "RTH-only" if ENFORCE_RTH_ONLY else "all-hours"
                 print(f"[WS] Live | {len(_subscribed)} tickers subscribed | "
-                      f"waiting for ticks...")
+                      f"{rth_status} | waiting for ticks...")
 
                 async for raw in ws:
                     try:
