@@ -529,15 +529,13 @@ def load_historical_signals() -> List[Dict]:
     
     Default: Generates synthetic test data
     
-    To use real data:
-    1. Uncomment one of the sections below
-    2. Comment out the synthetic data generation
+    To use real data, edit this function and choose one of:
+    - PostgreSQL database query
+    - CSV file loading
+    - SQLite database query
     """
     
-    # ─────────────────────────────────────────────────────────────────
-    # OPTION 1: SYNTHETIC TEST DATA (DEFAULT)
-    # ─────────────────────────────────────────────────────────────────
-    
+    # SYNTHETIC TEST DATA (DEFAULT - ACTIVE)
     print("[OPTIMIZATION] Generating synthetic test signals...")
     print("[OPTIMIZATION] (To use real data, edit load_historical_signals function)")
     print()
@@ -556,17 +554,14 @@ def load_historical_signals() -> List[Dict]:
         ticker = random.choice(['AAPL', 'NVDA', 'TSLA', 'SPY', 'QQQ', 'AMZN', 'MSFT', 'META'])
         direction = random.choice(['CALL', 'PUT'])
         
-        # Simulate realistic trading outcomes
-        # 55% win rate baseline
+        # Simulate realistic trading outcomes (55% win rate baseline)
         win = random.random() < 0.55
         
         if win:
-            # Winners: 1R to 4R (risk/reward)
-            r_multiple = random.uniform(1.0, 4.0)
+            r_multiple = random.uniform(1.0, 4.0)  # Winners: 1R to 4R
             pnl = random.uniform(50, 300)
         else:
-            # Losers: -1R (stop hit)
-            r_multiple = -1.0
+            r_multiple = -1.0  # Losers: -1R (stop hit)
             pnl = random.uniform(-150, -50)
         
         hold_time = random.randint(5, 90)  # 5-90 minutes
@@ -582,7 +577,6 @@ def load_historical_signals() -> List[Dict]:
             }
         })
     
-    # Sort by timestamp
     signals.sort(key=lambda x: x['timestamp'])
     
     print(f"[OPTIMIZATION] Generated {len(signals)} test signals")
@@ -590,112 +584,6 @@ def load_historical_signals() -> List[Dict]:
     print()
     
     return signals
-    
-    # ─────────────────────────────────────────────────────────────────
-    # OPTION 2: POSTGRESQL DATABASE
-    # ─────────────────────────────────────────────────────────────────
-    
-    # Uncomment to use PostgreSQL:
-    """
-    print("[OPTIMIZATION] Loading signals from PostgreSQL...")
-    
-    import psycopg2
-    import os
-    
-    database_url = os.getenv('DATABASE_URL')
-    if not database_url:
-        print("ERROR: DATABASE_URL not set")
-        return []
-    
-    try:
-        conn = psycopg2.connect(database_url)
-        cursor = conn.cursor()
-        
-        # Adjust table/column names to match YOUR schema
-        query = """
-        SELECT 
-            created_at,
-            ticker,
-            direction,
-            r_multiple,
-            pnl,
-            hold_time_minutes
-        FROM trade_signals
-        WHERE created_at >= NOW() - INTERVAL '60 days'
-        AND outcome IS NOT NULL
-        ORDER BY created_at
-        """
-        
-        cursor.execute(query)
-        rows = cursor.fetchall()
-        
-        signals = []
-        for row in rows:
-            signals.append({
-                'timestamp': row[0],
-                'ticker': row[1],
-                'direction': row[2],
-                'outcome': {
-                    'r_multiple': float(row[3]),
-                    'pnl': float(row[4]),
-                    'hold_time_minutes': int(row[5])
-                }
-            })
-        
-        cursor.close()
-        conn.close()
-        
-        print(f"[OPTIMIZATION] Loaded {len(signals)} signals from database")
-        if signals:
-            print(f"   Date range: {signals[0]['timestamp'].date()} to {signals[-1]['timestamp'].date()}")
-        
-        return signals
-    
-    except Exception as e:
-        print(f"[OPTIMIZATION] Database error: {e}")
-        return []
-    """
-    
-    # ─────────────────────────────────────────────────────────────────
-    # OPTION 3: CSV FILE
-    # ─────────────────────────────────────────────────────────────────
-    
-    # Uncomment to use CSV:
-    """
-    print("[OPTIMIZATION] Loading signals from CSV...")
-    
-    try:
-        df = pd.read_csv('signals_history.csv')
-        df['timestamp'] = pd.to_datetime(df['timestamp'])
-        
-        signals = []
-        for _, row in df.iterrows():
-            signals.append({
-                'timestamp': row['timestamp'],
-                'ticker': row['ticker'],
-                'direction': row['direction'],
-                'outcome': {
-                    'r_multiple': float(row['r_multiple']),
-                    'pnl': float(row['pnl']),
-                    'hold_time_minutes': int(row['hold_time_minutes'])
-                }
-            })
-        
-        signals.sort(key=lambda x: x['timestamp'])
-        
-        print(f"[OPTIMIZATION] Loaded {len(signals)} signals from CSV")
-        if signals:
-            print(f"   Date range: {signals[0]['timestamp'].date()} to {signals[-1]['timestamp'].date()}")
-        
-        return signals
-    
-    except FileNotFoundError:
-        print("[OPTIMIZATION] signals_history.csv not found")
-        return []
-    except Exception as e:
-        print(f"[OPTIMIZATION] Error loading CSV: {e}")
-        return []
-    """
 
 
 def main():
