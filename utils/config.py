@@ -14,6 +14,7 @@ from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, field
 import json
 from pathlib import Path
+import os
 
 
 # ========================================
@@ -46,7 +47,8 @@ POSITION_RISK = {
 
 # Database Configuration (optional - uses SQLite if not set)
 DATABASE_URL = None  # Set to PostgreSQL URL if using Railway/Heroku
-
+# Database configuration
+DB_PATH = os.getenv('DB_PATH', '/app/data/war_machine.db')
 
 # ========================================
 # FILTER CONFIGURATION DATACLASS
