@@ -31,6 +31,7 @@ Design:
   - NEW: Filters dark pool trades (dp: true) and invalid condition codes
     (Form T, odd lots, derivative pricing) to improve bar quality.
   - NEW: Optional market status (ms) filtering to enforce RTH-only bar building.
+  - NEW: Market hours enforcement (9:30 AM - 4:00 PM ET) to block pre-market trades.
   - Gracefully skips startup if 'websockets' package is not installed.
   - _started guard prevents double thread creation if start_ws_feed() is
     called more than once (e.g. from both main.py and scanner.py).
@@ -158,12 +159,21 @@ def _on_tick(ticker: str, price: float, volume: int, epoch_ms: int, msg: dict = 
     Merge one trade tick into the current open bar; close bar on minute rollover.
 
     Sanity gates (applied before any bar state is touched):
+      0. Market hours — only process trades between 9:30 AM - 4:00 PM ET (prevents pre-market spam)
       1. Basic bounds — price must be > 0 and <= 100,000; volume must be >= 0.
       2. Dark pool filter — reject off-exchange trades (dp: true)
-      3. Trade condition filter — reject invalid condition codes
+      3. Trade condition filter — reject invalid condition codes (silently to prevent log spam)
       4. Market status filter (optional) — reject non-RTH ticks if ENFORCE_RTH_ONLY=True
       5. Spike filter — reject ticks that move > SPIKE_THRESHOLD from current close
     """
+    # Gate 0: Market hours check - only process trades during regular market hours (9:30 AM - 4:00 PM ET)
+    bar_dt = _minute_floor(epoch_ms)
+    market_open_time = bar_dt.replace(hour=9, minute=30, second=0, microsecond=0)
+    market_close_time = bar_dt.replace(hour=16, minute=0, second=0, microsecond=0)
+    
+    if not (market_open_time <= bar_dt <= market_close_time):
+        return  # Silently reject pre-market and after-hours trades
+    
     # Gate 1: basic bounds (fast path, no lock needed)
     if price <= 0 or volume < 0 or price > 100_000:
         print(f"[WS] ⚠️ Bad tick rejected: {ticker} p={price} v={volume}")
@@ -174,22 +184,19 @@ def _on_tick(ticker: str, price: float, volume: int, epoch_ms: int, msg: dict = 
         if msg.get("dp", False):
             return
 
-        # Gate 3: Trade condition filter
+        # Gate 3: Trade condition filter (silently reject to prevent log spam)
         condition = msg.get("c", 0)
         # EODHD sometimes sends condition as a list [12] instead of int 12
         if isinstance(condition, list):
             condition = condition[0] if condition else 0
         if condition in INVALID_TRADE_CONDITIONS:
-            print(f"[WS] 🚫 Condition {condition}: {ticker} p={price:.2f} v={volume}")
-            return
+            return  # Silently reject - logging creates spam (thousands per minute)
 
         # Gate 4: Market status filter (optional RTH enforcement)
         if ENFORCE_RTH_ONLY:
             market_status = msg.get("ms", "")
             if market_status != MARKET_STATUS_RTH:
                 return
-
-    bar_dt = _minute_floor(epoch_ms)
 
     with _lock:
         cur = _open_bars.get(ticker)
@@ -336,7 +343,7 @@ async def _ws_run():
                 _connected = True
                 rth_status = "RTH-only" if ENFORCE_RTH_ONLY else "all-hours"
                 print(f"[WS] Live | {len(_subscribed)} tickers subscribed | "
-                      f"{rth_status} | waiting for ticks...")
+                      f"{rth_status} | 9:30-16:00 ET enforced | waiting for ticks...")
 
                 async for raw in ws:
                     try:
@@ -408,7 +415,7 @@ def start_ws_feed(tickers: list):
     threading.Thread(target=_event_loop_thread, name="ws-feed",  daemon=True).start()
     threading.Thread(target=_flush_loop,         name="ws-flush", daemon=True).start()
     print(f"[WS] Feed initializing | {len(tickers)} seed tickers | "
-          f"DB flush every {FLUSH_INTERVAL}s")
+          f"DB flush every {FLUSH_INTERVAL}s | Market hours: 9:30-16:00 ET")
 
 
 # ── REST Failover ─────────────────────────────────────────────────────────────────────────────
