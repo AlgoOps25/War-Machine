@@ -31,6 +31,9 @@ MAX_SECTOR_EXPOSURE_PCT = 30.0  # Maximum exposure to any single sector (%)
 MAX_POSITION_SIZE_PCT = 5.0     # Maximum % of account per position
 MAX_DAILY_LOSS_PCT = 2.0        # Stop trading if daily loss exceeds this %
 
+# Opening Range Filter
+MIN_OR_RANGE_PCT = 0.3  # Minimum opening range size as % of price (0.3% = $0.30 on $100 stock)
+
 # Database Configuration (optional - uses SQLite if not set)
 DATABASE_URL = None  # Set to PostgreSQL URL if using Railway/Heroku
 
