@@ -11,6 +11,11 @@ Output: Production-ready parameter configs ranked by Sharpe ratio
 
 Usage:
     python smart_optimization.py
+    
+Data Sources:
+    - Synthetic test data (default, for testing)
+    - PostgreSQL database (edit load_historical_signals)
+    - CSV file (edit load_historical_signals)
 """
 
 import sys
@@ -23,6 +28,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass, asdict
 from zoneinfo import ZoneInfo
+import random
 
 # Bayesian optimization
 try:
@@ -514,24 +520,182 @@ def objective(**params):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# MAIN OPTIMIZATION LOOP
+# DATA LOADING FUNCTIONS
 # ═══════════════════════════════════════════════════════════════════════════
 
 def load_historical_signals() -> List[Dict]:
     """
-    Load historical signals from cache/database.
+    Load historical signals for optimization.
     
-    For now, generates synthetic signals for testing.
-    Replace with actual signal loading from your database.
+    Default: Generates synthetic test data
+    
+    To use real data:
+    1. Uncomment one of the sections below
+    2. Comment out the synthetic data generation
     """
-    print("[OPTIMIZATION] Loading historical signals...")
     
-    # TODO: Replace with actual database query
-    # For now, return empty - you'll need to populate this
+    # ─────────────────────────────────────────────────────────────────
+    # OPTION 1: SYNTHETIC TEST DATA (DEFAULT)
+    # ─────────────────────────────────────────────────────────────────
+    
+    print("[OPTIMIZATION] Generating synthetic test signals...")
+    print("[OPTIMIZATION] (To use real data, edit load_historical_signals function)")
+    print()
+    
     signals = []
+    base_date = datetime.now(ET) - timedelta(days=60)
     
-    print(f"[OPTIMIZATION] Loaded {len(signals)} historical signals")
+    # Generate 500 realistic test signals
+    for i in range(500):
+        timestamp = base_date + timedelta(
+            days=random.randint(0, 59),
+            hours=random.randint(9, 15),
+            minutes=random.randint(0, 59)
+        )
+        
+        ticker = random.choice(['AAPL', 'NVDA', 'TSLA', 'SPY', 'QQQ', 'AMZN', 'MSFT', 'META'])
+        direction = random.choice(['CALL', 'PUT'])
+        
+        # Simulate realistic trading outcomes
+        # 55% win rate baseline
+        win = random.random() < 0.55
+        
+        if win:
+            # Winners: 1R to 4R (risk/reward)
+            r_multiple = random.uniform(1.0, 4.0)
+            pnl = random.uniform(50, 300)
+        else:
+            # Losers: -1R (stop hit)
+            r_multiple = -1.0
+            pnl = random.uniform(-150, -50)
+        
+        hold_time = random.randint(5, 90)  # 5-90 minutes
+        
+        signals.append({
+            'timestamp': timestamp,
+            'ticker': ticker,
+            'direction': direction,
+            'outcome': {
+                'r_multiple': r_multiple,
+                'pnl': pnl,
+                'hold_time_minutes': hold_time
+            }
+        })
+    
+    # Sort by timestamp
+    signals.sort(key=lambda x: x['timestamp'])
+    
+    print(f"[OPTIMIZATION] Generated {len(signals)} test signals")
+    print(f"   Date range: {signals[0]['timestamp'].date()} to {signals[-1]['timestamp'].date()}")
+    print()
+    
     return signals
+    
+    # ─────────────────────────────────────────────────────────────────
+    # OPTION 2: POSTGRESQL DATABASE
+    # ─────────────────────────────────────────────────────────────────
+    
+    # Uncomment to use PostgreSQL:
+    """
+    print("[OPTIMIZATION] Loading signals from PostgreSQL...")
+    
+    import psycopg2
+    import os
+    
+    database_url = os.getenv('DATABASE_URL')
+    if not database_url:
+        print("ERROR: DATABASE_URL not set")
+        return []
+    
+    try:
+        conn = psycopg2.connect(database_url)
+        cursor = conn.cursor()
+        
+        # Adjust table/column names to match YOUR schema
+        query = """
+        SELECT 
+            created_at,
+            ticker,
+            direction,
+            r_multiple,
+            pnl,
+            hold_time_minutes
+        FROM trade_signals
+        WHERE created_at >= NOW() - INTERVAL '60 days'
+        AND outcome IS NOT NULL
+        ORDER BY created_at
+        """
+        
+        cursor.execute(query)
+        rows = cursor.fetchall()
+        
+        signals = []
+        for row in rows:
+            signals.append({
+                'timestamp': row[0],
+                'ticker': row[1],
+                'direction': row[2],
+                'outcome': {
+                    'r_multiple': float(row[3]),
+                    'pnl': float(row[4]),
+                    'hold_time_minutes': int(row[5])
+                }
+            })
+        
+        cursor.close()
+        conn.close()
+        
+        print(f"[OPTIMIZATION] Loaded {len(signals)} signals from database")
+        if signals:
+            print(f"   Date range: {signals[0]['timestamp'].date()} to {signals[-1]['timestamp'].date()}")
+        
+        return signals
+    
+    except Exception as e:
+        print(f"[OPTIMIZATION] Database error: {e}")
+        return []
+    """
+    
+    # ─────────────────────────────────────────────────────────────────
+    # OPTION 3: CSV FILE
+    # ─────────────────────────────────────────────────────────────────
+    
+    # Uncomment to use CSV:
+    """
+    print("[OPTIMIZATION] Loading signals from CSV...")
+    
+    try:
+        df = pd.read_csv('signals_history.csv')
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        
+        signals = []
+        for _, row in df.iterrows():
+            signals.append({
+                'timestamp': row['timestamp'],
+                'ticker': row['ticker'],
+                'direction': row['direction'],
+                'outcome': {
+                    'r_multiple': float(row['r_multiple']),
+                    'pnl': float(row['pnl']),
+                    'hold_time_minutes': int(row['hold_time_minutes'])
+                }
+            })
+        
+        signals.sort(key=lambda x: x['timestamp'])
+        
+        print(f"[OPTIMIZATION] Loaded {len(signals)} signals from CSV")
+        if signals:
+            print(f"   Date range: {signals[0]['timestamp'].date()} to {signals[-1]['timestamp'].date()}")
+        
+        return signals
+    
+    except FileNotFoundError:
+        print("[OPTIMIZATION] signals_history.csv not found")
+        return []
+    except Exception as e:
+        print(f"[OPTIMIZATION] Error loading CSV: {e}")
+        return []
+    """
 
 
 def main():
@@ -549,36 +713,37 @@ def main():
     GLOBAL_SIGNALS = load_historical_signals()
     
     if len(GLOBAL_SIGNALS) == 0:
-        print("❌ ERROR: No historical signals found")
-        print("")
-        print("To run optimization, you need historical signal data with outcomes.")
-        print("")
-        print("Next steps:")
-        print("1. Run scanner for 30-60 days to collect signals")
-        print("2. Track outcomes (R-multiples, PnL, hold time)")
-        print("3. Store in database or CSV")
-        print("4. Load here for optimization")
+        print("❌ ERROR: No signals loaded")
         print()
-        print("For now, run this as a validation test:")
-        print("  python app/analytics/technical_indicators_extended.py")
+        print("Check load_historical_signals() function for data source configuration.")
         return
     
     print(f"✅ Loaded {len(GLOBAL_SIGNALS)} signals")
-    print(f"   Date range: {GLOBAL_SIGNALS[0]['timestamp']} to {GLOBAL_SIGNALS[-1]['timestamp']}")
+    print(f"   Date range: {GLOBAL_SIGNALS[0]['timestamp'].date()} to {GLOBAL_SIGNALS[-1]['timestamp'].date()}")
+    
+    # Calculate baseline metrics
+    wins = sum(1 for s in GLOBAL_SIGNALS if s['outcome']['r_multiple'] > 0)
+    baseline_win_rate = wins / len(GLOBAL_SIGNALS)
+    baseline_r = sum(s['outcome']['r_multiple'] for s in GLOBAL_SIGNALS) / len(GLOBAL_SIGNALS)
+    
+    print(f"   Baseline win rate: {baseline_win_rate:.1%}")
+    print(f"   Baseline avg R: {baseline_r:.2f}R")
     print()
     
     # Run Bayesian optimization
     print("Starting Bayesian optimization...")
     print(f"  Search space: {len(SEARCH_SPACE)} parameters")
-    print(f"  Iterations: 1000")
-    print(f"  Expected runtime: 3-5 hours")
+    print(f"  Iterations: 100 (fast mode for testing)")
+    print(f"  Expected runtime: 30-60 minutes")
+    print()
+    print("  Note: For production, increase n_calls to 1000 (3-5 hours)")
     print()
     
     result = gp_minimize(
         objective,
         SEARCH_SPACE,
-        n_calls=1000,  # 1000 smart samples
-        n_initial_points=50,  # 50 random samples to start
+        n_calls=100,  # Fast test mode (change to 1000 for production)
+        n_initial_points=20,  # Random samples to start
         random_state=42,
         verbose=True
     )
@@ -602,6 +767,11 @@ def main():
         'timestamp': datetime.now(ET).isoformat(),
         'best_sharpe': best_sharpe,
         'best_params': best_params,
+        'baseline_metrics': {
+            'win_rate': baseline_win_rate,
+            'avg_r_multiple': baseline_r,
+            'total_signals': len(GLOBAL_SIGNALS)
+        },
         'all_results': [
             {'params': dict(zip([d.name for d in SEARCH_SPACE], x)), 'sharpe': -y}
             for x, y in zip(result.x_iters, result.func_vals)
