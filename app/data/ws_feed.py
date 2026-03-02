@@ -176,6 +176,9 @@ def _on_tick(ticker: str, price: float, volume: int, epoch_ms: int, msg: dict = 
 
         # Gate 3: Trade condition filter
         condition = msg.get("c", 0)
+        # EODHD sometimes sends condition as a list [12] instead of int 12
+        if isinstance(condition, list):
+            condition = condition[0] if condition else 0
         if condition in INVALID_TRADE_CONDITIONS:
             print(f"[WS] 🚫 Condition {condition}: {ticker} p={price:.2f} v={volume}")
             return
