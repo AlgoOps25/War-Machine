@@ -1,7 +1,13 @@
-﻿[build]
+[build]
 builder = "NIXPACKS"
 
 [deploy]
 startCommand = "python -m app.core.scanner"
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 10
+
+# ML Confidence Booster - Weekly Retrain
+[[cron]]
+name = "ml-retrain"
+schedule = "0 7 * * 0"  # Sunday 7 AM UTC (2 AM ET)
+command = "python app/ml/train_ml_booster.py"
