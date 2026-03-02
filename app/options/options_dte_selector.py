@@ -475,17 +475,27 @@ class OptionsDTESelector:
         }
     
     def _create_fallback_response(self, reason: str, time_remaining: float) -> Dict:
-        """Create fallback response using time-based logic."""
-        # Simple time-based fallback
-        if time_remaining >= 2.5:
+        """
+        Create fallback response using time-based logic.
+        
+        Updated logic (March 2026):
+        - Accounts for realistic 45-60 minute hold times (not aspirational 15-30 min)
+        - Factors in EODHD data lag (1-3 minutes)
+        - Optimized for choppy market conditions where moves take longer
+        - Prioritizes 1DTE liquidity and flexibility for late-day signals
+        """
+        if time_remaining >= 3.5:
+            # Plenty of time for 0DTE intraday scalp
             dte = 0
             dte_text = "0DTE (Expires Today)"
-        elif time_remaining >= 1.5:
+        elif time_remaining >= 1.0:
+            # Not enough time for fast 0DTE scalp - use 1DTE for flexibility
             dte = 1
             dte_text = "1DTE (Expires Tomorrow)"
         else:
+            # Too close to market close
             return self._create_skip_response(
-                "Too close to market close",
+                "Too close to market close (<1 hour)",
                 time_remaining
             )
         
