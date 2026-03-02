@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 import json
 from pathlib import Path
 import os
+from datetime import time as dtime
 
 
 # ========================================
@@ -49,6 +50,30 @@ POSITION_RISK = {
 DATABASE_URL = None  # Set to PostgreSQL URL if using Railway/Heroku
 # Database configuration
 DB_PATH = os.getenv('DB_PATH', '/app/data/war_machine.db')
+DBPATH = DB_PATH  # Alias used by WatchlistFunnel / VolumeAnalyzer
+
+# ========================================
+# MARKET HOURS (datetime.time objects for proper comparisons)
+# ========================================
+
+# FIX: Must be datetime.time objects, NOT strings.
+# scanner.py and data_manager.py compare these with datetime.time values.
+MARKET_OPEN  = dtime(9, 30)   # 9:30 AM ET
+MARKET_CLOSE = dtime(16, 0)   # 4:00 PM ET
+PRE_MARKET_START = dtime(4, 0)   # 4:00 AM ET (extended hours open)
+AFTER_HOURS_END  = dtime(20, 0)  # 8:00 PM ET (extended hours close)
+
+# ========================================
+# WEBSOCKET FEED
+# ========================================
+
+ENABLE_WEBSOCKET_FEED = True  # Enable EODHD WebSocket real-time feed
+
+# ========================================
+# DISCORD ALERTS
+# ========================================
+
+DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1471917294891307100/onHzBfoozy0UK91wBi-7w0lC3NzF_eiiW2sUAuWLZogpWfMAk5Azfr7DcFyaGeKDM_Sa"
 
 # ========================================
 # FILTER CONFIGURATION DATACLASS
@@ -924,10 +949,3 @@ if __name__ == "__main__":
     print("filter_params = config.get_filter_params()")
     print("filter_weights = config.get_filter_weights()")
     print("\nEnabled filters:", config.get_filter_names())
-
-# Market Hours (EST)
-MARKET_OPEN = "09:30"
-MARKET_CLOSE = "16:00"
-
-# Discord Alerts
-DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1471917294891307100/onHzBfoozy0UK91wBi-7w0lC3NzF_eiiW2sUAuWLZogpWfMAk5Azfr7DcFyaGeKDM_Sa"
