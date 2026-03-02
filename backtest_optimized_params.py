@@ -26,34 +26,13 @@ import json
 import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass, asdict
-from zoneinfo import ZoneInfo
 from collections import defaultdict
 
 # War Machine imports
-from app.data.data_manager import data_manager
-from app.analytics.technical_indicators import (
-    check_trend_strength,
-    check_rsi_zone,
-    check_ema_position,
-    check_macd_crossover,
-    check_stochastic_crossover,
-    check_bollinger_squeeze,
-    get_trend_direction,
-)
-from app.analytics.technical_indicators_extended import (
-    get_atr_percentage,
-    check_stochrsi_signal,
-    check_trend_slope,
-    check_volatility_regime,
-)
-from app.analytics.volume_indicators import (
-    calculate_vwap_deviation,
-    calculate_mfi,
-    calculate_obv_trend,
-    check_indicator_confluence,
-)
+from app.data.db_connection import get_conn, ph, dict_cursor
 
 ET = ZoneInfo("America/New_York")
 
@@ -126,6 +105,54 @@ class TradeResult:
     pnl_percent: float
     hold_time_minutes: int
     win: bool
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# DATABASE QUERIES
+# ═══════════════════════════════════════════════════════════════════════════
+
+def get_bars_for_date_range(ticker: str, start_date: datetime, end_date: datetime, db_path: str = "market_memory.db") -> List[Dict]:
+    """
+    Fetch all bars for a ticker within a date range from the database.
+    
+    Returns:
+        List of bar dictionaries with keys: datetime, open, high, low, close, volume
+    """
+    p = ph()
+    conn = get_conn(db_path)
+    cursor = dict_cursor(conn)
+    
+    cursor.execute(f"""
+        SELECT datetime, open, high, low, close, volume
+        FROM intraday_bars
+        WHERE ticker = {p}
+          AND datetime >= {p}
+          AND datetime <= {p}
+        ORDER BY datetime ASC
+    """, (ticker, start_date, end_date))
+    
+    rows = cursor.fetchall()
+    conn.close()
+    
+    bars = []
+    for row in rows:
+        dt = row["datetime"]
+        if isinstance(dt, str):
+            dt = datetime.fromisoformat(dt)
+        if hasattr(dt, "tzinfo") and dt.tzinfo is not None:
+            dt = dt.replace(tzinfo=None)
+        
+        bars.append({
+            "datetime": dt,
+            "timestamp": dt,  # Alias for compatibility
+            "open": float(row["open"]),
+            "high": float(row["high"]),
+            "low": float(row["low"]),
+            "close": float(row["close"]),
+            "volume": int(row["volume"])
+        })
+    
+    return bars
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -224,19 +251,28 @@ def scan_historical_signals(ticker: str, days_back: int = 90) -> List[Historical
     """
     print(f"[SCAN] Scanning {ticker} for historical signals (past {days_back} days)...")
     
-    # Get historical bars from cache
-    bars = data_manager.get_bars_from_memory(ticker, limit=days_back * 390)  # 390 mins per trading day
+    # Calculate date range
+    end_date = datetime.now(ET)
+    start_date = end_date - timedelta(days=days_back)
+    
+    # Get historical bars from database
+    bars = get_bars_for_date_range(ticker, start_date, end_date)
     
     if not bars or len(bars) < 100:
-        print(f"[SCAN] Insufficient data for {ticker}")
+        if len(bars) == 0:
+            print(f"[SCAN] No data for {ticker}")
+        else:
+            print(f"[SCAN] Insufficient data for {ticker} ({len(bars)} bars, need 100+)")
         return []
+    
+    print(f"[SCAN] Loaded {len(bars)} bars for {ticker} from {start_date.date()} to {end_date.date()}")
     
     signals = []
     
     # Scan through each bar looking for patterns
     for idx in range(50, len(bars) - 10):  # Leave buffer on both ends
         bar = bars[idx]
-        timestamp = bar.get('timestamp')
+        timestamp = bar.get('datetime') or bar.get('timestamp')
         
         if not timestamp:
             continue
@@ -275,94 +311,110 @@ def scan_historical_signals(ticker: str, days_back: int = 90) -> List[Historical
 # FILTER VALIDATION - Apply Optimized Parameters
 # ═══════════════════════════════════════════════════════════════════════════
 
-def validate_signal_at_timestamp(signal: HistoricalSignal) -> Tuple[bool, float]:
+def calculate_rsi(bars: List[Dict], period: int = 14) -> float:
+    """Calculate RSI from bars"""
+    if len(bars) < period + 1:
+        return 50.0
+    
+    closes = [b['close'] for b in bars[-period-1:]]
+    deltas = [closes[i+1] - closes[i] for i in range(len(closes)-1)]
+    
+    gains = [d if d > 0 else 0 for d in deltas]
+    losses = [-d if d < 0 else 0 for d in deltas]
+    
+    avg_gain = np.mean(gains) if gains else 0
+    avg_loss = np.mean(losses) if losses else 0
+    
+    if avg_loss == 0:
+        return 100.0
+    
+    rs = avg_gain / avg_loss
+    rsi = 100 - (100 / (1 + rs))
+    
+    return rsi
+
+
+def calculate_mfi(bars: List[Dict], period: int = 14) -> float:
+    """Calculate Money Flow Index"""
+    if len(bars) < period + 1:
+        return 50.0
+    
+    recent = bars[-period-1:]
+    typical_prices = [(b['high'] + b['low'] + b['close']) / 3 for b in recent]
+    money_flows = [typical_prices[i] * recent[i]['volume'] for i in range(len(recent))]
+    
+    positive_flow = sum(money_flows[i] for i in range(1, len(money_flows)) if typical_prices[i] > typical_prices[i-1])
+    negative_flow = sum(money_flows[i] for i in range(1, len(money_flows)) if typical_prices[i] < typical_prices[i-1])
+    
+    if negative_flow == 0:
+        return 100.0
+    
+    money_ratio = positive_flow / negative_flow
+    mfi = 100 - (100 / (1 + money_ratio))
+    
+    return mfi
+
+
+def validate_signal_simple(signal: HistoricalSignal, bars: List[Dict]) -> Tuple[bool, float]:
     """
-    Apply optimized filters to a historical signal.
+    Simplified filter validation using basic technical indicators.
+    
+    Since we don't have full War Machine context at signal time,
+    we'll use simplified versions of the key filters.
     
     Returns:
         (passes_validation, confidence_score)
     """
     try:
-        ticker = signal.ticker
         direction = signal.direction
         params = OPTIMIZED_PARAMS
-        
-        # Get bars at signal time (need historical context)
-        bars = data_manager.get_bars_from_memory(ticker, limit=50)
-        
-        if not bars or len(bars) < 20:
-            return False, 0.0
-        
-        current_price = signal.entry_price
         base_confidence = 0.5
         
-        # ─────────────────────────────────────────────────────────────────
-        # HARD FILTERS (any fail = reject signal)
-        # ─────────────────────────────────────────────────────────────────
+        if len(bars) < 50:
+            return False, 0.0
         
-        # MFI confirmation (REQUIRED)
+        # Get recent bars at signal time
+        recent_bars = bars[-50:]
+        
+        # ─────────────────────────────────────────────────────────────────
+        # HARD FILTER 1: MFI confirmation (REQUIRED)
+        # ─────────────────────────────────────────────────────────────────
         if params['require_mfi_confirm']:
-            mfi = calculate_mfi(bars, period=14)
+            mfi = calculate_mfi(recent_bars)
             if direction == 'CALL' and mfi > params['mfi_overbought']:
                 return False, 0.0
             elif direction == 'PUT' and mfi < params['mfi_oversold']:
                 return False, 0.0
         
-        # MACD/Stoch crossover required (REQUIRED)
-        if params['require_crossover']:
-            macd_result, _ = check_macd_crossover(ticker, direction, lookback=params['macd_lookback'])
-            stoch_result, _ = check_stochastic_crossover(
-                ticker, direction,
-                overbought=params['stoch_overbought'],
-                oversold=params['stoch_oversold']
-            )
-            
-            has_bullish_cross = (macd_result == 'BULLISH_CROSS' or stoch_result == 'BULLISH_CROSS_OVERSOLD')
-            has_bearish_cross = (macd_result == 'BEARISH_CROSS' or stoch_result == 'BEARISH_CROSS_OVERBOUGHT')
-            
-            if direction == 'CALL' and not has_bullish_cross:
-                return False, 0.0
-            elif direction == 'PUT' and not has_bearish_cross:
-                return False, 0.0
+        # ─────────────────────────────────────────────────────────────────
+        # HARD FILTER 2: Volume requirement
+        # ─────────────────────────────────────────────────────────────────
+        current_volume = recent_bars[-1]['volume']
+        avg_volume = np.mean([b['volume'] for b in recent_bars[-20:]])
         
-        # Block divergence (REQUIRED)
-        if params['block_divergence']:
-            # Simplified divergence check - would need full implementation
-            # For now, skip this check in backtest
-            pass
+        if avg_volume > 0:
+            volume_ratio = current_volume / avg_volume
+            if volume_ratio < params['volume_ratio_min']:
+                return False, 0.0
         
         # ─────────────────────────────────────────────────────────────────
         # CONFIDENCE ADJUSTMENTS (soft signals)
         # ─────────────────────────────────────────────────────────────────
-        
         confidence_adjustments = []
         
         # Momentum weight (RSI zone)
-        rsi_zone, _ = check_rsi_zone(
-            ticker, direction,
-            overbought=params['rsi_overbought'],
-            oversold=params['rsi_oversold']
-        )
-        if rsi_zone == 'FAVORABLE':
+        rsi = calculate_rsi(recent_bars)
+        if direction == 'CALL' and rsi < params['rsi_oversold']:
             confidence_adjustments.append(params['momentum_weight'])
-        elif rsi_zone == 'UNFAVORABLE':
+        elif direction == 'PUT' and rsi > params['rsi_overbought']:
+            confidence_adjustments.append(params['momentum_weight'])
+        elif (direction == 'CALL' and rsi > params['rsi_overbought']) or \
+             (direction == 'PUT' and rsi < params['rsi_oversold']):
             confidence_adjustments.append(-params['momentum_weight'])
         
-        # Volume confluence
-        direction_str = 'bullish' if direction == 'CALL' else 'bearish'
-        confluence = check_indicator_confluence(bars, direction=direction_str)
-        if confluence['confluence_score'] >= 0.67:
-            confidence_adjustments.append(params['volume_confluence_weight'] * confluence['confluence_score'])
-        
-        # Crossover bonus
-        macd_result, _ = check_macd_crossover(ticker, direction, lookback=params['macd_lookback'])
-        if 'CROSS' in str(macd_result):
-            confidence_adjustments.append(params['crossover_bonus'])
-        
-        # BB Squeeze bonus
-        is_squeezed, _ = check_bollinger_squeeze(ticker, threshold=params['bb_squeeze_threshold'])
-        if is_squeezed:
-            confidence_adjustments.append(params['squeeze_bonus'])
+        # Volume bonus
+        if volume_ratio >= params['rvol_threshold']:
+            confidence_adjustments.append(params['rvol_bonus'])
         
         # Calculate final confidence
         final_confidence = base_confidence + sum(confidence_adjustments)
@@ -379,7 +431,31 @@ def validate_signal_at_timestamp(signal: HistoricalSignal) -> Tuple[bool, float]
 # TRADE SIMULATION - Calculate Outcomes
 # ═══════════════════════════════════════════════════════════════════════════
 
-def simulate_trade_outcome(signal: HistoricalSignal, passed_filter: bool, confidence: float) -> TradeResult:
+def calculate_atr(bars: List[Dict], period: int = 14) -> float:
+    """Calculate Average True Range"""
+    if len(bars) < period + 1:
+        return 0.0
+    
+    true_ranges = []
+    for i in range(1, len(bars)):
+        high = bars[i]['high']
+        low = bars[i]['low']
+        prev_close = bars[i-1]['close']
+        
+        tr = max(
+            high - low,
+            abs(high - prev_close),
+            abs(low - prev_close)
+        )
+        true_ranges.append(tr)
+    
+    if len(true_ranges) < period:
+        return 0.0
+    
+    return np.mean(true_ranges[-period:])
+
+
+def simulate_trade_outcome(signal: HistoricalSignal, passed_filter: bool, confidence: float, all_bars: List[Dict]) -> TradeResult:
     """
     Simulate what would have happened if we took this trade.
     
@@ -393,13 +469,11 @@ def simulate_trade_outcome(signal: HistoricalSignal, passed_filter: bool, confid
     entry_price = signal.entry_price
     entry_time = signal.timestamp
     
-    # Get subsequent bars (after signal)
-    all_bars = data_manager.get_bars_from_memory(ticker, limit=500)
-    
     # Find signal bar index
     signal_idx = None
     for i, bar in enumerate(all_bars):
-        if bar.get('timestamp') == entry_time:
+        bar_time = bar.get('datetime') or bar.get('timestamp')
+        if bar_time == entry_time:
             signal_idx = i
             break
     
@@ -420,7 +494,7 @@ def simulate_trade_outcome(signal: HistoricalSignal, passed_filter: bool, confid
         )
     
     # Calculate ATR for stop placement
-    atr_bars = all_bars[signal_idx:min(signal_idx+50, len(all_bars))]
+    atr_bars = all_bars[max(0, signal_idx-50):signal_idx+1]
     atr = calculate_atr(atr_bars)
     
     if atr == 0:
@@ -445,7 +519,7 @@ def simulate_trade_outcome(signal: HistoricalSignal, passed_filter: bool, confid
     exit_reason = 'EOD'
     hold_time = 0
     
-    future_bars = all_bars[signal_idx+1:min(signal_idx+390, len(all_bars))]  # Max 1 trading day
+    future_bars = all_bars[signal_idx+1:min(signal_idx+391, len(all_bars))]  # Max 1 trading day (390 mins)
     
     for i, bar in enumerate(future_bars):
         hold_time = i + 1
@@ -520,30 +594,6 @@ def simulate_trade_outcome(signal: HistoricalSignal, passed_filter: bool, confid
         hold_time_minutes=hold_time,
         win=win
     )
-
-
-def calculate_atr(bars: List[Dict], period: int = 14) -> float:
-    """Calculate Average True Range"""
-    if len(bars) < period:
-        return 0.0
-    
-    true_ranges = []
-    for i in range(1, len(bars)):
-        high = bars[i]['high']
-        low = bars[i]['low']
-        prev_close = bars[i-1]['close']
-        
-        tr = max(
-            high - low,
-            abs(high - prev_close),
-            abs(low - prev_close)
-        )
-        true_ranges.append(tr)
-    
-    if len(true_ranges) < period:
-        return 0.0
-    
-    return np.mean(true_ranges[-period:])
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -629,9 +679,9 @@ def calculate_metrics(results: List[TradeResult]) -> Dict:
 
 def main():
     """Run complete historical backtest"""
-    print("=" * 80)
+    print("="*80)
     print("HISTORICAL BACKTEST - OPTIMIZED PARAMETERS")
-    print("=" * 80)
+    print("="*80)
     print(f"Start time: {datetime.now(ET).strftime('%Y-%m-%d %H:%M:%S %Z')}")
     print()
     
@@ -643,9 +693,17 @@ def main():
     
     # Scan all tickers for historical signals
     all_signals = []
+    ticker_bar_cache = {}  # Cache bars for each ticker
+    
     for ticker in test_tickers:
         signals = scan_historical_signals(ticker, days_back=90)
         all_signals.extend(signals)
+        
+        # Cache bars for later use in validation
+        if signals:
+            end_date = datetime.now(ET)
+            start_date = end_date - timedelta(days=90)
+            ticker_bar_cache[ticker] = get_bars_for_date_range(ticker, start_date, end_date)
     
     print()
     print(f"✅ Total signals detected: {len(all_signals)}")
@@ -653,7 +711,12 @@ def main():
     
     if len(all_signals) == 0:
         print("❌ No signals found in historical data")
-        print("   Ensure market_memory.db has cached data for these tickers")
+        print("   This likely means:")
+        print("   1. Database has data but patterns weren't found, OR")
+        print("   2. Pattern detection thresholds are too strict")
+        print("")
+        print("   Try running: python main.py")
+        print("   To populate the database with fresh market data")
         return
     
     # Process each signal through filters and simulation
@@ -667,11 +730,24 @@ def main():
         if (i + 1) % 50 == 0:
             print(f"  Processed {i+1}/{len(all_signals)} signals...")
         
+        ticker = signal.ticker
+        bars = ticker_bar_cache.get(ticker, [])
+        
+        if not bars:
+            continue
+        
+        # Find bars up to signal time
+        signal_time = signal.timestamp
+        bars_up_to_signal = [b for b in bars if (b.get('datetime') or b.get('timestamp')) <= signal_time]
+        
+        if len(bars_up_to_signal) < 50:
+            continue
+        
         # Validate signal
-        passes, confidence = validate_signal_at_timestamp(signal)
+        passes, confidence = validate_signal_simple(signal, bars_up_to_signal)
         
         # Simulate trade outcome
-        result = simulate_trade_outcome(signal, passes, confidence)
+        result = simulate_trade_outcome(signal, passes, confidence, bars)
         
         # Track results
         baseline_results.append(result)
@@ -686,9 +762,9 @@ def main():
     optimized_metrics = calculate_metrics(optimized_results)
     
     # Display results
-    print("=" * 80)
+    print("="*80)
     print("BACKTEST RESULTS")
-    print("=" * 80)
+    print("="*80)
     print()
     
     print("BASELINE (No Filters):")
@@ -703,7 +779,9 @@ def main():
     
     print("OPTIMIZED (With Filters):")
     print(f"  Total Signals: {optimized_metrics['total_trades']}")
-    print(f"  Signals Filtered Out: {baseline_metrics['total_trades'] - optimized_metrics['total_trades']} ({(1 - optimized_metrics['total_trades']/baseline_metrics['total_trades'])*100:.1f}%)")
+    if baseline_metrics['total_trades'] > 0:
+        filter_rate = (1 - optimized_metrics['total_trades']/baseline_metrics['total_trades'])*100
+        print(f"  Signals Filtered Out: {baseline_metrics['total_trades'] - optimized_metrics['total_trades']} ({filter_rate:.1f}%)")
     print(f"  Win Rate: {optimized_metrics['win_rate']:.1%}")
     print(f"  Avg R-Multiple: {optimized_metrics['avg_r_multiple']:.2f}R")
     print(f"  Total R: {optimized_metrics['total_r']:.2f}R")
@@ -712,17 +790,18 @@ def main():
     print(f"  Avg Hold Time: {optimized_metrics['avg_hold_time_minutes']:.0f} minutes")
     print()
     
-    print("IMPROVEMENT:")
-    if baseline_metrics['win_rate'] > 0:
-        win_rate_improvement = ((optimized_metrics['win_rate'] - baseline_metrics['win_rate']) / baseline_metrics['win_rate']) * 100
-        print(f"  Win Rate: {win_rate_improvement:+.1f}%")
-    if baseline_metrics['avg_r_multiple'] != 0:
-        r_improvement = ((optimized_metrics['avg_r_multiple'] - baseline_metrics['avg_r_multiple']) / abs(baseline_metrics['avg_r_multiple'])) * 100
-        print(f"  Avg R-Multiple: {r_improvement:+.1f}%")
-    if baseline_metrics['sharpe_ratio'] != 0:
-        sharpe_improvement = ((optimized_metrics['sharpe_ratio'] - baseline_metrics['sharpe_ratio']) / abs(baseline_metrics['sharpe_ratio'])) * 100
-        print(f"  Sharpe Ratio: {sharpe_improvement:+.1f}%")
-    print()
+    if baseline_metrics['total_trades'] > 0 and optimized_metrics['total_trades'] > 0:
+        print("IMPROVEMENT:")
+        if baseline_metrics['win_rate'] > 0:
+            win_rate_improvement = ((optimized_metrics['win_rate'] - baseline_metrics['win_rate']) / baseline_metrics['win_rate']) * 100
+            print(f"  Win Rate: {win_rate_improvement:+.1f}%")
+        if baseline_metrics['avg_r_multiple'] != 0:
+            r_improvement = ((optimized_metrics['avg_r_multiple'] - baseline_metrics['avg_r_multiple']) / abs(baseline_metrics['avg_r_multiple'])) * 100
+            print(f"  Avg R-Multiple: {r_improvement:+.1f}%")
+        if baseline_metrics['sharpe_ratio'] != 0:
+            sharpe_improvement = ((optimized_metrics['sharpe_ratio'] - baseline_metrics['sharpe_ratio']) / abs(baseline_metrics['sharpe_ratio'])) * 100
+            print(f"  Sharpe Ratio: {sharpe_improvement:+.1f}%")
+        print()
     
     # Save detailed results
     output = {
