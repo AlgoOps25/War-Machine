@@ -1347,12 +1347,36 @@ def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high,
         )
     else:
         try:
+            # Extract Greeks data for Discord alert
+            greeks_data = None
+            if options_rec:
+                try:
+                    from app.validation.greeks_precheck import get_cached_greeks
+                    greeks_list = get_cached_greeks(ticker, direction)
+                    if greeks_list:
+                        best_option = greeks_list[0]  # Already sorted by quality
+                        greeks_data = {
+                            'is_valid': True,
+                            'reason': f"ATM {direction.upper()} options available with good Greeks",
+                            'best_strike': best_option['strike'],
+                            'details': {
+                                'delta': best_option['delta'],
+                                'iv': best_option['iv'],
+                                'dte': best_option['dte'],
+                                'spread_pct': best_option['spread_pct'],
+                                'liquidity_ok': best_option['is_liquid']
+                            }
+                        }
+                except Exception as greeks_err:
+                    print(f"[ARM] Greeks data extraction error (non-fatal): {greeks_err}")
+            
             send_options_signal_alert(
                 ticker=ticker, direction=direction,
                 entry=entry_price, stop=stop_price, t1=t1, t2=t2,
                 confidence=confidence, timeframe="5m", grade=grade, 
                 options_data=options_rec,
-                confirmation=bos_confirmation, candle_type=bos_candle_type
+                confirmation=bos_confirmation, candle_type=bos_candle_type,
+                greeks_data=greeks_data  # NEW: Pass Greeks validation data
             )
         except Exception as e:
             print(f"[DISCORD] ❌ Alert failed: {e}")
