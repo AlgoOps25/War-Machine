@@ -21,6 +21,130 @@ This module enables that multi-timeframe scanning capability.
 from typing import List, Dict
 from datetime import timedelta
 
+# Add these functions to app/mtf/mtf_compression.py
+
+def expand_to_15m(bars_5m: List[dict]) -> List[dict]:
+    """
+    Expand 5m bars to 15m bars.
+    
+    Strategy: Combine 3x 5m bars into 1x 15m bar.
+    Maintains proper OHLCV aggregation.
+    
+    Args:
+        bars_5m: List of 5m OHLCV bar dicts
+    
+    Returns:
+        List of 15m bars
+    """
+    bars_15m = []
+    
+    # Process in chunks of 3
+    for i in range(0, len(bars_5m) - 2, 3):
+        chunk = bars_5m[i:i+3]
+        
+        bars_15m.append({
+            'datetime': chunk[0]['datetime'],
+            'open': chunk[0]['open'],
+            'high': max(b['high'] for b in chunk),
+            'low': min(b['low'] for b in chunk),
+            'close': chunk[-1]['close'],
+            'volume': sum(b['volume'] for b in chunk)
+        })
+    
+    return bars_15m
+
+
+def expand_to_30m(bars_5m: List[dict]) -> List[dict]:
+    """
+    Expand 5m bars to 30m bars.
+    
+    Strategy: Combine 6x 5m bars into 1x 30m bar.
+    Maintains proper OHLCV aggregation.
+    
+    Args:
+        bars_5m: List of 5m OHLCV bar dicts
+    
+    Returns:
+        List of 30m bars
+    """
+    bars_30m = []
+    
+    # Process in chunks of 6
+    for i in range(0, len(bars_5m) - 5, 6):
+        chunk = bars_5m[i:i+6]
+        
+        bars_30m.append({
+            'datetime': chunk[0]['datetime'],
+            'open': chunk[0]['open'],
+            'high': max(b['high'] for b in chunk),
+            'low': min(b['low'] for b in chunk),
+            'close': chunk[-1]['close'],
+            'volume': sum(b['volume'] for b in chunk)
+        })
+    
+    return bars_30m
+
+
+def build_partial_higher_tf_bar(bars_5m: List[dict], target_tf: str) -> Optional[dict]:
+    """
+    Build incomplete higher timeframe bar from available 5m bars.
+    Useful for early-session analysis when full bars haven't formed yet.
+    
+    Args:
+        bars_5m: Recent 5m bars
+        target_tf: '15m' or '30m'
+    
+    Returns:
+        Partial bar dict with 'is_complete' flag, or None if insufficient data
+    """
+    bars_needed = {'15m': 3, '30m': 6}
+    required = bars_needed.get(target_tf)
+    
+    if not required or len(bars_5m) < 1:
+        return None
+    
+    # Take up to required number of recent bars
+    available = bars_5m[-required:] if len(bars_5m) >= required else bars_5m
+    
+    return {
+        'datetime': available[0]['datetime'],
+        'open': available[0]['open'],
+        'high': max(b['high'] for b in available),
+        'low': min(b['low'] for b in available),
+        'close': available[-1]['close'],
+        'volume': sum(b['volume'] for b in available),
+        'is_complete': len(available) == required,
+        'bars_available': len(available)
+    }
+
+
+# Update metadata
+TIMEFRAME_PRIORITY = ['1h', '30m', '15m', '5m', '3m', '2m', '1m']  # Highest to lowest
+
+TIMEFRAME_WEIGHTS = {
+    '1h': 2.00,   # Strongest (new)
+    '30m': 1.50,  # Very strong (new)
+    '15m': 1.25,  # Strong (new)
+    '5m': 1.00,
+    '3m': 0.85,
+    '2m': 0.70,
+    '1m': 0.55
+}
+
+# Time-based availability windows
+TIMEFRAME_MIN_MINUTES = {
+    '1h': 60,
+    '30m': 30,
+    '15m': 15,
+    '5m': 5,
+    '3m': 3,
+    '2m': 2,
+    '1m': 1
+}
+
+
+print("[MTF-COMPRESSION] ✅ Extended compression module loaded")
+print("[MTF-COMPRESSION] Supports: 1m→3m, 5m→15m/30m, all timeframes 1m-1h")
 
 def compress_to_3m(bars_5m: List[dict]) -> List[dict]:
     """

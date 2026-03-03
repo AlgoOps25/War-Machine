@@ -39,8 +39,17 @@ ET = ZoneInfo("America/New_York")
 _priority_stats = {
     'scans': 0,
     'conflicts_resolved': 0,
-    'primary_tf_breakdown': {'5m': 0, '3m': 0, '2m': 0, '1m': 0},
-    'confluence_found': 0
+    'primary_tf_breakdown': {
+        '1h': 0,   # NEW
+        '30m': 0,  # NEW
+        '15m': 0,  # NEW
+        '5m': 0,
+        '3m': 0,
+        '2m': 0,
+        '1m': 0
+    },
+    'confluence_found': 0,
+    'volume_filtered': 0  # NEW: Track how many FVGs rejected due to low volume
 }
 
 
@@ -52,26 +61,53 @@ def detect_fvg_on_timeframe(
     bars: List[dict],
     direction: str,
     tf_name: str,
-    min_pct: float = 0.001
+    min_pct: float = 0.001,
+    require_volume: bool = True  # NEW parameter
 ) -> Optional[Dict]:
     """
     Scan bars for the most recent FVG matching the given direction.
+    Enhanced with volume confirmation.
     
     Returns FVG dict or None.
     """
     if len(bars) < 10:
         return None
     
-    # Scan last 30 bars for FVGs (don't need full history)
+    # Scan last 30 bars for FVGs
     recent = bars[-30:]
     
-    for i in range(len(recent) - 1, 2, -1):  # Scan backwards (most recent first)
+    # Calculate average volume for comparison
+    avg_volume = sum(b['volume'] for b in recent[-20:-1]) / 19 if len(recent) >= 20 else None
+    
+    # Volume thresholds by timeframe (higher TF = stricter requirement)
+    volume_thresholds = {
+        '1h': 2.0,   # Require 100% above average
+        '30m': 1.8,  # Require 80% above average
+        '15m': 1.6,  # Require 60% above average
+        '5m': 1.5,   # Require 50% above average
+        '3m': 1.3,
+        '2m': 1.2,
+        '1m': 1.0    # No volume filter on 1m (too noisy)
+    }
+    
+    min_volume_ratio = volume_thresholds.get(tf_name, 1.5)
+    
+    for i in range(len(recent) - 1, 2, -1):
         c0 = recent[i - 2]
         c2 = recent[i]
         
         if direction == "bull":
             gap = c2["low"] - c0["high"]
             if gap > 0 and (gap / c0["high"]) >= min_pct:
+                
+                # Volume confirmation check
+                if require_volume and avg_volume:
+                    volume_ratio = c2['volume'] / avg_volume if avg_volume > 0 else 0
+                    if volume_ratio < min_volume_ratio:
+                        continue  # Skip this FVG - insufficient volume
+                else:
+                    volume_ratio = None
+                
                 return {
                     'timeframe': tf_name,
                     'direction': direction,
@@ -82,12 +118,24 @@ def detect_fvg_on_timeframe(
                     'fvg_size_pct': round(gap / c0["high"] * 100, 3),
                     'bar_idx': i,
                     'bar_time': recent[i]['datetime'],
-                    'priority_weight': TIMEFRAME_WEIGHTS[tf_name]
+                    'priority_weight': TIMEFRAME_WEIGHTS.get(tf_name, 1.0),
+                    'volume_ratio': round(volume_ratio, 2) if volume_ratio else None,
+                    'volume_confirmed': volume_ratio >= min_volume_ratio if volume_ratio else False,
+                    'avg_volume': round(avg_volume) if avg_volume else None
                 }
         
         elif direction == "bear":
             gap = c0["low"] - c2["high"]
             if gap > 0 and (gap / c0["low"]) >= min_pct:
+                
+                # Volume confirmation check
+                if require_volume and avg_volume:
+                    volume_ratio = c2['volume'] / avg_volume if avg_volume > 0 else 0
+                    if volume_ratio < min_volume_ratio:
+                        continue  # Skip this FVG - insufficient volume
+                else:
+                    volume_ratio = None
+                
                 return {
                     'timeframe': tf_name,
                     'direction': direction,
@@ -98,7 +146,10 @@ def detect_fvg_on_timeframe(
                     'fvg_size_pct': round(gap / c0["low"] * 100, 3),
                     'bar_idx': i,
                     'bar_time': recent[i]['datetime'],
-                    'priority_weight': TIMEFRAME_WEIGHTS[tf_name]
+                    'priority_weight': TIMEFRAME_WEIGHTS.get(tf_name, 1.0),
+                    'volume_ratio': round(volume_ratio, 2) if volume_ratio else None,
+                    'volume_confirmed': volume_ratio >= min_volume_ratio if volume_ratio else False,
+                    'avg_volume': round(avg_volume) if avg_volume else None
                 }
     
     return None
@@ -109,46 +160,76 @@ def detect_fvg_on_timeframe(
 # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 def scan_all_timeframes_for_fvgs(
-    bars_5m: List[dict],
+    bars_mtf: Dict[str, List[dict]],  # CHANGED: now accepts dict instead of just bars_5m
     direction: str,
-    min_pct: float = 0.001
+    min_pct: float = 0.001,
+    current_time: Optional[datetime] = None
 ) -> List[Dict]:
     """
-    Scan all timeframes (5m, 3m, 2m, 1m) for FVGs in the given direction.
+    Scan all available timeframes for FVGs in the given direction.
     
-    Returns list of FVG dicts, unsorted.
+    Args:
+        bars_mtf: Dict mapping timeframe name to bar list
+                  e.g., {'1h': [...], '30m': [...], '5m': [...]}
+        direction: 'bull' or 'bear'
+        min_pct: Minimum FVG size as % of price
+        current_time: Current timestamp (for time-aware filtering)
+    
+    Returns:
+        List of FVG dicts, unsorted
     """
-    if len(bars_5m) < 30:
-        return []
-    
     fvgs = []
     
-    # Scan 5m (primary timeframe)
-    fvg_5m = detect_fvg_on_timeframe(bars_5m, direction, '5m', min_pct)
-    if fvg_5m:
-        fvgs.append(fvg_5m)
+    # Determine which timeframes are valid based on market time
+    available_tfs = get_available_timeframes(current_time) if current_time else TIMEFRAME_PRIORITY
     
-    # Derive lower timeframes using consolidated compression module
-    bars_3m = compress_to_3m(bars_5m)
-    bars_2m = compress_to_2m(bars_5m)
-    bars_1m = compress_to_1m(bars_5m)
-    
-    # Scan 3m
-    fvg_3m = detect_fvg_on_timeframe(bars_3m, direction, '3m', min_pct)
-    if fvg_3m:
-        fvgs.append(fvg_3m)
-    
-    # Scan 2m
-    fvg_2m = detect_fvg_on_timeframe(bars_2m, direction, '2m', min_pct)
-    if fvg_2m:
-        fvgs.append(fvg_2m)
-    
-    # Scan 1m
-    fvg_1m = detect_fvg_on_timeframe(bars_1m, direction, '1m', min_pct)
-    if fvg_1m:
-        fvgs.append(fvg_1m)
+    # Scan each available timeframe
+    for tf_name in available_tfs:
+        if tf_name not in bars_mtf:
+            continue
+        
+        bars = bars_mtf[tf_name]
+        if not bars or len(bars) < 10:
+            continue
+        
+        fvg = detect_fvg_on_timeframe(bars, direction, tf_name, min_pct)
+        if fvg:
+            fvgs.append(fvg)
     
     return fvgs
+
+
+def get_available_timeframes(current_time: datetime) -> List[str]:
+    """
+    Determine which timeframes have complete bars based on current market time.
+    
+    Strategy:
+    - 9:30-9:45 AM: Only 5m and lower available
+    - 9:45-10:00 AM: Add 15m (may be partial)
+    - 10:00+ AM: Add 30m
+    - 10:30+ AM: Add 1h (first complete bar)
+    
+    Returns:
+        List of timeframe names in priority order
+    """
+    market_open = current_time.replace(hour=9, minute=30, second=0, microsecond=0)
+    minutes_since_open = (current_time - market_open).total_seconds() / 60
+    
+    if minutes_since_open < 0:
+        # Pre-market: no intraday signals
+        return []
+    elif minutes_since_open < 15:
+        # 9:30-9:45: Fast TFs only
+        return ['5m', '3m', '2m', '1m']
+    elif minutes_since_open < 30:
+        # 9:45-10:00: Add 15m
+        return ['15m', '5m', '3m', '2m', '1m']
+    elif minutes_since_open < 60:
+        # 10:00-10:30: Add 30m
+        return ['30m', '15m', '5m', '3m', '2m', '1m']
+    else:
+        # 10:30+: All timeframes
+        return ['1h', '30m', '15m', '5m', '3m', '2m', '1m']
 
 
 # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -185,15 +266,12 @@ def check_fvg_overlap(fvg1: Dict, fvg2: Dict, min_overlap_pct: float = 0.30) -> 
     return overlap_ratio >= min_overlap_pct
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-# PRIORITY RESOLVER (Core Logic)
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-
 def resolve_fvg_priority(
     ticker: str,
     direction: str,
-    bars_5m: List[dict],
-    min_pct: float = 0.001
+    bars_mtf: Dict[str, List[dict]],  # CHANGED: was bars_5m
+    min_pct: float = 0.001,
+    current_time: Optional[datetime] = None
 ) -> Dict:
     """
     Scan all timeframes for FVGs and resolve priority conflicts.
@@ -201,19 +279,20 @@ def resolve_fvg_priority(
     **Nitro Trades Rule:**
     "Always take the highest timeframe FVG when conflicts exist."
     
+    Args:
+        ticker: Symbol
+        direction: 'bull' or 'bear'
+        bars_mtf: Dict of bars by timeframe
+        min_pct: Minimum FVG size threshold
+        current_time: Current time (for time-aware priority)
+    
     Returns:
-    {
-        'primary_fvg': Dict (the FVG you should trade),
-        'secondary_fvgs': List[Dict] (lower-TF FVGs for confluence),
-        'confluence_count': int (how many TFs have FVGs),
-        'has_conflict': bool (were multiple FVGs found?),
-        'resolution': str (explanation of what was chosen)
-    }
+        Dict with priority resolution
     """
     _priority_stats['scans'] += 1
     
-    # Scan all timeframes
-    all_fvgs = scan_all_timeframes_for_fvgs(bars_5m, direction, min_pct)
+    # Scan all available timeframes
+    all_fvgs = scan_all_timeframes_for_fvgs(bars_mtf, direction, min_pct, current_time)
     
     if not all_fvgs:
         return {
@@ -240,9 +319,9 @@ def resolve_fvg_priority(
     # Multiple FVGs - apply priority resolution
     _priority_stats['conflicts_resolved'] += 1
     
-    # Sort by priority (5m > 3m > 2m > 1m)
+    # Sort by priority (1h > 30m > 15m > 5m > 3m > 2m > 1m)
     priority_order = {tf: i for i, tf in enumerate(TIMEFRAME_PRIORITY)}
-    sorted_fvgs = sorted(all_fvgs, key=lambda x: priority_order[x['timeframe']])
+    sorted_fvgs = sorted(all_fvgs, key=lambda x: priority_order.get(x['timeframe'], 999))
     
     # Highest TF FVG is primary
     primary_fvg = sorted_fvgs[0]
@@ -273,26 +352,27 @@ def resolve_fvg_priority(
     }
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-# PUBLIC API
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-
 def get_highest_priority_fvg(
     ticker: str,
     direction: str,
-    bars_5m: List[dict],
-    min_pct: float = 0.001
+    bars_mtf: Dict[str, List[dict]],  # CHANGED: was bars_5m
+    min_pct: float = 0.001,
+    current_time: Optional[datetime] = None
 ) -> Optional[Dict]:
     """
     Get the highest-priority FVG for trading.
     
-    **Use this in sniper.py INSTEAD of bos_fvg_engine.find_fvg_after_bos()**
-    when you want MTF priority enforcement.
+    Args:
+        ticker: Symbol
+        direction: 'bull' or 'bear'
+        bars_mtf: Dict of bars by timeframe
+        min_pct: Minimum FVG size
+        current_time: Current time for time-aware filtering
     
     Returns:
-        Primary FVG dict (with 'timeframe' field) or None if no FVGs exist.
+        Primary FVG dict or None
     """
-    result = resolve_fvg_priority(ticker, direction, bars_5m, min_pct)
+    result = resolve_fvg_priority(ticker, direction, bars_mtf, min_pct, current_time)
     
     if result['primary_fvg'] is None:
         return None
