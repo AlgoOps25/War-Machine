@@ -921,35 +921,47 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
                           bos_confirmation=None, bos_candle_type=None):
 
     # ══════════════════════════════════════════════════════════════════════════════
-    # STEP 6.5 — OPTIONS PRE-VALIDATION GATE (via validation.py)
+    # STEP 6.5 — OPTIONS PRE-VALIDATION GATE (2-PHASE: Greeks → Full)
+    # PHASE 1: Fast Greeks check (cached EODHD, <100ms, 300s TTL)
+    # PHASE 2: Full validation (GEX, UOA, liquidity) only if Greeks pass
     # ══════════════════════════════════════════════════════════════════════════════
     _pre_options_data = None
     if OPTIONS_PRE_GATE_ENABLED:
         try:
-            from app.validation.validation import get_options_filter
-            options_filter = get_options_filter()
+            # PHASE 1: Fast Greeks validation (cached)
+            from app.validation.greeks_precheck import validate_signal_greeks
             _proxy_entry = bars_session[-1]["close"]
-            _tradeable, _opts_data, _reason = options_filter.validate_signal_for_options(
-                ticker, direction, _proxy_entry, _proxy_entry * 1.05  # Temp target for validation
-            )
-            _pre_options_data = _opts_data
-
-            if OPTIONS_PRE_GATE_MODE == "HARD":
-                if not _tradeable:
-                    print(
-                        f"[{ticker}] ❌ OPTIONS GATE [HARD]: {_reason} "
-                        f"— signal dropped before confirmation"
-                    )
-                    return False
-                print(f"[{ticker}] ✅ OPTIONS GATE [HARD]: passed — proceeding to confirmation")
-            else:  # SOFT (default)
-                _gate_emoji = "✅" if _tradeable else "⚠️"
-                print(
-                    f"[{ticker}] {_gate_emoji} OPTIONS GATE [SOFT]: "
-                    f"tradeable={_tradeable} | {_reason}"
+            greeks_valid, greeks_reason = validate_signal_greeks(ticker, direction, _proxy_entry)
+            
+            # Log Greeks result
+            greeks_emoji = "✅" if greeks_valid else "❌"
+            print(f"[{ticker}] {greeks_emoji} GREEKS-GATE: {greeks_reason}")
+            
+            # HARD mode: block signal immediately if Greeks fail
+            if OPTIONS_PRE_GATE_MODE == "HARD" and not greeks_valid:
+                print(f"[{ticker}] 🚫 Signal dropped: Greeks pre-check failed")
+                return False
+            
+            # PHASE 2: Full validation only if Greeks passed (or SOFT mode)
+            if greeks_valid or OPTIONS_PRE_GATE_MODE == "SOFT":
+                from app.validation.validation import get_options_filter
+                options_filter = get_options_filter()
+                _tradeable, _opts_data, _reason = options_filter.validate_signal_for_options(
+                    ticker, direction, _proxy_entry, _proxy_entry * 1.05
                 )
+                _pre_options_data = _opts_data
+
+                if OPTIONS_PRE_GATE_MODE == "HARD":
+                    if not _tradeable:
+                        print(f"[{ticker}] ❌ OPTIONS-GATE [FULL]: {_reason} — signal dropped")
+                        return False
+                    print(f"[{ticker}] ✅ OPTIONS-GATE [FULL]: passed → proceeding to confirmation")
+                else:  # SOFT mode
+                    full_emoji = "✅" if _tradeable else "⚠️"
+                    print(f"[{ticker}] {full_emoji} OPTIONS-GATE [FULL-SOFT]: {_reason}")
+                    
         except Exception as _gate_err:
-            print(f"[{ticker}] OPTIONS GATE error (non-fatal): {_gate_err}")
+            print(f"[{ticker}] OPTIONS-GATE error (non-fatal): {_gate_err}")
             _pre_options_data = None
 
     # STEP 7 — CONFIRMATION CANDLE
