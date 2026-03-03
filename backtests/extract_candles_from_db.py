@@ -14,7 +14,7 @@ from typing import Dict, List
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 try:
-    from app.data.db_connection import get_conn, dict_cursor
+    from app.data.db_connection import get_conn, dict_cursor, ph
     HAS_DB = True
 except ImportError:
     HAS_DB = False
@@ -61,14 +61,15 @@ def extract_candles(
     try:
         conn = get_conn(db_path)
         cursor = dict_cursor(conn)
+        p = ph()  # Get correct placeholder for current database
         
         for symbol in symbols:
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT datetime, open, high, low, close, volume
                 FROM candle_cache
-                WHERE ticker = %s 
-                  AND timeframe = %s
-                  AND datetime >= %s
+                WHERE ticker = {p} 
+                  AND timeframe = {p}
+                  AND datetime >= {p}
                 ORDER BY datetime ASC
             """, (symbol, timeframe, cutoff))
             
@@ -81,17 +82,32 @@ def extract_candles(
             # Convert to list of dicts
             candles = []
             for row in rows:
-                dt = row['datetime']
+                # Handle both dict and tuple responses
+                if isinstance(row, dict):
+                    dt = row['datetime']
+                    open_price = row['open']
+                    high_price = row['high']
+                    low_price = row['low']
+                    close_price = row['close']
+                    volume = row['volume']
+                else:
+                    dt = row[0]
+                    open_price = row[1]
+                    high_price = row[2]
+                    low_price = row[3]
+                    close_price = row[4]
+                    volume = row[5]
+                
                 if isinstance(dt, str):
                     dt = datetime.fromisoformat(dt)
                 
                 candles.append({
                     'timestamp': dt.isoformat(),
-                    'open': float(row['open']),
-                    'high': float(row['high']),
-                    'low': float(row['low']),
-                    'close': float(row['close']),
-                    'volume': int(row['volume'])
+                    'open': float(open_price),
+                    'high': float(high_price),
+                    'low': float(low_price),
+                    'close': float(close_price),
+                    'volume': int(volume)
                 })
             
             all_data[symbol] = candles
@@ -141,20 +157,30 @@ def get_available_symbols(db_path: str, timeframe: str = '1m') -> List[str]:
     try:
         conn = get_conn(db_path)
         cursor = dict_cursor(conn)
+        p = ph()  # Get correct placeholder
         
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT DISTINCT ticker
             FROM candle_cache
-            WHERE timeframe = %s
+            WHERE timeframe = {p}
             ORDER BY ticker
         """, (timeframe,))
         
-        symbols = [row['ticker'] for row in cursor.fetchall()]
+        rows = cursor.fetchall()
+        
+        # Handle both dict and tuple responses
+        if rows and isinstance(rows[0], dict):
+            symbols = [row['ticker'] for row in rows]
+        else:
+            symbols = [row[0] for row in rows]
+        
         conn.close()
         
         return symbols
     except Exception as e:
         print(f"Error querying symbols: {e}")
+        import traceback
+        traceback.print_exc()
         return []
 
 def main():
@@ -197,6 +223,9 @@ def main():
         symbols = get_available_symbols(args.db, args.timeframe)
         if not symbols:
             print("\nERROR: No symbols found in cache. Use --list-symbols to check.")
+            print("\nMake sure your War Machine scanner has run and cached data.")
+            print("Check if candle_cache table exists with:")
+            print("  python check_database.py")
             return
         print(f"Found {len(symbols)} symbols: {', '.join(symbols[:10])}{'...' if len(symbols) > 10 else ''}\n")
     
