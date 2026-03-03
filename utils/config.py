@@ -53,6 +53,16 @@ DB_PATH = os.getenv('DB_PATH', '/app/data/war_machine.db')
 DBPATH = DB_PATH  # Alias used by WatchlistFunnel / VolumeAnalyzer
 # Opening range filter - TASK 2 INTEGRATION
 MIN_OR_RANGE_PCT = 0.03  # Minimum 3% OR range for early-session CFW6_OR gate (Task 2)
+# Options filtering thresholds - TASK 3 INTEGRATION
+MIN_DTE = 0  # Minimum days to expiration (0DTE allowed)
+MAX_DTE = 7  # Maximum days to expiration (weekly options)
+IDEAL_DTE = 2  # Ideal DTE for scoring (2 days out)
+MIN_OPTION_OI = 100  # Minimum open interest
+MIN_OPTION_VOLUME = 50  # Minimum daily volume
+MAX_BID_ASK_SPREAD_PCT = 0.10  # Maximum 10% spread
+TARGET_DELTA_MIN = 0.40  # Minimum delta (0.40-0.70 range)
+TARGET_DELTA_MAX = 0.70  # Maximum delta
+MAX_THETA_DECAY_PCT = 0.05  # Maximum 5% theta decay per day
 
 # ========================================
 # MARKET HOURS (datetime.time objects for proper comparisons)
