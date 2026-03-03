@@ -486,3 +486,33 @@ if __name__ == "__main__":
     for key, value in stats.items():
         print(f"{key}: {value}")
     print("=" * 70)
+
+    # ════════════════════════════════════════════════════════════════════════════════
+# INTEGRATION FUNCTION FOR SNIPER.PY
+# ════════════════════════════════════════════════════════════════════════════════
+
+def validate_signal_greeks(ticker: str, direction: str, entry_price: float) -> tuple[bool, str]:
+    """
+    Fast pre-validation using cached Greeks data.
+    Called from sniper.py Step 6.5 to block signals with bad options early.
+    
+    Returns:
+        (is_valid, reason_string)
+        
+    Examples:
+        (True, "Valid calls: $265 strike, Δ=0.50, IV=31%, 2DTE")
+        (False, "No valid calls: poor delta")
+    """
+    try:
+        # Update cache if needed (300s TTL prevents spam)
+        greeks_cache.update_cache(ticker, entry_price)
+        
+        # Quick validate without re-fetching
+        is_valid, reason = quick_validate_options(ticker, direction, entry_price)
+        
+        return is_valid, reason
+        
+    except Exception as e:
+        # Non-fatal: return True to avoid blocking on errors
+        return True, f"Validation skipped: {e}"
+
