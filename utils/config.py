@@ -52,6 +52,9 @@ DATABASE_URL = None  # Set to PostgreSQL URL if using Railway/Heroku
 DB_PATH = os.getenv('DB_PATH', '/app/data/war_machine.db')
 DBPATH = DB_PATH  # Alias used by WatchlistFunnel / VolumeAnalyzer
 
+# Opening range filter
+MIN_OR_RANGE_PCT = 0.5  # Minimum opening range size (0.5% default)
+
 # ========================================
 # MARKET HOURS (datetime.time objects for proper comparisons)
 # ========================================
