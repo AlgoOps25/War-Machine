@@ -1,0 +1,31 @@
+{
+  "trained_at": "2026-03-03T14:06:54.600544",
+  "n_samples": 10716,
+  "n_features": 20,
+  "train_accuracy": 0.6997200186654223,
+  "test_accuracy": 0.5447761194029851,
+  "roc_auc": 0.5502694917650385,
+  "baseline_win_rate": 0.5574841358715938,
+  "feature_columns": [
+    "risk",
+    "atr",
+    "volume_ratio",
+    "confidence",
+    "ticker_encoded",
+    "signal_type_encoded",
+    "time_bucket_encoded",
+    "risk_atr_ratio",
+    "risk_pct",
+    "volume_ratio_log",
+    "is_high_volume",
+    "hour",
+    "minute",
+    "is_first_hour",
+    "is_power_hour",
+    "confidence_squared",
+    "is_high_confidence",
+    "ticker_win_rate",
+    "time_bucket_win_rate",
+    "signal_type_win_rate"
+  ]
+}

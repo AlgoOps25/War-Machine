@@ -35,3 +35,5 @@ pandas_market_calendars>=4.3.0
 # Machine Learning (Day 6 ML Confidence Booster)
 xgboost==2.0.3
 scikit-learn==1.4.0
+
+matplotlib==3.10.8
