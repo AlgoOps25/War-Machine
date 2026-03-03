@@ -170,7 +170,13 @@ class GreeksCache:
                 # Parse fields
                 exp_date = attrs.get("exp_date", "")
                 option_type = attrs.get("type", "").lower()
-                strike = float(attrs.get("strike", 0))
+                strike_raw = attrs.get("strike", 0)
+                
+                # FIX: Ensure strike is a float
+                try:
+                    strike = float(strike_raw)
+                except (ValueError, TypeError):
+                    continue
                 
                 if not exp_date or option_type not in ("call", "put") or strike == 0:
                     continue
@@ -181,21 +187,21 @@ class GreeksCache:
                 except:
                     dte = 0
                 
-                # Create snapshot
+                # Create snapshot with all floats properly converted
                 snapshot = GreeksSnapshot(
                     ticker=ticker,
-                    strike=strike,
+                    strike=float(strike),  # Ensure float
                     expiration=exp_date,
                     option_type=option_type,
-                    delta=attrs.get("delta", 0),
-                    gamma=attrs.get("gamma", 0),
-                    theta=attrs.get("theta", 0),
-                    vega=attrs.get("vega", 0),
-                    iv=attrs.get("volatility", 0),
-                    bid=attrs.get("bid", 0),
-                    ask=attrs.get("ask", 0),
-                    volume=attrs.get("volume", 0),
-                    open_interest=attrs.get("open_interest", 0),
+                    delta=float(attrs.get("delta", 0)),
+                    gamma=float(attrs.get("gamma", 0)),
+                    theta=float(attrs.get("theta", 0)),
+                    vega=float(attrs.get("vega", 0)),
+                    iv=float(attrs.get("volatility", 0)),
+                    bid=float(attrs.get("bid", 0)),
+                    ask=float(attrs.get("ask", 0)),
+                    volume=int(attrs.get("volume", 0)),
+                    open_interest=int(attrs.get("open_interest", 0)),
                     dte=dte,
                     timestamp=datetime.now()
                 )
@@ -228,7 +234,7 @@ class GreeksCache:
         # Build cache structure: {strike: {'call': snapshot, 'put': snapshot}}
         strike_cache: Dict[float, Dict[str, GreeksSnapshot]] = {}
         for snapshot in snapshots:
-            strike = snapshot.strike
+            strike = float(snapshot.strike)  # Ensure float
             option_type = snapshot.option_type
             
             if strike not in strike_cache:
@@ -284,8 +290,9 @@ class GreeksCache:
                 if option_type is None or opt_type == option_type:
                     snapshots.append(snapshot)
         
-        # Sort by proximity to current price
-        snapshots.sort(key=lambda x: abs(x.strike - current_price))
+        # Sort by proximity to current price (both strike and current_price are floats now)
+        current_price_float = float(current_price)  # Ensure float
+        snapshots.sort(key=lambda x: abs(float(x.strike) - current_price_float))
         
         return snapshots[:num_strikes]
     
@@ -378,7 +385,7 @@ class GreeksCache:
                 delta_diff = abs(call.delta - 0.50)
                 if delta_diff < best_delta_diff:
                     best_delta_diff = delta_diff
-                    best_strike = strike
+                    best_strike = float(strike)  # Ensure float
         
         return best_strike
 
@@ -424,14 +431,41 @@ def quick_validate_options(ticker: str, direction: str, entry_price: float) -> T
     return greeks_cache.quick_validate(ticker, direction, entry_price)
 
 
-def get_cached_greeks(ticker: str, entry_price: float, num_strikes: int = 5) -> List[GreeksSnapshot]:
+def get_cached_greeks(ticker: str, direction: str, num_strikes: int = 5) -> List[Dict]:
     """
-    Get cached Greeks data convenience function.
+    Get cached Greeks data convenience function - returns dict format for Discord alerts.
     
     Usage:
-        strikes = get_cached_greeks("AAPL", 175.50, num_strikes=7)
+        greeks_list = get_cached_greeks("AAPL", "bull", num_strikes=5)
+        best = greeks_list[0]  # Already sorted by quality
     """
-    return greeks_cache.get_atm_strikes(ticker, entry_price, num_strikes)
+    # Get current price estimate from cache
+    current_price = greeks_cache.estimate_current_price(ticker)
+    if not current_price:
+        return []
+    
+    # Get ATM strikes filtered by direction
+    option_type = "call" if direction == "bull" else "put"
+    snapshots = greeks_cache.get_atm_strikes(
+        ticker, current_price, num_strikes=num_strikes, option_type=option_type
+    )
+    
+    # Convert to dict format with quality scoring
+    results = []
+    for snapshot in snapshots:
+        if snapshot.is_liquid() and snapshot.is_valid_delta():
+            results.append({
+                'strike': float(snapshot.strike),
+                'delta': float(snapshot.delta),
+                'iv': float(snapshot.iv),
+                'dte': snapshot.dte,
+                'spread_pct': float(snapshot.spread_pct),
+                'is_liquid': snapshot.is_liquid(),
+                'bid': float(snapshot.bid),
+                'ask': float(snapshot.ask)
+            })
+    
+    return results
 
 
 if __name__ == "__main__":
@@ -466,17 +500,15 @@ if __name__ == "__main__":
     print(f"Reason: {reason}\n")
     
     print(f"Test 3: Get cached ATM CALLS for {test_ticker}")
-    calls = get_cached_greeks(test_ticker, test_price, num_strikes=5)
-    calls = [c for c in calls if c.option_type == 'call'][:5]
+    calls = get_cached_greeks(test_ticker, "bull", num_strikes=5)
     print(f"Found {len(calls)} ATM call strikes:\n")
     
-    for i, strike in enumerate(calls, 1):
-        print(f"{i}. ${strike.strike:.0f} {strike.option_type.upper()} ({strike.dte}DTE)")
-        print(f"   Delta: {strike.delta:.3f} | IV: {strike.iv*100:.1f}%")
-        print(f"   Bid/Ask: ${strike.bid:.2f}/${strike.ask:.2f} (spread: {strike.spread_pct:.1f}%)")
-        print(f"   OI: {strike.open_interest:,} | Vol: {strike.volume:,}")
-        liquid_check = '✅' if strike.is_liquid() else '❌'
-        delta_check = '✅' if strike.is_valid_delta() else '❌'
+    for i, strike_data in enumerate(calls[:3], 1):
+        print(f"{i}. ${strike_data['strike']:.0f} CALL")
+        print(f"   Delta: {strike_data['delta']:.3f} | IV: {strike_data['iv']*100:.1f}%")
+        print(f"   Bid/Ask: ${strike_data['bid']:.2f}/${strike_data['ask']:.2f} (spread: {strike_data['spread_pct']:.1f}%)")
+        liquid_check = '✅' if strike_data['is_liquid'] else '❌'
+        delta_check = '✅' if abs(strike_data['delta']) >= 0.30 else '❌'
         print(f"   Liquid: {liquid_check} | Delta OK: {delta_check}\n")
     
     print("=" * 70)
@@ -487,7 +519,7 @@ if __name__ == "__main__":
         print(f"{key}: {value}")
     print("=" * 70)
 
-    # ════════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════════
 # INTEGRATION FUNCTION FOR SNIPER.PY
 # ════════════════════════════════════════════════════════════════════════════════
 
@@ -515,4 +547,3 @@ def validate_signal_greeks(ticker: str, direction: str, entry_price: float) -> t
     except Exception as e:
         # Non-fatal: return True to avoid blocking on errors
         return True, f"Validation skipped: {e}"
-
