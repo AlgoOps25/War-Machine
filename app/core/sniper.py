@@ -1600,7 +1600,19 @@ def process_ticker(ticker: str):
                 )
             else:
                 print(f"[{ticker}] OR: ${or_low:.2f}—${or_high:.2f} ({or_range_pct:.2%})")
+                
+                # TASK 2: Early session disqualifier for CFW6_OR
+                now_et = _now_et()
+                if should_skip_cfw6_or_early(or_range_pct, now_et):
+                    print(
+                        f"[{ticker}] EARLY SESSION GATE: CFW6_OR blocked before 9:40 AM "
+                        f"(OR={or_range_pct:.2%} < {config.MIN_OR_RANGE_PCT:.1%})"
+                    )
+                    return  # Skip this ticker entirely
+                
+                # Continue with normal OR path
                 direction, breakout_idx = detect_breakout_after_or(bars_session, or_high, or_low)
+
                 if direction:
                     zone_low, zone_high = detect_fvg_after_break(
                         bars_session, breakout_idx, direction
