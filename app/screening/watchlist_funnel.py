@@ -18,8 +18,16 @@ NEW in v3.1:
   - Now receives full metadata: rvol, rvol_tier, dollar_vol_m, sector
   - Can apply downstream filters on dollar-vol, RVOL tier, sector diversity
 """
+import sys
+from pathlib import Path
 from datetime import datetime, time
 from typing import List, Dict, Optional
+
+# Add project root to path for CLI runs
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
 from app.screening import premarket_scanner as momentum_screener
 from app.screening import volume_analyzer
 from app.screening import dynamic_screener
