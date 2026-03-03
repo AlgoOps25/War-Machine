@@ -37,6 +37,7 @@ from app.risk.position_manager import position_manager
 # # from app.ai.ai_learning import compute_confidence  # ARCHIVED - Feature not currently in use  # ARCHIVED - not currently used
 from utils import config
 from app.mtf.bos_fvg_engine import scan_bos_fvg, is_force_close_time
+from app.filters.early_session_disqualifier import should_skip_cfw6_or_early
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PHASE 4 INTEGRATION - Signal Analytics & Performance Monitoring
