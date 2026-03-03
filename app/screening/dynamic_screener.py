@@ -26,6 +26,7 @@ PASS STRATEGY:
 
 POST-FETCH FILTERS (applied in Python, not at API level):
   0. ETF exclusion gate       - name keyword match + known-bad ticker blocklist
+                                (SPY and QQQ are allowed for 0DTE trading)
   1. Dollar-volume gate       - price * avgvol_1d >= MIN_DOLLAR_VOL
   2. "In-play" gate           - must have momentum OR elevated RVOL
   3. RVOL tier scoring        - A/B/C tiers, Tier D discarded
@@ -89,12 +90,13 @@ STALE_1D_MAX            = 0.5
 STALE_5D_MAX            = 1.5
 STALE_PENALTY           = -8
 
-# — ETF exclusion  (NEW v3.1)
-# Gate 0: Drop anything that is an ETF / fund / trust / index product.
+# — ETF exclusion  (v3.1)
+# Gate 0: Drop most ETFs / funds / trusts / index products.
 # Two-layer approach:
 #   Layer 1 — name keyword match (catches iShares, SPDR, Vanguard, etc.)
-#   Layer 2 — known-bad ticker blocklist (catches things EODHD mis-labels
-#              as equities: sector-ETFs like XLI/XLP, commodity ETFs, etc.)
+#   Layer 2 — known-bad ticker blocklist (sector ETFs, commodity ETFs, etc.)
+#
+# EXCEPTION: SPY and QQQ are NOT blocked — they're the most liquid 0DTE products.
 _ETF_NAME_KEYWORDS = {
     # Issuers
     "ishares", "spdr", "vanguard", "invesco", "proshares", "direxion",
@@ -109,6 +111,8 @@ _ETF_NAME_KEYWORDS = {
 # Tickers that slip through because EODHD doesn't flag them as ETFs,
 # or their name doesn't contain the keywords above.
 # Add to this list any time a new one shows up in the output.
+#
+# NOTE: SPY and QQQ are intentionally REMOVED from this list.
 _ETF_TICKER_BLOCKLIST = {
     # SPDR Sector ETFs
     "XLB", "XLC", "XLE", "XLF", "XLI", "XLK", "XLP",
@@ -117,15 +121,15 @@ _ETF_TICKER_BLOCKLIST = {
     "IVV", "IWM", "IWF", "IWD", "IJH", "IJR", "IEF",
     "EFA", "EEM", "AGG", "LQD", "TLT", "SHY", "HYG",
     # Invesco / others
-    "QQQ", "QQQM", "RSP", "IGV", "IGE", "IBB",
+    "QQQM", "RSP", "IGV", "IGE", "IBB",
     "GDX", "GDXJ", "SLV", "GLD", "IAU", "GLDM",
     "USO", "UNG", "PDBC", "PSLV",
     # Vanguard
     "VTI", "VOO", "VEA", "VWO", "VIG", "VYM", "VNQ",
     "VGT", "VHT", "VFH", "VIS", "VAW", "VCR", "VDC",
     "VPU", "VOX",
-    # Broad index / leveraged
-    "SPY", "DIA", "MDY", "TQQQ", "SQQQ", "UPRO", "SPXU",
+    # Broad index / leveraged (SPY and QQQ removed)
+    "DIA", "MDY", "TQQQ", "SQQQ", "UPRO", "SPXU",
     "UVXY", "SVXY", "VXX",
     # International / thematic
     "IEMG", "ACWI", "MCHI", "EWJ", "EWZ", "EWG", "FXI",
@@ -202,6 +206,7 @@ PASS3_BREAKOUT_TREND = {
 # Emergency Fallback
 # ─────────────────────────────────────────────
 FALLBACK_WATCHLIST = [
+    "SPY", "QQQ",  # Always include for 0DTE
     "AAPL", "TSLA", "GOOGL", "AMZN", "MSFT", "META",
     "JPM", "BAC", "GS", "XOM", "CVX",
     "UNH", "JNJ", "HD", "WMT", "COST",
@@ -264,17 +269,17 @@ def _run_pass(pass_config: Dict) -> List[Dict]:
 
 
 # ─────────────────────────────────────────────
-# Gate 0: ETF Exclusion  (NEW v3.1)
+# Gate 0: ETF Exclusion  (v3.1)
 # ─────────────────────────────────────────────
 
 def _is_etf(ticker: str, name: str) -> bool:
     """
-    NEW v3.1: Returns True if this row should be excluded as an ETF/fund/trust.
+    v3.1: Returns True if this row should be excluded as an ETF/fund/trust.
 
     Layer 1 — ticker blocklist:
       Hard-coded set of known ETF tickers that EODHD either mislabels or
-      whose name doesn’t contain catchable keywords (e.g. sector-ETFs like
-      XLI, XLP, commodity trusts like PSLV, broad index products like SPY).
+      whose name doesn't contain catchable keywords (e.g. sector-ETFs like
+      XLI, XLP, commodity trusts like PSLV, broad index products).
 
     Layer 2 — name keyword scan:
       Catches any new ETF/fund/trust not in the blocklist by matching
@@ -282,6 +287,8 @@ def _is_etf(ticker: str, name: str) -> bool:
       (ETF, Fund, Trust, ETN…) in the full name string.
 
     Both checks are case-insensitive. Either one returning True = excluded.
+    
+    EXCEPTION: SPY and QQQ are NOT in the blocklist — they're allowed for 0DTE trading.
     """
     if ticker in _ETF_TICKER_BLOCKLIST:
         return True
@@ -364,7 +371,7 @@ def _score_ticker(p: Dict, rvol: float, tier: str, source_pass: int) -> int:
 def _process_raw(raw: Dict, source_pass: int) -> Optional[Dict]:
     """
     Full pipeline for a single raw EODHD row:
-      Gate 0: ETF exclusion
+      Gate 0: ETF exclusion (SPY/QQQ allowed)
       Gate 1: Dollar-volume
       Gate 2: RVOL tier (drop Tier D)
       Gate 3: In-play
@@ -374,7 +381,7 @@ def _process_raw(raw: Dict, source_pass: int) -> Optional[Dict]:
     if p is None:
         return None
 
-    # Gate 0: ETF / fund / trust exclusion
+    # Gate 0: ETF / fund / trust exclusion (SPY and QQQ pass through)
     if _is_etf(p["ticker"], p["name"]):
         return None
 
@@ -662,7 +669,7 @@ if __name__ == "__main__":
     print(f"  ⚡ Tier B (≥1.5x): {len(tier_b):>3}  →  {[t['ticker'] for t in tier_b[:8]]}")
     print(f"  📊 Tier C (≥1x):   {len(tier_c):>3}  →  {[t['ticker'] for t in tier_c[:8]]}")
 
-    print(f"\n🎯 Top 10 Watchlist (sector-capped, ETFs excluded):")
+    print(f"\n🎯 Top 10 Watchlist (SPY/QQQ allowed, other ETFs excluded):")
     for i, t in enumerate(get_dynamic_watchlist(max_tickers=10), 1):
         print(f"  {i:>2}. {t}")
 
