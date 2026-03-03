@@ -39,6 +39,30 @@ from utils import config
 from app.mtf.bos_fvg_engine import scan_bos_fvg, is_force_close_time
 from app.filters.early_session_disqualifier import should_skip_cfw6_or_early
 
+if False:  # type: ignore[truthy-function]
+    from signal_analytics import signal_tracker
+    from performance_monitor import performance_monitor
+    from performance_alerts import alert_manager
+
+def compute_confidence(grade: str, timeframe: str, ticker: str) -> float:
+    """
+    Local fallback for confidence computation when AI learning is disabled.
+    Returns a 0–1 float.
+    """
+    grade_map = {
+        "A+": 0.97,
+        "A": 0.94,
+        "A-": 0.91,
+        "B+": 0.88,
+        "B": 0.85,
+        "B-": 0.82,
+        "C+": 0.79,
+        "C": 0.76,
+        "C-": 0.73,
+        "reject": 0.70,
+    }
+    return grade_map.get(grade, 0.85)
+
 # ══════════════════════════════════════════════════════════════════════════════
 # PHASE 4 INTEGRATION - Signal Analytics & Performance Monitoring
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1148,7 +1172,7 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         print(f"[{ticker}] [OPTIONS] GEX data reused from Step 6.5 cache")
 
     # STEP 11 — CONFIDENCE
-    ticker_multiplier = learning_engine.get_ticker_confidence_multiplier(ticker)
+    ticker_multiplier = 1.0  # learning engine disabled / not wired yet
     mtf_boost = mtf_result.get('boost', 0.0)
     mode_decay = 0.95 if signal_type == "CFW6_INTRADAY" else 1.0
 
