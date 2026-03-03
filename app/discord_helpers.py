@@ -20,7 +20,8 @@ def send_options_signal_alert(
     grade: str = "A",
     options_data: Optional[Dict] = None,
     confirmation: Optional[str] = None,
-    candle_type: Optional[str] = None
+    candle_type: Optional[str] = None,
+    greeks_data: Optional[Dict] = None
 ):
     """Send enhanced Discord alert with CFW6 signal and options recommendation."""
     direction_emoji = "🐂" if direction == "bull" else "🐻"
@@ -53,6 +54,54 @@ def send_options_signal_alert(
         fields.append({
             "name": f"{conf_emoji} Confirmation",
             "value": f"**{confirmation}** — {candle_type or 'FVG retest'}",
+            "inline": False
+        })
+
+    # ── GREEKS METRICS (NEW) ────────────────────────────────────────────────
+    if greeks_data:
+        is_valid = greeks_data.get("is_valid", False)
+        reason = greeks_data.get("reason", "No data")
+        best_strike = greeks_data.get("best_strike")
+        
+        # Determine action emoji and recommendation
+        if is_valid and best_strike:
+            action_emoji = "✅"
+            option_type = "CALL" if direction == "bull" else "PUT"
+            action = f"**BUY {option_type}** @ ${best_strike}\n{reason}"
+        elif not is_valid:
+            action_emoji = "⚠️"
+            action = f"**WAIT** — {reason}\nConsider stock play or wait for better setup"
+        else:
+            action_emoji = "❌"
+            action = f"**SKIP** — {reason}\nNo tradeable options available"
+        
+        # Add Greeks quality metrics if available
+        greeks_details = greeks_data.get("details", {})
+        if greeks_details:
+            delta = greeks_details.get("delta", 0)
+            iv = greeks_details.get("iv", 0)
+            dte = greeks_details.get("dte", 0)
+            spread = greeks_details.get("spread_pct", 0)
+            liquidity = greeks_details.get("liquidity_ok", False)
+            
+            # Build quality indicators
+            delta_emoji = "✅" if abs(delta) >= 0.30 else "⚠️"
+            iv_emoji = "✅" if iv < 0.60 else "⚠️"
+            spread_emoji = "✅" if spread < 5 else ("⚠️" if spread < 8 else "❌")
+            liq_emoji = "✅" if liquidity else "❌"
+            
+            quality_str = (
+                f"Δ {delta:+.2f} {delta_emoji}  |  "
+                f"IV {iv*100:.0f}% {iv_emoji}  |  "
+                f"{dte}DTE\n"
+                f"Spread {spread:.1f}% {spread_emoji}  |  "
+                f"Liquidity {liq_emoji}"
+            )
+            action += f"\n\n**Greeks Quality:**\n{quality_str}"
+        
+        fields.append({
+            "name": f"{action_emoji} Greeks Analysis",
+            "value": action,
             "inline": False
         })
 
