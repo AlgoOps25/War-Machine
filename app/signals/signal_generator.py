@@ -31,6 +31,24 @@ from app.signals.breakout_detector import BreakoutDetector, format_signal_messag
 from app.data.data_manager import data_manager
 from app.discord_helpers import send_simple_message
 
+# ============================================================================
+# Dead Import Cleanup: Variables previously set by try/except import blocks
+# ============================================================================
+# These modules exist at:
+#   - app/analytics/performance_monitor.py
+#   - app/validation/validation.py
+#   - app/options/options_dte_selector.py
+# But are not used in this file, so flags are set to False
+
+ANALYTICS_ENABLED = False
+VALIDATOR_ENABLED = False
+VALIDATOR_TEST_MODE = False
+DTE_SELECTOR_ENABLED = False
+signal_tracker = None  # Referenced in conditional checks
+get_validator = None   # Referenced in conditional checks
+get_optimal_dte = None # Referenced in conditional checks
+dte_selector = None    # Referenced in conditional checks
+
 # Import Day 5 adaptive target discovery
 try:
     from app.analytics.target_discovery import get_target_discovery
