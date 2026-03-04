@@ -124,8 +124,7 @@ class UnusualOptionsDetector:
         
         # Log significant activity
         if is_unusual:
-            print(f"[UOA] {ticker} 🐋 UNUSUAL ACTIVITY DETECTED | \")
-            print(f\"      Overall: {overall_score:.1f}/10 | \"\n                  f\"Whale: {whale_score:.1f} | Flow: {flow_score:.1f} | \"\n                  f\"Sweep: {sweep_score:.1f} | Dark Pool: {dark_pool_score:.1f}")
+            print(f"[UOA] {ticker} 🐋 UNUSUAL ACTIVITY DETECTED | Overall: {overall_score:.1f}/10 | Whale: {whale_score:.1f} | Flow: {flow_score:.1f} | Sweep: {sweep_score:.1f} | Dark Pool: {dark_pool_score:.1f}")
             print(f"[UOA]   Confidence Boost: +{confidence_boost*100:.0f}%")
         
         return result
