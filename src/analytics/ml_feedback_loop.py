@@ -1,1 +1,183 @@
-"""\nML Feedback Loop for War Machine\nTrains model on signal outcomes and adjusts confidence scoring\n"""\n\nimport pandas as pd\nimport numpy as np\nfrom sklearn.ensemble import RandomForestClassifier\nfrom sklearn.preprocessing import LabelEncoder\nimport joblib\nimport logging\nfrom datetime import datetime\n\nclass MLFeedbackLoop:\n    def __init__(self, db_connection):\n        self.db = db_connection\n        self.model = None\n        self.label_encoders = {}\n        self.feature_importance = None\n        logging.info("[ML] Feedback loop initialized")\n    \n    def load_training_data(self, min_samples=20):\n        """\n        Load training data from database\n        Returns: (X, y) dataframes or None if insufficient data\n        """\n        try:\n            cursor = self.db.cursor()\n            cursor.execute("""\n                SELECT \n                    rvol, vix, score, time_of_day, confidence, regime,\n                    outcome, profit_r\n                FROM ml_training_data\n                WHERE outcome IS NOT NULL\n                ORDER BY created_at DESC\n            """)\n            \n            rows = cursor.fetchall()\n            \n            if len(rows) < min_samples:\n                logging.warning(f"[ML] Insufficient training data: {len(rows)} samples (need {min_samples})")\n                return None, None\n            \n            # Convert to DataFrame\n            df = pd.DataFrame(rows, columns=[\n                'rvol', 'vix', 'score', 'time_of_day', 'confidence', 'regime',\n                'outcome', 'profit_r'\n            ])\n            \n            # Separate features and targets\n            X = df[['rvol', 'vix', 'score', 'time_of_day', 'confidence', 'regime']]\n            y = df['outcome']\n            \n            logging.info(f"[ML] Loaded {len(df)} training samples | Win Rate: {y.mean()*100:.1f}%")\n            return X, y\n            \n        except Exception as e:\n            logging.error(f"[ML] Failed to load training data: {e}")\n            return None, None\n    \n    def train_model(self, X, y):\n        """\n        Train Random Forest model on signal outcomes\n        """\n        try:\n            # Encode categorical features\n            X_encoded = X.copy()\n            \n            for col in ['time_of_day', 'regime']:\n                if col not in self.label_encoders:\n                    self.label_encoders[col] = LabelEncoder()\n                    X_encoded[col] = self.label_encoders[col].fit_transform(X[col])\n                else:\n                    X_encoded[col] = self.label_encoders[col].transform(X[col])\n            \n            # Train Random Forest\n            self.model = RandomForestClassifier(\n                n_estimators=100,\n                max_depth=5,\n                min_samples_split=5,\n                random_state=42\n            )\n            \n            self.model.fit(X_encoded, y)\n            \n            # Calculate feature importance\n            self.feature_importance = dict(zip(\n                X.columns,\n                self.model.feature_importances_\n            ))\n            \n            # Log results\n            train_acc = self.model.score(X_encoded, y)\n            logging.info(f"[ML] ✅ Model trained | Accuracy: {train_acc*100:.1f}%")\n            logging.info(f"[ML] Top features: {sorted(self.feature_importance.items(), key=lambda x: x[1], reverse=True)[:3]}")\n            \n            return True\n            \n        except Exception as e:\n            logging.error(f"[ML] Training failed: {e}")\n            return False\n    \n    def predict_signal_quality(self, signal_features):\n        """\n        Predict win probability for a new signal\n        Returns: (win_probability, confidence_adjustment)\n        """\n        if self.model is None:\n            return 0.5, 1.0  # Default: 50% win rate, no adjustment\n        \n        try:\n            # Prepare features\n            X = pd.DataFrame([signal_features])\n            X_encoded = X.copy()\n            \n            for col in ['time_of_day', 'regime']:\n                if col in self.label_encoders:\n                    X_encoded[col] = self.label_encoders[col].transform(X[col])\n            \n            # Predict\n            win_prob = self.model.predict_proba(X_encoded)[0][1]\n            \n            # Confidence adjustment (boost/penalize based on ML prediction)\n            if win_prob >= 0.7:\n                confidence_adj = 1.10  # +10% confidence boost\n            elif win_prob >= 0.6:\n                confidence_adj = 1.05  # +5% confidence boost\n            elif win_prob <= 0.4:\n                confidence_adj = 0.85  # -15% confidence penalty\n            elif win_prob <= 0.5:\n                confidence_adj = 0.95  # -5% confidence penalty\n            else:\n                confidence_adj = 1.0  # No adjustment\n            \n            logging.info(f"[ML] Signal quality: {win_prob*100:.1f}% win prob | Confidence adj: {confidence_adj:.2f}x")\n            return win_prob, confidence_adj\n            \n        except Exception as e:\n            logging.error(f"[ML] Prediction failed: {e}")\n            return 0.5, 1.0\n    \n    def save_model(self, filepath='models/war_machine_ml.pkl'):\n        """Save trained model to disk"""\n        try:\n            joblib.dump({\n                'model': self.model,\n                'label_encoders': self.label_encoders,\n                'feature_importance': self.feature_importance\n            }, filepath)\n            logging.info(f"[ML] ✅ Model saved to {filepath}")\n        except Exception as e:\n            logging.error(f"[ML] Failed to save model: {e}")\n    \n    def load_model(self, filepath='models/war_machine_ml.pkl'):\n        """Load trained model from disk"""\n        try:\n            data = joblib.load(filepath)\n            self.model = data['model']\n            self.label_encoders = data['label_encoders']\n            self.feature_importance = data['feature_importance']\n            logging.info(f"[ML] ✅ Model loaded from {filepath}")\n            return True\n        except Exception as e:\n            logging.warning(f"[ML] No saved model found: {e}")\n            return False\n    \n    def retrain_daily(self):\n        """\n        Daily retraining routine (call at market close)\n        """\n        logging.info("[ML] 🔄 Starting daily retrain...")\n        \n        X, y = self.load_training_data()\n        if X is None:\n            logging.warning("[ML] Skipping retrain - insufficient data")\n            return False\n        \n        success = self.train_model(X, y)\n        if success:\n            self.save_model()\n            logging.info("[ML] ✅ Daily retrain complete")\n        \n        return success\n
+"""
+ML Feedback Loop for War Machine
+Trains model on signal outcomes and adjusts confidence scoring
+"""
+
+import pandas as pd
+import numpy as np
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.preprocessing import LabelEncoder
+import joblib
+import logging
+from datetime import datetime
+
+class MLFeedbackLoop:
+    def __init__(self, db_connection):
+        self.db = db_connection
+        self.model = None
+        self.label_encoders = {}
+        self.feature_importance = None
+        logging.info("[ML] Feedback loop initialized")
+    
+    def load_training_data(self, min_samples=20):
+        """
+        Load training data from database
+        Returns: (X, y) dataframes or None if insufficient data
+        """
+        try:
+            cursor = self.db.cursor()
+            cursor.execute("""
+                SELECT 
+                    rvol, vix, score, time_of_day, confidence, regime,
+                    outcome, profit_r
+                FROM ml_training_data
+                WHERE outcome IS NOT NULL
+                ORDER BY created_at DESC
+            """)
+            
+            rows = cursor.fetchall()
+            
+            if len(rows) < min_samples:
+                logging.warning(f"[ML] Insufficient training data: {len(rows)} samples (need {min_samples})")
+                return None, None
+            
+            # Convert to DataFrame
+            df = pd.DataFrame(rows, columns=[
+                'rvol', 'vix', 'score', 'time_of_day', 'confidence', 'regime',
+                'outcome', 'profit_r'
+            ])
+            
+            # Separate features and targets
+            X = df[['rvol', 'vix', 'score', 'time_of_day', 'confidence', 'regime']]
+            y = df['outcome']
+            
+            logging.info(f"[ML] Loaded {len(df)} training samples | Win Rate: {y.mean()*100:.1f}%")
+            return X, y
+            
+        except Exception as e:
+            logging.error(f"[ML] Failed to load training data: {e}")
+            return None, None
+    
+    def train_model(self, X, y):
+        """
+        Train Random Forest model on signal outcomes
+        """
+        try:
+            # Encode categorical features
+            X_encoded = X.copy()
+            
+            for col in ['time_of_day', 'regime']:
+                if col not in self.label_encoders:
+                    self.label_encoders[col] = LabelEncoder()
+                    X_encoded[col] = self.label_encoders[col].fit_transform(X[col])
+                else:
+                    X_encoded[col] = self.label_encoders[col].transform(X[col])
+            
+            # Train Random Forest
+            self.model = RandomForestClassifier(
+                n_estimators=100,
+                max_depth=5,
+                min_samples_split=5,
+                random_state=42
+            )
+            
+            self.model.fit(X_encoded, y)
+            
+            # Calculate feature importance
+            self.feature_importance = dict(zip(
+                X.columns,
+                self.model.feature_importances_
+            ))
+            
+            # Log results
+            train_acc = self.model.score(X_encoded, y)
+            logging.info(f"[ML] ✅ Model trained | Accuracy: {train_acc*100:.1f}%")
+            logging.info(f"[ML] Top features: {sorted(self.feature_importance.items(), key=lambda x: x[1], reverse=True)[:3]}")
+            
+            return True
+            
+        except Exception as e:
+            logging.error(f"[ML] Training failed: {e}")
+            return False
+    
+    def predict_signal_quality(self, signal_features):
+        """
+        Predict win probability for a new signal
+        Returns: (win_probability, confidence_adjustment)
+        """
+        if self.model is None:
+            return 0.5, 1.0  # Default: 50% win rate, no adjustment
+        
+        try:
+            # Prepare features
+            X = pd.DataFrame([signal_features])
+            X_encoded = X.copy()
+            
+            for col in ['time_of_day', 'regime']:
+                if col in self.label_encoders:
+                    X_encoded[col] = self.label_encoders[col].transform(X[col])
+            
+            # Predict
+            win_prob = self.model.predict_proba(X_encoded)[0][1]
+            
+            # Confidence adjustment (boost/penalize based on ML prediction)
+            if win_prob >= 0.7:
+                confidence_adj = 1.10  # +10% confidence boost
+            elif win_prob >= 0.6:
+                confidence_adj = 1.05  # +5% confidence boost
+            elif win_prob <= 0.4:
+                confidence_adj = 0.85  # -15% confidence penalty
+            elif win_prob <= 0.5:
+                confidence_adj = 0.95  # -5% confidence penalty
+            else:
+                confidence_adj = 1.0  # No adjustment
+            
+            logging.info(f"[ML] Signal quality: {win_prob*100:.1f}% win prob | Confidence adj: {confidence_adj:.2f}x")
+            return win_prob, confidence_adj
+            
+        except Exception as e:
+            logging.error(f"[ML] Prediction failed: {e}")
+            return 0.5, 1.0
+    
+    def save_model(self, filepath='models/war_machine_ml.pkl'):
+        """Save trained model to disk"""
+        try:
+            joblib.dump({
+                'model': self.model,
+                'label_encoders': self.label_encoders,
+                'feature_importance': self.feature_importance
+            }, filepath)
+            logging.info(f"[ML] ✅ Model saved to {filepath}")
+        except Exception as e:
+            logging.error(f"[ML] Failed to save model: {e}")
+    
+    def load_model(self, filepath='models/war_machine_ml.pkl'):
+        """Load trained model from disk"""
+        try:
+            data = joblib.load(filepath)
+            self.model = data['model']
+            self.label_encoders = data['label_encoders']
+            self.feature_importance = data['feature_importance']
+            logging.info(f"[ML] ✅ Model loaded from {filepath}")
+            return True
+        except Exception as e:
+            logging.warning(f"[ML] No saved model found: {e}")
+            return False
+    
+    def retrain_daily(self):
+        """
+        Daily retraining routine (call at market close)
+        """
+        logging.info("[ML] 🔄 Starting daily retrain...")
+        
+        X, y = self.load_training_data()
+        if X is None:
+            logging.warning("[ML] Skipping retrain - insufficient data")
+            return False
+        
+        success = self.train_model(X, y)
+        if success:
+            self.save_model()
+            logging.info("[ML] ✅ Daily retrain complete")
+        
+        return success
