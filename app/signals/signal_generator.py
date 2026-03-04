@@ -13,6 +13,7 @@ Responsibilities:
   - [Phase 1.9] Data-driven DTE selection with EODHD options intelligence
   - [Day 5] Adaptive target discovery using 90-day cached data
   - [TASK 4] ML-based signal scoring with confidence prediction
+  - [TASK 5] Multi-timeframe validation (1m/5m/15m/30m convergence)
   - [TASK 6] Options flow integration with whale detection
 """
 from typing import Dict, List, Optional
@@ -74,6 +75,15 @@ try:
 except ImportError as e:
     ML_BOOSTER_ENABLED = False
     print(f"[SIGNALS] ⚠️  ML Confidence Booster not available ({e})")
+
+# TASK 5: Import Multi-Timeframe Validator
+try:
+    from app.signals.mtf_validator import mtf_validator
+    MTF_ENABLED = True
+    print("[SIGNALS] ✅ MTF Validator enabled (Task 5 - Multi-timeframe validation)")
+except ImportError as e:
+    MTF_ENABLED = False
+    print(f"[SIGNALS] ⚠️  MTF Validator not available ({e})")
 
 # TASK 6: Import UOA Whale Detector
 try:
@@ -260,6 +270,7 @@ class SignalGenerator:
         Phase 1.9: Adds data-driven DTE selection for options recommendations.
         Day 5: Adaptive profit targets using 90-day cached historical data.
         TASK 4: ML-based confidence adjustments.
+        TASK 5: Multi-timeframe validation.
         TASK 6: UOA whale detection and flow correlation.
         
         Args:
@@ -442,6 +453,37 @@ class SignalGenerator:
                 print(f"[ML-BOOST] {ticker} error: {e}")
                 # Keep original confidence on error
         
+        # === TASK 5: MULTI-TIMEFRAME VALIDATION ===
+        if MTF_ENABLED and mtf_validator:
+            try:
+                mtf_result = mtf_validator.validate_signal(
+                    ticker=ticker,
+                    direction=signal['signal'],
+                    entry_price=signal['entry']
+                )
+                
+                # Store MTF data in signal
+                signal['mtf'] = mtf_result
+                
+                # Reject signal if MTF fails (weak timeframe alignment)
+                if not mtf_result['passes']:
+                    print(f"[MTF] {ticker} FILTERED - weak multi-timeframe alignment (score: {mtf_result['overall_score']:.1f}/10)")
+                    return None
+                
+                # Apply confidence boost if MTF passes
+                if mtf_result['confidence_boost'] > 0:
+                    original_conf = signal['confidence']
+                    boosted_conf = min(100, original_conf + (mtf_result['confidence_boost'] * 100))
+                    signal['confidence'] = round(boosted_conf, 1)
+                    
+                    print(f"[MTF-BOOST] {ticker} 🔄 | "
+                          f"Conf: {original_conf:.0f}% → {boosted_conf:.0f}% "
+                          f"(+{mtf_result['confidence_boost']*100:.1f}%) | "
+                          f"Score: {mtf_result['overall_score']:.1f}/10")
+            
+            except Exception as e:
+                print(f"[MTF] {ticker} error: {e}")
+        
         # === TASK 6: UOA WHALE DETECTION ===
         if UOA_ENABLED and uoa_detector:
             try:
@@ -539,6 +581,7 @@ class SignalGenerator:
         Phase 1.9: Now includes options DTE recommendation in Discord alert.
         Day 5: Includes adaptive target method and confidence in alerts.
         TASK 4: Shows ML confidence adjustments.
+        TASK 5: Shows MTF validation scores.
         TASK 6: Shows UOA whale activity.
         
         Args:
@@ -583,6 +626,18 @@ class SignalGenerator:
             print(f"  Original: {ml['original']:.1f}%")
             print(f"  Adjusted: {ml['adjusted']:.1f}%")
             print(f"  Delta: {ml['delta']:+.1f}%")
+        
+        # TASK 5: Show MTF validation
+        if 'mtf' in signal:
+            mtf = signal['mtf']
+            print(f"\nMulti-Timeframe Validation (Task 5):")
+            print(f"  Passes: {mtf['passes']}")
+            print(f"  Overall Score: {mtf['overall_score']}/10")
+            print(f"  TF Scores: 30m:{mtf['tf_scores']['30m']} 15m:{mtf['tf_scores']['15m']} 5m:{mtf['tf_scores']['5m']} 1m:{mtf['tf_scores']['1m']}")
+            print(f"  Confidence Boost: +{mtf['confidence_boost']*100:.0f}%")
+            if mtf['divergences']:
+                print(f"  Divergences: {', '.join(mtf['divergences'])}")
+            print(f"  Summary: {mtf['summary']}")
         
         # TASK 6: Show UOA whale data
         if 'uoa' in signal:
@@ -677,6 +732,11 @@ class SignalGenerator:
                 emoji = "📈" if ml['delta'] > 0 else "📉"
                 msg += f" ({emoji} ML: {ml['delta']:+.1f}%)"
         
+        # Show MTF validation if available
+        if 'mtf' in signal and signal['mtf']['confidence_boost'] > 0:
+            mtf = signal['mtf']
+            msg += f" (🔄 MTF: +{mtf['confidence_boost']*100:.0f}%)"
+        
         # Show UOA whale boost if available
         if 'uoa' in signal and signal['uoa']['is_unusual']:
             uoa = signal['uoa']
@@ -684,7 +744,14 @@ class SignalGenerator:
         
         msg += "\n"
         msg += f"   Pattern: {signal.get('pattern', 'BOS/FVG Breakout')}\n"
-        msg += f"   Timeframe: Multi-TF Convergence\n\n"
+        msg += f"   Timeframe: Multi-TF Convergence\n"
+        
+        # Add MTF scores if available
+        if 'mtf' in signal:
+            mtf = signal['mtf']
+            msg += f"   MTF Score: {mtf['overall_score']}/10 (30m:{mtf['tf_scores']['30m']} 15m:{mtf['tf_scores']['15m']} 5m:{mtf['tf_scores']['5m']} 1m:{mtf['tf_scores']['1m']})\n"
+        
+        msg += "\n"
         
         # === OPTIONS RECOMMENDATION (DTE) ===
         if 'options_dte' in signal:
