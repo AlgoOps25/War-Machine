@@ -1,4 +1,5 @@
-﻿"""
+# Original content preserved - adding v2 imports at top
+"""
 Professional Pre-Market Scanner - UNIFIED MODULE
 Consolidated from premarket_scanner_pro.py + premarket_scanner_integration.py
 
@@ -31,6 +32,12 @@ Integration Layer:
   - Runs professional 3-tier scoring
   - Compatible with watchlist_funnel.py infrastructure
   - 3-minute caching for efficiency
+
+TASK 12 ENHANCEMENTS (v2):
+  - Gap quality scoring via gap_analyzer
+  - News catalyst detection via news_catalyst
+  - Sector rotation tracking via sector_rotation
+  - Composite scoring: volume (60%) + gap (25%) + catalyst (15%)
 """
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Tuple
@@ -47,10 +54,21 @@ try:
 except ImportError:
     WS_AVAILABLE = False
 
+# TASK 12: Import v2 modules
+try:
+    from app.screening.gap_analyzer import analyze_gap
+    from app.screening.news_catalyst import detect_catalyst
+    from app.screening.sector_rotation import get_hot_sectors, is_hot_sector_stock
+    V2_ENABLED = True
+    print("[PREMARKET] ✅ v2 modules loaded (gap analyzer, news catalyst, sector rotation)")
+except ImportError as e:
+    V2_ENABLED = False
+    print(f"[PREMARKET] ⚠️  v2 modules not available: {e}")
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # CACHING LAYER
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═══════════════════════════════════════════════════════════════════════════════
 
 class ScannerCache:
     """Caches professional scan results and fundamental data."""
@@ -109,9 +127,9 @@ class ScannerCache:
 _scanner_cache = ScannerCache(ttl_seconds=180)
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═══════════════════════════════════════════════════════════════════════════════
 # TIER 1: VOLUME SPIKE DETECTION
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def calculate_relative_volume(
     current_volume: int,
@@ -122,10 +140,10 @@ def calculate_relative_volume(
     Calculate RVOL (Relative Volume) - Professional standard metric.
 
     Formula: (Current Volume / Expected Volume at this time)
-    Expected Volume = Avg Daily Volume Ã— Time Elapsed %
+    Expected Volume = Avg Daily Volume × Time Elapsed %
 
     Example: If 9:00 AM (25% of trading day), and stock normally does 1M volume/day:
-      Expected volume = 1M Ã— 0.25 = 250K
+      Expected volume = 1M × 0.25 = 250K
       If current volume = 500K, RVOL = 500K / 250K = 2.0x
 
     Professional thresholds:
@@ -207,9 +225,9 @@ def score_volume_quality(
     return round(total_score, 1), metrics
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═══════════════════════════════════════════════════════════════════════════════
 # FUNDAMENTAL DATA FETCHING (ATR, MARKET CAP, FLOAT)
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def fetch_fundamental_data(ticker: str) -> Dict:
     """
@@ -220,6 +238,7 @@ def fetch_fundamental_data(ticker: str) -> Dict:
       - Market Cap
       - Float (shares outstanding)
       - Average Daily Volume (20-day)
+      - Previous close (for gap calculation)
 
     Source: EODHD Fundamentals API
     Cached for entire session (slow-changing data)
@@ -246,6 +265,9 @@ def fetch_fundamental_data(ticker: str) -> Dict:
         float_shares = shares_stats.get('SharesFloat', 0) or shares_stats.get('SharesOutstanding', 0) or 0
         atr          = technicals.get('AverageTrueRange14', 0) or 0
         avg_volume   = highlights.get('AverageDailyVolume', 0) or 0
+        
+        # Get previous close for gap calculation
+        prev_close = technicals.get('previousClose', 0) or 0
 
         # Fallback: calculate from recent intraday bars if fundamentals API has no data
         if atr == 0:
@@ -259,6 +281,7 @@ def fetch_fundamental_data(ticker: str) -> Dict:
             'float_shares':    float_shares,
             'atr':             atr,
             'avg_daily_volume': avg_volume,
+            'prev_close':      prev_close,
             'timestamp':       datetime.now().isoformat()
         }
 
@@ -278,6 +301,7 @@ def _get_default_fundamentals(ticker: str) -> Dict:
         'float_shares':    0,
         'atr':             0,
         'avg_daily_volume': 0,
+        'prev_close':      0,
         'timestamp':       datetime.now().isoformat()
     }
 
@@ -335,15 +359,17 @@ def _get_average_volume_from_bars(ticker: str, periods: int = 20) -> int:
         return 0
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═══════════════════════════════════════════════════════════════════════════════
 # PUBLIC API
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def scan_ticker(ticker: str) -> Optional[Dict]:
     """
-    Scan a single ticker with professional 3-tier scoring.
+    Scan a single ticker with professional 3-tier scoring + v2 enhancements.
     Returns scan result or None if ticker doesn't qualify.
     Compatible with watchlist_funnel.py.
+    
+    TASK 12: Now includes gap quality, news catalyst, and sector rotation.
     """
     cached = _scanner_cache.get_scan(ticker)
     if cached:
@@ -364,10 +390,66 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
     else:
         return None
 
+    # Tier 1: Volume score (60% weight)
     volume_score, volume_metrics = score_volume_quality(
         volume,
         fundamentals['avg_daily_volume'],
         price
+    )
+    
+    # TASK 12: Tier 2 - Gap quality (25% weight)
+    gap_score = 0
+    gap_data = None
+    if V2_ENABLED and fundamentals['prev_close'] > 0:
+        try:
+            # Check for news catalyst first
+            catalyst = detect_catalyst(ticker)
+            has_earnings = catalyst and catalyst.catalyst_type == 'earnings'
+            has_news = catalyst is not None
+            
+            gap_result = analyze_gap(
+                ticker,
+                fundamentals['prev_close'],
+                price,
+                fundamentals['atr'],
+                has_earnings,
+                has_news
+            )
+            gap_score = gap_result.quality_score
+            gap_data = gap_result.to_dict()
+        except Exception as e:
+            print(f"[PREMARKET] Error analyzing gap for {ticker}: {e}")
+    
+    # TASK 12: Tier 3 - News catalyst (15% weight)
+    catalyst_score = 0
+    catalyst_data = None
+    if V2_ENABLED:
+        try:
+            catalyst = detect_catalyst(ticker)
+            if catalyst:
+                catalyst_score = catalyst.weight * 4  # Scale 0-100
+                catalyst_data = catalyst.to_dict()
+        except Exception as e:
+            print(f"[PREMARKET] Error detecting catalyst for {ticker}: {e}")
+    
+    # TASK 12: Sector rotation bonus (+15 pts if hot sector)
+    sector_bonus = 0
+    sector_data = None
+    if V2_ENABLED:
+        try:
+            is_hot, sector_name = is_hot_sector_stock(ticker)
+            if is_hot:
+                sector_bonus = 15
+                sector_data = {'sector': sector_name, 'is_hot': True}
+        except Exception as e:
+            print(f"[PREMARKET] Error checking sector for {ticker}: {e}")
+    
+    # Composite score (weighted)
+    composite_score = (
+        volume_score * 0.60 +  # 60% volume
+        gap_score * 0.25 +     # 25% gap quality
+        catalyst_score * 0.15 + # 15% news catalyst
+        sector_bonus           # Bonus for hot sector
     )
 
     result = {
@@ -375,13 +457,19 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
         'price':           price,
         'volume':          volume,
         'volume_score':    volume_score,
-        'composite_score': volume_score,  # Alias for watchlist_funnel.py compatibility
+        'gap_score':       gap_score,
+        'catalyst_score':  catalyst_score,
+        'sector_bonus':    sector_bonus,
+        'composite_score': round(composite_score, 1),
         'rvol':            volume_metrics['rvol'],
         'dollar_volume':   volume_metrics['dollar_volume'],
         'atr':             fundamentals['atr'],
         'market_cap':      fundamentals['market_cap'],
         'float':           fundamentals['float_shares'],
         'avg_daily_volume': fundamentals['avg_daily_volume'],
+        'gap_data':        gap_data,
+        'catalyst_data':   catalyst_data,
+        'sector_data':     sector_data,
         'timestamp':       datetime.now()
     }
 
@@ -399,13 +487,13 @@ def scan_watchlist(tickers: List[str], min_score: float = 60.0) -> List[Dict]:
     for ticker in tickers:
         try:
             scan_result = scan_ticker(ticker)
-            if scan_result and scan_result['volume_score'] >= min_score:
+            if scan_result and scan_result['composite_score'] >= min_score:
                 results.append(scan_result)
         except Exception as e:
             print(f"[PREMARKET] Error scanning {ticker}: {e}")
             continue
 
-    results.sort(key=lambda x: x['volume_score'], reverse=True)
+    results.sort(key=lambda x: x['composite_score'], reverse=True)
     return results
 
 
@@ -420,9 +508,9 @@ def clear_cache():
     print("[PREMARKET] All caches cleared")
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═══════════════════════════════════════════════════════════════════════════════
 # COMPATIBILITY STUBS (for watchlist_funnel.py)
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def run_momentum_screener(
     tickers: List[str],
@@ -469,6 +557,8 @@ def print_momentum_summary(scored_tickers: List[Dict], top_n: int = 10):
     Print formatted summary of top N movers.
     Compatibility function for watchlist_funnel.py.
     
+    TASK 12: Enhanced with gap/catalyst/sector info.
+    
     Args:
         scored_tickers: List of scored ticker dicts
         top_n: Number of top tickers to display
@@ -477,10 +567,23 @@ def print_momentum_summary(scored_tickers: List[Dict], top_n: int = 10):
         print("[PREMARKET] No tickers to display")
         return
     
+    # Print hot sectors if available
+    if V2_ENABLED:
+        try:
+            hot_sectors = get_hot_sectors()
+            if hot_sectors:
+                print("\n" + "="*80)
+                print("🌡️  HOT SECTORS")
+                print("="*80)
+                for sector_name, momentum_pct in hot_sectors:
+                    print(f"  {sector_name}: {momentum_pct:+.1f}%")
+        except Exception as e:
+            print(f"[PREMARKET] Error fetching hot sectors: {e}")
+    
     print(f"\n{'='*80}")
     print(f"TOP {min(top_n, len(scored_tickers))} MOMENTUM MOVERS")
     print(f"{'='*80}")
-    print(f"{'Rank':<6} {'Ticker':<8} {'Score':<8} {'RVOL':<8} {'Price':<10} {'Volume':>12}")
+    print(f"{'Rank':<6} {'Ticker':<8} {'Score':<8} {'RVOL':<8} {'Gap':<8} {'Catalyst':<12} {'Price':<10}")
     print(f"{'-'*80}")
     
     for i, ticker_data in enumerate(scored_tickers[:top_n], 1):
@@ -489,12 +592,18 @@ def print_momentum_summary(scored_tickers: List[Dict], top_n: int = 10):
         score = ticker_data.get('composite_score', ticker_data.get('volume_score', 0))
         rvol = ticker_data.get('rvol', 0)
         price = ticker_data.get('price', 0)
-        volume = ticker_data.get('volume', 0)
         
-        print(f"{rank:<6} {ticker:<8} {score:<8.1f} {rvol:<8.2f} ${price:<9.2f} {volume:>12,}")
+        # Gap info
+        gap_data = ticker_data.get('gap_data', {})
+        gap_str = f"{gap_data.get('size_pct', 0):+.1f}%" if gap_data else "N/A"
+        
+        # Catalyst info
+        catalyst_data = ticker_data.get('catalyst_data', {})
+        if catalyst_data:
+            catalyst_str = catalyst_data.get('type', 'N/A')[:10]
+        else:
+            catalyst_str = "-"
+        
+        print(f"{rank:<6} {ticker:<8} {score:<8.1f} {rvol:<8.2f} {gap_str:<8} {catalyst_str:<12} ${price:<9.2f}")
     
     print(f"{'='*80}\n")
-
-
-
-
