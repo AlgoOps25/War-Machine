@@ -1,4 +1,4 @@
-﻿"""
+"""
 Signal Generator - Integrate Breakout Detector with Scanner
 
 Responsibilities:
@@ -12,11 +12,14 @@ Responsibilities:
   - [FIX] Cooldown only triggers AFTER validation passes (Issue #3)
   - [Phase 1.9] Data-driven DTE selection with EODHD options intelligence
   - [Day 5] Adaptive target discovery using 90-day cached data
+  - [TASK 4] ML-based signal scoring with confidence prediction
+  - [TASK 6] Options flow integration with whale detection
 """
 from typing import Dict, List, Optional
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import json
+import numpy as np
 
 from app.signals.breakout_detector import BreakoutDetector, format_signal_message
 from app.data.data_manager import data_manager
@@ -62,6 +65,24 @@ except ImportError as e:
     TARGET_DISCOVERY_ENABLED = False
     target_discovery = None
     print(f"[SIGNALS] ⚠️  target_discovery not available ({e}) - using fixed R-multiples")
+
+# TASK 4: Import ML Confidence Booster
+try:
+    from app.ml.ml_confidence_boost import MLConfidenceBooster
+    ML_BOOSTER_ENABLED = True
+    print("[SIGNALS] ✅ ML Confidence Booster enabled (Task 4 - ML signal scoring)")
+except ImportError as e:
+    ML_BOOSTER_ENABLED = False
+    print(f"[SIGNALS] ⚠️  ML Confidence Booster not available ({e})")
+
+# TASK 6: Import UOA Whale Detector
+try:
+    from app.data.unusual_options import uoa_detector
+    UOA_ENABLED = True
+    print("[SIGNALS] ✅ UOA Whale Detection enabled (Task 6 - Options flow integration)")
+except ImportError as e:
+    UOA_ENABLED = False
+    print(f"[SIGNALS] ⚠️  UOA not available ({e})")
 
 ET = ZoneInfo("America/New_York")
 
@@ -129,6 +150,17 @@ class SignalGenerator:
                 print(f"[SIGNALS] ⚠️  Validator initialization error: {e}")
                 self.validator = None
         
+        # TASK 4: Initialize ML Booster
+        self.ml_booster = None
+        if ML_BOOSTER_ENABLED:
+            try:
+                self.ml_booster = MLConfidenceBooster()
+                status = "trained" if self.ml_booster.is_trained else "untrained"
+                print(f"[SIGNALS] ML Booster loaded: {status}")
+            except Exception as e:
+                print(f"[SIGNALS] ML Booster initialization error: {e}")
+                self.ml_booster = None
+        
         # Validation statistics
         self.validation_stats = {
             'total_signals': 0,
@@ -147,6 +179,78 @@ class SignalGenerator:
         
         print("[SIGNALS] ✅ Cooldown only triggers after validation passes (Issue #3 fix)")
     
+    def _extract_ml_features(self, ticker: str, signal: Dict, latest_bar: Dict) -> Dict[str, float]:
+        """
+        Extract ML features from signal data for confidence prediction (TASK 4).
+        
+        Args:
+            ticker: Stock ticker
+            signal: Signal dict with entry/stop/targets
+            latest_bar: Latest price bar
+        
+        Returns:
+            Dict of feature_name -> value (22 features)
+        """
+        features = {}
+        now_et = datetime.now(ET)
+        
+        # Time features
+        features['hour_of_day'] = now_et.hour
+        features['day_of_week'] = now_et.weekday()
+        features['time_since_open_min'] = signal.get('time_since_open_min', 0)
+        
+        # Gap features
+        gap_pct = signal.get('gap_pct', 0.0)
+        features['gap_pct'] = gap_pct
+        features['gap_abs'] = abs(gap_pct)
+        features['gap_direction'] = 1 if gap_pct > 0 else 0
+        
+        # Volume features
+        volume = latest_bar.get('volume', signal.get('volume', 0))
+        features['entry_volume'] = volume
+        features['volume_surge_ratio'] = signal.get('volume_surge', 1.0)
+        features['or_volume'] = signal.get('or_volume', 0)
+        features['volume_log'] = np.log1p(volume)
+        
+        # Price vs key levels
+        features['price_vs_pdh'] = signal.get('price_vs_pdh', 0.0)
+        features['price_vs_or_high'] = signal.get('price_vs_or_high', 0.0)
+        
+        # PDH/PDL distance
+        entry_price = signal['entry']
+        pdh = signal.get('pdh', 0)
+        pdl = signal.get('pdl', 0)
+        
+        if pdh and pdl and entry_price:
+            features['pdh_distance_pct'] = (entry_price - pdh) / pdh * 100
+            features['pdl_distance_pct'] = (entry_price - pdl) / pdl * 100
+            features['pd_range_pct'] = (pdh - pdl) / pdl * 100
+        else:
+            features['pdh_distance_pct'] = 0.0
+            features['pdl_distance_pct'] = 0.0
+            features['pd_range_pct'] = 0.0
+        
+        # OR breakout
+        or_high = signal.get('or_high', 0)
+        or_low = signal.get('or_low', 0)
+        
+        if or_high and or_low and entry_price:
+            features['or_breakout_size_pct'] = (entry_price - or_high) / or_high * 100
+            features['or_range_pct'] = (or_high - or_low) / or_low * 100
+        else:
+            features['or_breakout_size_pct'] = 0.0
+            features['or_range_pct'] = 0.0
+        
+        # VIX
+        features['vix_level'] = signal.get('vix', 15.0)
+        
+        # Signal type one-hot
+        signal_type = signal.get('type', 'unknown')
+        for sig_type in ['gap_breakout', 'volume_surge', 'momentum', 'reversal']:
+            features[f'signal_{sig_type}'] = 1 if sig_type in signal_type.lower() else 0
+        
+        return features
+    
     def check_ticker(self, ticker: str, use_5m: bool = True) -> Optional[Dict]:
         """
         Check if ticker has a breakout signal.
@@ -155,6 +259,8 @@ class SignalGenerator:
         Issue #3 Fix: Cooldown check moved AFTER validation - only validated signals trigger cooldown.
         Phase 1.9: Adds data-driven DTE selection for options recommendations.
         Day 5: Adaptive profit targets using 90-day cached historical data.
+        TASK 4: ML-based confidence adjustments.
+        TASK 6: UOA whale detection and flow correlation.
         
         Args:
             ticker: Stock ticker to check
@@ -225,7 +331,7 @@ class SignalGenerator:
                 # Fallback: Keep detector's original targets
                 pass
         
-        # === MULTI-INDICATOR VALIDATION (TEST MODE) ===
+        # === MULTI-INDICATOR VALIDATION ===
         if self.validator and bars:
             try:
                 latest_bar = bars[-1]
@@ -302,6 +408,63 @@ class SignalGenerator:
         self.recent_signals[ticker] = datetime.now(ET)
         print(f"[SIGNALS] {ticker} cooldown started ({self.cooldown_minutes}m)")
         
+        # === TASK 4: ML CONFIDENCE ADJUSTMENT ===
+        if ML_BOOSTER_ENABLED and self.ml_booster and self.ml_booster.is_trained:
+            try:
+                # Extract features
+                latest_bar = bars[-1] if bars else {}
+                ml_features = self._extract_ml_features(ticker, signal, latest_bar)
+                
+                # Get ML confidence adjustment (±15%)
+                adjustment = self.ml_booster.predict_confidence_adjustment(ml_features)
+                
+                # Apply adjustment (clamp to 0-100)
+                original_conf = signal['confidence']
+                adjusted_conf = max(0, min(100, original_conf + (adjustment * 100)))
+                signal['confidence'] = round(adjusted_conf, 1)
+                
+                # Store ML metadata
+                signal['ml_adjustment'] = {
+                    'original': original_conf,
+                    'adjusted': adjusted_conf,
+                    'delta': adjusted_conf - original_conf,
+                    'model_confidence': adjustment
+                }
+                
+                # Log significant adjustments
+                if abs(adjustment * 100) > 1.0:
+                    emoji = "📈" if adjustment > 0 else "📉"
+                    print(f"[ML-BOOST] {ticker} {emoji} | "
+                          f"Conf: {original_conf:.0f}% → {adjusted_conf:.0f}% "
+                          f"({adjustment*100:+.1f}%)")
+            
+            except Exception as e:
+                print(f"[ML-BOOST] {ticker} error: {e}")
+                # Keep original confidence on error
+        
+        # === TASK 6: UOA WHALE DETECTION ===
+        if UOA_ENABLED and uoa_detector:
+            try:
+                direction = 'CALL' if signal['signal'] == 'BUY' else 'PUT'
+                whale_data = uoa_detector.check_whale_activity(ticker, direction)
+                
+                # Store UOA data in signal
+                signal['uoa'] = whale_data
+                
+                # Apply confidence boost if whale activity detected
+                if whale_data['is_unusual'] and whale_data['confidence_boost'] > 0:
+                    original_conf = signal['confidence']
+                    boosted_conf = min(100, original_conf + (whale_data['confidence_boost'] * 100))
+                    signal['confidence'] = round(boosted_conf, 1)
+                    
+                    print(f"[UOA-BOOST] {ticker} 🐋 | "
+                          f"Conf: {original_conf:.0f}% → {boosted_conf:.0f}% "
+                          f"(+{whale_data['confidence_boost']*100:.1f}%) | "
+                          f"Score: {whale_data['overall_score']:.1f}/10")
+            
+            except Exception as e:
+                print(f"[UOA] {ticker} error: {e}")
+        
         # === Phase 1.9: DATA-DRIVEN DTE SELECTION ===
         if DTE_SELECTOR_ENABLED and dte_selector:
             try:
@@ -375,6 +538,8 @@ class SignalGenerator:
         
         Phase 1.9: Now includes options DTE recommendation in Discord alert.
         Day 5: Includes adaptive target method and confidence in alerts.
+        TASK 4: Shows ML confidence adjustments.
+        TASK 6: Shows UOA whale activity.
         
         Args:
             signal: Signal dict from detector
@@ -411,6 +576,25 @@ class SignalGenerator:
             if val['checks_failed']:
                 print(f"  Failed: {', '.join(val['checks_failed'])}")
         
+        # TASK 4: Show ML adjustment
+        if 'ml_adjustment' in signal:
+            ml = signal['ml_adjustment']
+            print(f"\nML Confidence Adjustment (Task 4):")
+            print(f"  Original: {ml['original']:.1f}%")
+            print(f"  Adjusted: {ml['adjusted']:.1f}%")
+            print(f"  Delta: {ml['delta']:+.1f}%")
+        
+        # TASK 6: Show UOA whale data
+        if 'uoa' in signal:
+            uoa = signal['uoa']
+            print(f"\nWhale Activity (Task 6):")
+            print(f"  Unusual: {uoa['is_unusual']}")
+            print(f"  Overall Score: {uoa['overall_score']:.1f}/10")
+            print(f"  Whale Score: {uoa['whale_score']:.1f}/10")
+            print(f"  Flow Score: {uoa['flow_score']:.1f}/10")
+            print(f"  Confidence Boost: +{uoa['confidence_boost']*100:.1f}%")
+            print(f"  Summary: {uoa['summary']}")
+        
         if 'signal_id' in signal:
             print(f"Signal ID: {signal['signal_id']} (tracked in analytics DB)")
         
@@ -435,7 +619,7 @@ class SignalGenerator:
     
     def _format_discord_alert(self, signal: Dict) -> str:
         """
-        Format enhanced Discord alert message with DTE and adaptive targets.
+        Format enhanced Discord alert message with all enhancements.
         
         Args:
             signal: Signal dict
@@ -484,7 +668,21 @@ class SignalGenerator:
         
         # Signal quality
         msg += f"📊 **SIGNAL QUALITY:**\n"
-        msg += f"   Confidence: {confidence}%\n"
+        msg += f"   Confidence: {confidence}%"
+        
+        # Show ML adjustment if available
+        if 'ml_adjustment' in signal:
+            ml = signal['ml_adjustment']
+            if abs(ml['delta']) > 1.0:
+                emoji = "📈" if ml['delta'] > 0 else "📉"
+                msg += f" ({emoji} ML: {ml['delta']:+.1f}%)"
+        
+        # Show UOA whale boost if available
+        if 'uoa' in signal and signal['uoa']['is_unusual']:
+            uoa = signal['uoa']
+            msg += f" (🐋 Whale: +{uoa['confidence_boost']*100:.1f}%)"
+        
+        msg += "\n"
         msg += f"   Pattern: {signal.get('pattern', 'BOS/FVG Breakout')}\n"
         msg += f"   Timeframe: Multi-TF Convergence\n\n"
         
@@ -806,6 +1004,13 @@ class SignalGenerator:
             except Exception as e:
                 print(f"[SIGNALS] Analytics cache clear error: {e}")
         
+        # Clear UOA cache
+        if UOA_ENABLED and uoa_detector:
+            try:
+                uoa_detector.clear_cache()
+            except Exception as e:
+                print(f"[SIGNALS] UOA cache clear error: {e}")
+        
         print("[SIGNALS] Daily reset complete")
 
 
@@ -891,6 +1096,3 @@ if __name__ == "__main__":
     # Print performance stats
     print("\n" + "="*70)
     print_performance_report(days=7)
-
-
-
