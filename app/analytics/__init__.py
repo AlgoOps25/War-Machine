@@ -1,31 +1,13 @@
 """
-Analytics Module - Signal Performance Tracking and Optimization
-
-Provides:
-  - Funnel analytics (conversion rates at each stage)
-  - A/B testing framework (parameter optimization)
-  - Discord reporting (EOD summaries)
+Analytics Module for War Machine
+Central import point for signal tracking and performance analytics
 """
-from app.analytics.funnel_analytics import (
-    funnel_tracker,
-    log_screened,
-    log_bos,
-    log_fvg,
-    log_validator,
-    log_armed,
-    log_fired,
-    log_filled
-)
-from app.analytics.ab_test_framework import ab_test
 
-__all__ = [
-    'funnel_tracker',
-    'ab_test',
-    'log_screened',
-    'log_bos',
-    'log_fvg',
-    'log_validator',
-    'log_armed',
-    'log_fired',
-    'log_filled'
-]
+try:
+    from app.core.analytics_integration import AnalyticsIntegration
+    ANALYTICS_AVAILABLE = True
+except ImportError:
+    ANALYTICS_AVAILABLE = False
+    AnalyticsIntegration = None
+
+__all__ = ['AnalyticsIntegration', 'ANALYTICS_AVAILABLE']
