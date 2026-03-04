@@ -66,6 +66,21 @@ class SectorRotationDetector:
         
         return self.hot_sectors[:2]  # Top 2 sectors
     
+    def get_sector(self, ticker: str) -> Optional[str]:
+        """
+        Get the sector for a ticker (regardless of whether it's hot).
+        
+        Args:
+            ticker: Stock ticker
+        
+        Returns:
+            Sector name or None if not mapped
+        """
+        for sector_name, stocks in self.SECTOR_STOCKS.items():
+            if ticker in stocks:
+                return sector_name
+        return None
+    
     def is_hot_sector(self, ticker: str) -> Tuple[bool, Optional[str]]:
         """
         Check if ticker belongs to a hot sector.
@@ -76,13 +91,17 @@ class SectorRotationDetector:
         Returns:
             (is_hot: bool, sector_name: Optional[str])
         """
+        # First get the ticker's sector
+        ticker_sector = self.get_sector(ticker)
+        
+        if not ticker_sector:
+            return False, None
+        
+        # Check if that sector is in hot sectors
         hot_sector_names = [sector for sector, _ in self.get_hot_sectors()]
+        is_hot = ticker_sector in hot_sector_names
         
-        for sector_name, stocks in self.SECTOR_STOCKS.items():
-            if ticker in stocks and sector_name in hot_sector_names:
-                return True, sector_name
-        
-        return False, None
+        return is_hot, ticker_sector
     
     def _update_hot_sectors(self):
         """
@@ -207,6 +226,19 @@ def get_hot_sectors(force_refresh: bool = False) -> List[Tuple[str, float]]:
         List of (sector_name, momentum_pct) tuples
     """
     return _sector_detector.get_hot_sectors(force_refresh)
+
+
+def get_sector(ticker: str) -> Optional[str]:
+    """
+    Public API: Get the sector for a ticker.
+    
+    Args:
+        ticker: Stock ticker
+    
+    Returns:
+        Sector name or None if not mapped
+    """
+    return _sector_detector.get_sector(ticker)
 
 
 def is_hot_sector_stock(ticker: str) -> Tuple[bool, Optional[str]]:
