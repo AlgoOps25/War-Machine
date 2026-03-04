@@ -17,6 +17,10 @@ Responsibilities:
   - [TASK 6] Options flow integration with whale detection
   - [TASK 7] Opening Range (OR) detection with tight/wide classification
 """
+# Note: signal_analytics, signal_validator, options_dte_selector imports removed
+# These modules exist at app/analytics/*, app/validation/*, app/options/*
+# and are imported correctly elsewhere in the codebase
+
 from typing import Dict, List, Optional
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -26,35 +30,6 @@ import numpy as np
 from app.signals.breakout_detector import BreakoutDetector, format_signal_message
 from app.data.data_manager import data_manager
 from app.discord_helpers import send_simple_message
-
-# Import signal analytics for performance tracking
-try:
-    from signal_analytics import signal_tracker
-    ANALYTICS_ENABLED = True
-    print("[SIGNALS] ✅ Phase 4 tracking enabled (signal_analytics + performance_alerts)")
-except ImportError:
-    ANALYTICS_ENABLED = False
-    signal_tracker = None
-    print("[SIGNALS] ⚠️  signal_analytics not available - performance tracking disabled")
-
-# Import signal validator for multi-indicator confirmation
-try:
-    from signal_validator import get_validator
-    VALIDATOR_ENABLED = True
-    VALIDATOR_TEST_MODE = False  # Set to False to enable filtering
-except ImportError:
-    VALIDATOR_ENABLED = False
-    print("[SIGNALS] ⚠️  signal_validator not available - multi-indicator validation disabled")
-
-# Import DTE selector for data-driven options expiration logic
-try:
-    from options_dte_selector import dte_selector, get_optimal_dte
-    DTE_SELECTOR_ENABLED = True
-    print("[SIGNALS] ✅ Options DTE selector enabled (data-driven expiration logic)")
-except ImportError:
-    DTE_SELECTOR_ENABLED = False
-    dte_selector = None
-    print("[SIGNALS] ⚠️  options_dte_selector not available - using time-based fallback")
 
 # Import Day 5 adaptive target discovery
 try:
