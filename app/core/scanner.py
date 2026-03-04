@@ -2,6 +2,7 @@
 Scanner Module - Intelligent Watchlist Builder & Scanner Loop
 INTEGRATED: Adaptive Watchlist Funnel, Pre-Market Scanner, Position Monitoring, Database Cleanup
 CANDLE CACHE: Cache-aware startup with 95%+ API reduction
+OUTCOME TRACKING: Signal deduplication, ML predictions, EOD reports
 """
 import os
 import time
@@ -9,10 +10,6 @@ import threading
 from datetime import datetime, time as dtime
 from zoneinfo import ZoneInfo
 from utils import config
-from src.analytics.signal_analytics import SignalAnalytics
-from src.learning.ml_feedback_loop import MLFeedbackLoop
-from src.reporting.performance_reporter import PerformanceReporter
-
 
 from app.data.data_manager import data_manager
 from app.risk.position_manager import position_manager
@@ -36,16 +33,38 @@ from app.screening.watchlist_funnel import (
 )
 
 # ────────────────────────────────────────────────────────────────────────────────────
-# OPTIONAL: SIGNAL ANALYTICS
+# LEGACY SIGNAL ANALYTICS (Quality scoring, Sharpe, expectancy)
 # ────────────────────────────────────────────────────────────────────────────────────
 try:
     from signal_analytics import signal_tracker
-    ANALYTICS_ENABLED = True
-    print("[SCANNER] ✅ Signal analytics enabled")
+    LEGACY_ANALYTICS_ENABLED = True
+    print("[SCANNER] ✅ Legacy signal analytics enabled")
 except ImportError:
-    ANALYTICS_ENABLED = False
+    LEGACY_ANALYTICS_ENABLED = False
     signal_tracker = None
-    print("[SCANNER] ⚠️  signal_analytics not available — analytics disabled")
+    print("[SCANNER] ⚠️  signal_analytics not available")
+
+# ────────────────────────────────────────────────────────────────────────────────────
+# SIGNAL OUTCOME TRACKING (Deduplication, ML, Discord Reports)
+# ────────────────────────────────────────────────────────────────────────────────────
+try:
+    from app.analytics import AnalyticsIntegration, ANALYTICS_AVAILABLE
+    if ANALYTICS_AVAILABLE:
+        import psycopg2
+        analytics_db = psycopg2.connect(os.getenv('DATABASE_URL'))
+        analytics = AnalyticsIntegration(
+            analytics_db,
+            enable_ml=True,
+            enable_discord=True
+        )
+        print("[SCANNER] ✅ Signal outcome tracking enabled (Deduplication + ML + Reports)")
+    else:
+        analytics = None
+        print("[SCANNER] ⚠️  Analytics dependencies missing")
+except Exception as e:
+    analytics = None
+    ANALYTICS_AVAILABLE = False
+    print(f"[SCANNER] ⚠️  Outcome tracking disabled: {e}")
 
 API_KEY = os.getenv("EODHD_API_KEY", "")
 
@@ -134,15 +153,17 @@ def start_scanner_loop():
     print(f"{'='*60}")
     print(f"Market Hours: {config.MARKET_OPEN} - {config.MARKET_CLOSE}")
     print(f"Adaptive intervals + watchlist funnel + breakout signals active")
-    if ANALYTICS_ENABLED:
-        print(f"Analytics:     ✅ ENABLED (quality scoring, Sharpe, expectancy)")
+    if LEGACY_ANALYTICS_ENABLED:
+        print(f"Legacy Analytics: ✅ ENABLED (quality scoring, Sharpe, expectancy)")
+    if ANALYTICS_AVAILABLE and analytics:
+        print(f"Outcome Tracking: ✅ ENABLED (deduplication, ML, reports)")
     print(f"Candle Cache:  ✅ ENABLED (95%+ API reduction on redeploy)")
     print(f"WS Failover:   ✅ ENABLED (REST API fallback on disconnect)")
     print(f"Spread Gate:   ✅ ENABLED (us-quote bid/ask filter active)")
     print(f"{'='*60}\n")
 
     try:
-        send_simple_message("🎯 WAR MACHINE ONLINE - CFW6 Scanner + Breakout Detector Started")
+        send_simple_message("🎯 WAR MACHINE ONLINE - CFW6 Scanner + Outcome Tracking Started")
     except Exception as e:
         print(f"[SCANNER] Discord unavailable: {e}")
 
@@ -315,6 +336,20 @@ def start_scanner_loop():
 
                 print(f"[SIGNALS] Scanning {len(watchlist)} tickers for breakouts...")
                 check_and_alert(watchlist)
+                
+                # Monitor active analytics signals for outcome tracking
+                if ANALYTICS_AVAILABLE and analytics:
+                    try:
+                        def get_price(ticker):
+                            from app.data.ws_feed import get_current_bar_with_fallback
+                            bar = get_current_bar_with_fallback(ticker)
+                            return bar['close'] if bar else None
+                        
+                        analytics.monitor_active_signals(get_price)
+                        analytics.check_scheduled_tasks()
+                    except Exception as e:
+                        print(f"[ANALYTICS] Monitor error: {e}")
+                
                 monitor_signals()
 
                 if signal_generator.active_signals:
@@ -355,8 +390,8 @@ def start_scanner_loop():
                     if open_positions:
                         print(f"[EOD] {len(open_positions)} positions still open")
 
-                    # 1. SIGNAL ANALYTICS
-                    if ANALYTICS_ENABLED and signal_tracker:
+                    # 1. LEGACY SIGNAL ANALYTICS
+                    if LEGACY_ANALYTICS_ENABLED and signal_tracker:
                         try:
                             print("\n[ANALYTICS] Generating signal performance report...\n")
                             summary = signal_tracker.get_daily_summary()
