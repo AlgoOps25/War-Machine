@@ -8,6 +8,7 @@ import numpy as np
 import pickle
 from datetime import datetime
 import logging
+import os
 
 try:
     from sklearn.ensemble import RandomForestClassifier
@@ -23,6 +24,9 @@ class MLFeedbackLoop:
         self.model_path = model_path
         self.model = None
         self.feature_importance = {}
+        
+        # Create models directory if it doesn't exist
+        os.makedirs(os.path.dirname(model_path) if os.path.dirname(model_path) else 'models', exist_ok=True)
         
         if ML_AVAILABLE:
             self.load_model()
@@ -60,18 +64,20 @@ class MLFeedbackLoop:
         
         try:
             cursor = self.db.cursor()
+            # Fixed: JOIN with signal_outcomes to get signal_time
             cursor.execute("""
                 SELECT 
-                    rvol, vix, score, 
-                    EXTRACT(HOUR FROM signal_time) as hour,
-                    EXTRACT(MINUTE FROM signal_time) as minute,
-                    confidence, 
-                    CASE WHEN regime = 'BULL' THEN 1 ELSE 0 END as is_bull,
-                    outcome,
-                    profit_r
-                FROM ml_training_data
-                WHERE outcome IS NOT NULL
-                ORDER BY created_at DESC
+                    ml.rvol, ml.vix, ml.score, 
+                    EXTRACT(HOUR FROM so.signal_time) as hour,
+                    EXTRACT(MINUTE FROM so.signal_time) as minute,
+                    ml.confidence, 
+                    CASE WHEN ml.regime = 'BULL' THEN 1 ELSE 0 END as is_bull,
+                    ml.outcome,
+                    ml.profit_r
+                FROM ml_training_data ml
+                JOIN signal_outcomes so ON ml.signal_id = so.id
+                WHERE ml.outcome IS NOT NULL
+                ORDER BY ml.created_at DESC
                 LIMIT 500
             """)
             
