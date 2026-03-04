@@ -1,1 +1,187 @@
-"""\nPerformance Reporter for War Machine\nGenerate daily summaries and send to Discord\n"""\n\nimport psycopg2\nfrom datetime import datetime, date\nimport logging\nimport requests\nimport json\n\nclass PerformanceReporter:\n    def __init__(self, db_connection, discord_webhook_url=None):\n        self.db = db_connection\n        self.webhook_url = discord_webhook_url\n        logging.info("[REPORTER] Performance reporter initialized")\n    \n    def generate_eod_report(self, target_date=None):\n        """\n        Generate end-of-day performance report\n        Returns: dict with summary stats\n        """\n        if target_date is None:\n            target_date = date.today()\n        \n        try:\n            cursor = self.db.cursor()\n            \n            # Overall stats\n            cursor.execute("""\n                SELECT \n                    COUNT(*) as total_signals,\n                    SUM(CASE WHEN outcome = 'WIN' THEN 1 ELSE 0 END) as wins,\n                    SUM(CASE WHEN outcome = 'LOSS' THEN 1 ELSE 0 END) as losses,\n                    ROUND(AVG(CASE WHEN outcome IS NOT NULL THEN profit_pct END), 2) as avg_profit,\n                    ROUND(SUM(CASE WHEN outcome IS NOT NULL THEN profit_pct END), 2) as total_profit,\n                    ROUND(AVG(CASE WHEN outcome IS NOT NULL THEN hold_minutes END), 0) as avg_hold\n                FROM signal_outcomes\n                WHERE DATE(signal_time) = %s\n            """, (target_date,))\n            \n            stats = cursor.fetchone()\n            total, wins, losses, avg_profit, total_profit, avg_hold = stats\n            \n            if total == 0:\n                logging.info(f"[REPORTER] No signals for {target_date}")\n                return None\n            \n            win_rate = (wins / (wins + losses)) * 100 if (wins + losses) > 0 else 0\n            \n            # Pattern breakdown\n            cursor.execute("""\n                SELECT \n                    pattern,\n                    COUNT(*) as count,\n                    SUM(CASE WHEN outcome = 'WIN' THEN 1 ELSE 0 END) as wins,\n                    ROUND(AVG(profit_pct), 2) as avg_profit\n                FROM signal_outcomes\n                WHERE DATE(signal_time) = %s AND outcome IS NOT NULL\n                GROUP BY pattern\n                ORDER BY count DESC\n            """, (target_date,))\n            \n            pattern_stats = []\n            for row in cursor.fetchall():\n                pattern, count, pat_wins, pat_avg = row\n                pattern_stats.append({\n                    'pattern': pattern,\n                    'count': count,\n                    'wins': pat_wins,\n                    'avg_profit': pat_avg\n                })\n            \n            # Best/worst trades\n            cursor.execute("""\n                SELECT ticker, profit_pct, profit_r, pattern\n                FROM signal_outcomes\n                WHERE DATE(signal_time) = %s AND outcome IS NOT NULL\n                ORDER BY profit_pct DESC\n                LIMIT 3\n            """, (target_date,))\n            best_trades = cursor.fetchall()\n            \n            cursor.execute("""\n                SELECT ticker, profit_pct, profit_r, pattern\n                FROM signal_outcomes\n                WHERE DATE(signal_time) = %s AND outcome IS NOT NULL\n                ORDER BY profit_pct ASC\n                LIMIT 3\n            """, (target_date,))\n            worst_trades = cursor.fetchall()\n            \n            report = {\n                'date': str(target_date),\n                'total_signals': total,\n                'wins': wins,\n                'losses': losses,\n                'win_rate': round(win_rate, 1),\n                'avg_profit': avg_profit,\n                'total_profit': total_profit,\n                'avg_hold_minutes': int(avg_hold) if avg_hold else 0,\n                'pattern_stats': pattern_stats,\n                'best_trades': best_trades,\n                'worst_trades': worst_trades\n            }\n            \n            logging.info(f"[REPORTER] EOD report generated for {target_date}")\n            return report\n            \n        except Exception as e:\n            logging.error(f"[REPORTER] Failed to generate report: {e}")\n            return None\n    \n    def send_to_discord(self, report):\n        """\n        Send EOD report to Discord webhook\n        """\n        if not self.webhook_url:\n            logging.warning("[REPORTER] No Discord webhook URL configured")\n            return False\n        \n        if not report:\n            return False\n        \n        try:\n            # Format message\n            message = f"""📊 **DAILY SUMMARY - {report['date']}**\n\n✅ **Trades:** {report['total_signals']} | W/L: {report['wins']}/{report['losses']} ({report['win_rate']}% WR)\n💰 **Total P&L:** {report['total_profit']:+.2f}%\n📈 **Avg Profit:** {report['avg_profit']:+.2f}%\n⏱️ **Avg Hold:** {report['avg_hold_minutes']}m\n"""\n            \n            # Pattern breakdown\n            if report['pattern_stats']:\n                message += "\n📋 **Pattern Performance:**\n"\n                for ps in report['pattern_stats']:\n                    message += f"  • {ps['pattern']}: {ps['count']} trades, {ps['wins']} wins, {ps['avg_profit']:+.2f}% avg\n"\n            \n            # Best trades\n            if report['best_trades']:\n                message += "\n🏆 **Top Trades:**\n"\n                for ticker, pct, r, pattern in report['best_trades']:\n                    message += f"  • {ticker}: {pct:+.2f}% ({r:.2f}R) - {pattern}\n"\n            \n            # Worst trades\n            if report['worst_trades']:\n                message += "\n⚠️ **Worst Trades:**\n"\n                for ticker, pct, r, pattern in report['worst_trades']:\n                    message += f"  • {ticker}: {pct:+.2f}% ({r:.2f}R) - {pattern}\n"\n            \n            # Send to Discord\n            payload = {"content": message}\n            response = requests.post(self.webhook_url, json=payload, timeout=5)\n            \n            if response.status_code == 204:\n                logging.info("[REPORTER] EOD report sent to Discord")\n                return True\n            else:\n                logging.error(f"[REPORTER] Discord webhook failed: {response.status_code}")\n                return False\n                \n        except Exception as e:\n            logging.error(f"[REPORTER] Failed to send Discord message: {e}")\n            return False\n    \n    def schedule_eod_report(self):\n        """\n        Auto-generate and send EOD report at 4:05 PM\n        Call this in your main loop\n        """\n        now = datetime.now()\n        if now.hour == 16 and now.minute == 5:\n            logging.info("[REPORTER] Running scheduled EOD report...")\n            report = self.generate_eod_report()\n            if report:\n                self.send_to_discord(report)
+"""
+Performance Reporter for War Machine
+Generate daily summaries and send to Discord
+"""
+
+import psycopg2
+from datetime import datetime, date
+import logging
+import requests
+import json
+
+class PerformanceReporter:
+    def __init__(self, db_connection, discord_webhook_url=None):
+        self.db = db_connection
+        self.webhook_url = discord_webhook_url
+        logging.info("[REPORTER] Performance reporter initialized")
+    
+    def generate_eod_report(self, target_date=None):
+        """
+        Generate end-of-day performance report
+        Returns: dict with summary stats
+        """
+        if target_date is None:
+            target_date = date.today()
+        
+        try:
+            cursor = self.db.cursor()
+            
+            # Overall stats
+            cursor.execute("""
+                SELECT 
+                    COUNT(*) as total_signals,
+                    SUM(CASE WHEN outcome = 'WIN' THEN 1 ELSE 0 END) as wins,
+                    SUM(CASE WHEN outcome = 'LOSS' THEN 1 ELSE 0 END) as losses,
+                    ROUND(AVG(CASE WHEN outcome IS NOT NULL THEN profit_pct END), 2) as avg_profit,
+                    ROUND(SUM(CASE WHEN outcome IS NOT NULL THEN profit_pct END), 2) as total_profit,
+                    ROUND(AVG(CASE WHEN outcome IS NOT NULL THEN hold_minutes END), 0) as avg_hold
+                FROM signal_outcomes
+                WHERE DATE(signal_time) = %s
+            """, (target_date,))
+            
+            stats = cursor.fetchone()
+            total, wins, losses, avg_profit, total_profit, avg_hold = stats
+            
+            if total == 0:
+                logging.info(f"[REPORTER] No signals for {target_date}")
+                return None
+            
+            win_rate = (wins / (wins + losses)) * 100 if (wins + losses) > 0 else 0
+            
+            # Pattern breakdown
+            cursor.execute("""
+                SELECT 
+                    pattern,
+                    COUNT(*) as count,
+                    SUM(CASE WHEN outcome = 'WIN' THEN 1 ELSE 0 END) as wins,
+                    ROUND(AVG(profit_pct), 2) as avg_profit
+                FROM signal_outcomes
+                WHERE DATE(signal_time) = %s AND outcome IS NOT NULL
+                GROUP BY pattern
+                ORDER BY count DESC
+            """, (target_date,))
+            
+            pattern_stats = []
+            for row in cursor.fetchall():
+                pattern, count, pat_wins, pat_avg = row
+                pattern_stats.append({
+                    'pattern': pattern,
+                    'count': count,
+                    'wins': pat_wins,
+                    'avg_profit': pat_avg
+                })
+            
+            # Best/worst trades
+            cursor.execute("""
+                SELECT ticker, profit_pct, profit_r, pattern
+                FROM signal_outcomes
+                WHERE DATE(signal_time) = %s AND outcome IS NOT NULL
+                ORDER BY profit_pct DESC
+                LIMIT 3
+            """, (target_date,))
+            best_trades = cursor.fetchall()
+            
+            cursor.execute("""
+                SELECT ticker, profit_pct, profit_r, pattern
+                FROM signal_outcomes
+                WHERE DATE(signal_time) = %s AND outcome IS NOT NULL
+                ORDER BY profit_pct ASC
+                LIMIT 3
+            """, (target_date,))
+            worst_trades = cursor.fetchall()
+            
+            report = {
+                'date': str(target_date),
+                'total_signals': total,
+                'wins': wins,
+                'losses': losses,
+                'win_rate': round(win_rate, 1),
+                'avg_profit': avg_profit,
+                'total_profit': total_profit,
+                'avg_hold_minutes': int(avg_hold) if avg_hold else 0,
+                'pattern_stats': pattern_stats,
+                'best_trades': best_trades,
+                'worst_trades': worst_trades
+            }
+            
+            logging.info(f"[REPORTER] EOD report generated for {target_date}")
+            return report
+            
+        except Exception as e:
+            logging.error(f"[REPORTER] Failed to generate report: {e}")
+            return None
+    
+    def send_to_discord(self, report):
+        """
+        Send EOD report to Discord webhook
+        """
+        if not self.webhook_url:
+            logging.warning("[REPORTER] No Discord webhook URL configured")
+            return False
+        
+        if not report:
+            return False
+        
+        try:
+            # Format message
+            message = f"""📊 **DAILY SUMMARY - {report['date']}**
+
+✅ **Trades:** {report['total_signals']} | W/L: {report['wins']}/{report['losses']} ({report['win_rate']}% WR)
+💰 **Total P&L:** {report['total_profit']:+.2f}%
+📈 **Avg Profit:** {report['avg_profit']:+.2f}%
+⏱️ **Avg Hold:** {report['avg_hold_minutes']}m
+"""
+            
+            # Pattern breakdown
+            if report['pattern_stats']:
+                message += "
+📋 **Pattern Performance:**
+"
+                for ps in report['pattern_stats']:
+                    message += f"  • {ps['pattern']}: {ps['count']} trades, {ps['wins']} wins, {ps['avg_profit']:+.2f}% avg
+"
+            
+            # Best trades
+            if report['best_trades']:
+                message += "
+🏆 **Top Trades:**
+"
+                for ticker, pct, r, pattern in report['best_trades']:
+                    message += f"  • {ticker}: {pct:+.2f}% ({r:.2f}R) - {pattern}
+"
+            
+            # Worst trades
+            if report['worst_trades']:
+                message += "
+⚠️ **Worst Trades:**
+"
+                for ticker, pct, r, pattern in report['worst_trades']:
+                    message += f"  • {ticker}: {pct:+.2f}% ({r:.2f}R) - {pattern}
+"
+            
+            # Send to Discord
+            payload = {"content": message}
+            response = requests.post(self.webhook_url, json=payload, timeout=5)
+            
+            if response.status_code == 204:
+                logging.info("[REPORTER] EOD report sent to Discord")
+                return True
+            else:
+                logging.error(f"[REPORTER] Discord webhook failed: {response.status_code}")
+                return False
+                
+        except Exception as e:
+            logging.error(f"[REPORTER] Failed to send Discord message: {e}")
+            return False
+    
+    def schedule_eod_report(self):
+        """
+        Auto-generate and send EOD report at 4:05 PM
+        Call this in your main loop
+        """
+        now = datetime.now()
+        if now.hour == 16 and now.minute == 5:
+            logging.info("[REPORTER] Running scheduled EOD report...")
+            report = self.generate_eod_report()
+            if report:
+                self.send_to_discord(report)
