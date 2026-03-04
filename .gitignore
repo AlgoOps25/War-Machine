@@ -239,19 +239,34 @@ target_discovery_summary.txt
 __pycache__/
 *.pyc
 
-# Migration artifacts
+
+# ─────────────────────────────────────────────────────────────────
+# War Machine - Additional Ignores (Added 2026-03-04)
+# ─────────────────────────────────────────────────────────────────
+
+# Migration/cleanup artifacts
 migration_backup_*/
 migration_log_*.txt
 rollback_migration.ps1
 organize_repository.ps1
+cleanup_priority.ps1
 
-# Python
+# Python cache and compiled files
 __pycache__/
 *.py[cod]
+*$py.class
+*.so
+
+# Testing artifacts
 .pytest_cache/
 .coverage
 htmlcov/
 
 # Logs
 *.log
+
+# Database backups
+*.db.backup
+*.sqlite.backup
+
 
