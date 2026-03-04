@@ -138,8 +138,7 @@ class MTFValidator:
         
         # Log validation result
         emoji = "✅" if passes else "❌"
-        print(f"[MTF] {ticker} {emoji} | Score: {overall_score:.1f}/10 | \")
-        print(f"      30m:{score_30m:.1f} 15m:{score_15m:.1f} 5m:{score_5m:.1f} 1m:{score_1m:.1f}")
+        print(f"[MTF] {ticker} {emoji} | Score: {overall_score:.1f}/10 | 30m:{score_30m:.1f} 15m:{score_15m:.1f} 5m:{score_5m:.1f} 1m:{score_1m:.1f}")
         
         if divergences:
             print(f"[MTF]   ⚠️  Divergences: {', '.join(divergences)}")
