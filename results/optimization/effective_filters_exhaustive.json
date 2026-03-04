@@ -1,0 +1,91 @@
+[
+  {
+    "filters": [
+      "price_range"
+    ],
+    "train_win_rate": 0.7518248175182481,
+    "val_win_rate": 0.7796610169491526,
+    "val_total_signals": 59,
+    "val_profit_factor": 1.2829054335369723,
+    "signals_retained_pct": 93.65079365079364,
+    "beats_baseline": true,
+    "timestamp": "2026-02-27T15:18:12.379582"
+  },
+  {
+    "filters": [
+      "rsi_threshold"
+    ],
+    "train_win_rate": 0.7445255474452555,
+    "val_win_rate": 0.7627118644067796,
+    "val_total_signals": 59,
+    "val_profit_factor": 1.2061193926437386,
+    "signals_retained_pct": 93.65079365079364,
+    "beats_baseline": true,
+    "timestamp": "2026-02-27T15:18:13.220222"
+  },
+  {
+    "filters": [
+      "volume_surge"
+    ],
+    "train_win_rate": 0.6,
+    "val_win_rate": 0.5,
+    "val_total_signals": 4,
+    "val_profit_factor": 0.19148589552762388,
+    "signals_retained_pct": 6.349206349206349,
+    "beats_baseline": false,
+    "timestamp": "2026-02-27T15:18:13.812780"
+  },
+  {
+    "filters": [
+      "price_range",
+      "rsi_threshold"
+    ],
+    "train_win_rate": 0.7637795275590551,
+    "val_win_rate": 0.7636363636363637,
+    "val_total_signals": 55,
+    "val_profit_factor": 1.1836303129676313,
+    "signals_retained_pct": 87.3015873015873,
+    "beats_baseline": true,
+    "timestamp": "2026-02-27T15:18:15.316311"
+  },
+  {
+    "filters": [
+      "price_range",
+      "volume_surge"
+    ],
+    "train_win_rate": 0.6,
+    "val_win_rate": 0.5,
+    "val_total_signals": 4,
+    "val_profit_factor": 0.19148589552762388,
+    "signals_retained_pct": 6.349206349206349,
+    "beats_baseline": false,
+    "timestamp": "2026-02-27T15:18:16.483690"
+  },
+  {
+    "filters": [
+      "rsi_threshold",
+      "volume_surge"
+    ],
+    "train_win_rate": 0.6,
+    "val_win_rate": 0.5,
+    "val_total_signals": 4,
+    "val_profit_factor": 0.19148589552762388,
+    "signals_retained_pct": 6.349206349206349,
+    "beats_baseline": false,
+    "timestamp": "2026-02-27T15:18:17.869569"
+  },
+  {
+    "filters": [
+      "price_range",
+      "rsi_threshold",
+      "volume_surge"
+    ],
+    "train_win_rate": 0.6,
+    "val_win_rate": 0.5,
+    "val_total_signals": 4,
+    "val_profit_factor": 0.19148589552762388,
+    "signals_retained_pct": 6.349206349206349,
+    "beats_baseline": false,
+    "timestamp": "2026-02-27T15:18:19.780888"
+  }
+]

@@ -1,0 +1,33 @@
+[14:05:16]    Created: scripts/config
+[14:05:16]    Created: migration_backup_20260304_140516
+[14:05:17]    OK: backtest_results.json -> results/backtests/backtest_results.json
+[14:05:17]    OK: quick_backtest_results.csv -> results/backtests/quick_backtest_results.csv
+[14:05:17]    OK: optimization_results.json -> results/optimization/optimization_results.json
+[14:05:17]    OK: optimized_filter_parameters.json -> results/optimization/optimized_filter_parameters.json
+[14:05:17]    OK: effective_filters_exhaustive.json -> results/optimization/effective_filters_exhaustive.json
+[14:05:17]    OK: two_phase_optimization_results.json -> results/optimization/two_phase_optimization_results.json
+[14:05:17]    OK: war_machine_optimized.json -> results/optimization/war_machine_optimized.json
+[14:05:17]    OK: indicator_backtest_detailed.json -> results/indicators/indicator_backtest_detailed.json
+[14:05:17]    OK: indicator_backtest_results.csv -> results/indicators/indicator_backtest_results.csv
+[14:05:17]    OK: indicator_backtest_results.json -> results/indicators/indicator_backtest_results.json
+[14:05:17]    OK: indicator_backtest_results_REAL.csv -> results/indicators/indicator_backtest_results_REAL.csv
+[14:05:17]    OK: indicator_backtest_results_REAL.json -> results/indicators/indicator_backtest_results_REAL.json
+[14:05:17]    OK: indicator_backtest_summary.csv -> results/indicators/indicator_backtest_summary.csv
+[14:05:17]    OK: quick_indicator_results.csv -> results/indicators/quick_indicator_results.csv
+[14:05:17]    OK: validation_signals.csv -> results/validation/validation_signals.csv
+[14:05:17]    OK: backtest_optimized_params.py -> scripts/backtesting/backtest_optimized_params.py
+[14:05:17]    OK: production_indicator_backtest.py -> scripts/backtesting/production_indicator_backtest.py
+[14:05:17]    OK: smart_optimization.py -> scripts/optimization/smart_optimization.py
+[14:05:17]    OK: analyze_ml_training_data.py -> scripts/analysis/analyze_ml_training_data.py
+[14:05:17]    OK: inspect_signal_outcomes.py -> scripts/analysis/inspect_signal_outcomes.py
+[14:05:17]    OK: target_discovery.py -> scripts/analysis/target_discovery.py
+[14:05:17]    OK: check_database.py -> scripts/database/check_database.py
+[14:05:17]    OK: inspect_database_schema.py -> scripts/database/inspect_database_schema.py
+[14:05:17]    OK: setup_database.py -> scripts/database/setup_database.py
+[14:05:17]    OK: load_historical_data.py -> scripts/database/load_historical_data.py
+[14:05:17]    OK: update_sniper_greeks.py -> scripts/maintenance/update_sniper_greeks.py
+[14:05:17]    OK: production_helpers.py -> scripts/maintenance/production_helpers.py
+[14:05:17]    OK: dependency_analyzer.ps1 -> scripts/powershell/dependency_analyzer.ps1
+[14:05:17]    OK: restore_and_deploy.ps1 -> scripts/powershell/restore_and_deploy.ps1
+[14:05:17]    OK: super_indicator_config.py -> scripts/config/super_indicator_config.py
+[14:05:17]    OK: super_indicator_filters.py -> scripts/config/super_indicator_filters.py

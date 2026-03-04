@@ -1,0 +1,60 @@
+{
+  "config_name": "War Machine Optimized",
+  "optimization_date": "2026-02-27",
+  "validation_performance": {
+    "win_rate": 0.909,
+    "wins": 20,
+    "losses": 2,
+    "profit_factor": 3.23,
+    "signals_retained_pct": 34.9,
+    "baseline_improvement_pct": 17.9
+  },
+  "filters": {
+    "price_range": {
+      "enabled": true,
+      "min_price": 1,
+      "max_price": 200,
+      "description": "Filter stocks between $1-$200"
+    },
+    "bollinger_position": {
+      "enabled": true,
+      "period": 10,
+      "std_dev": 1.5,
+      "min_position": 0.2,
+      "max_position": 1.0,
+      "description": "Stocks in lower 20% to upper band of Bollinger Bands"
+    }
+  },
+  "alternative_configs": {
+    "more_signals_1": {
+      "description": "83.9% WR, 31 signals",
+      "filters": {
+        "price_range": {
+          "min_price": 1,
+          "max_price": 200
+        },
+        "rsi_threshold": {
+          "min_rsi": 35,
+          "max_rsi": 65,
+          "period": 20
+        }
+      }
+    },
+    "more_signals_2": {
+      "description": "86.7% WR, 30 signals",
+      "filters": {
+        "rsi_threshold": {
+          "min_rsi": 35,
+          "max_rsi": 65,
+          "period": 20
+        },
+        "bollinger_position": {
+          "period": 10,
+          "std_dev": 1.5,
+          "min_position": 0.2,
+          "max_position": 1.0
+        }
+      }
+    }
+  }
+}
