@@ -15,6 +15,7 @@ Responsibilities:
   - [TASK 4] ML-based signal scoring with confidence prediction
   - [TASK 5] Multi-timeframe validation (1m/5m/15m/30m convergence)
   - [TASK 6] Options flow integration with whale detection
+  - [TASK 7] Opening Range (OR) detection with tight/wide classification
 """
 from typing import Dict, List, Optional
 from datetime import datetime, timedelta
@@ -93,6 +94,15 @@ try:
 except ImportError as e:
     UOA_ENABLED = False
     print(f"[SIGNALS] ⚠️  UOA not available ({e})")
+
+# TASK 7: Import Opening Range Detector
+try:
+    from app.signals.opening_range import or_detector
+    OR_ENABLED = True
+    print("[SIGNALS] ✅ Opening Range Detection enabled (Task 7 - OR tight/wide classification)")
+except ImportError as e:
+    OR_ENABLED = False
+    print(f"[SIGNALS] ⚠️  Opening Range not available ({e})")
 
 ET = ZoneInfo("America/New_York")
 
@@ -272,6 +282,7 @@ class SignalGenerator:
         TASK 4: ML-based confidence adjustments.
         TASK 5: Multi-timeframe validation.
         TASK 6: UOA whale detection and flow correlation.
+        TASK 7: Opening Range (OR) tight/wide classification with confidence adjustments.
         
         Args:
             ticker: Stock ticker to check
@@ -507,6 +518,27 @@ class SignalGenerator:
             except Exception as e:
                 print(f"[UOA] {ticker} error: {e}")
         
+        # === TASK 7: OPENING RANGE (OR) DETECTION ===
+        if OR_ENABLED and or_detector:
+            try:
+                # Adjust signal confidence based on OR classification
+                signal = or_detector.adjust_signal_confidence(signal)
+                
+                # Check if signal was filtered by wide OR threshold
+                if signal.get('or_filtered'):
+                    print(f"[OR] {ticker} FILTERED - {signal['or_filter_reason']}")
+                    return None
+                
+                # Log OR boost if applied
+                if 'or_boost' in signal and signal['or_boost'] > 0:
+                    or_data = signal.get('or', {})
+                    print(f"[OR-BOOST] {ticker} 🎯 | "
+                          f"Conf: +{signal['or_boost']*100:.0f}% | "
+                          f"OR Type: {or_data.get('classification', 'N/A')}")
+            
+            except Exception as e:
+                print(f"[OR] {ticker} error: {e}")
+        
         # === Phase 1.9: DATA-DRIVEN DTE SELECTION ===
         if DTE_SELECTOR_ENABLED and dte_selector:
             try:
@@ -583,6 +615,7 @@ class SignalGenerator:
         TASK 4: Shows ML confidence adjustments.
         TASK 5: Shows MTF validation scores.
         TASK 6: Shows UOA whale activity.
+        TASK 7: Shows OR classification and confidence adjustments.
         
         Args:
             signal: Signal dict from detector
@@ -649,6 +682,16 @@ class SignalGenerator:
             print(f"  Flow Score: {uoa['flow_score']:.1f}/10")
             print(f"  Confidence Boost: +{uoa['confidence_boost']*100:.1f}%")
             print(f"  Summary: {uoa['summary']}")
+        
+        # TASK 7: Show OR data
+        if 'or' in signal:
+            or_data = signal['or']
+            print(f"\nOpening Range (Task 7):")
+            print(f"  Classification: {or_data['classification']}")
+            print(f"  OR Range: ${or_data['or_range']:.2f} ({or_data['or_range_pct']:.2f}%)")
+            print(f"  ATR Ratio: {or_data['or_range_atr']:.2f}x")
+            print(f"  Confidence Adjustment: +{or_data['confidence_adjustment']*100:.0f}%")
+            print(f"  Min Confidence: {or_data['min_confidence']*100:.0f}%")
         
         if 'signal_id' in signal:
             print(f"Signal ID: {signal['signal_id']} (tracked in analytics DB)")
@@ -742,6 +785,10 @@ class SignalGenerator:
             uoa = signal['uoa']
             msg += f" (🐋 Whale: +{uoa['confidence_boost']*100:.1f}%)"
         
+        # Show OR boost if available
+        if 'or_boost' in signal and signal['or_boost'] > 0:
+            msg += f" (🎯 OR: +{signal['or_boost']*100:.0f}%)"
+        
         msg += "\n"
         msg += f"   Pattern: {signal.get('pattern', 'BOS/FVG Breakout')}\n"
         msg += f"   Timeframe: Multi-TF Convergence\n"
@@ -750,6 +797,12 @@ class SignalGenerator:
         if 'mtf' in signal:
             mtf = signal['mtf']
             msg += f"   MTF Score: {mtf['overall_score']}/10 (30m:{mtf['tf_scores']['30m']} 15m:{mtf['tf_scores']['15m']} 5m:{mtf['tf_scores']['5m']} 1m:{mtf['tf_scores']['1m']})\n"
+        
+        # Add OR classification if available
+        if 'or' in signal:
+            or_data = signal['or']
+            or_emoji = "🎯" if or_data['classification'] == 'TIGHT' else "⚠️" if or_data['classification'] == 'WIDE' else "✅"
+            msg += f"   OR Type: {or_emoji} {or_data['classification']} ({or_data['or_range_atr']:.2f}x ATR)\n"
         
         msg += "\n"
         
@@ -1040,6 +1093,7 @@ class SignalGenerator:
         Reset signal generator for new trading day.
         
         Phase 1.8: Now clears PDH/PDL cache in breakout detector.
+        TASK 7: Clears OR cache for new session.
         """
         self.recent_signals.clear()
         self.active_signals.clear()
@@ -1077,6 +1131,14 @@ class SignalGenerator:
                 uoa_detector.clear_cache()
             except Exception as e:
                 print(f"[SIGNALS] UOA cache clear error: {e}")
+        
+        # TASK 7: Clear OR cache
+        if OR_ENABLED and or_detector:
+            try:
+                or_detector.clear_cache()
+                print("[SIGNALS] OR cache cleared for new session")
+            except Exception as e:
+                print(f"[SIGNALS] OR cache clear error: {e}")
         
         print("[SIGNALS] Daily reset complete")
 
