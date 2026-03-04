@@ -123,41 +123,37 @@ class PerformanceReporter:
             return False
         
         try:
-            # Format message
-            message = f"""📊 **DAILY SUMMARY - {report['date']}**
-
-✅ **Trades:** {report['total_signals']} | W/L: {report['wins']}/{report['losses']} ({report['win_rate']}% WR)
-💰 **Total P&L:** {report['total_profit']:+.2f}%
-📈 **Avg Profit:** {report['avg_profit']:+.2f}%
-⏱️ **Avg Hold:** {report['avg_hold_minutes']}m
-"""
+            # Build message line by line
+            lines = []
+            lines.append(f"📊 **DAILY SUMMARY - {report['date']}**")
+            lines.append("")
+            lines.append(f"✅ **Trades:** {report['total_signals']} | W/L: {report['wins']}/{report['losses']} ({report['win_rate']}% WR)")
+            lines.append(f"💰 **Total P&L:** {report['total_profit']:+.2f}%")
+            lines.append(f"📈 **Avg Profit:** {report['avg_profit']:+.2f}%")
+            lines.append(f"⏱️ **Avg Hold:** {report['avg_hold_minutes']}m")
             
             # Pattern breakdown
             if report['pattern_stats']:
-                message += "
-📋 **Pattern Performance:**
-"
+                lines.append("")
+                lines.append("📋 **Pattern Performance:**")
                 for ps in report['pattern_stats']:
-                    message += f"  • {ps['pattern']}: {ps['count']} trades, {ps['wins']} wins, {ps['avg_profit']:+.2f}% avg
-"
+                    lines.append(f"  • {ps['pattern']}: {ps['count']} trades, {ps['wins']} wins, {ps['avg_profit']:+.2f}% avg")
             
             # Best trades
             if report['best_trades']:
-                message += "
-🏆 **Top Trades:**
-"
+                lines.append("")
+                lines.append("🏆 **Top Trades:**")
                 for ticker, pct, r, pattern in report['best_trades']:
-                    message += f"  • {ticker}: {pct:+.2f}% ({r:.2f}R) - {pattern}
-"
+                    lines.append(f"  • {ticker}: {pct:+.2f}% ({r:.2f}R) - {pattern}")
             
             # Worst trades
             if report['worst_trades']:
-                message += "
-⚠️ **Worst Trades:**
-"
+                lines.append("")
+                lines.append("⚠️ **Worst Trades:**")
                 for ticker, pct, r, pattern in report['worst_trades']:
-                    message += f"  • {ticker}: {pct:+.2f}% ({r:.2f}R) - {pattern}
-"
+                    lines.append(f"  • {ticker}: {pct:+.2f}% ({r:.2f}R) - {pattern}")
+            
+            message = "\n".join(lines)
             
             # Send to Discord
             payload = {"content": message}
