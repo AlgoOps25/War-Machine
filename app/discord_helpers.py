@@ -5,7 +5,7 @@ Handles all Discord webhook notifications.
 import requests
 from typing import Dict, Optional
 from datetime import datetime
-import config
+from utils import config
 
 
 def send_options_signal_alert(
