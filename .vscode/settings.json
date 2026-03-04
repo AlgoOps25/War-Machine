@@ -12,7 +12,7 @@
   "[python]": {
     "editor.formatOnSave": false,
     "editor.codeActionsOnSave": {
-      "source.organizeImports": false
+      "source.organizeImports": "never"
     }
   },
   "files.exclude": {
