@@ -1,7 +1,0 @@
-name,filters,description,trades,wins,losses,win_rate,profit_factor,total_pnl,avg_win,avg_loss
-Current Winner,"['price_range', 'bollinger_position']",Your current 90.9% WR config,0,0,0,0.0,0.0,0.0,0.0,0.0
-Best Single Config,"['price_range', 'rsi_threshold', 'bollinger_position']",The 94.4% WR config (18 trades),0,0,0,0.0,0.0,0.0,0.0,0.0
-ATR Variant,"['price_range', 'atr_threshold', 'bollinger_position']",Also showed 90.9% WR,0,0,0,0.0,0.0,0.0,0.0,0.0
-Trend + Price,"['price_range', 'trend_alignment']",Simple trend filter,0,0,0,0.0,0.0,0.0,0.0,0.0
-RSI + Bollinger,"['rsi_threshold', 'bollinger_position']",Pure momentum combo,0,0,0,0.0,0.0,0.0,0.0,0.0
-Volume + Trend,"['price_range', 'volume_surge', 'trend_alignment']",Volume confirmation,0,0,0,0.0,0.0,0.0,0.0,0.0
