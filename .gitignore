@@ -270,3 +270,58 @@ htmlcov/
 *.sqlite.backup
 
 
+
+# 
+# War Machine - Comprehensive Cleanup (2026-03-04)
+# 
+
+# Cache folders
+backtests/
+data_cache/
+database/
+backtest_cache*/
+*_cache/
+*.cache/
+
+# Results and outputs
+results/
+signal_outcomes.csv
+target_discovery_summary.txt
+*_summary.txt
+top_*.csv
+top_*.json
+optimal_*.json
+
+# Old databases
+*.db
+*.sqlite
+*.db.backup
+*.sqlite.backup
+market_memory.db
+war_machine.db
+
+# Python cache (root level should not exist)
+/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# ML model artifacts (keep only active models)
+models/*_v2.pkl
+models/*_rf.pkl
+models/label_encoders*.pkl
+models/feature_importance*.json
+models/model_metadata*.json
+models/feature_scaler.pkl
+
+# Large data files
+*.parquet
+cached_candles.json
+
+# Temporary/stale scripts
+cleanup_*.ps1
+organize_*.ps1
+rollback_*.ps1
+*_backup_*/
+production_indicator_backtest*.py
+
