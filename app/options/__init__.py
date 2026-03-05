@@ -9,6 +9,12 @@ based on:
 4. Risk/reward calculation
 5. Contract quantity sizing
 
+PHASE 1.14: Real EODHD Options Data Integration
+- Fetches real Greeks from EODHD API
+- Calculates IV Rank from 52-week IV range
+- Finds optimal strikes based on real delta values
+- Gets actual option prices (bid/ask midpoint)
+
 Usage:
     from app.options import build_options_trade, get_greeks
     
@@ -17,35 +23,21 @@ Usage:
         direction="CALL",
         confidence=75
     )
-    
-    # Returns:
-    # {
-    #     'ticker': 'NVDA',
-    #     'direction': 'CALL',
-    #     'strike': 485.0,
-    #     'expiration': '2026-03-20',
-    #     'dte': 15,
-    #     'contract': 'NVDA260320C00485000',
-    #     'price': 12.50,
-    #     'greeks': {...},
-    #     'iv_rank': 65,
-    #     'risk_reward': '1:2.5',
-    #     'quantity': 2
-    # }
 """
 import logging
 import os
+import requests
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
 
-# Tradier API configuration (free tier available)
-TRADIER_API_KEY = os.getenv('TRADIER_API_KEY', '')
-TRADIER_BASE_URL = 'https://api.tradier.com/v1'
+# EODHD API configuration
+EODHD_API_KEY = os.getenv('EODHD_API_KEY', '')
+EODHD_BASE_URL = 'https://eodhd.com/api'
 
-# Interactive Brokers configuration (if using IB for Greeks)
-IB_ENABLED = os.getenv('IB_ENABLED', 'false').lower() == 'true'
+# Request timeout
+REQUEST_TIMEOUT = 10
 
 
 def build_options_trade(
@@ -97,7 +89,7 @@ def build_options_trade(
     # STEP 3: SELECT STRIKE (BASED ON CONFIDENCE)
     # ══════════════════════════════════════════════════════════════════════════════
     target_delta = _confidence_to_delta(confidence)
-    strike = _select_strike(
+    strike, greeks = _select_strike_with_greeks(
         ticker=ticker,
         current_price=current_price,
         direction=direction,
@@ -106,15 +98,14 @@ def build_options_trade(
     )
     
     # ══════════════════════════════════════════════════════════════════════════════
-    # STEP 4: GET GREEKS AND IV RANK
+    # STEP 4: GET IV RANK
     # ══════════════════════════════════════════════════════════════════════════════
-    greeks = get_greeks(ticker, strike, expiration_date, direction)
     iv_rank = _get_iv_rank(ticker)
     
     # ══════════════════════════════════════════════════════════════════════════════
     # STEP 5: GET OPTION PRICE
     # ══════════════════════════════════════════════════════════════════════════════
-    option_price = _get_option_price(ticker, strike, expiration_date, direction)
+    option_price = greeks.get('price', 5.00)  # Use price from options chain
     
     # ══════════════════════════════════════════════════════════════════════════════
     # STEP 6: CALCULATE QUANTITY (RISK-BASED POSITION SIZING)
@@ -160,20 +151,67 @@ def build_options_trade(
 
 def get_greeks(ticker: str, strike: float = None, expiration: str = None, direction: str = "CALL") -> dict:
     """
-    Fetch Greeks for an option contract.
+    Fetch Greeks for an option contract from EODHD API.
     
     Returns:
-        dict: {'delta': 0.55, 'gamma': 0.03, 'theta': -0.12, 'vega': 0.25, 'iv': 45}
+        dict: {'delta': 0.55, 'gamma': 0.03, 'theta': -0.12, 'vega': 0.25, 'iv': 45, 'price': 12.50}
     """
-    # TODO: Implement Tradier or IB API call
-    # For now, return placeholder Greeks
+    if not EODHD_API_KEY:
+        logger.warning("[OPTIONS] EODHD_API_KEY not set - using placeholder Greeks")
+        return _get_placeholder_greeks()
+    
+    try:
+        # Fetch options chain
+        url = f"{EODHD_BASE_URL}/options/{ticker}.US"
+        params = {
+            'api_token': EODHD_API_KEY,
+            'date': expiration
+        }
+        
+        response = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
+        response.raise_for_status()
+        data = response.json()
+        
+        if not data or 'options' not in data:
+            logger.warning(f"[OPTIONS] No options data for {ticker}")
+            return _get_placeholder_greeks()
+        
+        # Find contract matching strike and direction
+        option_type = 'calls' if direction == "CALL" else 'puts'
+        contracts = data['options'][option_type] if option_type in data['options'] else []
+        
+        for contract in contracts:
+            if abs(contract.get('strike', 0) - strike) < 0.01:  # Match strike
+                return {
+                    'delta': contract.get('delta', 0.5),
+                    'gamma': contract.get('gamma', 0.03),
+                    'theta': contract.get('theta', -0.10),
+                    'vega': contract.get('vega', 0.20),
+                    'iv': contract.get('implied_volatility', 40),
+                    'price': (contract.get('bid', 0) + contract.get('ask', 0)) / 2,
+                    'bid': contract.get('bid', 0),
+                    'ask': contract.get('ask', 0),
+                    'volume': contract.get('volume', 0),
+                    'open_interest': contract.get('openInterest', 0)
+                }
+        
+        logger.warning(f"[OPTIONS] No matching contract for {ticker} ${strike} {direction}")
+        return _get_placeholder_greeks()
+        
+    except Exception as e:
+        logger.error(f"[OPTIONS] Failed to fetch Greeks for {ticker}: {e}")
+        return _get_placeholder_greeks()
+
+
+def _get_placeholder_greeks() -> dict:
+    """Return placeholder Greeks when API unavailable."""
     return {
         'delta': 0.50,
         'gamma': 0.03,
         'theta': -0.10,
         'vega': 0.20,
         'iv': 40,
-        'iv_rank': 50
+        'price': 5.00
     }
 
 
@@ -210,19 +248,59 @@ def _calculate_optimal_dte(confidence: float) -> int:
 
 def _get_nearest_expiration(ticker: str, target_dte: int) -> str:
     """
-    Find the nearest options expiration date to target DTE.
+    Find the nearest options expiration date to target DTE from EODHD API.
     
     Returns:
         str: Expiration date in YYYY-MM-DD format
     """
-    # TODO: Fetch real expirations from API
-    # For now, calculate next Friday (standard weekly expiration)
+    if not EODHD_API_KEY:
+        return _calculate_fallback_expiration(target_dte)
+    
+    try:
+        # Fetch available expirations from EODHD
+        url = f"{EODHD_BASE_URL}/options/{ticker}.US"
+        params = {'api_token': EODHD_API_KEY}
+        
+        response = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
+        response.raise_for_status()
+        data = response.json()
+        
+        if not data or 'expirations' not in data:
+            return _calculate_fallback_expiration(target_dte)
+        
+        # Find closest expiration to target DTE
+        today = datetime.now(ZoneInfo("America/New_York")).date()
+        target_date = today + timedelta(days=target_dte)
+        
+        closest_exp = None
+        min_diff = float('inf')
+        
+        for exp_str in data['expirations']:
+            exp_date = datetime.strptime(exp_str, '%Y-%m-%d').date()
+            diff = abs((exp_date - target_date).days)
+            if diff < min_diff:
+                min_diff = diff
+                closest_exp = exp_str
+        
+        if closest_exp:
+            return closest_exp
+        
+        return _calculate_fallback_expiration(target_dte)
+        
+    except Exception as e:
+        logger.warning(f"[OPTIONS] Failed to fetch expirations: {e}")
+        return _calculate_fallback_expiration(target_dte)
+
+
+def _calculate_fallback_expiration(target_dte: int) -> str:
+    """Calculate next Friday as fallback expiration."""
     today = datetime.now(ZoneInfo("America/New_York"))
-    days_ahead = target_dte
-    target_date = today + timedelta(days=days_ahead)
+    target_date = today + timedelta(days=target_dte)
     
     # Round to next Friday
     days_until_friday = (4 - target_date.weekday()) % 7
+    if days_until_friday == 0:
+        days_until_friday = 7  # If today is Friday, go to next Friday
     expiration = target_date + timedelta(days=days_until_friday)
     
     return expiration.strftime('%Y-%m-%d')
@@ -244,40 +322,97 @@ def _confidence_to_delta(confidence: float) -> float:
         return 0.45  # Conservative
 
 
-def _select_strike(
+def _select_strike_with_greeks(
     ticker: str,
     current_price: float,
     direction: str,
     target_delta: float,
     expiration: str
-) -> float:
+) -> tuple:
     """
-    Select strike price based on target delta.
+    Select strike price based on target delta using real options chain.
     
-    TODO: Use real options chain data to find strike matching target delta.
-    For now, use price-based approximation.
+    Returns:
+        tuple: (strike, greeks_dict)
     """
-    # Simplified strike selection (needs real options chain)
+    if not EODHD_API_KEY:
+        return _fallback_strike_selection(current_price, direction, target_delta)
+    
+    try:
+        # Fetch options chain
+        url = f"{EODHD_BASE_URL}/options/{ticker}.US"
+        params = {
+            'api_token': EODHD_API_KEY,
+            'date': expiration
+        }
+        
+        response = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
+        response.raise_for_status()
+        data = response.json()
+        
+        if not data or 'options' not in data:
+            return _fallback_strike_selection(current_price, direction, target_delta)
+        
+        # Get contracts based on direction
+        option_type = 'calls' if direction == "CALL" else 'puts'
+        contracts = data['options'].get(option_type, [])
+        
+        if not contracts:
+            return _fallback_strike_selection(current_price, direction, target_delta)
+        
+        # Find contract with delta closest to target
+        best_contract = None
+        min_delta_diff = float('inf')
+        
+        for contract in contracts:
+            contract_delta = abs(contract.get('delta', 0))  # Use absolute for puts
+            delta_diff = abs(contract_delta - target_delta)
+            
+            if delta_diff < min_delta_diff:
+                min_delta_diff = delta_diff
+                best_contract = contract
+        
+        if best_contract:
+            strike = best_contract.get('strike', current_price)
+            greeks = {
+                'delta': best_contract.get('delta', target_delta),
+                'gamma': best_contract.get('gamma', 0.03),
+                'theta': best_contract.get('theta', -0.10),
+                'vega': best_contract.get('vega', 0.20),
+                'iv': best_contract.get('implied_volatility', 40),
+                'price': (best_contract.get('bid', 0) + best_contract.get('ask', 0)) / 2,
+                'bid': best_contract.get('bid', 0),
+                'ask': best_contract.get('ask', 0),
+                'volume': best_contract.get('volume', 0),
+                'open_interest': best_contract.get('openInterest', 0)
+            }
+            return strike, greeks
+        
+        return _fallback_strike_selection(current_price, direction, target_delta)
+        
+    except Exception as e:
+        logger.error(f"[OPTIONS] Failed to fetch options chain: {e}")
+        return _fallback_strike_selection(current_price, direction, target_delta)
+
+
+def _fallback_strike_selection(current_price: float, direction: str, target_delta: float) -> tuple:
+    """Fallback strike selection when API unavailable."""
     if direction == "CALL":
-        # For calls, ATM = delta ~0.50, higher strikes = lower delta
-        # Delta 0.65: ~2% OTM
-        # Delta 0.55: ~3% OTM
-        # Delta 0.45: ~5% OTM
         if target_delta >= 0.60:
-            strike = current_price * 1.02  # 2% OTM
+            strike = current_price * 1.02
         elif target_delta >= 0.50:
-            strike = current_price * 1.03  # 3% OTM
+            strike = current_price * 1.03
         else:
-            strike = current_price * 1.05  # 5% OTM
-    else:  # PUT
+            strike = current_price * 1.05
+    else:
         if target_delta >= 0.60:
-            strike = current_price * 0.98  # 2% OTM
+            strike = current_price * 0.98
         elif target_delta >= 0.50:
-            strike = current_price * 0.97  # 3% OTM
+            strike = current_price * 0.97
         else:
-            strike = current_price * 0.95  # 5% OTM
+            strike = current_price * 0.95
     
-    # Round to nearest strike increment ($5 for high-priced stocks, $1 otherwise)
+    # Round to nearest strike increment
     if current_price > 200:
         strike = round(strike / 5) * 5
     elif current_price > 100:
@@ -285,30 +420,10 @@ def _select_strike(
     else:
         strike = round(strike)
     
-    return strike
-
-
-def _get_option_price(ticker: str, strike: float, expiration: str, direction: str) -> float:
-    """
-    Get option price (mid-point of bid/ask).
+    greeks = _get_placeholder_greeks()
+    greeks['delta'] = target_delta
     
-    TODO: Fetch from Tradier or IB API.
-    For now, estimate based on intrinsic + time value.
-    """
-    # Placeholder pricing (needs real options data)
-    current_price = _get_current_price(ticker)
-    if current_price is None:
-        return 5.00  # Default estimate
-    
-    # Simple intrinsic + time value estimate
-    if direction == "CALL":
-        intrinsic = max(0, current_price - strike)
-    else:
-        intrinsic = max(0, strike - current_price)
-    
-    time_value = 2.50  # Rough estimate (depends on IV and DTE)
-    
-    return intrinsic + time_value
+    return strike, greeks
 
 
 def _get_iv_rank(ticker: str) -> float:
@@ -317,11 +432,56 @@ def _get_iv_rank(ticker: str) -> float:
     
     IV Rank formula:
     (Current IV - 1Y Low IV) / (1Y High IV - 1Y Low IV) * 100
-    
-    TODO: Fetch real IV data from Tradier/IB.
     """
-    # Placeholder - return moderate IV rank
-    return 50.0
+    if not EODHD_API_KEY:
+        return 50.0
+    
+    try:
+        # Fetch historical IV data (52 weeks)
+        end_date = datetime.now(ZoneInfo("America/New_York"))
+        start_date = end_date - timedelta(days=365)
+        
+        url = f"{EODHD_BASE_URL}/options/{ticker}.US"
+        params = {
+            'api_token': EODHD_API_KEY,
+            'from': start_date.strftime('%Y-%m-%d'),
+            'to': end_date.strftime('%Y-%m-%d')
+        }
+        
+        response = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
+        response.raise_for_status()
+        data = response.json()
+        
+        if not data or 'options' not in data:
+            return 50.0
+        
+        # Extract IV values from ATM options
+        iv_values = []
+        for date_data in data.get('options', []):
+            calls = date_data.get('calls', [])
+            if calls:
+                # Get ATM call IV
+                atm_call = min(calls, key=lambda x: abs(x.get('strike', 0) - x.get('last', 0)))
+                iv = atm_call.get('implied_volatility', 0)
+                if iv > 0:
+                    iv_values.append(iv)
+        
+        if len(iv_values) < 10:  # Need at least 10 data points
+            return 50.0
+        
+        current_iv = iv_values[-1]
+        min_iv = min(iv_values)
+        max_iv = max(iv_values)
+        
+        if max_iv == min_iv:
+            return 50.0
+        
+        iv_rank = ((current_iv - min_iv) / (max_iv - min_iv)) * 100
+        return round(iv_rank, 1)
+        
+    except Exception as e:
+        logger.warning(f"[OPTIONS] Failed to calculate IV rank: {e}")
+        return 50.0
 
 
 def _calculate_quantity(option_price: float, max_risk: float) -> int:
