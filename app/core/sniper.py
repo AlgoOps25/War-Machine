@@ -41,7 +41,7 @@ from app.filters.early_session_disqualifier import should_skip_cfw6_or_early
 
 if False:  # type: ignore[truthy-function]
     from signal_analytics import signal_tracker
-    from performance_monitor import performance_monitor
+    from app.analytics.performance_monitor import performance_monitor
     from performance_alerts import alert_manager
 
 def compute_confidence(grade: str, timeframe: str, ticker: str) -> float:
@@ -68,7 +68,7 @@ def compute_confidence(grade: str, timeframe: str, ticker: str) -> float:
 # ══════════════════════════════════════════════════════════════════════════════
 try:
     from signal_analytics import signal_tracker
-    from performance_monitor import performance_monitor
+    from app.analytics.performance_monitor import performance_monitor
     from performance_alerts import alert_manager
     PHASE_4_ENABLED = True
     print("[SIGNALS] ✅ Phase 4 monitoring enabled (analytics + performance + alerts)")
@@ -128,7 +128,7 @@ print("[SNIPER] ✅ Options pre-validation gate enabled (via validation.py)")
 # Non-fatal import: sniper works normally if MTF system unavailable.
 # ────────────────────────────────────────────────────────────────────────────────
 try:
-    from mtf_integration import enhance_signal_with_mtf, print_mtf_stats
+    from app.mtf.mtf_integration import enhance_signal_with_mtf, print_mtf_stats
     MTF_ENABLED = True
     print("[SNIPER] ✅ MTF convergence boost enabled")
 except ImportError:
@@ -144,7 +144,7 @@ except ImportError:
 # Non-fatal import: sniper works normally if priority resolver unavailable.
 # ────────────────────────────────────────────────────────────────────────────────
 try:
-    from mtf_fvg_priority import get_highest_priority_fvg, get_full_mtf_analysis, print_priority_stats
+    from app.mtf.mtf_fvg_priority import get_highest_priority_fvg, get_full_mtf_analysis, print_priority_stats
     MTF_PRIORITY_ENABLED = True
     print("[SNIPER] ✅ MTF FVG priority resolver enabled")
 except ImportError:
