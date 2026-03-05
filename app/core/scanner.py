@@ -3,6 +3,7 @@ Scanner Module - Intelligent Watchlist Builder & Scanner Loop
 INTEGRATED: Adaptive Watchlist Funnel, Pre-Market Scanner, Position Monitoring, Database Cleanup
 CANDLE CACHE: Cache-aware startup with 95%+ API reduction
 OUTCOME TRACKING: Signal deduplication, ML predictions, EOD reports
+DYNAMIC WS SUBSCRIPTION: Live session ticker subscription with bar prefetch
 """
 import os
 import time
@@ -139,6 +140,49 @@ def monitor_open_positions():
     position_manager.check_exits(current_prices)
 
 
+def subscribe_and_prefetch_tickers(new_tickers: list):
+    """
+    Subscribe new tickers to WebSocket feeds and prefetch their bar data.
+    
+    Args:
+        new_tickers: List of ticker symbols to subscribe and prefetch
+    
+    This function:
+    1. Subscribes tickers to WS bar feed (5m candles)
+    2. Subscribes tickers to WS quote feed (bid/ask/spread)
+    3. Prefetches 30 days of historical bars (cached)
+    4. Prefetches today's intraday bars
+    5. Waits 3 seconds for initial WS bars to flow
+    """
+    if not new_tickers:
+        return
+    
+    try:
+        # Step 1: Subscribe to WebSocket feeds
+        subscribe_tickers(new_tickers)
+        subscribe_quote_tickers(new_tickers)
+        print(f"[WS-SUBSCRIBE] ✅ Subscribed {len(new_tickers)} new tickers: {', '.join(new_tickers)}")
+        
+        # Step 2: Prefetch historical bars (cached, fast)
+        print(f"[PREFETCH] Fetching 30d historical bars for {len(new_tickers)} tickers...")
+        data_manager.startup_backfill_with_cache(new_tickers, days=30)
+        
+        # Step 3: Prefetch today's intraday bars
+        print(f"[PREFETCH] Fetching today's intraday bars for {len(new_tickers)} tickers...")
+        data_manager.startup_intraday_backfill_today(new_tickers)
+        
+        # Step 4: Wait for initial WebSocket bars to flow
+        print(f"[WS-SUBSCRIBE] Waiting 3s for initial bars to flow...")
+        time.sleep(3)
+        
+        print(f"[WS-SUBSCRIBE] ✅ Prefetch complete for {len(new_tickers)} tickers")
+        
+    except Exception as e:
+        print(f"[WS-SUBSCRIBE] ⚠️ Error subscribing/prefetching tickers: {e}")
+        import traceback
+        traceback.print_exc()
+
+
 def start_scanner_loop():
     from app.core.sniper import process_ticker, clear_armed_signals, clear_watching_signals
     from app.discord_helpers import send_simple_message
@@ -160,6 +204,7 @@ def start_scanner_loop():
     print(f"Candle Cache:  ✅ ENABLED (95%+ API reduction on redeploy)")
     print(f"WS Failover:   ✅ ENABLED (REST API fallback on disconnect)")
     print(f"Spread Gate:   ✅ ENABLED (us-quote bid/ask filter active)")
+    print(f"Dynamic WS:    ✅ ENABLED (live session ticker subscription)")
     print(f"{'='*60}\n")
 
     try:
@@ -172,6 +217,7 @@ def start_scanner_loop():
     cycle_count         = 0
     last_report_day     = None
     loss_streak_alerted = False
+    last_subscribed_watchlist = set()  # Track subscribed tickers to detect changes
 
     # ── STARTUP SEQUENCE ─────────────────────────────────────────────────────
     startup_watchlist = list(EMERGENCY_FALLBACK)
@@ -190,6 +236,7 @@ def start_scanner_loop():
     data_manager.startup_backfill_with_cache(startup_watchlist, days=30)
     data_manager.startup_intraday_backfill_today(startup_watchlist)
     set_backfill_complete()
+    last_subscribed_watchlist = set(startup_watchlist)  # Initialize with startup tickers
     # ──────────────────────────────────────────────────────────────────────────
 
     while True:
@@ -208,8 +255,16 @@ def start_scanner_loop():
                         volume_signals      = watchlist_data['volume_signals']
 
                         premarket_built = True
-                        subscribe_tickers(premarket_watchlist)
-                        subscribe_quote_tickers(premarket_watchlist)
+                        
+                        # Subscribe new tickers and update tracking
+                        current_set = set(premarket_watchlist)
+                        new_tickers = list(current_set - last_subscribed_watchlist)
+                        if new_tickers:
+                            subscribe_and_prefetch_tickers(new_tickers)
+                        else:
+                            subscribe_tickers(premarket_watchlist)
+                            subscribe_quote_tickers(premarket_watchlist)
+                        last_subscribed_watchlist = current_set
 
                         print(
                             f"[WS] Subscribed premarket watchlist "
@@ -256,8 +311,16 @@ def start_scanner_loop():
                         try:
                             watchlist_data      = get_watchlist_with_metadata(force_refresh=True)
                             premarket_watchlist = watchlist_data['watchlist']
-                            subscribe_tickers(premarket_watchlist)
-                            subscribe_quote_tickers(premarket_watchlist)
+                            
+                            # Subscribe new tickers and update tracking
+                            current_set = set(premarket_watchlist)
+                            new_tickers = list(current_set - last_subscribed_watchlist)
+                            if new_tickers:
+                                subscribe_and_prefetch_tickers(new_tickers)
+                            else:
+                                subscribe_tickers(premarket_watchlist)
+                                subscribe_quote_tickers(premarket_watchlist)
+                            last_subscribed_watchlist = current_set
 
                             metadata = watchlist_data['metadata']
                             print(
@@ -328,6 +391,19 @@ def start_scanner_loop():
 
                 optimal_size = calculate_optimal_watchlist_size()
                 watchlist    = watchlist[:optimal_size]
+
+                # ══════════════════════════════════════════════════════════════════════════════
+                # FIX ISSUE #1: DYNAMIC WEBSOCKET SUBSCRIPTION DURING LIVE SESSION
+                # Detect new tickers in watchlist and subscribe them to WS feeds + prefetch bars
+                # ══════════════════════════════════════════════════════════════════════════════
+                current_set = set(watchlist)
+                new_tickers = list(current_set - last_subscribed_watchlist)
+                
+                if new_tickers:
+                    print(f"[WS-SUBSCRIBE] 🔄 Detected {len(new_tickers)} new watchlist tickers")
+                    subscribe_and_prefetch_tickers(new_tickers)
+                    last_subscribed_watchlist = current_set
+                # ══════════════════════════════════════════════════════════════════════════════
 
                 print(
                     f"[SCANNER] {len(watchlist)} tickers | "
@@ -472,6 +548,7 @@ def start_scanner_loop():
                     premarket_built     = False
                     cycle_count         = 0
                     loss_streak_alerted = False
+                    last_subscribed_watchlist = set()  # Reset subscription tracking
 
                     clear_armed_signals()
                     clear_watching_signals()
