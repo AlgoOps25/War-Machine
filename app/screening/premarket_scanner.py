@@ -393,7 +393,8 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
                     if bars:
                         current_bar = bars[-1]
                         print(f"[PREMARKET] {ticker}: WS miss → DB bar used (pre-market fallback)")
-                except Exception:
+                except Exception as e:
+                    print(f"[PREMARKET] {ticker}: DB fallback error: {e}")
                     pass
 
             # Fallback 2: EODHD real-time REST quote
@@ -411,7 +412,10 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
                             'volume': rt.get('volume', 0)
                         }
                         print(f"[PREMARKET] {ticker}: WS+DB miss → REST quote used")
-                except Exception:
+                    else:
+                        print(f"[PREMARKET] {ticker}: REST API failed (HTTP {rt_resp.status_code})")
+                except Exception as e:
+                    print(f"[PREMARKET] {ticker}: REST fallback error: {e}")
                     pass
 
             if not current_bar:
@@ -419,7 +423,8 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
 
             price  = current_bar.get('close', 0)
             volume = current_bar.get('volume', 0)
-        except Exception:
+        except Exception as e:
+            print(f"[PREMARKET] {ticker}: Fatal error in bar resolution: {e}")
             return None
     else:
         return None
@@ -590,7 +595,7 @@ def print_momentum_summary(scored_tickers: List[Dict], top_n: int = 10):
     """
     Print formatted summary of top N movers.
     Compatibility function for watchlist_funnel.py.
-    
+
     TASK 12: Enhanced with gap/catalyst/sector info.
     
     Args:
