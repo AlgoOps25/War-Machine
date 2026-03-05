@@ -196,15 +196,13 @@ def backtest_signals_from_candles(
         for i in range(window_size, len(candles) - 30):
             window = candles[i-window_size:i]
             
-            # Detect BOS pattern
-            has_bos, direction = detect_bos_pattern(window)
+            # Detect BOS pattern (RELAXED)
+            has_bos, direction = detect_bos_pattern_relaxed(window)
             if not has_bos:
                 continue
             
-            # Detect FVG
+            # FVG is optional now - just having strong momentum is enough
             has_fvg, fvg_data = detect_fvg_pattern(window, direction)
-            if not has_fvg:
-                continue
             
             # Calculate features
             signal_bar = candles[i]
@@ -215,11 +213,14 @@ def backtest_signals_from_candles(
             avg_volume = sum(b['volume'] for b in window) / len(window)
             volume_ratio = signal_bar['volume'] / avg_volume if avg_volume > 0 else 1.0
             
-            # Base confidence
-            base_confidence = 0.55 + (0.1 if volume_ratio > 2.0 else 0)
-            
-            if base_confidence < 0.50:
-                continue
+            # Base confidence - higher if has FVG + volume
+            base_confidence = 0.50
+            if has_fvg:
+                base_confidence += 0.08
+            if volume_ratio > 1.5:
+                base_confidence += 0.05
+            if volume_ratio > 2.5:
+                base_confidence += 0.05
             
             # Track outcome
             outcome = calculate_signal_outcome(
@@ -231,34 +232,37 @@ def backtest_signals_from_candles(
             )
             
             # Store signal
+            pattern_type = 'BOS+FVG' if has_fvg else 'BOS'
             signals.append({
                 'ticker': ticker,
                 'timestamp': signal_time,
                 'direction': direction,
                 'entry_price': entry_price,
-                'confidence': base_confidence,
+                'confidence': min(base_confidence, 0.75),  # Cap at 75%
                 'volume_ratio': volume_ratio,
-                'pattern_type': 'BOS+FVG',
+                'pattern_type': pattern_type,
                 'outcome': outcome['result'],
                 'pnl_pct': outcome['pnl_pct'],
                 'exit_price': outcome['exit_price'],
                 'bars_held': outcome['bars_held']
             })
             
-            if len(signals) >= min_signals * 2:
+            if len(signals) >= min_signals * 3:  # Get extra samples
                 break
         
         # Return best signals
         signals.sort(key=lambda x: x['confidence'], reverse=True)
-        return signals[:min_signals * 2]
+        return signals[:min(len(signals), min_signals * 2)]
         
     except Exception as e:
         logger.error(f"Error in backtest: {e}")
+        import traceback
+        traceback.print_exc()
         return signals
 
 
-def detect_bos_pattern(candles: List[Dict]) -> Tuple[bool, str]:
-    """Detect Break of Structure pattern."""
+def detect_bos_pattern_relaxed(candles: List[Dict]) -> Tuple[bool, str]:
+    """Detect Break of Structure pattern - RELAXED VERSION."""
     if len(candles) < 10:
         return False, None
     
@@ -268,20 +272,38 @@ def detect_bos_pattern(candles: List[Dict]) -> Tuple[bool, str]:
     prior_low = min(c['low'] for c in candles[-20:-10])
     
     latest = candles[-1]
+    prev = candles[-2]
     
-    # Bullish BOS
-    if latest['close'] > prior_high and latest['close'] > recent_high * 1.002:
-        return True, "BULLISH"
+    # Bullish BOS - just need to break recent high with momentum
+    if latest['close'] > recent_high:
+        # Check for momentum (green bar)
+        if latest['close'] > latest['open']:
+            return True, "BULLISH"
     
-    # Bearish BOS
-    if latest['close'] < prior_low and latest['close'] < recent_low * 0.998:
-        return True, "BEARISH"
+    # Bearish BOS - just need to break recent low with momentum
+    if latest['close'] < recent_low:
+        # Check for momentum (red bar)
+        if latest['close'] < latest['open']:
+            return True, "BEARISH"
+    
+    # Also detect strong directional moves
+    price_change = (latest['close'] - candles[-5]['close']) / candles[-5]['close']
+    
+    # Bullish strong move (>0.5% in 5 bars)
+    if price_change > 0.005:
+        if latest['close'] > latest['open']:  # Confirm with green bar
+            return True, "BULLISH"
+    
+    # Bearish strong move (>0.5% in 5 bars)
+    if price_change < -0.005:
+        if latest['close'] < latest['open']:  # Confirm with red bar
+            return True, "BEARISH"
     
     return False, None
 
 
 def detect_fvg_pattern(candles: List[Dict], direction: str) -> Tuple[bool, Dict]:
-    """Detect Fair Value Gap pattern."""
+    """Detect Fair Value Gap pattern (optional)."""
     if len(candles) < 3:
         return False, {}
     
@@ -308,6 +330,9 @@ def calculate_signal_outcome(
     target_pct: float = 0.03
 ) -> Dict:
     """Track signal outcome over future candles."""
+    if not future_candles:
+        return {'result': 'BREAKEVEN', 'exit_price': entry_price, 'pnl_pct': 0, 'bars_held': 0}
+    
     if direction == "BULLISH":
         stop_price = entry_price * (1 - stop_loss_pct)
         target_price = entry_price * (1 + target_pct)
