@@ -17,6 +17,11 @@ NEW in v3.1:
   - Switched from get_dynamic_watchlist() to get_scored_tickers()
   - Now receives full metadata: rvol, rvol_tier, dollar_vol_m, sector
   - Can apply downstream filters on dollar-vol, RVOL tier, sector diversity
+
+NEW in v3.2:
+  - Fixed live session max_tickers cap (10 → 20) to allow more discovery
+  - Reduced live session min_score (55 → 25) to match actual usage
+  - Added dynamic expansion when insufficient tickers pass scoring
 """
 import sys
 from pathlib import Path
@@ -74,8 +79,8 @@ class WatchlistFunnel:
             "live": {
                 "time_start": time(9, 30),
                 "time_end": time(16, 0),
-                "max_tickers": 10,
-                "min_score": 55.0,
+                "max_tickers": 20,  # INCREASED from 10 to allow more discovery
+                "min_score": 25.0,  # REDUCED from 55.0 to match actual usage
                 "description": "Live session - Active movers"
             }
         }
@@ -302,35 +307,56 @@ class WatchlistFunnel:
         return watchlist
     
     def _build_live_watchlist(self) -> List[str]:
-        """Live session: Top 10 active movers based on real-time momentum.
+        """Live session: Top 10-20 active movers based on real-time momentum.
         
-        BUGFIX: Lower min_score threshold for live session.
-        During live session, screener tickers don't have premarket gap/catalyst data,
-        so composite_score is primarily volume-based (~20-40 range for new movers).
-        Using min_score=55.0 filters out all candidates. Use 30.0 to allow discovery.
+        BUGFIX v3.2: 
+        - Increased max_tickers to 20 (from 10) to allow more discovery
+        - Lowered min_score to 25.0 (from 55.0) since live tickers don't have premarket data
+        - Added dynamic expansion: if < 10 tickers pass, fetch more candidates
         """
         stage_config = self.stages["live"]
         
         # Get fresh scored tickers from screener (uses cache if recent)
         screener_results = dynamic_screener.get_scored_tickers(
-            max_tickers=30,
+            max_tickers=50,  # INCREASED from 30 to get more candidates
             min_score=0,
             force_refresh=False
         )
-        candidates = [t['ticker'] for t in screener_results[:30]]
+        candidates = [t['ticker'] for t in screener_results[:50]]
         
         print(f"[FUNNEL] Live session: scanning {len(candidates)} candidates from screener")
         
         # Score candidates with professional scanner
-        # Use lower threshold (30.0) for live discovery - these tickers don't have
+        # Use lower threshold (25.0) for live discovery - these tickers don't have
         # premarket momentum data, so scores will be in 20-50 range initially
         self.scored_tickers = momentum_screener.run_momentum_screener(
             candidates,
-            min_composite_score=30.0,  # LOWERED from 55.0 to allow live discovery
+            min_composite_score=stage_config["min_score"],  # Now 25.0 (matches config)
             use_cache=True
         )
         
-        print(f"[FUNNEL] {len(self.scored_tickers)} tickers passed scoring (min_score=30.0)")
+        print(f"[FUNNEL] {len(self.scored_tickers)} tickers passed scoring (min_score={stage_config['min_score']})")
+        
+        # DYNAMIC EXPANSION: If we have fewer than 10 tickers, fetch more candidates
+        if len(self.scored_tickers) < 10:
+            print(f"[FUNNEL] ⚠️  Only {len(self.scored_tickers)} tickers passed scoring, expanding search...")
+            
+            # Try fetching more candidates with lower screener score threshold
+            expanded_results = dynamic_screener.get_scored_tickers(
+                max_tickers=100,
+                min_score=0,
+                force_refresh=True
+            )
+            expanded_candidates = [t['ticker'] for t in expanded_results[:100]]
+            
+            # Re-score with even lower threshold
+            self.scored_tickers = momentum_screener.run_momentum_screener(
+                expanded_candidates,
+                min_composite_score=15.0,  # Emergency low threshold
+                use_cache=True
+            )
+            
+            print(f"[FUNNEL] Expanded search returned {len(self.scored_tickers)} tickers (min_score=15.0)")
         
         # Boost tickers with active volume signals
         volume_signals = self.volume_analyzer.get_active_signals()
@@ -342,6 +368,7 @@ class WatchlistFunnel:
         
         self.scored_tickers.sort(key=lambda x: x['composite_score'], reverse=True)
         
+        # Return top N (up to max_tickers, now 20)
         watchlist = momentum_screener.get_top_n_movers(
             self.scored_tickers,
             n=stage_config["max_tickers"]
