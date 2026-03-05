@@ -1,4 +1,4 @@
-﻿"""
+"""
 MTF Timeframe Compression Module
 Unified compression logic for multi-timeframe analysis
 
@@ -18,7 +18,7 @@ the most powerful one."
 This module enables that multi-timeframe scanning capability.
 """
 
-from typing import List, Dict
+from typing import List, Dict, Optional
 from datetime import timedelta
 
 # Add these functions to app/mtf/mtf_compression.py

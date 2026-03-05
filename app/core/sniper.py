@@ -20,7 +20,7 @@
 # REGIME FILTER: VIX/SPY market condition detection — avoids bad tape
 # EXPLOSIVE MOVER OVERRIDE: Score ≥80 + RVOL ≥4.0x bypasses regime filter for extreme opportunities
 # CORRELATION CHECK: Sector-aware over-leverage prevention
-# PHASE 4 MONITORING: Live performance dashboard, circuit breaker, risk alerts
+# PHASE 4 MONITORING: Live performance dashboard, risk alerts
 # HOURLY GATE: Time-based confidence adjustment from historical win rates
 import traceback
 import requests
@@ -41,7 +41,7 @@ from app.filters.early_session_disqualifier import should_skip_cfw6_or_early
 
 if False:  # type: ignore[truthy-function]
     from signal_analytics import signal_tracker
-    from performance_monitor import performance_monitor
+    from app.analytics.performance_monitor import performance_monitor
     from performance_alerts import alert_manager
 
 def compute_confidence(grade: str, timeframe: str, ticker: str) -> float:
@@ -68,7 +68,7 @@ def compute_confidence(grade: str, timeframe: str, ticker: str) -> float:
 # ══════════════════════════════════════════════════════════════════════════════
 try:
     from signal_analytics import signal_tracker
-    from performance_monitor import performance_monitor
+    from app.analytics.performance_monitor import performance_monitor
     from performance_alerts import alert_manager
     PHASE_4_ENABLED = True
     print("[SIGNALS] ✅ Phase 4 monitoring enabled (analytics + performance + alerts)")
@@ -128,7 +128,7 @@ print("[SNIPER] ✅ Options pre-validation gate enabled (via validation.py)")
 # Non-fatal import: sniper works normally if MTF system unavailable.
 # ────────────────────────────────────────────────────────────────────────────────
 try:
-    from mtf_integration import enhance_signal_with_mtf, print_mtf_stats
+    from app.mtf.mtf_integration import enhance_signal_with_mtf, print_mtf_stats
     MTF_ENABLED = True
     print("[SNIPER] ✅ MTF convergence boost enabled")
 except ImportError:
@@ -144,7 +144,7 @@ except ImportError:
 # Non-fatal import: sniper works normally if priority resolver unavailable.
 # ────────────────────────────────────────────────────────────────────────────────
 try:
-    from mtf_fvg_priority import get_highest_priority_fvg, get_full_mtf_analysis, print_priority_stats
+    from app.mtf.mtf_fvg_priority import get_highest_priority_fvg, get_full_mtf_analysis, print_priority_stats
     MTF_PRIORITY_ENABLED = True
     print("[SNIPER] ✅ MTF FVG priority resolver enabled")
 except ImportError:
@@ -1299,29 +1299,6 @@ def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high,
         print(f"[ARM] ⚠️ {ticker} stop too tight — skipping")
         return
 
-    # ══════════════════════════════════════════════════════════════════════════════
-    # PHASE 4 INTEGRATION POINT #5 - Circuit Breaker Check
-    # ══════════════════════════════════════════════════════════════════════════════
-    if PHASE_4_ENABLED and performance_monitor:
-        try:
-            cb_status = performance_monitor.get_circuit_breaker_status()
-            if cb_status['triggered']:
-                print(
-                    f"[ARM] 🛑 CIRCUIT BREAKER TRIGGERED: {ticker} signal blocked\n"
-                    f"      Daily loss: {cb_status['current_loss_pct']:.2f}% / "
-                    f"trigger at {cb_status['trigger_threshold_pct']:.2f}%"
-                )
-                return  # Block this signal
-            
-            # Warn if approaching trigger
-            if cb_status['warning_level'] in ['WARNING', 'CRITICAL']:
-                print(
-                    f"[ARM] ⚠️  CIRCUIT BREAKER {cb_status['warning_level']}: "
-                    f"{cb_status['distance_to_trigger_pct']:.2f}% from trigger"
-                )
-        except Exception as e:
-            print(f"[PHASE 4] Circuit breaker check error: {e}")
-
     open_positions = position_manager.get_open_positions()
 
     # ══════════════════════════════════════════════════════════════════════════════
@@ -1426,7 +1403,7 @@ def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high,
     print(f"[ARMED] {ticker} ID:{position_id}")
     
     # ══════════════════════════════════════════════════════════════════════════════
-    # PHASE 4 INTEGRATION POINT #6 - Check Alerts After Position Opens
+    # PHASE 4 INTEGRATION POINT #5 - Check Alerts After Position Opens
     # ══════════════════════════════════════════════════════════════════════════════
     if PHASE_4_ENABLED and alert_manager:
         try:
