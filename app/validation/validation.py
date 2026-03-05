@@ -1,26 +1,58 @@
-﻿"""" 
-Unified Validation Module
+"""
+═══════════════════════════════════════════════════════════════════════════════
+UNIFIED VALIDATION MODULE - PRODUCTION
+═══════════════════════════════════════════════════════════════════════════════
 
 Consolidates signal_validator.py + regime_filter.py + options_filter.py
-into a single validation interface.
+into a single validation interface with comprehensive multi-indicator confirmation.
 
 PHASE 3A CONSOLIDATION (Feb 26, 2026):
-  - Merged 3 files â†’ 1 active module
-  - 72KB â†’ ~65KB (eliminated duplicate imports)
+  - Merged 3 files → 1 active module
+  - 72KB → ~65KB (eliminated duplicate imports)
   - Single source of truth for all validation
   - Compatibility stubs maintain zero breaking changes
 
-Validation Layers:
+VALIDATION CONFIGURATION:
+  • Minimum Final Confidence: 50% (configurable via min_final_confidence)
+  • Minimum ADX: 25.0 (trending markets)
+  • Minimum Volume Ratio: 1.5x average
+  • Daily Bias Penalty: -25% for counter-trend (VPVR can rescue)
+  • Regime Penalty: -30% for unfavorable market conditions
+  • VIX Threshold: 30+ = VOLATILE regime (unfavorable)
+  • ADX Threshold: 25+ = TRENDING regime (favorable)
+
+CONFIDENCE ADJUSTMENTS:
+  Boosts (additive):
+    +10%: Volume 2x+ average
+    +8%:  VPVR strong entry (0.85+ score)
+    +7%:  EMA full stack alignment
+    +5%:  Multiple indicators (ADX 40+, bias aligned, divergence, time zones)
+  
+  Penalties (subtractive):
+    -30%: Unfavorable regime (CHOPPY/VOLATILE)
+    -25%: Strong counter-trend to daily bias (rescuable by VPVR 0.85+)
+    -10%: DMI conflict
+    -8%:  Weak volume
+    -5%:  Various indicator conflicts
+
+VALIDATION LAYERS:
   1. SignalValidator - Multi-indicator CFW6 confirmation
   2. RegimeFilter - Market condition detection (VIX/SPY)
-  3. OptionsFilter - Options chain analysis
+  3. OptionsFilter - Options chain analysis with IVR/UOA/GEX
 
-Usage:
+USAGE:
   from validation import get_validator, get_regime_filter, get_options_filter
   
-  # Signal validation
-  validator = get_validator()
+  # Signal validation with automatic filtering
+  validator = get_validator()  # Uses 50% minimum confidence
   should_pass, conf, metadata = validator.validate_signal(...)
+  
+  # Print formatted summary for monitoring
+  if should_pass:
+      validator.print_validation_summary(ticker, metadata)
+  
+  # Custom threshold (aggressive: 40%, conservative: 65%)
+  validator = SignalValidator(min_final_confidence=0.65, strict_mode=True)
   
   # Regime filtering
   regime_filter = get_regime_filter()
@@ -30,6 +62,8 @@ Usage:
   # Options validation
   options_filter = get_options_filter()
   is_valid, data, reason = options_filter.validate_signal_for_options(...)
+
+═══════════════════════════════════════════════════════════════════════════════
 """
 
 from typing import Dict, List, Optional, Tuple
@@ -80,9 +114,9 @@ except ImportError:
     vpvr_calculator = None
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ══════════════════════════════════════════════════════════════════════════════
 # REGIME FILTER (from regime_filter.py)
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ══════════════════════════════════════════════════════════════════════════════
 
 @dataclass
 class RegimeState:
@@ -291,8 +325,8 @@ class RegimeFilter:
     def print_regime_summary(self) -> None:
         """Print formatted regime summary to console."""
         state = self.get_regime_state()
-        emoji = {"TRENDING": "ðŸ“ˆ" if state.favorable else "ðŸ“‰", "CHOPPY": "ã€°ï¸", "VOLATILE": "âš¡"}[state.regime]
-        status = "âœ… FAVORABLE" if state.favorable else "ðŸš« UNFAVORABLE"
+        emoji = {"TRENDING": "📈" if state.favorable else "📉", "CHOPPY": "〰️", "VOLATILE": "⚡"}[state.regime]
+        status = "✅ FAVORABLE" if state.favorable else "🚫 UNFAVORABLE"
         
         print("\n" + "=" * 70)
         print(f"{emoji}  MARKET REGIME: {state.regime}  {status}")
@@ -311,9 +345,9 @@ class RegimeFilter:
         print("[REGIME] Cache cleared")
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ══════════════════════════════════════════════════════════════════════════════
 # OPTIONS FILTER (from options_filter.py)
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ══════════════════════════════════════════════════════════════════════════════
 
 class OptionsFilter:
     """Filters and analyzes options chains for trading signals."""
@@ -574,15 +608,15 @@ def get_options_recommendation(ticker, direction, entry_price, target_price, sto
     f = OptionsFilter()
     is_valid, data, reason = f.validate_signal_for_options(ticker, direction, entry_price, target_price, stop_price=stop_price)
     if is_valid and data:
-        print(f"[OPTIONS] âœ… {ticker}: {reason}")
+        print(f"[OPTIONS] ✅ {ticker}: {reason}")
         return data
-    print(f"[OPTIONS] âš ï¸ {ticker}: {reason}")
+    print(f"[OPTIONS] ⚠️ {ticker}: {reason}")
     return None
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ══════════════════════════════════════════════════════════════════════════════
 # SIGNAL VALIDATOR (from signal_validator.py)
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ══════════════════════════════════════════════════════════════════════════════
 
 def get_time_of_day_quality(signal_time: datetime) -> Tuple[str, float]:
     """
@@ -611,6 +645,7 @@ class SignalValidator:
     
     def __init__(
         self,
+        min_final_confidence: float = 0.50,
         min_adx: float = 25.0,
         min_volume_ratio: float = 1.5,
         enable_vpvr: bool = True,
@@ -621,6 +656,7 @@ class SignalValidator:
         min_bias_confidence: float = 0.65,
         strict_mode: bool = False
     ):
+        self.min_final_confidence = min_final_confidence
         self.min_adx = min_adx
         self.min_volume_ratio = min_volume_ratio
         self.enable_vpvr = enable_vpvr and VPVR_ENABLED
@@ -634,12 +670,19 @@ class SignalValidator:
         self.validation_stats = {
             'total_validated': 0, 'passed': 0, 'filtered': 0, 'boosted': 0,
             'bias_penalized': 0, 'vpvr_rescued': 0, 'vpvr_scored': 0,
-            'time_zones': {}, 'ema_stack_aligned': 0, 'rsi_divergence_detected': 0
+            'time_zones': {}, 'ema_stack_aligned': 0, 'rsi_divergence_detected': 0,
+            'confidence_filtered': 0
         }
+        
+        # Production initialization banner
+        print("[VALIDATOR] ╔════════════════════════════════════════════════╗")
+        print("[VALIDATOR] ║  SIGNAL VALIDATOR - PRODUCTION CONFIG          ║")
+        print(f"[VALIDATOR] ║  Min Final Confidence: {int(min_final_confidence*100)}%{' '*(24-len(str(int(min_final_confidence*100))))}║")
+        print("[VALIDATOR] ╚════════════════════════════════════════════════╝")
         
         if self.enable_daily_bias:
             print(f"[VALIDATOR] Daily bias penalty active (min confidence: {min_bias_confidence*100:.0f}%)")
-            print(f"[VALIDATOR] â­ Counter-trend signals penalized but can be rescued by VPVR")
+            print(f"[VALIDATOR] ⭐ Counter-trend signals penalized but can be rescued by VPVR")
         if self.enable_time_filter:
             print(f"[VALIDATOR] Time-of-day quality scoring enabled")
         if self.enable_ema_stack:
@@ -696,7 +739,7 @@ class SignalValidator:
                     failed_checks.append('BIAS_COUNTER_TREND_STRONG')
                     needs_vpvr_rescue = True
                     self.validation_stats['bias_penalized'] += 1
-                    print(f"[VALIDATOR] âš ï¸  {ticker} counter-trend to {bias_data['bias']} bias (-25%) - VPVR can rescue")
+                    print(f"[VALIDATOR] ⚠️  {ticker} counter-trend to {bias_data['bias']} bias (-25%) - VPVR can rescue")
                 elif bias_data['bias'] != 'NEUTRAL':
                     if not should_filter:
                         bias_boost = bias_data['confidence'] * 0.10
@@ -953,25 +996,25 @@ class SignalValidator:
                             failed_checks.remove('BIAS_COUNTER_TREND_STRONG')
                             vpvr_rescue_applied = True
                             self.validation_stats['vpvr_rescued'] += 1
-                            print(f"[VPVR] âœ¨ {ticker} RESCUED: Excellent entry at {entry_reason} overrides bias penalty (+{rescue_boost:.2%})")
+                            print(f"[VPVR] ✨ {ticker} RESCUED: Excellent entry at {entry_reason} overrides bias penalty (+{rescue_boost:.2%})")
                         
                         # Standard VPVR scoring
                         if entry_score >= 0.85:
                             if not vpvr_rescue_applied:
                                 confidence_adjustment += 0.08
                                 passed_checks.append('VPVR_STRONG')
-                            print(f"[VPVR] âœ… {ticker} strong entry: {entry_reason}")
+                            print(f"[VPVR] ✅ {ticker} strong entry: {entry_reason}")
                         elif entry_score >= 0.70:
                             confidence_adjustment += 0.03
                             passed_checks.append('VPVR_GOOD')
-                            print(f"[VPVR] ðŸŸ¢ {ticker} good entry: {entry_reason}")
+                            print(f"[VPVR] 🟢 {ticker} good entry: {entry_reason}")
                         elif entry_score < 0.50:
                             confidence_adjustment -= 0.05
                             failed_checks.append('VPVR_WEAK')
-                            print(f"[VPVR] âš ï¸  {ticker} weak entry: {entry_reason}")
+                            print(f"[VPVR] ⚠️  {ticker} weak entry: {entry_reason}")
                         else:
                             passed_checks.append('VPVR_NEUTRAL')
-                            print(f"[VPVR] ðŸŸ¡ {ticker} neutral entry: {entry_reason}")
+                            print(f"[VPVR] 🟡 {ticker} neutral entry: {entry_reason}")
                         
                         if vpvr_rescue_applied:
                             metadata['checks']['vpvr']['rescued'] = True
@@ -982,10 +1025,15 @@ class SignalValidator:
             except Exception as e:
                 metadata['checks']['vpvr'] = {'error': str(e)}
         
-        # Final Decision
+        # Calculate final confidence
         adjusted_confidence = max(0.0, min(1.0, base_confidence + confidence_adjustment))
         
-        if self.strict_mode:
+        # NEW: Minimum confidence threshold check
+        if adjusted_confidence < self.min_final_confidence:
+            should_pass = False
+            self.validation_stats['confidence_filtered'] += 1
+            print(f"[VALIDATOR] ❌ {ticker} FILTERED: {adjusted_confidence*100:.1f}% < {self.min_final_confidence*100:.1f}% minimum")
+        elif self.strict_mode:
             critical_failures = ['VOLUME_WEAK', 'DMI_CONFLICT', 'ADX_WEAK']
             should_pass = not any(fail in failed_checks for fail in critical_failures)
         else:
@@ -1007,10 +1055,73 @@ class SignalValidator:
             'passed_checks': passed_checks,
             'failed_checks': failed_checks,
             'check_score': f"{len(passed_checks)}/{len(passed_checks) + len(failed_checks)}",
-            'vpvr_rescued': vpvr_rescue_applied
+            'vpvr_rescued': vpvr_rescue_applied,
+            'min_confidence_met': adjusted_confidence >= self.min_final_confidence
         }
         
         return should_pass, adjusted_confidence, metadata
+    
+    def print_validation_summary(self, ticker: str, metadata: Dict) -> None:
+        """Print formatted validation summary for production monitoring."""
+        summary = metadata.get('summary', {})
+        checks = metadata.get('checks', {})
+        
+        # Result emoji
+        result = "✅ PASS" if summary.get('should_pass') else "❌ FAIL"
+        
+        # Quality badge
+        conf = summary.get('adjusted_confidence', 0)
+        if conf >= 0.80:
+            quality = "🔵 STRONG"
+        elif conf >= 0.65:
+            quality = "🟢 GOOD"
+        elif conf >= 0.50:
+            quality = "🟡 FAIR"
+        else:
+            quality = "🔴 WEAK"
+        
+        # Confidence change
+        base = metadata.get('base_confidence', 0)
+        adj = summary.get('confidence_adjustment', 0)
+        conf_change = f"+{adj*100:.1f}%" if adj >= 0 else f"{adj*100:.1f}%"
+        
+        # Build output
+        print("=" * 70)
+        print(f"🎯 VALIDATION SUMMARY: {ticker}")
+        print("=" * 70)
+        print(f"Result:     {result}")
+        print(f"Quality:    {quality}")
+        print(f"Confidence: {base*100:.1f}% → {conf*100:.1f}% ({conf_change})")
+        print(f"Score:      {summary.get('check_score', 'N/A')} checks passed")
+        print("")
+        
+        # Regime info
+        regime = checks.get('regime_filter', {})
+        if regime and 'regime' in regime:
+            status = "✓" if regime.get('favorable') else "✗"
+            print(f"Regime:     {status} {regime['regime']} (VIX: {regime.get('vix', 0):.1f})")
+            print("")
+        
+        # Passed checks (limit to 5 most important)
+        passed = summary.get('passed_checks', [])
+        if passed:
+            print(f"Passed:     {', '.join(passed[:5])}")
+            if len(passed) > 5:
+                print(f"            +{len(passed)-5} more")
+            print("")
+        
+        # Failed checks
+        failed = summary.get('failed_checks', [])
+        if failed:
+            print(f"Failed:     {', '.join(failed)}")
+            print("")
+        
+        # VPVR rescue note
+        if summary.get('vpvr_rescued'):
+            print("✨ VPVR RESCUE: Counter-trend signal saved by excellent entry point!")
+            print("")
+        
+        print("=" * 70)
     
     def get_validation_stats(self) -> Dict:
         """Get validation statistics."""
@@ -1027,7 +1138,8 @@ class SignalValidator:
             'vpvr_rescue_rate': round(self.validation_stats['vpvr_rescued'] / total, 3),
             'ema_stack_rate': round(self.validation_stats['ema_stack_aligned'] / total, 3),
             'rsi_div_rate': round(self.validation_stats['rsi_divergence_detected'] / total, 3),
-            'vpvr_scored_rate': round(self.validation_stats['vpvr_scored'] / total, 3)
+            'vpvr_scored_rate': round(self.validation_stats['vpvr_scored'] / total, 3),
+            'confidence_filter_rate': round(self.validation_stats['confidence_filtered'] / total, 3)
         }
         
         if self.validation_stats['time_zones']:
@@ -1040,13 +1152,14 @@ class SignalValidator:
         self.validation_stats = {
             'total_validated': 0, 'passed': 0, 'filtered': 0, 'boosted': 0,
             'bias_penalized': 0, 'vpvr_rescued': 0, 'vpvr_scored': 0,
-            'time_zones': {}, 'ema_stack_aligned': 0, 'rsi_divergence_detected': 0
+            'time_zones': {}, 'ema_stack_aligned': 0, 'rsi_divergence_detected': 0,
+            'confidence_filtered': 0
         }
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ══════════════════════════════════════════════════════════════════════════════
 # GLOBAL INSTANCES & FACTORY FUNCTIONS
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ══════════════════════════════════════════════════════════════════════════════
 
 _validator_instance: Optional[SignalValidator] = None
 _regime_filter_instance: Optional[RegimeFilter] = None
@@ -1058,6 +1171,7 @@ def get_validator() -> SignalValidator:
     global _validator_instance
     if _validator_instance is None:
         _validator_instance = SignalValidator(
+            min_final_confidence=0.50,
             min_adx=25.0,
             min_volume_ratio=1.5,
             enable_vpvr=True,
@@ -1111,7 +1225,7 @@ if __name__ == "__main__":
     
     print("Testing SignalValidator...")
     validator = get_validator()
-    print(f"âœ… SignalValidator initialized")
+    print(f"✅ SignalValidator initialized")
     
     print("\nTesting RegimeFilter...")
     regime = get_regime_filter()
@@ -1119,16 +1233,8 @@ if __name__ == "__main__":
     
     print("\nTesting OptionsFilter...")
     opts = get_options_filter()
-    print(f"âœ… OptionsFilter initialized")
+    print(f"✅ OptionsFilter initialized")
     
     print("\n" + "=" * 70)
     print("All validation components operational!")
     print("=" * 70)
-
-
-
-
-
-
-
-
