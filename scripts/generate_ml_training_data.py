@@ -14,6 +14,12 @@ This script:
 
 import sys
 import os
+from pathlib import Path
+
+# Add project root to Python path so we can import app modules
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
+
 from datetime import datetime, timedelta
 from typing import List, Dict, Tuple
 import logging
