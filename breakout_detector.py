@@ -29,6 +29,14 @@ Phase 1.9 Wiring Fix (FEB 27, 2026):
   - T1/T2 targets now use config values (2.0R / 3.5R) instead of hardcoded 1.5R / 2.5R
   - Fully backwards compatible: falls back to constructor defaults if grade=None
 
+Phase 1.10 Health Check Integration (MAR 5, 2026):
+  - Added comprehensive startup health check banner
+  - Database connection verification (fail-fast option)
+  - Discord webhook validation
+  - Subsystem status visibility (✓/✗/?)
+  - Options/Validation integration status detection
+  - Graceful degradation for optional systems
+
 Risk Management:
   - Stop: ATR-based dynamic stop, grade-resolved from config.STOP_MULTIPLIERS
   - T1: config.TARGET_1_RR (take 50% position, secure gains)
@@ -38,6 +46,8 @@ Risk Management:
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 import statistics
+import sys
+import os
 
 # ── Config wiring (Phase 1.9 fix) ─────────────────────────────────────────────
 try:
@@ -807,16 +817,67 @@ def format_signal_message(ticker: str, signal: Dict) -> str:
     return msg
 
 
-# ========================================
-# USAGE EXAMPLE
-# ========================================
-if __name__ == "__main__":
+# ═══════════════════════════════════════════════════════════════════════════════
+# PHASE 1.10: HEALTH CHECK INTEGRATION
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def run_with_health_check():
+    """
+    Run breakout detector with comprehensive health checks.
+    
+    Phase 1.10 - Action Item #5
+    Provides startup banner showing all subsystem status.
+    """
+    # Import health check module
+    try:
+        from app import perform_health_check, print_session_info
+        HEALTH_CHECK_AVAILABLE = True
+    except ImportError:
+        print("⚠️  Health check module not available")
+        print("   To enable: Ensure app/health_check.py exists")
+        HEALTH_CHECK_AVAILABLE = False
+    
+    # ──────────────────────────────────────────────────────────────────────────
+    # STEP 1: Run comprehensive health check
+    # ──────────────────────────────────────────────────────────────────────────
+    if HEALTH_CHECK_AVAILABLE:
+        health_status = perform_health_check(
+            require_database=False,  # Optional: Analytics tracking
+            require_discord=False,   # Optional: Alert notifications
+            verbose=True             # Show startup banner
+        )
+        
+        # Exit if critical systems failed (data feed)
+        if not health_status['critical_systems_ok']:
+            print("\n⚠️  CRITICAL SYSTEM FAILURE - Cannot proceed")
+            print("\nRequired fixes:")
+            print("  1. Set EODHD_API_KEY environment variable")
+            print("  2. Verify API key is valid")
+            sys.exit(1)
+        
+        # Print session info
+        print_session_info(
+            session_start="09:30",
+            session_end="16:00",
+            is_premarket=False,
+            watchlist_size=0  # Placeholder
+        )
+    else:
+        print("\n" + "="*70)
+        print("WAR MACHINE BOS/FVG SCANNER")
+        print("Running without health checks (limited diagnostics)")
+        print("="*70 + "\n")
+    
+    # ──────────────────────────────────────────────────────────────────────────
+    # STEP 2: Initialize detector and run examples
+    # ──────────────────────────────────────────────────────────────────────────
+    print("🚀 War Machine operational - running examples...\n")
+    
     detector = BreakoutDetector(
         lookback_bars=12,
         volume_multiplier=2.0,
         min_candle_body_pct=0.4,
         min_bars_since_breakout=1
-        # t1/t2/atr_mult now come from config.py automatically
     )
 
     sample_bars = [
@@ -835,7 +896,8 @@ if __name__ == "__main__":
         {'datetime': datetime.now(), 'open': 107, 'high': 110, 'low': 106.5, 'close': 109.5, 'volume': 2500000},
     ]
 
-    # Test with A+ grade — should use 1.2x ATR stop and config T1/T2 targets
+    # Test with different grades — shows config integration
+    print("Testing breakout detection with grade-based stops/targets...\n")
     for grade in ["A+", "A", "A-", None]:
         signal = detector.detect_breakout(sample_bars, ticker="TEST", grade=grade)
         if signal:
@@ -852,3 +914,11 @@ if __name__ == "__main__":
             print(f"T2 Profit (50%): ${shares * 0.5 * (signal['t2'] - signal['entry']):.2f}")
         else:
             print(f"Grade {grade}: No signal")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ENTRY POINT
+# ═══════════════════════════════════════════════════════════════════════════════
+
+if __name__ == "__main__":
+    run_with_health_check()
