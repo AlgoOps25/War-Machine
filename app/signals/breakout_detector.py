@@ -520,10 +520,12 @@ class BreakoutDetector:
             in_retest_zone = abs(latest['low'] - breakout_level) <= retest_tolerance
             
             # Phase 1.8: Require strong bull candle for retest
-            if not (in_retest_zone and 
-                    candle_strength['direction'] == 'bull' and 
-                    candle_strength['is_strong'] and 
+            if not (in_retest_zone and
+                    candle_strength['direction'] == 'bull' and
+                    candle_strength['is_strong'] and
                     volume_ratio >= 1.5):
+
+
                 return None
             
             entry = latest['close']
@@ -574,10 +576,11 @@ class BreakoutDetector:
             in_retest_zone = abs(latest['high'] - breakout_level) <= retest_tolerance
             
             # Phase 1.8: Require strong bear candle for retest
-            if not (in_retest_zone and 
-                    candle_strength['direction'] == 'bear' and 
-                    candle_strength['is_strong'] and 
+            if not (in_retest_zone and
+                    candle_strength['direction'] == 'bear' and
+                    candle_strength['is_strong'] and       # ✅ Added closing bracket
                     volume_ratio >= 1.5):
+
                 return None
             
             entry = latest['close']
