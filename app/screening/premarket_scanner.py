@@ -376,11 +376,15 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
       2. data_manager session bars[-1] — DB fallback for subscribed tickers
       3. EODHD real-time REST quote    — fallback for unsubscribed pre-market tickers
     """
+    print(f"[PREMARKET] Scanning {ticker}...")
+    
     cached = _scanner_cache.get_scan(ticker)
     if cached:
+        print(f"[PREMARKET] {ticker}: Using cached scan (score={cached.get('composite_score', 0):.1f})")
         return cached
 
     fundamentals = fetch_fundamental_data(ticker)
+    print(f"[PREMARKET] {ticker}: Fundamentals - ADV={fundamentals['avg_daily_volume']}, ATR={fundamentals['atr']:.2f}")
 
     if WS_AVAILABLE:
         try:
@@ -399,19 +403,22 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
 
             # Fallback 2: EODHD real-time REST quote
             if not current_bar:
+                print(f"[PREMARKET] {ticker}: Attempting REST API fallback...")
                 try:
                     rt_url = (
                         f"https://eodhd.com/api/real-time/{ticker}.US"
                         f"?api_token={config.EODHD_API_KEY}&fmt=json"
                     )
                     rt_resp = requests.get(rt_url, timeout=5)
+                    print(f"[PREMARKET] {ticker}: REST API response HTTP {rt_resp.status_code}")
+                    
                     if rt_resp.status_code == 200:
                         rt = rt_resp.json()
                         current_bar = {
                             'close':  rt.get('close') or rt.get('previousClose', 0),
                             'volume': rt.get('volume', 0)
                         }
-                        print(f"[PREMARKET] {ticker}: WS+DB miss → REST quote used")
+                        print(f"[PREMARKET] {ticker}: WS+DB miss → REST quote used (price=${current_bar['close']:.2f}, vol={current_bar['volume']})")
                     else:
                         print(f"[PREMARKET] {ticker}: REST API failed (HTTP {rt_resp.status_code})")
                 except Exception as e:
@@ -419,14 +426,18 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
                     pass
 
             if not current_bar:
+                print(f"[PREMARKET] {ticker}: ❌ No bar data available (WS/DB/REST all failed) - skipping")
                 return None
 
             price  = current_bar.get('close', 0)
             volume = current_bar.get('volume', 0)
+            
+            print(f"[PREMARKET] {ticker}: Bar resolved - price=${price:.2f}, volume={volume}")
         except Exception as e:
             print(f"[PREMARKET] {ticker}: Fatal error in bar resolution: {e}")
             return None
     else:
+        print(f"[PREMARKET] {ticker}: WS not available - cannot scan")
         return None
 
     # Tier 1: Volume score (60% weight)
@@ -435,6 +446,8 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
         fundamentals['avg_daily_volume'],
         price
     )
+    
+    print(f"[PREMARKET] {ticker}: Volume score={volume_score:.1f}, RVOL={volume_metrics['rvol']:.2f}x")
     
     # TASK 12: Tier 2 - Gap quality (25% weight)
     gap_score = 0
@@ -490,6 +503,8 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
         catalyst_score * 0.15 + # 15% news catalyst
         sector_bonus           # Bonus for hot sector
     )
+    
+    print(f"[PREMARKET] {ticker}: ✅ Composite score={composite_score:.1f} (vol={volume_score:.1f}, gap={gap_score:.1f}, catalyst={catalyst_score:.1f}, sector={sector_bonus:.1f})")
 
     result = {
         'ticker':          ticker,
@@ -521,18 +536,26 @@ def scan_watchlist(tickers: List[str], min_score: float = 60.0) -> List[Dict]:
     Scan multiple tickers and return those meeting minimum score.
     Compatible with watchlist_funnel.py interface.
     """
+    print(f"[PREMARKET] Scanning {len(tickers)} tickers with min_score={min_score}...")
     results = []
 
     for ticker in tickers:
         try:
             scan_result = scan_ticker(ticker)
-            if scan_result and scan_result['composite_score'] >= min_score:
-                results.append(scan_result)
+            if scan_result:
+                if scan_result['composite_score'] >= min_score:
+                    results.append(scan_result)
+                    print(f"[PREMARKET] {ticker}: ✅ PASS (score={scan_result['composite_score']:.1f} >= {min_score})")
+                else:
+                    print(f"[PREMARKET] {ticker}: ❌ FILTERED (score={scan_result['composite_score']:.1f} < {min_score})")
+            else:
+                print(f"[PREMARKET] {ticker}: ❌ SKIPPED (scan returned None)")
         except Exception as e:
             print(f"[PREMARKET] Error scanning {ticker}: {e}")
             continue
 
     results.sort(key=lambda x: x['composite_score'], reverse=True)
+    print(f"[PREMARKET] Scan complete: {len(results)}/{len(tickers)} tickers passed")
     return results
 
 
@@ -568,6 +591,7 @@ def run_momentum_screener(
     Returns:
         List of scored ticker dicts with 'composite_score' field
     """
+    print(f"[PREMARKET] run_momentum_screener() called with {len(tickers)} tickers, min_score={min_composite_score}")
     return scan_watchlist(tickers, min_score=min_composite_score)
 
 
