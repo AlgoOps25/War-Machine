@@ -10,7 +10,7 @@ based on:
 5. Contract quantity sizing
 
 PHASE 1.14: Real EODHD Options Data Integration
-- Fetches real Greeks from EODHD Unicorn Bay Marketplace API
+- Fetches real Greeks from EODHD US Stock Options Data API
 - Calculates IV Rank from 52-week IV range
 - Finds optimal strikes based on real delta values
 - Gets actual option prices (bid/ask midpoint)
@@ -32,12 +32,12 @@ from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
 
-# EODHD Unicorn Bay Marketplace API configuration
+# EODHD US Stock Options Data API configuration
 EODHD_API_KEY = os.getenv('EODHD_API_KEY', '')
-EODHD_MARKETPLACE_URL = 'https://eodhd.com/api/mp/unicornbay/options/contracts'
+EODHD_BASE_URL = 'https://eodhd.com/api'
 
 # Request timeout
-REQUEST_TIMEOUT = 10
+REQUEST_TIMEOUT = 30  # Increased to 30 seconds for options data
 
 
 def build_options_trade(
@@ -151,7 +151,7 @@ def build_options_trade(
 
 def get_greeks(ticker: str, strike: float = None, expiration: str = None, direction: str = "CALL") -> dict:
     """
-    Fetch Greeks for an option contract from EODHD Unicorn Bay Marketplace API.
+    Fetch Greeks for an option contract from EODHD US Stock Options Data API.
     
     Returns:
         dict: {'delta': 0.55, 'gamma': 0.03, 'theta': -0.12, 'vega': 0.25, 'iv': 45, 'price': 12.50}
@@ -161,47 +161,58 @@ def get_greeks(ticker: str, strike: float = None, expiration: str = None, direct
         return _get_placeholder_greeks()
     
     try:
-        # Fetch options chain from Unicorn Bay Marketplace
+        # Fetch options chain from standard US Stock Options Data API
+        url = f"{EODHD_BASE_URL}/options/{ticker}.US"
         params = {
-            'filter[underlying_symbol]': ticker,
-            'filter[exp_date]': expiration,
-            'filter[type]': direction.lower(),
             'api_token': EODHD_API_KEY,
-            'limit': 1000
+            'date': expiration
         }
         
-        response = requests.get(EODHD_MARKETPLACE_URL, params=params, timeout=REQUEST_TIMEOUT)
+        response = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
         data = response.json()
         
+        # Standard API returns: {"data": [{"expirationDate": "...", "options": {"CALL": [...], "PUT": [...]}}]}
         if not data or 'data' not in data:
             logger.warning(f"[OPTIONS] No options data for {ticker}")
             return _get_placeholder_greeks()
         
-        # Parse marketplace format
-        contracts = data['data']
+        # Find data for the requested expiration
+        options_data = None
+        for exp_data in data['data']:
+            if exp_data.get('expirationDate') == expiration:
+                options_data = exp_data.get('options', {})
+                break
+        
+        if not options_data:
+            logger.warning(f"[OPTIONS] No data for expiration {expiration}")
+            return _get_placeholder_greeks()
+        
+        # Get contracts for direction
+        contracts = options_data.get(direction, [])
         
         if not contracts:
-            logger.warning(f"[OPTIONS] No contracts found for {ticker}")
+            logger.warning(f"[OPTIONS] No {direction} contracts found")
             return _get_placeholder_greeks()
         
         # Find contract matching strike
         for contract in contracts:
-            attrs = contract.get('attributes', contract)  # Handle both formats
-            contract_strike = attrs.get('strike', 0)
+            contract_strike = contract.get('strike', 0)
             
             if abs(contract_strike - strike) < 0.01:  # Match strike
+                bid = contract.get('bid', 0)
+                ask = contract.get('ask', 0)
                 return {
-                    'delta': attrs.get('delta', 0.5),
-                    'gamma': attrs.get('gamma', 0.03),
-                    'theta': attrs.get('theta', -0.10),
-                    'vega': attrs.get('vega', 0.20),
-                    'iv': attrs.get('volatility', attrs.get('implied_volatility', 40)),
-                    'price': (attrs.get('bid', 0) + attrs.get('ask', 0)) / 2 if attrs.get('bid') and attrs.get('ask') else 5.0,
-                    'bid': attrs.get('bid', 0),
-                    'ask': attrs.get('ask', 0),
-                    'volume': attrs.get('volume', 0),
-                    'open_interest': attrs.get('open_interest', 0)
+                    'delta': contract.get('delta', 0.5),
+                    'gamma': contract.get('gamma', 0.03),
+                    'theta': contract.get('theta', -0.10),
+                    'vega': contract.get('vega', 0.20),
+                    'iv': contract.get('impliedVolatility', 40) * 100,  # Convert to percentage
+                    'price': (bid + ask) / 2 if (bid and ask) else contract.get('lastPrice', 5.0),
+                    'bid': bid,
+                    'ask': ask,
+                    'volume': contract.get('volume', 0),
+                    'open_interest': contract.get('openInterest', 0)
                 }
         
         logger.warning(f"[OPTIONS] No matching contract for {ticker} ${strike} {direction}")
@@ -210,8 +221,13 @@ def get_greeks(ticker: str, strike: float = None, expiration: str = None, direct
     except requests.exceptions.HTTPError as e:
         if e.response.status_code == 404:
             logger.warning(f"[OPTIONS] No options data available for {ticker} (404) - using placeholder")
+        elif e.response.status_code == 401:
+            logger.error(f"[OPTIONS] API authentication failed (401) - check EODHD_API_KEY")
         else:
             logger.error(f"[OPTIONS] HTTP error fetching Greeks for {ticker}: {e}")
+        return _get_placeholder_greeks()
+    except requests.exceptions.Timeout:
+        logger.warning(f"[OPTIONS] API timeout for {ticker} - using placeholder")
         return _get_placeholder_greeks()
     except Exception as e:
         logger.error(f"[OPTIONS] Failed to fetch Greeks for {ticker}: {e}")
@@ -263,7 +279,7 @@ def _calculate_optimal_dte(confidence: float) -> int:
 
 def _get_nearest_expiration(ticker: str, target_dte: int) -> str:
     """
-    Find the nearest options expiration date to target DTE from Unicorn Bay API.
+    Find the nearest options expiration date to target DTE from EODHD API.
     
     Returns:
         str: Expiration date in YYYY-MM-DD format
@@ -272,38 +288,27 @@ def _get_nearest_expiration(ticker: str, target_dte: int) -> str:
         return _calculate_fallback_expiration(target_dte)
     
     try:
-        # Fetch available expirations from marketplace (query unique exp dates)
-        today = datetime.now(ZoneInfo("America/New_York"))
-        end_date = today + timedelta(days=target_dte + 30)  # Look 30 days beyond target
+        # Fetch available expirations from standard API
+        url = f"{EODHD_BASE_URL}/options/{ticker}.US"
+        params = {'api_token': EODHD_API_KEY}
         
-        params = {
-            'filter[underlying_symbol]': ticker,
-            'filter[exp_date_from]': today.strftime('%Y-%m-%d'),
-            'filter[exp_date_to]': end_date.strftime('%Y-%m-%d'),
-            'api_token': EODHD_API_KEY,
-            'limit': 100
-        }
-        
-        response = requests.get(EODHD_MARKETPLACE_URL, params=params, timeout=REQUEST_TIMEOUT)
+        response = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
         data = response.json()
         
+        # Standard API returns: {"data": [{"expirationDate": "..."}, ...]}
         if not data or 'data' not in data:
             return _calculate_fallback_expiration(target_dte)
         
-        # Extract unique expiration dates
-        expirations = set()
-        for contract in data['data']:
-            attrs = contract.get('attributes', contract)
-            exp = attrs.get('exp_date')
-            if exp:
-                expirations.add(exp)
+        # Extract expiration dates
+        expirations = [item.get('expirationDate') for item in data['data'] if item.get('expirationDate')]
         
         if not expirations:
             return _calculate_fallback_expiration(target_dte)
         
         # Find closest expiration to target DTE
-        target_date = today.date() + timedelta(days=target_dte)
+        today = datetime.now(ZoneInfo("America/New_York")).date()
+        target_date = today + timedelta(days=target_dte)
         
         closest_exp = None
         min_diff = float('inf')
@@ -323,9 +328,14 @@ def _get_nearest_expiration(ticker: str, target_dte: int) -> str:
         
     except requests.exceptions.HTTPError as e:
         if e.response.status_code == 404:
-            logger.warning(f"[OPTIONS] No options available for {ticker} (404) - using fallback expiration")
+            logger.warning(f"[OPTIONS] No options available for {ticker} (404) - using fallback")
+        elif e.response.status_code == 401:
+            logger.error(f"[OPTIONS] API authentication failed (401) - check EODHD_API_KEY")
         else:
             logger.warning(f"[OPTIONS] HTTP error fetching expirations: {e}")
+        return _calculate_fallback_expiration(target_dte)
+    except requests.exceptions.Timeout:
+        logger.warning(f"[OPTIONS] API timeout - using fallback expiration")
         return _calculate_fallback_expiration(target_dte)
     except Exception as e:
         logger.warning(f"[OPTIONS] Failed to fetch expirations: {e}")
@@ -379,23 +389,32 @@ def _select_strike_with_greeks(
         return _fallback_strike_selection(current_price, direction, target_delta)
     
     try:
-        # Fetch options chain from marketplace
+        # Fetch options chain from standard API
+        url = f"{EODHD_BASE_URL}/options/{ticker}.US"
         params = {
-            'filter[underlying_symbol]': ticker,
-            'filter[exp_date]': expiration,
-            'filter[type]': direction.lower(),
             'api_token': EODHD_API_KEY,
-            'limit': 1000
+            'date': expiration
         }
         
-        response = requests.get(EODHD_MARKETPLACE_URL, params=params, timeout=REQUEST_TIMEOUT)
+        response = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
         data = response.json()
         
         if not data or 'data' not in data:
             return _fallback_strike_selection(current_price, direction, target_delta)
         
-        contracts = data['data']
+        # Find data for the requested expiration
+        options_data = None
+        for exp_data in data['data']:
+            if exp_data.get('expirationDate') == expiration:
+                options_data = exp_data.get('options', {})
+                break
+        
+        if not options_data:
+            return _fallback_strike_selection(current_price, direction, target_delta)
+        
+        # Get contracts for direction
+        contracts = options_data.get(direction, [])
         
         if not contracts:
             return _fallback_strike_selection(current_price, direction, target_delta)
@@ -405,31 +424,30 @@ def _select_strike_with_greeks(
         min_delta_diff = float('inf')
         
         for contract in contracts:
-            attrs = contract.get('attributes', contract)
-            contract_delta = abs(attrs.get('delta', 0))  # Use absolute for puts
+            contract_delta = abs(contract.get('delta', 0))  # Use absolute for puts
             delta_diff = abs(contract_delta - target_delta)
             
             if delta_diff < min_delta_diff:
                 min_delta_diff = delta_diff
-                best_contract = attrs
+                best_contract = contract
         
         if best_contract:
             strike = best_contract.get('strike', current_price)
             bid = best_contract.get('bid', 0)
             ask = best_contract.get('ask', 0)
-            price = (bid + ask) / 2 if (bid and ask) else 5.0
+            price = (bid + ask) / 2 if (bid and ask) else best_contract.get('lastPrice', 5.0)
             
             greeks = {
                 'delta': best_contract.get('delta', target_delta),
                 'gamma': best_contract.get('gamma', 0.03),
                 'theta': best_contract.get('theta', -0.10),
                 'vega': best_contract.get('vega', 0.20),
-                'iv': best_contract.get('volatility', best_contract.get('implied_volatility', 40)),
+                'iv': best_contract.get('impliedVolatility', 0.40) * 100,  # Convert to percentage
                 'price': price,
                 'bid': bid,
                 'ask': ask,
                 'volume': best_contract.get('volume', 0),
-                'open_interest': best_contract.get('open_interest', 0)
+                'open_interest': best_contract.get('openInterest', 0)
             }
             logger.info(f"[OPTIONS] Selected strike ${strike} (delta={greeks['delta']:.2f}, target={target_delta:.2f})")
             return strike, greeks
@@ -439,8 +457,13 @@ def _select_strike_with_greeks(
     except requests.exceptions.HTTPError as e:
         if e.response.status_code == 404:
             logger.warning(f"[OPTIONS] No options chain for {ticker} (404) - using fallback")
+        elif e.response.status_code == 401:
+            logger.error(f"[OPTIONS] API authentication failed (401) - check EODHD_API_KEY")
         else:
             logger.error(f"[OPTIONS] HTTP error fetching options chain: {e}")
+        return _fallback_strike_selection(current_price, direction, target_delta)
+    except requests.exceptions.Timeout:
+        logger.warning(f"[OPTIONS] API timeout - using fallback")
         return _fallback_strike_selection(current_price, direction, target_delta)
     except Exception as e:
         logger.error(f"[OPTIONS] Failed to fetch options chain: {e}")
@@ -485,21 +508,11 @@ def _get_iv_rank(ticker: str) -> float:
     IV Rank formula:
     (Current IV - 1Y Low IV) / (1Y High IV - 1Y Low IV) * 100
     
-    Note: Requires historical IV data which may not be available in marketplace API.
-    Returns 50.0 (neutral) as fallback.
+    Note: This would require historical IV tracking.
+    Returns 50.0 (neutral) as fallback for now.
     """
-    if not EODHD_API_KEY:
-        return 50.0
-    
-    try:
-        # Fetch recent IV data (marketplace doesn't provide historical IV easily)
-        # For now, return neutral 50.0 until we implement historical IV tracking
-        logger.info(f"[OPTIONS] IV Rank calculation requires historical tracking - returning neutral 50.0")
-        return 50.0
-        
-    except Exception as e:
-        logger.warning(f"[OPTIONS] Failed to calculate IV rank: {e}")
-        return 50.0
+    # TODO: Implement historical IV tracking in database
+    return 50.0
 
 
 def _calculate_quantity(option_price: float, max_risk: float) -> int:
