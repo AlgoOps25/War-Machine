@@ -73,6 +73,8 @@ class NewsCatalystDetector:
         # Check cache
         if not force_refresh and ticker in self.cache:
             cached = self.cache[ticker]
+            if cached is None:
+                return None
             age = datetime.now() - cached.timestamp
             if age < self.cache_ttl:
                 return cached
@@ -80,14 +82,22 @@ class NewsCatalystDetector:
         # Fetch news from EODHD
         news_items = self._fetch_news(ticker)
         if not news_items:
+            print(f"[NEWS] {ticker}: No news items returned from API")
+            self.cache[ticker] = None
             return None
+        
+        print(f"[NEWS] {ticker}: Fetched {len(news_items)} news items")
         
         # Analyze news for catalysts
         catalyst = self._analyze_news(ticker, news_items)
         
-        # Cache result
+        # Cache result (even if None)
+        self.cache[ticker] = catalyst
+        
         if catalyst:
-            self.cache[ticker] = catalyst
+            print(f"[NEWS] {ticker}: Catalyst found - {catalyst.catalyst_type} (weight={catalyst.weight})")
+        else:
+            print(f"[NEWS] {ticker}: No catalyst found")
         
         return catalyst
     
@@ -110,13 +120,40 @@ class NewsCatalystDetector:
             
             response = requests.get(url, params=params, timeout=10)
             if response.status_code != 200:
+                print(f"[NEWS] {ticker}: API returned HTTP {response.status_code}")
                 return []
             
-            return response.json()
+            news_data = response.json()
+            return news_data if isinstance(news_data, list) else []
         
         except Exception as e:
             print(f"[NEWS] Error fetching news for {ticker}: {e}")
             return []
+    
+    def _is_ticker_specific(self, ticker: str, title: str, content: str) -> bool:
+        """
+        Check if news item is actually about the ticker.
+        Prevents false positives from general market news.
+        
+        Args:
+            ticker: Stock ticker
+            title: News headline
+            content: News content
+        
+        Returns:
+            True if news is ticker-specific
+        """
+        combined = (title + ' ' + content).lower()
+        ticker_lower = ticker.lower()
+        
+        # Check if ticker appears in the text
+        # Also check common variations (e.g., "Tesla" for TSLA)
+        if ticker_lower in combined:
+            return True
+        
+        # TODO: Add company name mapping (TSLA -> Tesla, AAPL -> Apple, etc.)
+        # For now, just require ticker to be present
+        return False
     
     def _analyze_news(self, ticker: str, news_items: List[Dict]) -> Optional[NewsCatalyst]:
         """
@@ -125,18 +162,28 @@ class NewsCatalystDetector:
         Returns the highest-weight catalyst found.
         """
         catalysts = []
+        ticker_specific_count = 0
         
         for item in news_items:
-            title = item.get('title', '').lower()
-            content = item.get('content', '').lower()
-            combined = title + ' ' + content
+            title = item.get('title', '')
+            content = item.get('content', '')
+            
+            # CRITICAL: Only analyze ticker-specific news
+            if not self._is_ticker_specific(ticker, title, content):
+                continue
+            
+            ticker_specific_count += 1
+            
+            title_lower = title.lower()
+            content_lower = content.lower()
+            combined = title_lower + ' ' + content_lower
             
             # Check for earnings
             if any(kw in combined for kw in self.EARNINGS_KEYWORDS):
                 catalysts.append(NewsCatalyst(
                     ticker=ticker,
                     catalyst_type='earnings',
-                    headline=item.get('title', ''),
+                    headline=title,
                     sentiment=self._detect_sentiment(combined),
                     weight=25,  # Highest weight
                     timestamp=datetime.now()
@@ -147,7 +194,7 @@ class NewsCatalystDetector:
                 catalysts.append(NewsCatalyst(
                     ticker=ticker,
                     catalyst_type='upgrade',
-                    headline=item.get('title', ''),
+                    headline=title,
                     sentiment='bullish',
                     weight=20,
                     timestamp=datetime.now()
@@ -158,7 +205,7 @@ class NewsCatalystDetector:
                 catalysts.append(NewsCatalyst(
                     ticker=ticker,
                     catalyst_type='downgrade',
-                    headline=item.get('title', ''),
+                    headline=title,
                     sentiment='bearish',
                     weight=15,
                     timestamp=datetime.now()
@@ -169,7 +216,7 @@ class NewsCatalystDetector:
                 catalysts.append(NewsCatalyst(
                     ticker=ticker,
                     catalyst_type='merger',
-                    headline=item.get('title', ''),
+                    headline=title,
                     sentiment='bullish',
                     weight=25,
                     timestamp=datetime.now()
@@ -180,11 +227,13 @@ class NewsCatalystDetector:
                 catalysts.append(NewsCatalyst(
                     ticker=ticker,
                     catalyst_type='fda',
-                    headline=item.get('title', ''),
+                    headline=title,
                     sentiment=self._detect_sentiment(combined),
                     weight=22,
                     timestamp=datetime.now()
                 ))
+        
+        print(f"[NEWS] {ticker}: {ticker_specific_count} ticker-specific news items, {len(catalysts)} catalysts detected")
         
         # Return highest-weight catalyst
         if catalysts:
