@@ -14,7 +14,7 @@ Use Case:
 from typing import List, Dict, Optional, Tuple
 from datetime import datetime
 import statistics
-import sqlite3
+from app.data.db_connection import get_conn, ph
 
 
 class VolumeState:
@@ -204,8 +204,7 @@ class VolumeState:
 class VolumeAnalyzer:
     """Multi-ticker volume analyzer for real-time monitoring."""
     
-    def __init__(self, db_path: str = "market_memory.db"):
-        self.db_path = db_path
+    def __init__(self):
         self.tracked_tickers: Dict[str, VolumeState] = {}
     
     def track_ticker(self, ticker: str, lookback_bars: int = 20):
@@ -254,16 +253,16 @@ class VolumeAnalyzer:
     def load_historical_bars(self, ticker: str, lookback_minutes: int = 60):
         """Load historical bars from database to initialize volume state."""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = get_conn()
             cursor = conn.cursor()
             
-            # Fixed: Use intraday_bars table instead of bars
-            query = """
+            # Use parameterized placeholder for cross-database compatibility
+            query = f"""
                 SELECT close, volume, datetime
                 FROM intraday_bars
-                WHERE ticker = ?
+                WHERE ticker = {ph()}
                 ORDER BY datetime DESC
-                LIMIT ?
+                LIMIT {ph()}
             """
             
             cursor.execute(query, (ticker, lookback_minutes))
@@ -278,12 +277,23 @@ class VolumeAnalyzer:
                 self.track_ticker(ticker)
             
             # Add bars in chronological order
-            for close_price, volume, ts in reversed(rows):
+            for row in reversed(rows):
+                # Handle both dict (PostgreSQL) and tuple (SQLite) row formats
+                if isinstance(row, dict):
+                    close_price = row['close']
+                    volume = row['volume']
+                    ts = row['datetime']
+                else:
+                    close_price = row[0]
+                    volume = row[1]
+                    ts = row[2]
+                
                 # Handle both string and datetime timestamp types
                 if isinstance(ts, str):
                     timestamp = datetime.fromisoformat(ts)
                 else:
                     timestamp = ts
+                
                 self.update_bar(ticker, close_price, volume, timestamp)
             
             print(f"[VOL] Loaded {len(rows)} historical bars for {ticker}")
