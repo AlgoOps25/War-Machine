@@ -52,8 +52,9 @@ def generate_training_data_from_cache(
     logger.info("=" * 80)
     
     try:
-        # Import War Machine components
-        from app.db.database import Database
+        # Import War Machine components (correct paths)
+        from app.data.database import Database
+        from app.data.candle_cache import CandleCache
         from app.signals.signal_generator import SignalGenerator
         from app.validation.validation import SignalValidator
         
@@ -63,6 +64,7 @@ def generate_training_data_from_cache(
         
         # Initialize components
         db = Database()
+        cache = CandleCache()
         signal_gen = SignalGenerator()
         validator = SignalValidator(min_final_confidence=0.50)
         
@@ -81,7 +83,7 @@ def generate_training_data_from_cache(
                 start_date = end_date - timedelta(days=lookback_days)
                 
                 # Fetch 5-minute candles from cache
-                candles = db.fetch_candles_from_cache(
+                candles = cache.fetch_candles(
                     ticker=ticker,
                     interval='5m',
                     start_time=start_date,
@@ -116,6 +118,8 @@ def generate_training_data_from_cache(
                 
             except Exception as e:
                 logger.error(f"  ❌ Error processing {ticker}: {e}")
+                import traceback
+                traceback.print_exc()
                 ticker_stats[ticker] = 0
                 continue
         
@@ -137,12 +141,12 @@ def generate_training_data_from_cache(
         if total_generated >= 100:
             logger.info("")
             logger.info("🎯 READY FOR ML TRAINING!")
-            logger.info("Run: python app/ml/train_ml_booster.py")
+            logger.info("Run: python -m app.ml.train_ml_booster")
             return total_generated
         else:
             logger.warning("")
             logger.warning(f"⚠️  Need {100 - total_generated} more signals for ML training")
-            logger.warning("Recommendation: Lower lookback period or add more tickers")
+            logger.warning("Recommendation: Increase lookback days or add more tickers")
             return total_generated
             
     except Exception as e:
@@ -459,7 +463,7 @@ if __name__ == "__main__":
     logger.info("=" * 80)
     if total >= 100:
         logger.info("✅ SUCCESS - Ready for ML training!")
-        logger.info("Next step: python app/ml/train_ml_booster.py")
+        logger.info("Next step: python -m app.ml.train_ml_booster")
     else:
         logger.info(f"⚠️  Generated {total}/100 minimum signals")
         logger.info("Try: python scripts/generate_ml_training_data.py --days 90")
