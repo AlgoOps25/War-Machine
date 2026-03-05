@@ -47,7 +47,7 @@ class WatchlistFunnel:
     def __init__(self):
         self.current_watchlist: List[str] = []
         self.scored_tickers: List[Dict] = []
-        self.volume_analyzer = volume_analyzer.VolumeAnalyzer(config.DB_PATH)
+        self.volume_analyzer = volume_analyzer.VolumeAnalyzer()
         
         # Funnel stage tracking
         self.current_stage = "wide"
