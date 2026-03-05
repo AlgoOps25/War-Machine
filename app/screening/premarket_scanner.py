@@ -1,4 +1,4 @@
-# Original content preserved - adding v2 imports at top
+# Original content preserved - fixing fundamentals fetch
 """
 Professional Pre-Market Scanner - UNIFIED MODULE
 Consolidated from premarket_scanner_pro.py + premarket_scanner_integration.py
@@ -235,13 +235,13 @@ def fetch_fundamental_data(ticker: str) -> Dict:
     Fetch fundamental data needed for professional scoring.
 
     Data needed:
-      - ATR (Average True Range) - 14-day default
+      - ATR (Average True Range) - 14-day calculated from EOD data
       - Market Cap
       - Float (shares outstanding)
-      - Average Daily Volume (20-day)
+      - Average Daily Volume (20-day calculated from EOD data)
       - Previous close (for gap calculation)
 
-    Source: EODHD Fundamentals API
+    Source: EODHD EOD API (historical daily bars)
     Cached for entire session (slow-changing data)
     """
     # Check cache first
@@ -250,31 +250,53 @@ def fetch_fundamental_data(ticker: str) -> Dict:
         return cached
 
     try:
-        url = f"https://eodhd.com/api/fundamentals/{ticker}.US?api_token={config.EODHD_API_KEY}&fmt=json"
+        # Fetch last 30 days of EOD data to calculate ADV and ATR
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=30)
+        
+        url = f"https://eodhd.com/api/eod/{ticker}.US"
+        params = {
+            'api_token': config.EODHD_API_KEY,
+            'period': 'd',
+            'from': start_date.strftime('%Y-%m-%d'),
+            'to': end_date.strftime('%Y-%m-%d'),
+            'fmt': 'json'
+        }
 
-        response = requests.get(url, timeout=10)
+        response = requests.get(url, params=params, timeout=10)
         if response.status_code != 200:
+            print(f"[PREMARKET] {ticker}: EOD API HTTP {response.status_code}")
             return _get_default_fundamentals(ticker)
 
-        data = response.json()
-
-        highlights   = data.get('Highlights', {})
-        technicals   = data.get('Technicals', {})
-        shares_stats = data.get('SharesStats', {})
-
-        market_cap   = highlights.get('MarketCapitalization', 0) or 0
-        float_shares = shares_stats.get('SharesFloat', 0) or shares_stats.get('SharesOutstanding', 0) or 0
-        atr          = technicals.get('AverageTrueRange14', 0) or 0
-        avg_volume   = highlights.get('AverageDailyVolume', 0) or 0
+        eod_data = response.json()
+        if not eod_data or len(eod_data) < 14:
+            print(f"[PREMARKET] {ticker}: Insufficient EOD data ({len(eod_data)} bars)")
+            return _get_default_fundamentals(ticker)
         
-        # Get previous close for gap calculation
-        prev_close = technicals.get('previousClose', 0) or 0
-
-        # Fallback: calculate from recent intraday bars if fundamentals API has no data
-        if atr == 0:
-            atr = _calculate_atr_from_bars(ticker)
-        if avg_volume == 0:
-            avg_volume = _get_average_volume_from_bars(ticker)
+        # Calculate 20-day ADV
+        volumes = [bar['volume'] for bar in eod_data[-20:]]
+        avg_volume = int(statistics.mean(volumes)) if volumes else 0
+        
+        # Calculate 14-day ATR
+        atr = _calculate_atr_from_eod(eod_data[-14:])
+        
+        # Get previous close (most recent bar)
+        prev_close = eod_data[-1]['close'] if eod_data else 0
+        
+        # Try to get market cap from fundamentals API (lightweight call)
+        market_cap = 0
+        float_shares = 0
+        try:
+            fund_url = f"https://eodhd.com/api/fundamentals/{ticker}.US?api_token={config.EODHD_API_KEY}&fmt=json"
+            fund_resp = requests.get(fund_url, timeout=5)
+            if fund_resp.status_code == 200:
+                fund_data = fund_resp.json()
+                highlights = fund_data.get('Highlights', {})
+                shares_stats = fund_data.get('SharesStats', {})
+                market_cap = highlights.get('MarketCapitalization', 0) or 0
+                float_shares = shares_stats.get('SharesFloat', 0) or shares_stats.get('SharesOutstanding', 0) or 0
+        except:
+            pass
 
         fundamentals = {
             'ticker':          ticker,
@@ -287,11 +309,41 @@ def fetch_fundamental_data(ticker: str) -> Dict:
         }
 
         _scanner_cache.set_fundamental(ticker, fundamentals)
+        print(f"[PREMARKET] {ticker}: Calculated ADV={avg_volume:,}, ATR=${atr:.2f}, prev_close=${prev_close:.2f}")
         return fundamentals
 
     except Exception as e:
         print(f"[PREMARKET] Error fetching fundamentals for {ticker}: {e}")
         return _get_default_fundamentals(ticker)
+
+
+def _calculate_atr_from_eod(bars: List[Dict], periods: int = 14) -> float:
+    """
+    Calculate ATR from EOD bars.
+    
+    Args:
+        bars: List of daily bars with 'high', 'low', 'close'
+        periods: Number of periods for ATR (default 14)
+    
+    Returns:
+        ATR value
+    """
+    if not bars or len(bars) < 2:
+        return 0.0
+    
+    true_ranges = []
+    for i in range(1, len(bars)):
+        prev_close = bars[i - 1]['close']
+        curr_high = bars[i]['high']
+        curr_low = bars[i]['low']
+        tr = max(
+            curr_high - curr_low,
+            abs(curr_high - prev_close),
+            abs(curr_low - prev_close)
+        )
+        true_ranges.append(tr)
+    
+    return statistics.mean(true_ranges) if true_ranges else 0.0
 
 
 def _get_default_fundamentals(ticker: str) -> Dict:
@@ -385,7 +437,7 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
         return cached
 
     fundamentals = fetch_fundamental_data(ticker)
-    print(f"[PREMARKET] {ticker}: Fundamentals - ADV={fundamentals['avg_daily_volume']}, ATR={fundamentals['atr']:.2f}")
+    print(f"[PREMARKET] {ticker}: Fundamentals - ADV={fundamentals['avg_daily_volume']:,}, ATR={fundamentals['atr']:.2f}")
 
     current_bar = None
     
@@ -427,7 +479,7 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
                     'close':  rt.get('close') or rt.get('previousClose', 0),
                     'volume': rt.get('volume', 0)
                 }
-                print(f"[PREMARKET] {ticker}: ✅ REST quote (price=${current_bar['close']:.2f}, vol={current_bar['volume']})")
+                print(f"[PREMARKET] {ticker}: ✅ REST quote (price=${current_bar['close']:.2f}, vol={current_bar['volume']:,})")
             else:
                 print(f"[PREMARKET] {ticker}: ❌ REST API failed (HTTP {rt_resp.status_code})")
         except Exception as e:
@@ -441,7 +493,7 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
     price  = current_bar.get('close', 0)
     volume = current_bar.get('volume', 0)
     
-    print(f"[PREMARKET] {ticker}: Bar resolved - price=${price:.2f}, volume={volume}")
+    print(f"[PREMARKET] {ticker}: Bar resolved - price=${price:.2f}, volume={volume:,}")
 
     # Tier 1: Volume score (60% weight)
     volume_score, volume_metrics = score_volume_quality(
@@ -473,7 +525,7 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
             gap_score = gap_result.quality_score
             gap_data = gap_result.to_dict()
         except Exception as e:
-            print(f"[PREMARKET] Error analyzing gap for {ticker}: {e}")
+            print(f"[PREMARKET] {ticker}: Gap analysis error: {e}")
     
     # TASK 12: Tier 3 - News catalyst (15% weight)
     catalyst_score = 0
@@ -482,10 +534,14 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
         try:
             catalyst = detect_catalyst(ticker)
             if catalyst:
-                catalyst_score = catalyst.weight * 4  # Scale 0-100
+                # Scale weight (0-25) to score (0-100)
+                catalyst_score = min(100, catalyst.weight * 4)
                 catalyst_data = catalyst.to_dict()
+                print(f"[PREMARKET] {ticker}: Catalyst detected - {catalyst.catalyst_type} (weight={catalyst.weight}, score={catalyst_score:.1f})")
+            else:
+                print(f"[PREMARKET] {ticker}: No catalyst detected")
         except Exception as e:
-            print(f"[PREMARKET] Error detecting catalyst for {ticker}: {e}")
+            print(f"[PREMARKET] {ticker}: Catalyst detection error: {e}")
     
     # TASK 12: Sector rotation bonus (+15 pts if hot sector)
     sector_bonus = 0
@@ -497,7 +553,7 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
                 sector_bonus = 15
                 sector_data = {'sector': sector_name, 'is_hot': True}
         except Exception as e:
-            print(f"[PREMARKET] Error checking sector for {ticker}: {e}")
+            print(f"[PREMARKET] {ticker}: Sector check error: {e}")
     
     # Composite score (weighted)
     composite_score = (
@@ -606,7 +662,7 @@ def get_top_n_movers(scored_tickers: List[Dict], n: int = 10) -> List[str]:
     Args:
         scored_tickers: List of dicts with 'composite_score' or 'volume_score'
         n: Number of top tickers to return
-    
+
     Returns:
         List of ticker symbols (strings)
     """
