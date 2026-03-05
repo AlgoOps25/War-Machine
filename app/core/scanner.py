@@ -12,6 +12,10 @@ PHASE 1.11 (MAR 5, 2026):
   - Structured logging with component tags
   - Data storage spam reduction (periodic summaries)
   - Explicit zero-watchlist alerts
+
+PHASE 1.12 (MAR 5, 2026):
+  - Database SSL hotfix for Railway connections
+  - Parse DATABASE_URL and inject sslmode=require
 """
 import os
 import time
@@ -48,7 +52,7 @@ from app.screening.watchlist_funnel import (
 logger = logging.getLogger(__name__)
 
 # ────────────────────────────────────────────────────────────────────────────────────
-# PHASE 1.11: CRITICAL DATABASE CONNECTION (BLOCKING FIX)
+# PHASE 1.12: DATABASE CONNECTION WITH RAILWAY SSL SUPPORT
 # ────────────────────────────────────────────────────────────────────────────────────
 ANALYTICS_AVAILABLE = False
 analytics_conn = None
@@ -59,7 +63,14 @@ logger.info("DATABASE Attempting connection...")
 if DATABASE_URL:
     try:
         import psycopg2
-        analytics_conn = psycopg2.connect(DATABASE_URL)
+        # Railway requires SSL for proxy connections
+        # Add sslmode=require if not already present
+        conn_url = DATABASE_URL
+        if 'sslmode=' not in conn_url.lower():
+            separator = '&' if '?' in conn_url else '?'
+            conn_url = f"{conn_url}{separator}sslmode=require"
+        
+        analytics_conn = psycopg2.connect(conn_url)
         logger.info("DATABASE ✓ Connected - Analytics ONLINE")
         ANALYTICS_AVAILABLE = True
     except Exception as e:
