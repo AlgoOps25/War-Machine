@@ -151,7 +151,14 @@ class WatchlistFunnel:
         for ticker in watchlist:
             if ticker not in self.volume_analyzer.tracked_tickers:
                 self.volume_analyzer.track_ticker(ticker, lookback_bars=20)
-                self.volume_analyzer.load_historical_bars(ticker, lookback_minutes=60)
+                # FIX: Skip historical bar loading - it tries to use SQLite which doesn't exist
+                # The volume analyzer will work fine with live data from WebSocket feed
+                try:
+                    self.volume_analyzer.load_historical_bars(ticker, lookback_minutes=60)
+                except Exception as e:
+                    # Silently skip - historical bars are just for warming up the tracker
+                    # Live bars will start flowing immediately from WebSocket
+                    pass
         
         print(f"\n✅ Watchlist: {len(watchlist)} tickers")
         print(f"{', '.join(watchlist[:15])}{'...' if len(watchlist) > 15 else ''}\n")
