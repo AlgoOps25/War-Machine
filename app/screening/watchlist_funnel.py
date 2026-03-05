@@ -33,6 +33,8 @@ from app.screening import volume_analyzer
 from app.screening import dynamic_screener
 from utils import config
 
+from zoneinfo import ZoneInfo
+ET = ZoneInfo("America/New_York")
 
 class WatchlistFunnel:
     """Manages adaptive watchlist narrowing throughout pre-market and market hours."""
@@ -79,8 +81,7 @@ class WatchlistFunnel:
         }
     
     def get_current_stage(self) -> str:
-        """Determine current funnel stage based on time of day."""
-        now = datetime.now().time()
+        now = datetime.now(tz=ET).time()   # ← timezone-aware
         
         if now < self.stages["wide"]["time_end"]:
             return "wide"
