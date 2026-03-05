@@ -46,13 +46,14 @@ import requests
 
 from utils import config
 
-# Import existing modules
+# Import existing modules (optional - for optimization only)
 try:
     from ws_feed import get_current_bar
     from app.data.data_manager import data_manager
     WS_AVAILABLE = True
 except ImportError:
     WS_AVAILABLE = False
+    print("[PREMARKET] ⚠️  WS/DB modules not available - using REST API only")
 
 # TASK 12: Import v2 modules
 try:
@@ -372,9 +373,9 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
     TASK 12: Now includes gap quality, news catalyst, and sector rotation.
 
     Bar resolution order:
-      1. WS get_current_bar()          — real-time, preferred
+      1. WS get_current_bar()          — real-time, preferred (if available)
       2. data_manager session bars[-1] — DB fallback for subscribed tickers
-      3. EODHD real-time REST quote    — fallback for unsubscribed pre-market tickers
+      3. EODHD real-time REST quote    — fallback for unsubscribed tickers (PRIMARY for screener)
     """
     print(f"[PREMARKET] Scanning {ticker}...")
     
@@ -386,59 +387,61 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
     fundamentals = fetch_fundamental_data(ticker)
     print(f"[PREMARKET] {ticker}: Fundamentals - ADV={fundamentals['avg_daily_volume']}, ATR={fundamentals['atr']:.2f}")
 
+    current_bar = None
+    
+    # Try WS first (optimization for subscribed tickers)
     if WS_AVAILABLE:
         try:
             current_bar = get_current_bar(ticker)
-
-            # Fallback 1: today's session bars from DB
-            if not current_bar:
-                try:
-                    bars = data_manager.get_today_session_bars(ticker)
-                    if bars:
-                        current_bar = bars[-1]
-                        print(f"[PREMARKET] {ticker}: WS miss → DB bar used (pre-market fallback)")
-                except Exception as e:
-                    print(f"[PREMARKET] {ticker}: DB fallback error: {e}")
-                    pass
-
-            # Fallback 2: EODHD real-time REST quote
-            if not current_bar:
-                print(f"[PREMARKET] {ticker}: Attempting REST API fallback...")
-                try:
-                    rt_url = (
-                        f"https://eodhd.com/api/real-time/{ticker}.US"
-                        f"?api_token={config.EODHD_API_KEY}&fmt=json"
-                    )
-                    rt_resp = requests.get(rt_url, timeout=5)
-                    print(f"[PREMARKET] {ticker}: REST API response HTTP {rt_resp.status_code}")
-                    
-                    if rt_resp.status_code == 200:
-                        rt = rt_resp.json()
-                        current_bar = {
-                            'close':  rt.get('close') or rt.get('previousClose', 0),
-                            'volume': rt.get('volume', 0)
-                        }
-                        print(f"[PREMARKET] {ticker}: WS+DB miss → REST quote used (price=${current_bar['close']:.2f}, vol={current_bar['volume']})")
-                    else:
-                        print(f"[PREMARKET] {ticker}: REST API failed (HTTP {rt_resp.status_code})")
-                except Exception as e:
-                    print(f"[PREMARKET] {ticker}: REST fallback error: {e}")
-                    pass
-
-            if not current_bar:
-                print(f"[PREMARKET] {ticker}: ❌ No bar data available (WS/DB/REST all failed) - skipping")
-                return None
-
-            price  = current_bar.get('close', 0)
-            volume = current_bar.get('volume', 0)
-            
-            print(f"[PREMARKET] {ticker}: Bar resolved - price=${price:.2f}, volume={volume}")
+            if current_bar:
+                print(f"[PREMARKET] {ticker}: ✅ WS bar found")
         except Exception as e:
-            print(f"[PREMARKET] {ticker}: Fatal error in bar resolution: {e}")
-            return None
-    else:
-        print(f"[PREMARKET] {ticker}: WS not available - cannot scan")
+            print(f"[PREMARKET] {ticker}: WS lookup error: {e}")
+            pass
+
+    # Fallback 1: DB session bars (for subscribed tickers)
+    if not current_bar and WS_AVAILABLE:
+        try:
+            bars = data_manager.get_today_session_bars(ticker)
+            if bars:
+                current_bar = bars[-1]
+                print(f"[PREMARKET] {ticker}: ✅ DB bar used")
+        except Exception as e:
+            print(f"[PREMARKET] {ticker}: DB lookup error: {e}")
+            pass
+
+    # Fallback 2: EODHD REST API (PRIMARY for unsubscribed screener tickers)
+    if not current_bar:
+        print(f"[PREMARKET] {ticker}: Attempting REST API...")
+        try:
+            rt_url = (
+                f"https://eodhd.com/api/real-time/{ticker}.US"
+                f"?api_token={config.EODHD_API_KEY}&fmt=json"
+            )
+            rt_resp = requests.get(rt_url, timeout=5)
+            print(f"[PREMARKET] {ticker}: REST API HTTP {rt_resp.status_code}")
+            
+            if rt_resp.status_code == 200:
+                rt = rt_resp.json()
+                current_bar = {
+                    'close':  rt.get('close') or rt.get('previousClose', 0),
+                    'volume': rt.get('volume', 0)
+                }
+                print(f"[PREMARKET] {ticker}: ✅ REST quote (price=${current_bar['close']:.2f}, vol={current_bar['volume']})")
+            else:
+                print(f"[PREMARKET] {ticker}: ❌ REST API failed (HTTP {rt_resp.status_code})")
+        except Exception as e:
+            print(f"[PREMARKET] {ticker}: ❌ REST API error: {e}")
+            pass
+
+    if not current_bar:
+        print(f"[PREMARKET] {ticker}: ❌ No data available (all sources failed)")
         return None
+
+    price  = current_bar.get('close', 0)
+    volume = current_bar.get('volume', 0)
+    
+    print(f"[PREMARKET] {ticker}: Bar resolved - price=${price:.2f}, volume={volume}")
 
     # Tier 1: Volume score (60% weight)
     volume_score, volume_metrics = score_volume_quality(
