@@ -164,10 +164,14 @@ def get_greeks(ticker: str, strike: float = None, expiration: str = None, direct
         return _get_placeholder_greeks()
 
     try:
-        # Fetch options contracts from UnicornBay API
+        # Fetch specific contracts from UnicornBay API with filters
         url = f"{EODHD_BASE_URL}/options/contracts"
         params = {
             'filter[underlying_symbol]': ticker,
+            'filter[type]': direction.lower(),
+            'filter[strike]': strike,
+            'filter[exp_date]': expiration,
+            'page[size]': 10,  # Should only return 1 contract
             'api_token': EODHD_API_KEY
         }
 
@@ -175,53 +179,42 @@ def get_greeks(ticker: str, strike: float = None, expiration: str = None, direct
         response.raise_for_status()
         data = response.json()
 
-        # UnicornBay API returns: {"data": [{"id": "...", "type": "options-contracts", "attributes": {...}}]}
         if not data or 'data' not in data:
             logger.warning(f"[OPTIONS] No options data for {ticker}")
             return _get_placeholder_greeks()
 
         contracts = data['data']
         if not contracts:
-            logger.warning(f"[OPTIONS] No contracts found for {ticker}")
+            logger.warning(f"[OPTIONS] No contracts found for {ticker} ${strike} {direction} {expiration}")
             return _get_placeholder_greeks()
 
-        # Convert direction to lowercase for API
-        option_type = direction.lower()
-
-        # Find matching contract
-        for contract in contracts:
-            attrs = contract.get('attributes', {})
-            
-            # Match: expiration, strike, and type
-            if (attrs.get('exp_date') == expiration and 
-                abs(attrs.get('strike', 0) - strike) < 0.01 and
-                attrs.get('type') == option_type):
-                
-                bid = attrs.get('bid', 0)
-                ask = attrs.get('ask', 0)
-                midpoint = attrs.get('midpoint', (bid + ask) / 2 if (bid and ask) else attrs.get('last', 5.0))
-                
-                return {
-                    'delta': attrs.get('delta', 0.5),
-                    'gamma': attrs.get('gamma', 0.03),
-                    'theta': attrs.get('theta', -0.10),
-                    'vega': attrs.get('vega', 0.20),
-                    'iv': attrs.get('volatility', 0.40) * 100,  # Convert decimal to percentage
-                    'price': midpoint,
-                    'bid': bid,
-                    'ask': ask,
-                    'volume': attrs.get('volume', 0),
-                    'open_interest': attrs.get('open_interest', 0)
-                }
-
-        logger.warning(f"[OPTIONS] No matching contract for {ticker} ${strike} {direction} {expiration}")
-        return _get_placeholder_greeks()
+        # Should only be one matching contract
+        attrs = contracts[0].get('attributes', {})
+        
+        bid = attrs.get('bid', 0)
+        ask = attrs.get('ask', 0)
+        midpoint = attrs.get('midpoint', (bid + ask) / 2 if (bid and ask) else attrs.get('last', 5.0))
+        
+        return {
+            'delta': attrs.get('delta', 0.5),
+            'gamma': attrs.get('gamma', 0.03),
+            'theta': attrs.get('theta', -0.10),
+            'vega': attrs.get('vega', 0.20),
+            'iv': attrs.get('volatility', 0.40) * 100,  # Convert decimal to percentage
+            'price': midpoint,
+            'bid': bid,
+            'ask': ask,
+            'volume': attrs.get('volume', 0),
+            'open_interest': attrs.get('open_interest', 0)
+        }
 
     except requests.exceptions.HTTPError as e:
         if e.response.status_code == 404:
             logger.warning(f"[OPTIONS] No options data available for {ticker} (404)")
         elif e.response.status_code == 401:
             logger.error(f"[OPTIONS] API authentication failed (401) - check EODHD_API_KEY")
+        elif e.response.status_code == 400:
+            logger.warning(f"[OPTIONS] Bad request (400) - filters may not be supported")
         else:
             logger.error(f"[OPTIONS] HTTP error fetching Greeks: {e}")
         return _get_placeholder_greeks()
