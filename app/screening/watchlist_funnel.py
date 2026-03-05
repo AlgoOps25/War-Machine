@@ -295,7 +295,13 @@ class WatchlistFunnel:
         return watchlist
     
     def _build_live_watchlist(self) -> List[str]:
-        """Live session: Top 10 active movers based on real-time momentum."""
+        """Live session: Top 10 active movers based on real-time momentum.
+        
+        BUGFIX: Lower min_score threshold for live session.
+        During live session, screener tickers don't have premarket gap/catalyst data,
+        so composite_score is primarily volume-based (~20-40 range for new movers).
+        Using min_score=55.0 filters out all candidates. Use 30.0 to allow discovery.
+        """
         stage_config = self.stages["live"]
         
         # Get fresh scored tickers from screener (uses cache if recent)
@@ -306,12 +312,18 @@ class WatchlistFunnel:
         )
         candidates = [t['ticker'] for t in screener_results[:30]]
         
+        print(f"[FUNNEL] Live session: scanning {len(candidates)} candidates from screener")
+        
         # Score candidates with professional scanner
+        # Use lower threshold (30.0) for live discovery - these tickers don't have
+        # premarket momentum data, so scores will be in 20-50 range initially
         self.scored_tickers = momentum_screener.run_momentum_screener(
             candidates,
-            min_composite_score=stage_config["min_score"],
+            min_composite_score=30.0,  # LOWERED from 55.0 to allow live discovery
             use_cache=True
         )
+        
+        print(f"[FUNNEL] {len(self.scored_tickers)} tickers passed scoring (min_score=30.0)")
         
         # Boost tickers with active volume signals
         volume_signals = self.volume_analyzer.get_active_signals()
