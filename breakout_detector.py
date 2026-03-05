@@ -642,7 +642,7 @@ class BreakoutDetector:
 
             if not (in_retest_zone and
                     candle_strength['direction'] == 'bear' and
-                    candle_strength['is_strong' and
+                    candle_strength['is_strong'] and
                     volume_ratio >= 1.5):
                 return None
 
