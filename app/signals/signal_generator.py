@@ -30,24 +30,26 @@ import numpy as np
 from app.signals.breakout_detector import BreakoutDetector, format_signal_message
 from app.data.data_manager import data_manager
 from app.discord_helpers import send_simple_message
+from app.validation.validation import get_validator
 
 # ============================================================================
-# Dead Import Cleanup: Variables previously set by try/except import blocks
+# Feature flags for optional subsystems
 # ============================================================================
-# These modules exist at:
-#   - app/analytics/performance_monitor.py
-#   - app/validation/validation.py
-#   - app/options/options_dte_selector.py
-# But are not used in this file, so flags are set to False
+# Analytics + DTE selector remain disabled here (not yet integrated).
+# Validator is now enabled and imported from app.validation.validation.
 
 ANALYTICS_ENABLED = False
-VALIDATOR_ENABLED = False
+
+# Turn validation ON in production; flip VALIDATOR_TEST_MODE to True if
+# you want to observe validation effects without actually filtering.
+VALIDATOR_ENABLED = True
 VALIDATOR_TEST_MODE = False
+
 DTE_SELECTOR_ENABLED = False
-signal_tracker = None  # Referenced in conditional checks
-get_validator = None   # Referenced in conditional checks
-get_optimal_dte = None # Referenced in conditional checks
-dte_selector = None    # Referenced in conditional checks
+
+signal_tracker = None          # Placeholder until analytics is wired
+get_optimal_dte = None         # Placeholder for future DTE selector
+dte_selector = None            # Placeholder for future DTE selector
 
 # Import Day 5 adaptive target discovery
 try:
