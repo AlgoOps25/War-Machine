@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 Historical Signal Backtester & ML Training Data Generator
-Generates synthetic signal outcomes from 60-90 days of cached candle data
-to bootstrap ML model training without waiting for live signals.
+Generates synthetic signal outcomes from cached candle data.
+Uses 1m cached bars and aggregates to 5m for pattern detection.
 """
 
 import sys
@@ -42,6 +42,7 @@ def generate_training_data_from_cache(
         from app.data.database import get_db_connection
         
         logger.info(f"Analyzing last {lookback_days} days of cached data")
+        logger.info(f"Using 1m cached data, aggregating to 5m for analysis")
         logger.info(f"Target: {target_total_signals} signals across all tickers")
         logger.info("")
         
@@ -58,24 +59,33 @@ def generate_training_data_from_cache(
             logger.info(f"[{ticker}] Processing historical data...")
             
             try:
-                # Load cached candles
-                candles = cache.load_cached_candles(
+                # Load 1m cached candles
+                candles_1m = cache.load_cached_candles(
                     ticker=ticker,
-                    timeframe='5m',
+                    timeframe='1m',
                     days=lookback_days
                 )
                 
-                if not candles or len(candles) < 100:
-                    logger.warning(f"  ⚠️  Insufficient data for {ticker} ({len(candles) if candles else 0} bars)")
+                if not candles_1m or len(candles_1m) < 500:
+                    logger.warning(f"  ⚠️  Insufficient 1m data for {ticker} ({len(candles_1m) if candles_1m else 0} bars)")
                     ticker_stats[ticker] = 0
                     continue
                 
-                logger.info(f"  📊 Loaded {len(candles)} bars")
+                logger.info(f"  📊 Loaded {len(candles_1m)} 1m bars")
+                
+                # Aggregate 1m -> 5m
+                candles_5m = aggregate_1m_to_5m(candles_1m)
+                logger.info(f"  📊 Aggregated to {len(candles_5m)} 5m bars")
+                
+                if len(candles_5m) < 100:
+                    logger.warning(f"  ⚠️  Insufficient 5m bars after aggregation")
+                    ticker_stats[ticker] = 0
+                    continue
                 
                 # Backtest signals
                 signals = backtest_signals_from_candles(
                     ticker=ticker,
-                    candles=candles,
+                    candles=candles_5m,
                     min_signals=min_signals_per_ticker
                 )
                 
@@ -125,6 +135,49 @@ def generate_training_data_from_cache(
         import traceback
         traceback.print_exc()
         return 0
+
+
+def aggregate_1m_to_5m(candles_1m: List[Dict]) -> List[Dict]:
+    """
+    Aggregate 1-minute bars into 5-minute bars.
+    """
+    if not candles_1m:
+        return []
+    
+    candles_5m = []
+    buffer = []
+    
+    for candle in candles_1m:
+        dt = candle['datetime']
+        minute = dt.minute
+        
+        # Start of new 5m bar (0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55)
+        if minute % 5 == 0 and buffer:
+            # Complete previous 5m bar
+            candles_5m.append({
+                'datetime': buffer[0]['datetime'],
+                'open': buffer[0]['open'],
+                'high': max(b['high'] for b in buffer),
+                'low': min(b['low'] for b in buffer),
+                'close': buffer[-1]['close'],
+                'volume': sum(b['volume'] for b in buffer)
+            })
+            buffer = []
+        
+        buffer.append(candle)
+    
+    # Don't forget last bar
+    if buffer:
+        candles_5m.append({
+            'datetime': buffer[0]['datetime'],
+            'open': buffer[0]['open'],
+            'high': max(b['high'] for b in buffer),
+            'low': min(b['low'] for b in buffer),
+            'close': buffer[-1]['close'],
+            'volume': sum(b['volume'] for b in buffer)
+        })
+    
+    return candles_5m
 
 
 def backtest_signals_from_candles(
