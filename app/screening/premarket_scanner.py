@@ -370,6 +370,11 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
     Compatible with watchlist_funnel.py.
     
     TASK 12: Now includes gap quality, news catalyst, and sector rotation.
+
+    Bar resolution order:
+      1. WS get_current_bar()          — real-time, preferred
+      2. data_manager session bars[-1] — DB fallback for subscribed tickers
+      3. EODHD real-time REST quote    — fallback for unsubscribed pre-market tickers
     """
     cached = _scanner_cache.get_scan(ticker)
     if cached:
@@ -380,6 +385,35 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
     if WS_AVAILABLE:
         try:
             current_bar = get_current_bar(ticker)
+
+            # Fallback 1: today's session bars from DB
+            if not current_bar:
+                try:
+                    bars = data_manager.get_today_session_bars(ticker)
+                    if bars:
+                        current_bar = bars[-1]
+                        print(f"[PREMARKET] {ticker}: WS miss → DB bar used (pre-market fallback)")
+                except Exception:
+                    pass
+
+            # Fallback 2: EODHD real-time REST quote
+            if not current_bar:
+                try:
+                    rt_url = (
+                        f"https://eodhd.com/api/real-time/{ticker}.US"
+                        f"?api_token={config.EODHD_API_KEY}&fmt=json"
+                    )
+                    rt_resp = requests.get(rt_url, timeout=5)
+                    if rt_resp.status_code == 200:
+                        rt = rt_resp.json()
+                        current_bar = {
+                            'close':  rt.get('close') or rt.get('previousClose', 0),
+                            'volume': rt.get('volume', 0)
+                        }
+                        print(f"[PREMARKET] {ticker}: WS+DB miss → REST quote used")
+                except Exception:
+                    pass
+
             if not current_bar:
                 return None
 
