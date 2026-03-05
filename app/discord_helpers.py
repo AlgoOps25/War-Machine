@@ -23,9 +23,10 @@ def send_options_signal_alert(
     candle_type: Optional[str] = None,
     greeks_data: Optional[Dict] = None
 ):
-    """Send enhanced Discord alert with CFW6 signal and options recommendation."""
-    direction_emoji = "🐂" if direction == "bull" else "🐻"
-    color = 0x00FF00 if direction == "bull" else 0xFF0000
+    """Send enhanced Discord alert with options signal (redesigned format)."""
+    # Determine option type (CALL/PUT)
+    option_type = "CALL" if direction == "bull" else "PUT"
+    color = 0x00FF00 if direction == "bull" else 0xFF0000  # Green for CALL, Red for PUT
 
     # Calculate risk:reward
     risk = abs(entry - stop)
@@ -34,14 +35,43 @@ def send_options_signal_alert(
     rr_t1 = round(reward_t1 / risk, 2) if risk > 0 else 0
     rr_t2 = round(reward_t2 / risk, 2) if risk > 0 else 0
 
-    fields = [
-        {"name": "📥 Entry",          "value": f"${entry:.2f}",                     "inline": True},
-        {"name": "🛑 Stop Loss",       "value": f"${stop:.2f}",                      "inline": True},
-        {"name": "🎯 Target 1 (2R)",   "value": f"${t1:.2f}  (RR: {rr_t1}x)",       "inline": True},
-        {"name": "🎯 Target 2 (3.5R)", "value": f"${t2:.2f}  (RR: {rr_t2}x)",       "inline": True},
-        {"name": "📊 Confidence",      "value": f"{confidence:.1%}",                 "inline": True},
-        {"name": "🏅 Grade",           "value": grade,                               "inline": True},
-    ]
+    # Build fields with clean vertical layout
+    fields = []
+    
+    # Entry range
+    fields.append({
+        "name": "📥 Entry",
+        "value": f"**${entry:.2f}** (RR: {rr_t1:.1f}x)",
+        "inline": False
+    })
+    
+    # Stop Loss
+    fields.append({
+        "name": "🛑 Stop Loss",
+        "value": f"${stop:.2f}",
+        "inline": False
+    })
+    
+    # Target 1 (50% position)
+    fields.append({
+        "name": "🎯 Target 1 (1.5R)",
+        "value": f"${t1:.2f} (RR: {rr_t1:.1f}x)",
+        "inline": False
+    })
+    
+    # Target 2 (50% position)
+    fields.append({
+        "name": "🎯 Target 2 (3.5R)",
+        "value": f"${t2:.2f} (RR: {rr_t2:.1f}x)",
+        "inline": False
+    })
+    
+    # Confidence & Grade
+    fields.append({
+        "name": "📊 Confidence",
+        "value": f"**{confidence*100:.0f}%** | Grade: **{grade}**",
+        "inline": False
+    })
 
     # Add candle confirmation if present (from Nitro 3-tier model)
     if confirmation:
@@ -53,29 +83,17 @@ def send_options_signal_alert(
         
         fields.append({
             "name": f"{conf_emoji} Confirmation",
-            "value": f"**{confirmation}** — {candle_type or 'FVG retest'}",
+            "value": f"**{confirmation}** — {candle_type or 'Hammer'}",
             "inline": False
         })
 
-    # ── GREEKS METRICS (NEW) ────────────────────────────────────────────────
+    # ── GREEKS ANALYSIS ────────────────────────────────────────────────
     if greeks_data:
         is_valid = greeks_data.get("is_valid", False)
         reason = greeks_data.get("reason", "No data")
         best_strike = greeks_data.get("best_strike")
         
-        # Determine action emoji and recommendation
-        if is_valid and best_strike:
-            action_emoji = "✅"
-            option_type = "CALL" if direction == "bull" else "PUT"
-            action = f"**BUY {option_type}** @ ${best_strike}\n{reason}"
-        elif not is_valid:
-            action_emoji = "⚠️"
-            action = f"**WAIT** — {reason}\nConsider stock play or wait for better setup"
-        else:
-            action_emoji = "❌"
-            action = f"**SKIP** — {reason}\nNo tradeable options available"
-        
-        # Add Greeks quality metrics if available
+        # Get Greeks details if available
         greeks_details = greeks_data.get("details", {})
         if greeks_details:
             delta = greeks_details.get("delta", 0)
@@ -84,75 +102,70 @@ def send_options_signal_alert(
             spread = greeks_details.get("spread_pct", 0)
             liquidity = greeks_details.get("liquidity_ok", False)
             
-            # Build quality indicators
-            delta_emoji = "✅" if abs(delta) >= 0.30 else "⚠️"
-            iv_emoji = "✅" if iv < 0.60 else "⚠️"
-            spread_emoji = "✅" if spread < 5 else ("⚠️" if spread < 8 else "❌")
-            liq_emoji = "✅" if liquidity else "❌"
+            # Build quality indicators (checkmarks and warnings)
+            delta_check = "✅" if abs(delta) >= 0.30 else "⚠️"
+            iv_check = "✅" if iv < 0.60 else "⚠️"
+            spread_check = "✅" if spread < 5 else "⚠️"
+            liq_check = "✅" if liquidity else "❌"
             
-            quality_str = (
-                f"Δ {delta:+.2f} {delta_emoji}  |  "
-                f"IV {iv*100:.0f}% {iv_emoji}  |  "
-                f"{dte}DTE\n"
-                f"Spread {spread:.1f}% {spread_emoji}  |  "
-                f"Liquidity {liq_emoji}"
+            # Format Greeks data similar to screenshot
+            greeks_summary = (
+                f"Δ +{abs(delta):.2f} {delta_check} | IV {iv*100:.0f}% {iv_check} | {dte}DTE\n"
+                f"Spread {spread:.1f}% {spread_check} | Liquidity {liq_check}"
             )
-            action += f"\n\n**Greeks Quality:**\n{quality_str}"
-        
-        fields.append({
-            "name": f"{action_emoji} Greeks Analysis",
-            "value": action,
-            "inline": False
-        })
+            
+            fields.append({
+                "name": "✅ Greeks Quality:",
+                "value": greeks_summary,
+                "inline": False
+            })
 
+    # ── RECOMMENDED OPTION ────────────────────────────────────────────────
     if options_data:
-        # ── Contract summary ─────────────────────────────────────────────
         contract_label = (
             options_data.get("contract_label")
             or f"${options_data.get('strike', '?')}"
                f"{'C' if str(options_data.get('contract_type', '')).upper().startswith('C') else 'P'}"
         )
-        dte   = options_data.get("dte", 0)
-        delta = options_data.get("delta", 0)
-        theta = options_data.get("theta", 0)
-        iv    = options_data.get("iv", 0)
-
+        dte = options_data.get("dte", 0)
+        
+        # Get expiry date if available
+        expiry = options_data.get("expiry", "2DTE")
+        if isinstance(dte, int) and dte > 0:
+            expiry = f"{dte}DTE"
+        
         fields.append({
             "name": "📋 Recommended Option",
-            "value": (
-                f"`{contract_label}`\n"
-                f"DTE: **{dte}**  |  Δ {delta:+.2f}  |  "
-                f"θ {theta:.3f}  |  IV: {iv*100:.0f}%"
-            ),
+            "value": f"**{option_type}** @ **${options_data.get('strike', '?')}**\nValid calls available: ${options_data.get('strike', '?')} strike, Δ={abs(options_data.get('delta', 0)):.2f}, IV={options_data.get('iv', 0)*100:.0f}%, {expiry}",
             "inline": False
         })
 
-        # ── Limit price entry range ────────────────────────────────────────
-        bid         = options_data.get("bid", 0)
-        ask         = options_data.get("ask", 0)
-        mid         = options_data.get("mid") or (round((bid + ask) / 2, 2) if bid and ask else 0)
+        # ── LIMIT ENTRY RANGE ────────────────────────────────────────────
+        bid = options_data.get("bid", 0)
+        ask = options_data.get("ask", 0)
+        mid = options_data.get("mid") or (round((bid + ask) / 2, 2) if bid and ask else 0)
         limit_entry = options_data.get("limit_entry", mid)
-        max_entry   = options_data.get("max_entry", ask)
-        spread_pct  = options_data.get("spread_pct", 0)
+        max_entry = options_data.get("max_entry", ask)
+        spread_pct = options_data.get("spread_pct", 0)
 
         if ask > 0 and bid > 0:
-            spread_emoji = "✅" if spread_pct < 5 else ("⚠️" if spread_pct < 10 else "🚨")
+            spread_emoji = "✅" if spread_pct < 5 else "⚠️"
             fields.append({
                 "name": "💲 Limit Entry",
                 "value": (
-                    f"**Place: ${limit_entry:.2f}**  →  Max: **${max_entry:.2f}**\n"
-                    f"Bid: ${bid:.2f}  |  Ask: ${ask:.2f}  |  "
-                    f"Spread: {spread_pct:.1f}% {spread_emoji}"
+                    f"**Place: ${limit_entry:.2f}** — Max: **${max_entry:.2f}**\n"
+                    f"Bid: ${bid:.2f} | Ask: ${ask:.2f} | Spread: {spread_pct:.1f}% {spread_emoji}"
                 ),
                 "inline": False
             })
 
+    # Build embed with new title format: "SYMBOL CALL/PUT"
     embed = {
-        "title": f"{direction_emoji} CFW6 SIGNAL: {ticker} ({timeframe})",
+        "title": f"{ticker} {option_type}",
         "color": color,
         "fields": fields,
         "footer": {
-            "text": f"War Machine Sniper  |  {datetime.now().strftime('%Y-%m-%d %H:%M:%S EST')}"
+            "text": f"War Machine Sniper  |  {datetime.now().strftime('%Y-%m-%d %I:%M %p EST')}"
         }
     }
 
