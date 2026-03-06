@@ -18,6 +18,7 @@ Responsibilities:
   - [TASK 7] Opening Range (OR) detection with tight/wide classification
   - [FIX] Market hours gate — signals suppressed before 9:30 AM ET and on weekends
   - [FIX] Minimum move filter — T2 ≥ 2.0%, T1 ≥ 1.2% floor
+  - [FIX] Python 3.10 f-string backslash compatibility fix
 """
 # Note: signal_analytics, signal_validator, options_dte_selector imports removed
 # These modules exist at app/analytics/*, app/validation/*, app/options/*
@@ -731,8 +732,10 @@ class SignalGenerator:
         # Add validation summary if available
         if 'validation_test' in signal:
             val = signal['validation_test']
+            # Pre-compute string to avoid backslash-in-f-string (Python 3.10 compat)
+            val_status = "\u2705 Would Pass" if val['should_pass'] else "\u274c Would Filter"
             print(f"\nValidation Test:")
-            print(f"  Status: {'\u2705 Would Pass' if val['should_pass'] else '\u274c Would Filter'}")
+            print(f"  Status: {val_status}")
             print(f"  Confidence: {val['original_confidence']}% \u2192 {val['adjusted_confidence']}% ({val['confidence_delta']:+.0f}%)")
             print(f"  Checks: {val['check_score']}")
             if val['checks_failed']:
@@ -952,8 +955,9 @@ class SignalGenerator:
         # Add validation test info if available
         if 'validation_test' in signal:
             val = signal['validation_test']
-            status_emoji = "\u2705" if val['should_pass'] else "\u26a0\ufe0f"
-            msg += f"\n\n{status_emoji} **Validation:** {val['check_score']} checks | "
+            # Pre-compute string to avoid backslash-in-f-string (Python 3.10 compat)
+            val_status_emoji = "\u2705" if val['should_pass'] else "\u26a0\ufe0f"
+            msg += f"\n\n{val_status_emoji} **Validation:** {val['check_score']} checks | "
             msg += f"Conf: {val['original_confidence']}% \u2192 {val['adjusted_confidence']}%"
 
         return msg
