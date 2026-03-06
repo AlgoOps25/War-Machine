@@ -16,6 +16,10 @@ PHASE 1.11 (MAR 5, 2026):
 PHASE 1.12 (MAR 5, 2026):
   - Database SSL hotfix for Railway connections
   - Parse DATABASE_URL and inject sslmode=require
+
+PHASE 1.13 (MAR 6, 2026):
+  - Removed deprecated signal_generator imports (check_and_alert, monitor_signals, etc.)
+  - Scanner now relies entirely on sniper.py for signal processing
 """
 import os
 import time
@@ -33,12 +37,6 @@ from app.core.scanner_optimizer import (
     get_adaptive_scan_interval,
     should_scan_now,
     calculate_optimal_watchlist_size
-)
-from app.signals.signal_generator import (
-    check_and_alert,
-    monitor_signals,
-    print_active_signals,
-    signal_generator
 )
 from app.screening.watchlist_funnel import (
     get_current_watchlist,
@@ -477,17 +475,19 @@ def start_scanner_loop():
                         send_simple_message(msg)
 
                         logger.info(
-                            f"[SIGNALS] Pre-market breakout scan on "
-                            f"{len(premarket_watchlist)} tickers...",
+                            f"[SIGNALS] Pre-market scan on {len(premarket_watchlist)} tickers...",
                             extra={
                                 "component": "signal_scanner",
                                 "ticker_count": len(premarket_watchlist)
                             }
                         )
-                        check_and_alert(premarket_watchlist)
-
-                        if signal_generator.active_signals:
-                            print_active_signals()
+                        
+                        # PHASE 1.13: No check_and_alert, just process each ticker directly
+                        for ticker in premarket_watchlist:
+                            try:
+                                process_ticker(ticker)
+                            except Exception as e:
+                                logger.error(f"[PRE-MARKET] Error processing {ticker}: {e}")
 
                     except Exception as e:
                         logger.error(
@@ -537,18 +537,19 @@ def start_scanner_loop():
                             )
 
                             logger.info(
-                                f"[SIGNALS] Pre-market breakout scan on "
-                                f"{len(premarket_watchlist)} tickers...",
+                                f"[SIGNALS] Pre-market scan on {len(premarket_watchlist)} tickers...",
                                 extra={
                                     "component": "signal_scanner",
                                     "ticker_count": len(premarket_watchlist)
                                 }
                             )
-                            check_and_alert(premarket_watchlist)
-                            monitor_signals()
-
-                            if signal_generator.active_signals:
-                                print_active_signals()
+                            
+                            # PHASE 1.13: No check_and_alert/monitor_signals
+                            for ticker in premarket_watchlist:
+                                try:
+                                    process_ticker(ticker)
+                                except Exception as e:
+                                    logger.error(f"[PRE-MARKET] Error processing {ticker}: {e}")
 
                         except Exception as e:
                             logger.error(
@@ -654,7 +655,6 @@ def start_scanner_loop():
                         "ticker_count": len(watchlist)
                     }
                 )
-                check_and_alert(watchlist)
                 
                 # Monitor active analytics signals for outcome tracking
                 if ANALYTICS_AVAILABLE and analytics:
@@ -671,11 +671,6 @@ def start_scanner_loop():
                             f"[ANALYTICS] Monitor error: {e}",
                             extra={"component": "analytics"}
                         )
-                
-                monitor_signals()
-
-                if signal_generator.active_signals:
-                    print_active_signals()
 
                 monitor_open_positions()
 
@@ -877,8 +872,7 @@ def start_scanner_loop():
                             extra={"component": "database_cleanup"}
                         )
 
-                    # 6. DAILY RESET
-                    signal_generator.reset_daily()
+                    # 6. DAILY RESET - No signal_generator reset needed now
                     logger.info("[SIGNALS] Daily reset complete")
 
                     # 7. STATE RESET
