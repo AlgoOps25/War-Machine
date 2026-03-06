@@ -23,7 +23,7 @@ from datetime import time as dtime
 # ========================================
 
 # EODHD API Key (required for data_manager, signal_generator, etc.)
-EODHD_API_KEY = "695cf9738b6fc2.79743285"  # Replace with your actual key
+EODHD_API_KEY = os.getenv('EODHD_API_KEY', '')  # Replace with your actual key
 
 # Account Configuration
 ACCOUNT_SIZE = 5000  # Your trading account size in USD
@@ -85,7 +85,7 @@ ENABLE_WEBSOCKET_FEED = True  # Enable EODHD WebSocket real-time feed
 # DISCORD ALERTS
 # ========================================
 
-DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1471917294891307100/onHzBfoozy0UK91wBi-7w0lC3NzF_eiiW2sUAuWLZogpWfMAk5Azfr7DcFyaGeKDM_Sa"
+DISCORD_WEBHOOK_URL = os.getenv('DISCORD_WEBHOOK_URL', '')
 
 # ========================================
 # FILTER CONFIGURATION DATACLASS
