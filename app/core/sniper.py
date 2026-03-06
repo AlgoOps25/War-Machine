@@ -1155,7 +1155,7 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
     # PHASE 4 INTEGRATION POINT #2 - Track Signal Generated
     # ══════════════════════════════════════════════════════════════════════════════
     _prelim_stop, _prelim_t1, _prelim_t2 = compute_stop_and_targets(
-        bars_session, direction, or_high_ref, or_low_ref, entry_price,
+        ticker, bars_session, direction, or_high_ref, or_low_ref, entry_price,
         grade=final_grade
     )
     
@@ -1279,7 +1279,7 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
 
     # STEP 9 — STOPS & TARGETS
     stop_price, t1, t2 = compute_stop_and_targets(
-        bars_session, direction, or_high_ref, or_low_ref, entry_price,
+        ticker, bars_session, direction, or_high_ref, or_low_ref, entry_price,
         grade=final_grade
     )
 
@@ -1295,7 +1295,7 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
     # STEP 11 — CONFIDENCE
     ticker_multiplier = 1.0  # learning engine disabled / not wired yet
     mtf_boost = mtf_result.get('boost', 0.0)
-    mode_decay = 0.95 if signal_type == "CFW6_INTRADAY" else 1.0
+    mode_decay = 0.95 if signal_type == "CFW6_OR" else 1.0  # 🔧 FIX #3: OR signals get penalty (less reliable), INTRADAY gets 1.0
 
     ivr_multiplier = options_rec.get("ivr_multiplier", 1.0) if options_rec else 1.0
     ivr_label      = options_rec.get("ivr_label",      "IVR-N/A") if options_rec else "IVR-N/A"
