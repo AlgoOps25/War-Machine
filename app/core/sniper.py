@@ -60,16 +60,21 @@ if TYPE_CHECKING:
 
 import random
 
+#  FIX #10: WIDENED CONFIDENCE RANGES (better grade differentiation)
+# Old compressed range: A+ (92-95%) to C+ (70-74%) = only 18-25 point spread
+# New expanded range: A+ (88-92%) to C+ (55-60%) = 28-37 point spread
+# This forces C-grade setups to EARN their way through multipliers instead of
+# starting near the gate threshold. Prevents weak setups from slipping through.
 GRADE_CONFIDENCE_RANGES = {
-    "A+":     (0.92, 0.95),  # 92-95% range
-    "A":      (0.89, 0.92),  # 89-92%
-    "A-":     (0.85, 0.88),  # 85-88%
-    "B+":     (0.82, 0.85),  # 82-85%
-    "B":      (0.78, 0.82),  # 78-82%
-    "B-":     (0.74, 0.78),  # 74-78%
-    "C+":     (0.70, 0.74),  # 70-74%
-    "C":      (0.66, 0.70),  # 66-70%
-    "C-":     (0.62, 0.66),  # 62-66%
+    "A+":     (0.88, 0.92),  # 88-92% range (was 92-95%)
+    "A":      (0.83, 0.87),  # 83-87% (was 89-92%)
+    "A-":     (0.78, 0.82),  # 78-82% (was 85-88%)
+    "B+":     (0.72, 0.76),  # 72-76% (was 82-85%)
+    "B":      (0.66, 0.70),  # 66-70% (was 78-82%)
+    "B-":     (0.60, 0.64),  # 60-64% (was 74-78%)
+    "C+":     (0.55, 0.60),  # 55-60% (was 70-74%)
+    "C":      (0.50, 0.55),  # 50-55% (was 66-70%)
+    "C-":     (0.45, 0.50),  # 45-50% (was 62-66%)
 }
 
 def compute_confidence(grade: str, timeframe: str, ticker: str) -> float:
@@ -1304,12 +1309,18 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
     gex_multiplier = options_rec.get("gex_multiplier", 1.0) if options_rec else 1.0
     gex_label      = options_rec.get("gex_label",      "GEX-N/A") if options_rec else "GEX-N/A"
     
+    #  FIX #12: BALANCED PENALTY/BOOST CAPS (was asymmetric: +15% boost vs -20% penalty)
+    # Old: Boosts capped at +15%, penalties at -20% (system penalized more than rewarded)
+    # New: Both capped at 10% per multiplier for symmetric treatment
+    # With 5 multipliers, max adjustment is 50% instead of +45%/-100%
     def mult_to_adjustment(multiplier, base_conf):
         """Convert multiplier to bounded additive adjustment."""
         if multiplier >= 1.0:
-            return min((multiplier - 1.0) * base_conf * 0.75, base_conf * 0.15)
+            # Boost cap: +10% per multiplier (was +15%)
+            return min((multiplier - 1.0) * base_conf * 0.75, base_conf * 0.10)
         else:
-            return max((multiplier - 1.0) * base_conf * 1.00, base_conf * -0.20)
+            # Penalty cap: -10% per multiplier (was -20%)
+            return max((multiplier - 1.0) * base_conf * 1.00, base_conf * -0.10)
     
     ticker_adj = mult_to_adjustment(ticker_multiplier, base_confidence)
     mode_adj   = mult_to_adjustment(mode_decay, base_confidence)
