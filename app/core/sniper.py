@@ -1309,12 +1309,18 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
     gex_multiplier = options_rec.get("gex_multiplier", 1.0) if options_rec else 1.0
     gex_label      = options_rec.get("gex_label",      "GEX-N/A") if options_rec else "GEX-N/A"
     
+    #  FIX #12: BALANCED PENALTY/BOOST CAPS (was asymmetric: +15% boost vs -20% penalty)
+    # Old: Boosts capped at +15%, penalties at -20% (system penalized more than rewarded)
+    # New: Both capped at 10% per multiplier for symmetric treatment
+    # With 5 multipliers, max adjustment is 50% instead of +45%/-100%
     def mult_to_adjustment(multiplier, base_conf):
         """Convert multiplier to bounded additive adjustment."""
         if multiplier >= 1.0:
-            return min((multiplier - 1.0) * base_conf * 0.75, base_conf * 0.15)
+            # Boost cap: +10% per multiplier (was +15%)
+            return min((multiplier - 1.0) * base_conf * 0.75, base_conf * 0.10)
         else:
-            return max((multiplier - 1.0) * base_conf * 1.00, base_conf * -0.20)
+            # Penalty cap: -10% per multiplier (was -20%)
+            return max((multiplier - 1.0) * base_conf * 1.00, base_conf * -0.10)
     
     ticker_adj = mult_to_adjustment(ticker_multiplier, base_confidence)
     mode_adj   = mult_to_adjustment(mode_decay, base_confidence)
