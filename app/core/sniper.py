@@ -26,6 +26,7 @@
 #   - 9:45 OR WINDOW: Widened from 9:30-9:40 to 9:30-9:45 (3 bars) for better range capture
 #   - VWAP DIRECTIONAL GATE: Price must be above/below VWAP for bull/bear signals
 #   - HYBRID CONFIDENCE: Grade-based spread (A+: 92-95%, A-: 85-88%) instead of fixed values
+#   - INTRADAY GRADE GATE REMOVED: A-, B+, B grades now flow through confidence gate
 import traceback
 import requests
 import json
@@ -43,7 +44,8 @@ from utils import config
 from app.mtf.bos_fvg_engine import scan_bos_fvg, is_force_close_time
 from app.filters.early_session_disqualifier import should_skip_cfw6_or_early
 
-if False:  # type: ignore[truthy-function]
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
     from signal_analytics import signal_tracker
     from app.analytics.performance_monitor import performance_monitor
     from performance_alerts import alert_manager
@@ -68,7 +70,6 @@ GRADE_CONFIDENCE_RANGES = {
     "C+":     (0.70, 0.74),  # 70-74%
     "C":      (0.66, 0.70),  # 66-70%
     "C-":     (0.62, 0.66),  # 62-66%
-    "reject": (0.60, 0.65),  # 60-65% (shouldn't reach Discord)
 }
 
 def compute_confidence(grade: str, timeframe: str, ticker: str) -> float:
@@ -283,7 +284,13 @@ _watches_loaded    = False   # True after first DB load attempt this session
 _armed_loaded      = False   # True after first armed signals load
 
 MAX_WATCH_BARS      = 12  # 60 min optimal momentum window
-INTRADAY_MIN_GRADES = {"A+", "A"}
+
+# 🔧 FIX #5: REMOVED INTRADAY_MIN_GRADES HARD GATE
+# Old behavior: Blocked all A-, B+, B intraday signals regardless of confidence
+# New behavior: All grades flow through confidence threshold gate (Step 11b)
+# Rationale: Grade is already factored into confidence calculation. The hard
+#            gate was redundant and blocking 90%+ of valid signals.
+# INTRADAY_MIN_GRADES = {"A+", "A"}  # ← REMOVED
 
 # Options pre-gate mode:
 #   "SOFT" — log result but never filter (data collection phase, safe default)
@@ -1096,9 +1103,14 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         print(f"[{ticker}] — No confirmation (found={found}, grade={base_grade})")
         return False
 
-    if signal_type == "CFW6_INTRADAY" and base_grade not in INTRADAY_MIN_GRADES:
-        print(f"[{ticker}] — Intraday grade {base_grade} below A threshold")
-        return False
+    # 🔧 FIX #5: INTRADAY GRADE GATE REMOVED
+    # Old code that blocked 90% of signals:
+    # if signal_type == "CFW6_INTRADAY" and base_grade not in INTRADAY_MIN_GRADES:
+    #     print(f"[{ticker}] — Intraday grade {base_grade} below A threshold")
+    #     return False
+    # 
+    # New behavior: All grades flow through to confidence gate at Step 11b
+    print(f"[{ticker}] ✅ CONFIRMATION: {base_grade} grade @ ${entry_price:.2f}")
 
     # ══════════════════════════════════════════════════════════════════════════════
     # PHASE 2 WIN RATE ENHANCEMENT: VWAP DIRECTIONAL GATE
