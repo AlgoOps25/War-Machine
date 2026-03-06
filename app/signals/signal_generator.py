@@ -17,6 +17,8 @@ Responsibilities:
   - [TASK 6] Options flow integration with whale detection
   - [TASK 7] Opening Range (OR) detection with tight/wide classification
   - [FIX] Market hours gate — signals suppressed before 9:30 AM ET and on weekends
+  - [FIX] Minimum move filter — T2 ≥ 2.0%, T1 ≥ 1.2% floor
+  - [FIX] Python 3.10 f-string backslash compatibility fix (line 915 SyntaxError)
 """
 # Note: signal_analytics, signal_validator, options_dte_selector imports removed
 # These modules exist at app/analytics/*, app/validation/*, app/options/*
@@ -51,6 +53,12 @@ DTE_SELECTOR_ENABLED = False
 signal_tracker = None          # Placeholder until analytics is wired
 get_optimal_dte = None         # Placeholder for future DTE selector
 dte_selector = None            # Placeholder for future DTE selector
+
+# ============================================================================
+# Minimum Move Filter — prevents sub-1% targets from reaching Discord
+# ============================================================================
+MIN_T1_MOVE_PCT = 0.012   # 1.2%: T1 bumped to this floor if too small
+MIN_T2_MOVE_PCT = 0.020   # 2.0%: hard filter — signal rejected if T2 < this
 
 # Import Day 5 adaptive target discovery
 try:
@@ -240,6 +248,7 @@ class SignalGenerator:
 
         print("[SIGNALS] \u2705 Cooldown only triggers after validation passes (Issue #3 fix)")
         print("[SIGNALS] \u2705 Market hours gate active: Mon-Fri 9:30 AM \u2013 4:00 PM ET only")
+        print(f"[SIGNALS] \u2705 Minimum move filter active: T2 \u2265 {MIN_T2_MOVE_PCT:.1%}, T1 floor \u2265 {MIN_T1_MOVE_PCT:.1%}")
 
     def _extract_ml_features(self, ticker: str, signal: Dict, latest_bar: Dict) -> Dict[str, float]:
         """
@@ -325,6 +334,7 @@ class SignalGenerator:
         TASK 5: Multi-timeframe validation.
         TASK 6: UOA whale detection and flow correlation.
         TASK 7: Opening Range (OR) tight/wide classification with confidence adjustments.
+        MIN MOVE: T2 must be >= 2.0% from entry; T1 bumped to 1.2% floor if too small.
 
         Args:
             ticker: Stock ticker to check
@@ -394,6 +404,29 @@ class SignalGenerator:
                 print(f"[TARGETS] {ticker} error ({e}) - using fixed R-multiples")
                 # Fallback: Keep detector's original targets
                 pass
+
+        # === MINIMUM MOVE FILTER ===
+        # Rejects signals where T2 is too small to justify a 0DTE options trade
+        # (theta + spread costs make sub-2% moves unprofitable).
+        # T1 is bumped to a 1.2% floor rather than rejected outright.
+        _entry = signal['entry']
+        _t1 = signal.get('t1', signal['target'])
+        _t2 = signal.get('t2', signal['target'])
+        _direction_mult = 1 if signal['signal'] == 'BUY' else -1
+
+        _t1_move = abs(_t1 - _entry) / _entry
+        _t2_move = abs(_t2 - _entry) / _entry
+
+        if _t2_move < MIN_T2_MOVE_PCT:
+            print(f"[SIGNALS] {ticker} FILTERED - T2 move too small "
+                  f"({_t2_move:.1%} < {MIN_T2_MOVE_PCT:.1%} min)")
+            return None
+
+        if _t1_move < MIN_T1_MOVE_PCT:
+            _new_t1 = round(_entry * (1 + _direction_mult * MIN_T1_MOVE_PCT), 2)
+            signal['t1'] = _new_t1
+            print(f"[SIGNALS] {ticker} T1 bumped to {MIN_T1_MOVE_PCT:.1%} floor "
+                  f"(was {_t1_move:.1%}, now ${_new_t1:.2f})")
 
         # === MULTI-INDICATOR VALIDATION ===
         if self.validator and bars:
@@ -699,8 +732,10 @@ class SignalGenerator:
         # Add validation summary if available
         if 'validation_test' in signal:
             val = signal['validation_test']
+            # Pre-compute string to avoid backslash-in-f-string (Python 3.10 compat)
+            val_status = "\u2705 Would Pass" if val['should_pass'] else "\u274c Would Filter"
             print(f"\nValidation Test:")
-            print(f"  Status: {'\u2705 Would Pass' if val['should_pass'] else '\u274c Would Filter'}")
+            print(f"  Status: {val_status}")
             print(f"  Confidence: {val['original_confidence']}% \u2192 {val['adjusted_confidence']}% ({val['confidence_delta']:+.0f}%)")
             print(f"  Checks: {val['check_score']}")
             if val['checks_failed']:
@@ -804,10 +839,13 @@ class SignalGenerator:
         msg += f"   Entry Window: Next 2-5 minutes\n\n"
 
         # Risk management with adaptive targets
+        t1_pct = (t1 - entry) / entry * 100
+        t2_pct = (target - entry) / entry * 100
+        stop_pct = (stop - entry) / entry * 100
         msg += f"\U0001f6e1\ufe0f **RISK MANAGEMENT:**\n"
-        msg += f"   Stop Loss: ${stop:.2f} ({((stop - entry) / entry * 100):+.2f}%)\n"
-        msg += f"   T1 (50%): ${t1:.2f} ({((t1 - entry) / entry * 100):+.2f}%)\n"
-        msg += f"   T2 (50%): ${target:.2f} ({((target - entry) / entry * 100):+.2f}%)\n"
+        msg += f"   Stop Loss: ${stop:.2f} ({stop_pct:+.2f}%)\n"
+        msg += f"   T1 (50%): ${t1:.2f} ({t1_pct:+.2f}%)\n"
+        msg += f"   T2 (50%): ${target:.2f} ({t2_pct:+.2f}%)\n"
         msg += f"   R:R Ratio: {rr_ratio:.2f}:1\n"
 
         # Add target method if adaptive
@@ -870,15 +908,29 @@ class SignalGenerator:
                 msg += f"   \u2705 **SELECTED: {selected_dte}DTE** (Expires {'Today' if selected_dte == 0 else 'Tomorrow'} 4:00 PM)\n\n"
 
                 # Data analysis summary
+                # Python 3.10 compat: pre-compute all check/label strings —
+                # backslash escapes (\u2705, \u274c) are not allowed inside
+                # f-string expression parts {} until Python 3.12.
                 factors = dte_info.get('data_factors', {})
                 time_hrs = dte_info.get('time_remaining_hours', 0)
+                _chk = "\u2705"
+                _x   = "\u274c"
+                _time_chk    = _chk if factors.get('time_adequate')           else _x
+                _liq_chk     = _chk if factors.get('dte_0_liquid')             else _x
+                _liq_lbl     = "Strong"     if factors.get('dte_0_liquid')             else "Weak"
+                _theta_chk   = _chk if factors.get('dte_0_theta_acceptable')  else _x
+                _theta_lbl   = "Acceptable" if factors.get('dte_0_theta_acceptable')  else "Aggressive"
+                _spread_chk  = _chk if factors.get('dte_0_spread_tight')      else _x
+                _spread_lbl  = "Tight"      if factors.get('dte_0_spread_tight')      else "Wide"
+                _iv_chk      = _chk if factors.get('iv_favorable')             else _x
+                _iv_lbl      = "Fair"       if factors.get('iv_favorable')             else "Inflated"
 
                 msg += f"   **Data Analysis:**\n"
-                msg += f"   {'\u2705' if factors.get('time_adequate') else '\u274c'} Time Adequate: {time_hrs:.1f} hours remaining\n"
-                msg += f"   {'\u2705' if factors.get('dte_0_liquid') else '\u274c'} Liquidity {'Strong' if factors.get('dte_0_liquid') else 'Weak'}\n"
-                msg += f"   {'\u2705' if factors.get('dte_0_theta_acceptable') else '\u274c'} Theta {'Acceptable' if factors.get('dte_0_theta_acceptable') else 'Aggressive'}\n"
-                msg += f"   {'\u2705' if factors.get('dte_0_spread_tight') else '\u274c'} Spread {'Tight' if factors.get('dte_0_spread_tight') else 'Wide'}\n"
-                msg += f"   {'\u2705' if factors.get('iv_favorable') else '\u274c'} IV {'Fair' if factors.get('iv_favorable') else 'Inflated'}\n\n"
+                msg += f"   {_time_chk} Time Adequate: {time_hrs:.1f} hours remaining\n"
+                msg += f"   {_liq_chk} Liquidity {_liq_lbl}\n"
+                msg += f"   {_theta_chk} Theta {_theta_lbl}\n"
+                msg += f"   {_spread_chk} Spread {_spread_lbl}\n"
+                msg += f"   {_iv_chk} IV {_iv_lbl}\n\n"
 
                 # Strike recommendations
                 strikes = dte_info.get('recommended_strikes', [])
@@ -917,8 +969,9 @@ class SignalGenerator:
         # Add validation test info if available
         if 'validation_test' in signal:
             val = signal['validation_test']
-            status_emoji = "\u2705" if val['should_pass'] else "\u26a0\ufe0f"
-            msg += f"\n\n{status_emoji} **Validation:** {val['check_score']} checks | "
+            # Pre-compute string to avoid backslash-in-f-string (Python 3.10 compat)
+            val_status_emoji = "\u2705" if val['should_pass'] else "\u26a0\ufe0f"
+            msg += f"\n\n{val_status_emoji} **Validation:** {val['check_score']} checks | "
             msg += f"Conf: {val['original_confidence']}% \u2192 {val['adjusted_confidence']}%"
 
         return msg

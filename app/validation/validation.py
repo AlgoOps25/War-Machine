@@ -12,14 +12,23 @@ PHASE 3A CONSOLIDATION (Feb 26, 2026):
   - Single source of truth for all validation
   - Compatibility stubs maintain zero breaking changes
 
+PHASE 3A PATCH (Mar 6, 2026) — Regime Filter Improvements:
+  - VIX-aware dynamic ADX threshold replaces hardcoded 25
+      VIX ≤ 20  → effective ADX threshold = 20.0
+      VIX 20–25 → effective ADX threshold = 15.0  (elevated VIX compresses ADX)
+      VIX > 25  → effective ADX threshold = 12.0  (extreme fear, ADX tanks)
+  - RegimeFilter.is_favorable_for_explosive_mover(rvol): bypasses regime gate
+    ENTIRELY when RVOL ≥ 4.0x — explosive movers override choppy-tape blocking
+  - min_adx default lowered 25.0 → 15.0 (aligns with regime filter change)
+
 VALIDATION CONFIGURATION:
   • Minimum Final Confidence: 50% (configurable via min_final_confidence)
-  • Minimum ADX: 25.0 (trending markets)
+  • Minimum ADX: 15.0 (VIX-aware dynamic threshold, was 25.0)
   • Minimum Volume Ratio: 1.5x average
   • Daily Bias Penalty: -25% for counter-trend (VPVR can rescue)
   • Regime Penalty: -30% for unfavorable market conditions
   • VIX Threshold: 30+ = VOLATILE regime (unfavorable)
-  • ADX Threshold: 25+ = TRENDING regime (favorable)
+  • ADX Threshold: VIX-aware dynamic (12 / 15 / 20 based on VIX level)
 
 CONFIDENCE ADJUSTMENTS:
   Boosts (additive):
@@ -54,10 +63,14 @@ USAGE:
   # Custom threshold (aggressive: 40%, conservative: 65%)
   validator = SignalValidator(min_final_confidence=0.65, strict_mode=True)
   
-  # Regime filtering
+  # Regime filtering (standard)
   regime_filter = get_regime_filter()
   if not regime_filter.is_favorable_regime():
       print("Bad tape - skip signal")
+  
+  # Regime filtering (explosive mover override — call this INSTEAD of is_favorable_regime)
+  if regime_filter.is_favorable_for_explosive_mover(rvol=ticker_rvol):
+      process_signal()  # passes if RVOL >= 4x regardless of ADX/regime
   
   # Options validation
   options_filter = get_options_filter()
@@ -135,9 +148,19 @@ class RegimeFilter:
     Market regime detection using VIX and SPY price action.
     
     Regime Classification:
-      TRENDING: ADX > 25, VIX < 30, clear directional move
-      CHOPPY:   ADX < 25, VIX < 20, range-bound action
+      TRENDING: ADX > dynamic threshold (VIX-aware), VIX < 30, clear directional move
+      CHOPPY:   ADX below dynamic threshold, VIX < 20, range-bound action
       VOLATILE: VIX > 30, erratic moves, avoid trading
+    
+    VIX-Aware ADX Thresholds (Phase 3A Patch):
+      VIX ≤ 20:  ADX must be ≥ 20.0 for TRENDING
+      VIX 20–25: ADX must be ≥ 15.0 for TRENDING  (elevated VIX compresses ADX)
+      VIX > 25:  ADX must be ≥ 12.0 for TRENDING  (extreme fear, ADX tanks further)
+    
+    Explosive Mover Override (Phase 3A Patch):
+      RVOL ≥ 4.0x bypasses the regime gate entirely via
+      is_favorable_for_explosive_mover(rvol). Call this INSTEAD of
+      is_favorable_regime() for tickers with known high RVOL.
     """
     
     def __init__(self):
@@ -149,6 +172,34 @@ class RegimeFilter:
         """Check if current market regime is favorable for trading."""
         state = self.get_regime_state(force_refresh=force_refresh)
         return state.favorable
+
+    def is_favorable_for_explosive_mover(self, rvol: float, rvol_threshold: float = 4.0) -> bool:
+        """
+        RVOL-based regime override for explosive movers.
+
+        Checks RVOL BEFORE the regime gate. If RVOL >= rvol_threshold, the
+        regime check is bypassed entirely — an explosive mover with 4x+
+        relative volume warrants a signal attempt regardless of ADX or VIX.
+
+        Call this method INSTEAD of is_favorable_regime() for tickers where
+        the RVOL is known (e.g., from the premarket scanner composite score).
+
+        Args:
+            rvol: Relative volume ratio (e.g., 4.5 means 4.5x average volume)
+            rvol_threshold: Minimum RVOL to trigger override (default 4.0x)
+
+        Returns:
+            True if explosive mover override fires OR standard regime is favorable
+        """
+        if rvol >= rvol_threshold:
+            state = self.get_regime_state()
+            print(
+                f"[REGIME] ⚡ EXPLOSIVE MOVER OVERRIDE: RVOL={rvol:.1f}x ≥ {rvol_threshold:.0f}x "
+                f"— bypassing {state.regime} gate "
+                f"(VIX:{state.vix:.1f}, ADX:{state.adx if state.adx is not None else 'N/A'})"
+            )
+            return True
+        return self.is_favorable_regime()
     
     def get_regime_state(self, force_refresh: bool = False) -> RegimeState:
         """Get current market regime state."""
@@ -292,34 +343,68 @@ class RegimeFilter:
             ema = (value * multiplier) + (ema * (1 - multiplier))
         return ema
     
-    def _classify_regime(self, vix: float, adx: Optional[float], 
-                        spy_trend: str, spy_bars: list) -> Tuple[str, bool, str]:
-        """Classify market regime and determine if favorable for trading."""
+    def _classify_regime(self, vix: float, adx: Optional[float],
+                         spy_trend: str, spy_bars: list) -> Tuple[str, bool, str]:
+        """
+        Classify market regime and determine if favorable for trading.
+
+        Phase 3A Patch: VIX-aware ADX thresholds replace the hardcoded 25.
+        Elevated VIX environments naturally compress ADX readings — a market
+        moving directionally with VIX=25 will often show ADX=10–14, which is
+        still a tradeable trend. The thresholds scale accordingly:
+
+          VIX > 25  → effective_adx_threshold = 12.0
+          VIX > 20  → effective_adx_threshold = 15.0
+          VIX ≤ 20  → effective_adx_threshold = 20.0
+        """
+        # Hard blocks: extreme volatility
         if vix >= 35:
             return ("VOLATILE", False, f"VIX too high ({vix:.1f}) - extreme fear/greed")
         if vix >= 30:
             return ("VOLATILE", False, f"VIX elevated ({vix:.1f}) - elevated volatility")
-        
+
+        # Whipsaw check: too many candle direction reversals
         if len(spy_bars) >= 10:
             recent_bars = spy_bars[-10:]
-            reversals = sum(1 for i in range(1, len(recent_bars)) 
-                          if (recent_bars[i]["close"] - recent_bars[i]["open"]) * 
-                             (recent_bars[i-1]["close"] - recent_bars[i-1]["open"]) < 0)
+            reversals = sum(
+                1 for i in range(1, len(recent_bars))
+                if (recent_bars[i]["close"] - recent_bars[i]["open"]) *
+                   (recent_bars[i-1]["close"] - recent_bars[i-1]["open"]) < 0
+            )
             if reversals >= 6:
                 return ("CHOPPY", False, f"Whipsaw action ({reversals}/10 reversals) - avoid")
-        
+
+        # VIX-aware dynamic ADX threshold
+        # Rationale: elevated VIX compresses ADX — a directional move at VIX=25
+        # will often register ADX=10-14, which is still tradeable.
+        if vix > 25:
+            effective_adx_threshold = 12.0   # High fear: ADX tanks, use very low bar
+        elif vix > 20:
+            effective_adx_threshold = 15.0   # Moderate fear: relaxed threshold
+        else:
+            effective_adx_threshold = 20.0   # Normal market (was 25, lowered to 20)
+
         if adx is not None:
-            if adx >= 25:
+            if adx >= effective_adx_threshold:
                 if vix < 25:
-                    return ("TRENDING", True, f"Strong {spy_trend} trend (ADX: {adx:.0f}, VIX: {vix:.1f})")
+                    return (
+                        "TRENDING", True,
+                        f"Strong {spy_trend} trend (ADX: {adx:.0f} ≥ {effective_adx_threshold:.0f}, VIX: {vix:.1f})"
+                    )
                 else:
-                    return ("TRENDING", True, f"{spy_trend} trend with elevated VIX (ADX: {adx:.0f}, VIX: {vix:.1f})")
+                    return (
+                        "TRENDING", True,
+                        f"{spy_trend} trend with elevated VIX (ADX: {adx:.0f} ≥ {effective_adx_threshold:.0f}, VIX: {vix:.1f})"
+                    )
             else:
-                return ("CHOPPY", False, f"Weak trend (ADX: {adx:.0f}) - range-bound")
-        
+                return (
+                    "CHOPPY", False,
+                    f"Weak trend (ADX: {adx:.0f} < {effective_adx_threshold:.0f}) - range-bound"
+                )
+
         if vix < 20 and spy_trend != "NEUTRAL":
             return ("TRENDING", True, f"Low VIX ({vix:.1f}), {spy_trend} bias")
-        
+
         return ("CHOPPY", False, f"Neutral conditions (VIX: {vix:.1f})")
     
     def print_regime_summary(self) -> None:
@@ -646,7 +731,7 @@ class SignalValidator:
     def __init__(
         self,
         min_final_confidence: float = 0.50,
-        min_adx: float = 25.0,
+        min_adx: float = 15.0,
         min_volume_ratio: float = 1.5,
         enable_vpvr: bool = True,
         enable_daily_bias: bool = True,
@@ -691,7 +776,7 @@ class SignalValidator:
             print(f"[VALIDATOR] RSI divergence detection enabled")
         if self.enable_vpvr:
             print(f"[VALIDATOR] VPVR entry scoring enabled")
-        print(f"[VALIDATOR] ADX threshold: {min_adx}")
+        print(f"[VALIDATOR] ADX threshold: {min_adx} (VIX-aware dynamic threshold in regime filter)")
         print(f"[VALIDATOR] Volume ratio: {min_volume_ratio}x")
     
     def validate_signal(
@@ -1172,7 +1257,7 @@ def get_validator() -> SignalValidator:
     if _validator_instance is None:
         _validator_instance = SignalValidator(
             min_final_confidence=0.50,
-            min_adx=25.0,
+            min_adx=15.0,
             min_volume_ratio=1.5,
             enable_vpvr=True,
             enable_daily_bias=True,
