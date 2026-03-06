@@ -18,7 +18,7 @@ Responsibilities:
   - [TASK 7] Opening Range (OR) detection with tight/wide classification
   - [FIX] Market hours gate — signals suppressed before 9:30 AM ET and on weekends
   - [FIX] Minimum move filter — T2 ≥ 2.0%, T1 ≥ 1.2% floor
-  - [FIX] Python 3.10 f-string backslash compatibility fix
+  - [FIX] Python 3.10 f-string backslash compatibility fix (line 915 SyntaxError)
 """
 # Note: signal_analytics, signal_validator, options_dte_selector imports removed
 # These modules exist at app/analytics/*, app/validation/*, app/options/*
@@ -908,15 +908,29 @@ class SignalGenerator:
                 msg += f"   \u2705 **SELECTED: {selected_dte}DTE** (Expires {'Today' if selected_dte == 0 else 'Tomorrow'} 4:00 PM)\n\n"
 
                 # Data analysis summary
+                # Python 3.10 compat: pre-compute all check/label strings —
+                # backslash escapes (\u2705, \u274c) are not allowed inside
+                # f-string expression parts {} until Python 3.12.
                 factors = dte_info.get('data_factors', {})
                 time_hrs = dte_info.get('time_remaining_hours', 0)
+                _chk = "\u2705"
+                _x   = "\u274c"
+                _time_chk    = _chk if factors.get('time_adequate')           else _x
+                _liq_chk     = _chk if factors.get('dte_0_liquid')             else _x
+                _liq_lbl     = "Strong"     if factors.get('dte_0_liquid')             else "Weak"
+                _theta_chk   = _chk if factors.get('dte_0_theta_acceptable')  else _x
+                _theta_lbl   = "Acceptable" if factors.get('dte_0_theta_acceptable')  else "Aggressive"
+                _spread_chk  = _chk if factors.get('dte_0_spread_tight')      else _x
+                _spread_lbl  = "Tight"      if factors.get('dte_0_spread_tight')      else "Wide"
+                _iv_chk      = _chk if factors.get('iv_favorable')             else _x
+                _iv_lbl      = "Fair"       if factors.get('iv_favorable')             else "Inflated"
 
                 msg += f"   **Data Analysis:**\n"
-                msg += f"   {'\u2705' if factors.get('time_adequate') else '\u274c'} Time Adequate: {time_hrs:.1f} hours remaining\n"
-                msg += f"   {'\u2705' if factors.get('dte_0_liquid') else '\u274c'} Liquidity {'Strong' if factors.get('dte_0_liquid') else 'Weak'}\n"
-                msg += f"   {'\u2705' if factors.get('dte_0_theta_acceptable') else '\u274c'} Theta {'Acceptable' if factors.get('dte_0_theta_acceptable') else 'Aggressive'}\n"
-                msg += f"   {'\u2705' if factors.get('dte_0_spread_tight') else '\u274c'} Spread {'Tight' if factors.get('dte_0_spread_tight') else 'Wide'}\n"
-                msg += f"   {'\u2705' if factors.get('iv_favorable') else '\u274c'} IV {'Fair' if factors.get('iv_favorable') else 'Inflated'}\n\n"
+                msg += f"   {_time_chk} Time Adequate: {time_hrs:.1f} hours remaining\n"
+                msg += f"   {_liq_chk} Liquidity {_liq_lbl}\n"
+                msg += f"   {_theta_chk} Theta {_theta_lbl}\n"
+                msg += f"   {_spread_chk} Spread {_spread_lbl}\n"
+                msg += f"   {_iv_chk} IV {_iv_lbl}\n\n"
 
                 # Strike recommendations
                 strikes = dte_info.get('recommended_strikes', [])
