@@ -151,6 +151,35 @@ VALIDATOR_TEST_MODE = False  # Set to False to enable filtering
 _validator_stats = {'tested': 0, 'passed': 0, 'filtered': 0, 'boosted': 0, 'penalized': 0}
 print("[SIGNALS] ✅ Multi-indicator validator ACTIVE (filtering enabled)")
 
+# ══════════════════════════════════════════════════════════════════════════════
+# ISSUE #21: VALIDATOR CALL TRACKING
+# Track validation calls to detect duplicates (should be exactly once per signal)
+# ══════════════════════════════════════════════════════════════════════════════
+_validation_call_tracker = {}  # {signal_id: call_count}
+
+def _get_signal_id(ticker: str, direction: str, price: float) -> str:
+    """Generate unique signal ID for tracking."""
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M')
+    return f"{ticker}_{direction}_{price:.2f}_{timestamp}"
+
+def _track_validation_call(ticker: str, direction: str, price: float) -> bool:
+    """
+    Track validator calls to detect duplicates.
+    Returns True if this is a duplicate call (already validated).
+    """
+    signal_id = _get_signal_id(ticker, direction, price)
+    
+    if signal_id in _validation_call_tracker:
+        _validation_call_tracker[signal_id] += 1
+        print(
+            f"[VALIDATOR] ⚠️  WARNING: {ticker} validated {_validation_call_tracker[signal_id]} times "
+            f"(possible duplicate call - signal_id: {signal_id})"
+        )
+        return True  # This is a duplicate
+    else:
+        _validation_call_tracker[signal_id] = 1
+        return False  # First validation
+
 # ────────────────────────────────────────────────────────────────────────────────
 # OPTIONS PRE-VALIDATION GATE - Now integrated into validation.py
 # ────────────────────────────────────────────────────────────────────────────────
@@ -405,6 +434,33 @@ def print_validation_stats():
     print("="*80)
     if VALIDATOR_TEST_MODE:
         print("⚠️  TEST MODE ACTIVE - Signals NOT being filtered")
+    print("="*80 + "\n")
+
+def print_validation_call_stats():
+    """Print end-of-day validation call statistics (Issue #21)."""
+    if not _validation_call_tracker:
+        return
+    
+    total_signals = len(_validation_call_tracker)
+    duplicate_calls = [
+        (sig_id, count) for sig_id, count in _validation_call_tracker.items() 
+        if count > 1
+    ]
+    
+    print("\n" + "="*80)
+    print("VALIDATOR CALL TRACKING - DAILY STATISTICS")
+    print("="*80)
+    print(f"Total Unique Signals: {total_signals}")
+    print(f"Signals with Duplicate Validations: {len(duplicate_calls)}")
+    
+    if duplicate_calls:
+        print(f"\n⚠️  DUPLICATE VALIDATIONS DETECTED:")
+        for sig_id, count in duplicate_calls:
+            print(f"  • {sig_id}: validated {count} times")
+        print(f"\n⚠️  Action required: Investigate duplicate validation calls")
+    else:
+        print(f"\n✅ No duplicate validations detected - all signals validated exactly once")
+    
     print("="*80 + "\n")
 
 
@@ -1190,6 +1246,12 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
 
     validation_result = None
     if VALIDATOR_ENABLED:
+        # Issue #21: Track validation calls to detect duplicates
+        is_duplicate = _track_validation_call(ticker, direction, entry_price)
+        if is_duplicate:
+            print(f"[VALIDATOR] 🚫 {ticker} - Skipping duplicate validation")
+            return False
+        
         try:
             validator = get_validator()
             should_pass, adjusted_conf, metadata = validator.validate_signal(
@@ -1659,6 +1721,7 @@ def process_ticker(ticker: str):
         if is_force_close_time(bars_session[-1]):
             position_manager.close_all_eod({ticker: bars_session[-1]["close"]})
             print_validation_stats()
+            print_validation_call_stats()  # Issue #21
             print_mtf_stats()
             print_priority_stats()
             
