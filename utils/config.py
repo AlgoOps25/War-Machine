@@ -1,4 +1,4 @@
-﻿"""
+"""
 War Machine Filter Configuration System - Phase 3
 Centralized configuration for all market filters
 
@@ -52,7 +52,7 @@ DATABASE_URL = None  # Set to PostgreSQL URL if using Railway/Heroku
 DB_PATH = os.getenv('DB_PATH', '/app/data/war_machine.db')
 DBPATH = DB_PATH  # Alias used by WatchlistFunnel / VolumeAnalyzer
 # Opening range filter - TASK 2 INTEGRATION
-MIN_OR_RANGE_PCT = 0.03  # Minimum 3% OR range for early-session CFW6_OR gate (Task 2)
+MIN_OR_RANGE_PCT = 0.015  #  FIX #8: Lowered to 1.5% for large-cap compatibility (was 3%)
 # Options filtering thresholds - TASK 3 INTEGRATION
 MIN_DTE = 0  # Minimum days to expiration (0DTE allowed)
 MAX_DTE = 7  # Maximum days to expiration (weekly options)
