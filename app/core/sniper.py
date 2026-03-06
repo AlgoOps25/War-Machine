@@ -60,16 +60,21 @@ if TYPE_CHECKING:
 
 import random
 
+#  FIX #10: WIDENED CONFIDENCE RANGES (better grade differentiation)
+# Old compressed range: A+ (92-95%) to C+ (70-74%) = only 18-25 point spread
+# New expanded range: A+ (88-92%) to C+ (55-60%) = 28-37 point spread
+# This forces C-grade setups to EARN their way through multipliers instead of
+# starting near the gate threshold. Prevents weak setups from slipping through.
 GRADE_CONFIDENCE_RANGES = {
-    "A+":     (0.92, 0.95),  # 92-95% range
-    "A":      (0.89, 0.92),  # 89-92%
-    "A-":     (0.85, 0.88),  # 85-88%
-    "B+":     (0.82, 0.85),  # 82-85%
-    "B":      (0.78, 0.82),  # 78-82%
-    "B-":     (0.74, 0.78),  # 74-78%
-    "C+":     (0.70, 0.74),  # 70-74%
-    "C":      (0.66, 0.70),  # 66-70%
-    "C-":     (0.62, 0.66),  # 62-66%
+    "A+":     (0.88, 0.92),  # 88-92% range (was 92-95%)
+    "A":      (0.83, 0.87),  # 83-87% (was 89-92%)
+    "A-":     (0.78, 0.82),  # 78-82% (was 85-88%)
+    "B+":     (0.72, 0.76),  # 72-76% (was 82-85%)
+    "B":      (0.66, 0.70),  # 66-70% (was 78-82%)
+    "B-":     (0.60, 0.64),  # 60-64% (was 74-78%)
+    "C+":     (0.55, 0.60),  # 55-60% (was 70-74%)
+    "C":      (0.50, 0.55),  # 50-55% (was 66-70%)
+    "C-":     (0.45, 0.50),  # 45-50% (was 62-66%)
 }
 
 def compute_confidence(grade: str, timeframe: str, ticker: str) -> float:
