@@ -30,7 +30,6 @@ def apply_migration(content: str) -> tuple[str, int]:
     Returns (migrated_content, num_changes)
     """
     changes = 0
-    original = content
     
     # Patch 1: Add thread-safe state import
     pattern = r'from app\.filters\.early_session_disqualifier import should_skip_cfw6_or_early'
@@ -87,11 +86,11 @@ print("[SNIPER] ✅ Thread-safe state management enabled")'''
     
     pattern = r'_validation_call_tracker\[signal_id\] = 1\s+return False'
     replacement = 'return False'
-    content, n = re.suben(pattern, replacement, content)
+    content, n = re.subn(pattern, replacement, content)
     changes += n
     
     # Patch 7: Update print_validation_stats
-    pattern = r'def print_validation_stats\(\):\s+if not VALIDATOR_ENABLED or _validator_stats\[\'tested\'\] == 0:\s+return\s+stats = _validator_stats'
+    pattern = r"def print_validation_stats\(\):\s+if not VALIDATOR_ENABLED or _validator_stats\['tested'\] == 0:\s+return\s+stats = _validator_stats"
     replacement = '''def print_validation_stats():
     if not VALIDATOR_ENABLED:
         return
@@ -135,7 +134,7 @@ print("[SNIPER] ✅ Thread-safe state management enabled")'''
     ]
     
     for pattern, replacement in replacements:
-        content, n = re.suben(pattern, replacement, content)
+        content, n = re.subn(pattern, replacement, content)
         changes += n
     
     # Patch 23: Fix watching_signals dict access patterns
@@ -235,10 +234,16 @@ def main():
     # Create backup
     backup_path = backup_file(sniper_path)
     
-    # Load content
+    # Load content with UTF-8 encoding (Windows fix)
     print("📖 Loading sniper.py...")
-    with open(sniper_path, 'r') as f:
-        content = f.read()
+    try:
+        with open(sniper_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+    except UnicodeDecodeError as e:
+        print(f"❌ Unicode decode error: {e}")
+        print("   Attempting to read with 'utf-8-sig' encoding...")
+        with open(sniper_path, 'r', encoding='utf-8-sig') as f:
+            content = f.read()
     
     original_lines = len(content.splitlines())
     print(f"   Original: {original_lines} lines, {len(content):,} bytes")
@@ -256,9 +261,9 @@ def main():
         print("   File may already be migrated or patterns didn't match.")
         return 1
     
-    # Write migrated content
+    # Write migrated content with UTF-8 encoding (Windows fix)
     print("\n💾 Writing migrated file...")
-    with open(sniper_path, 'w') as f:
+    with open(sniper_path, 'w', encoding='utf-8') as f:
         f.write(migrated)
     
     print("\n✅ Migration complete!")
