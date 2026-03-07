@@ -7,8 +7,8 @@ try:
     from app.core.analytics_integration import AnalyticsIntegration
     ANALYTICS_AVAILABLE = True
     __all__ = ['ANALYTICS_AVAILABLE', 'AnalyticsIntegration']
-except ImportError as e:
-    # Gracefully disable if analytics_integration is missing
+except Exception as e:
+    # Gracefully disable if analytics_integration or its dependencies are missing
     print(f"[ANALYTICS] Module unavailable: {e}")
     ANALYTICS_AVAILABLE = False
     AnalyticsIntegration = None
