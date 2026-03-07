@@ -27,6 +27,8 @@
 #   - VWAP DIRECTIONAL GATE: Price must be above/below VWAP for bull/bear signals
 #   - HYBRID CONFIDENCE: Grade-based spread (A+: 92-95%, A-: 85-88%) instead of fixed values
 #   - INTRADAY GRADE GATE REMOVED: A-, B+, B grades now flow through confidence gate
+#
+# FIX #3: SQL INJECTION PREVENTION - All queries now use parameterized execution
 import traceback
 import requests
 import json
@@ -49,6 +51,13 @@ from app.core.thread_safe_state import get_state
 
 _state = get_state()
 print("[SNIPER] ✅ Thread-safe state management enabled")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# FIX #3: SQL INJECTION PREVENTION
+# ══════════════════════════════════════════════════════════════════════════════
+from app.data.sql_safe import safe_execute, safe_query, build_insert, safe_insert_dict, safe_in_clause, get_placeholder
+
+print("[SNIPER] ✅ SQL injection prevention enabled (parameterized queries)")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # INTEGRATION POINT #1: IMPORT TRACKERS
@@ -154,7 +163,7 @@ def _get_signal_id(ticker: str, direction: str, price: float) -> str:
 def _track_validation_call(ticker: str, direction: str, price: float) -> bool:
     signal_id = _get_signal_id(ticker, direction, price)
     call_count = _state.track_validation_call(signal_id)  # Thread-safe
-    if call_count > 1
+    if call_count > 1:
         print(
             f"[VALIDATOR] ⚠️  WARNING: {ticker} validated {call_count} times "
             f"(possible duplicate call - signal_id: {signal_id})"
@@ -284,11 +293,14 @@ def _get_ticker_screener_metadata(ticker: str) -> dict:
         return {'score': 0, 'rvol': 0.0, 'qualified': False, 'tier': 'N/A'}
 
 def log_proposed_trade(ticker, signal_type, direction, price, confidence, grade):
+    """FIX #3: Refactored to use parameterized queries"""
     try:
-        from app.data.db_connection import get_conn, ph, serial_pk
+        from app.data.db_connection import get_conn, serial_pk
         conn = get_conn()
         cursor = conn.cursor()
-        p = ph()
+        p = get_placeholder(conn)
+        
+        # Create table with proper serial_pk
         cursor.execute(f"""
             CREATE TABLE IF NOT EXISTS proposed_trades (
                 id {serial_pk()}, ticker TEXT, signal_type TEXT,
@@ -296,11 +308,13 @@ def log_proposed_trade(ticker, signal_type, direction, price, confidence, grade)
                 timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        cursor.execute(
-            f"INSERT INTO proposed_trades (ticker, signal_type, direction, price, confidence, grade) "
-            f"VALUES ({p}, {p}, {p}, {p}, {p}, {p})",
-            (ticker, signal_type, direction, price, confidence, grade)
-        )
+        
+        # Use parameterized insert
+        query = build_insert("proposed_trades", 
+                            ["ticker", "signal_type", "direction", "price", "confidence", "grade"],
+                            p)
+        safe_execute(cursor, query, (ticker, signal_type, direction, price, confidence, grade))
+        
         conn.commit()
         conn.close()
     except Exception as e:
@@ -379,19 +393,22 @@ def _ensure_armed_db():
         print(f"[ARMED-DB] Init error: {e}")
 
 def _persist_armed_signal(ticker: str, data: dict):
+    """FIX #3: Refactored to use parameterized queries"""
     try:
-        from app.data.db_connection import get_conn, ph as _ph
+        from app.data.db_connection import get_conn
         conn = get_conn()
         cursor = conn.cursor()
-        p = _ph()
+        p = get_placeholder(conn)
+        
         validation_json = None
         if data.get("validation"):
             try:
                 validation_json = json.dumps(data["validation"])
             except:
                 validation_json = None
-        cursor.execute(
-            f"""
+        
+        # Use parameterized upsert
+        query = f"""
             INSERT INTO armed_signals_persist
                 (ticker, position_id, direction, entry_price, stop_price, t1, t2,
                  confidence, grade, signal_type, validation_data, saved_at)
@@ -408,97 +425,103 @@ def _persist_armed_signal(ticker: str, data: dict):
                 signal_type     = EXCLUDED.signal_type,
                 validation_data = EXCLUDED.validation_data,
                 saved_at        = CURRENT_TIMESTAMP
-            """,
-            (
-                ticker,
-                data["position_id"],
-                data["direction"],
-                data["entry_price"],
-                data["stop_price"],
-                data["t1"],
-                data["t2"],
-                data["confidence"],
-                data["grade"],
-                data["signal_type"],
-                validation_json
-            )
-        )
+        """
+        
+        safe_execute(cursor, query, (
+            ticker,
+            data["position_id"],
+            data["direction"],
+            data["entry_price"],
+            data["stop_price"],
+            data["t1"],
+            data["t2"],
+            data["confidence"],
+            data["grade"],
+            data["signal_type"],
+            validation_json
+        ))
+        
         conn.commit()
         conn.close()
     except Exception as e:
         print(f"[ARMED-DB] Persist error for {ticker}: {e}")
 
 def _remove_armed_from_db(ticker: str):
+    """FIX #3: Refactored to use parameterized queries"""
     try:
-        from app.data.db_connection import get_conn, ph as _ph
+        from app.data.db_connection import get_conn
         conn = get_conn()
         cursor = conn.cursor()
-        p = _ph()
-        cursor.execute(
-            f"DELETE FROM armed_signals_persist WHERE ticker = {p}", (ticker,)
-        )
+        p = get_placeholder(conn)
+        
+        safe_execute(cursor, f"DELETE FROM armed_signals_persist WHERE ticker = {p}", (ticker,))
+        
         conn.commit()
         conn.close()
     except Exception as e:
         print(f"[ARMED-DB] Remove error for {ticker}: {e}")
 
 def _cleanup_stale_armed_signals():
+    """FIX #3: Refactored to use parameterized queries"""
     try:
         from app.data.db_connection import get_conn
         open_positions = position_manager.get_open_positions()
         open_position_ids = {pos["id"] for pos in open_positions}
+        
         conn = get_conn()
         cursor = conn.cursor()
-        cursor.execute("SELECT ticker, position_id FROM armed_signals_persist")
-        rows = cursor.fetchall()
+        p = get_placeholder(conn)
+        
+        rows = safe_query(cursor, "SELECT ticker, position_id FROM armed_signals_persist")
+        
         stale_tickers = []
         for row in rows:
             ticker = row[0] if isinstance(row, tuple) else row["ticker"]
             pos_id = row[1] if isinstance(row, tuple) else row["position_id"]
             if pos_id not in open_position_ids:
                 stale_tickers.append(ticker)
+        
         if stale_tickers:
-            placeholders = ",".join(["?" if not hasattr(conn, "_use_postgres") else "%s"] * len(stale_tickers))
-            cursor.execute(
-                f"DELETE FROM armed_signals_persist WHERE ticker IN ({placeholders})",
-                stale_tickers
-            )
+            placeholders, params = safe_in_clause(stale_tickers, p)
+            safe_execute(cursor, 
+                        f"DELETE FROM armed_signals_persist WHERE ticker IN ({placeholders})",
+                        tuple(params))
             conn.commit()
             print(f"[ARMED-DB] 🧹 Auto-cleaned {len(stale_tickers)} closed position(s): {', '.join(stale_tickers)}")
+        
         conn.close()
     except Exception as e:
         print(f"[ARMED-DB] Cleanup error: {e}")
 
 def _load_armed_signals_from_db() -> dict:
+    """FIX #3: Refactored to use parameterized queries"""
     try:
-        from app.data.db_connection import get_conn, dict_cursor as _dc, ph as _ph, USE_POSTGRES as _USE_PG
+        from app.data.db_connection import get_conn, dict_cursor as _dc, USE_POSTGRES as _USE_PG
         _cleanup_stale_armed_signals()
+        
         conn = get_conn()
         cursor = _dc(conn)
-        p = _ph()
+        p = get_placeholder(conn)
         today_et = _now_et().date()
+        
         if _USE_PG:
-            cursor.execute(
-                f"""
+            query = f"""
                 SELECT ticker, position_id, direction, entry_price, stop_price, t1, t2,
                        confidence, grade, signal_type, validation_data
                 FROM   armed_signals_persist
                 WHERE  DATE(saved_at AT TIME ZONE 'America/New_York') = {p}
-                """,
-                (today_et,),
-            )
+            """
         else:
-            cursor.execute(
-                f"""
+            query = f"""
                 SELECT ticker, position_id, direction, entry_price, stop_price, t1, t2,
                        confidence, grade, signal_type, validation_data
                 FROM   armed_signals_persist
                 WHERE  DATE(saved_at) = {p}
-                """,
-                (today_et,),
-            )
-        rows = cursor.fetchall()
+            """
+        
+        rows = safe_query(cursor, query, (today_et,))
         conn.close()
+        
         loaded = {}
         for row in rows:
             validation = None
@@ -519,6 +542,7 @@ def _load_armed_signals_from_db() -> dict:
                 "signal_type":  row["signal_type"],
                 "validation":   validation
             }
+        
         if loaded:
             print(
                 f"[ARMED-DB] 📄 Reloaded {len(loaded)} armed signal(s) from DB after restart: "
@@ -560,13 +584,14 @@ def _ensure_watch_db():
         print(f"[WATCH-DB] Init error: {e}")
 
 def _persist_watch(ticker: str, data: dict):
+    """FIX #3: Refactored to use parameterized queries"""
     try:
-        from app.data.db_connection import get_conn, ph as _ph
+        from app.data.db_connection import get_conn
         conn = get_conn()
         cursor = conn.cursor()
-        p = _ph()
-        cursor.execute(
-            f"""
+        p = get_placeholder(conn)
+        
+        query = f"""
             INSERT INTO watching_signals_persist
                 (ticker, direction, breakout_bar_dt, or_high, or_low, signal_type, saved_at)
             VALUES ({p}, {p}, {p}, {p}, {p}, {p}, CURRENT_TIMESTAMP)
@@ -577,83 +602,88 @@ def _persist_watch(ticker: str, data: dict):
                 or_low          = EXCLUDED.or_low,
                 signal_type     = EXCLUDED.signal_type,
                 saved_at        = CURRENT_TIMESTAMP
-            """,
-            (
-                ticker,
-                data["direction"],
-                data["breakout_bar_dt"],
-                data["or_high"],
-                data["or_low"],
-                data["signal_type"],
-            )
-        )
+        """
+        
+        safe_execute(cursor, query, (
+            ticker,
+            data["direction"],
+            data["breakout_bar_dt"],
+            data["or_high"],
+            data["or_low"],
+            data["signal_type"],
+        ))
+        
         conn.commit()
         conn.close()
     except Exception as e:
         print(f"[WATCH-DB] Persist error for {ticker}: {e}")
 
 def _remove_watch_from_db(ticker: str):
+    """FIX #3: Refactored to use parameterized queries"""
     try:
-        from app.data.db_connection import get_conn, ph as _ph
+        from app.data.db_connection import get_conn
         conn = get_conn()
         cursor = conn.cursor()
-        p = _ph()
-        cursor.execute(
-            f"DELETE FROM watching_signals_persist WHERE ticker = {p}", (ticker,)
-        )
+        p = get_placeholder(conn)
+        
+        safe_execute(cursor, f"DELETE FROM watching_signals_persist WHERE ticker = {p}", (ticker,))
+        
         conn.commit()
         conn.close()
     except Exception as e:
         print(f"[WATCH-DB] Remove error for {ticker}: {e}")
 
 def _cleanup_stale_watches():
+    """FIX #3: Refactored to use parameterized queries"""
     try:
-        from app.data.db_connection import get_conn, ph as _ph
+        from app.data.db_connection import get_conn
         watch_window_minutes = MAX_WATCH_BARS * 5
         cutoff_time = _now_et() - timedelta(minutes=watch_window_minutes)
+        
         conn = get_conn()
         cursor = conn.cursor()
-        p = _ph()
-        cursor.execute(
-            f"DELETE FROM watching_signals_persist WHERE breakout_bar_dt < {p}",
-            (cutoff_time,)
-        )
+        p = get_placeholder(conn)
+        
+        safe_execute(cursor, 
+                    f"DELETE FROM watching_signals_persist WHERE breakout_bar_dt < {p}",
+                    (cutoff_time,))
         deleted_count = cursor.rowcount
+        
         conn.commit()
         conn.close()
+        
         if deleted_count > 0:
             print(f"[WATCH-DB] 🧹 Auto-cleaned {deleted_count} stale watch(es) (older than {watch_window_minutes}min)")
     except Exception as e:
         print(f"[WATCH-DB] Cleanup error: {e}")
 
 def _load_watches_from_db() -> dict:
+    """FIX #3: Refactored to use parameterized queries"""
     try:
-        from app.data.db_connection import get_conn, dict_cursor as _dc, ph as _ph, USE_POSTGRES as _USE_PG
+        from app.data.db_connection import get_conn, dict_cursor as _dc, USE_POSTGRES as _USE_PG
         _cleanup_stale_watches()
+        
         conn = get_conn()
         cursor = _dc(conn)
-        p = _ph()
+        p = get_placeholder(conn)
         today_et = _now_et().date()
+        
         if _USE_PG:
-            cursor.execute(
-                f"""
+            query = f"""
                 SELECT ticker, direction, breakout_bar_dt, or_high, or_low, signal_type
                 FROM   watching_signals_persist
                 WHERE  DATE(saved_at AT TIME ZONE 'America/New_York') = {p}
-                """,
-                (today_et,),
-            )
+            """
         else:
-            cursor.execute(
-                f"""
+            query = f"""
                 SELECT ticker, direction, breakout_bar_dt, or_high, or_low, signal_type
                 FROM   watching_signals_persist
                 WHERE  DATE(saved_at) = {p}
-                """,
-                (today_et,),
-            )
-        rows = cursor.fetchall()
+            """
+        
+        rows = safe_query(cursor, query, (today_et,))
         conn.close()
+        
         loaded = {}
         for row in rows:
             loaded[row["ticker"]] = {
@@ -664,6 +694,7 @@ def _load_watches_from_db() -> dict:
                 "or_low":          row["or_low"],
                 "signal_type":     row["signal_type"],
             }
+        
         if loaded:
             print(
                 f"[WATCH-DB] 📄 Reloaded {len(loaded)} watch state(s) from DB after restart: "
@@ -684,7 +715,6 @@ def _maybe_load_watches():
         _state.update_watching_signals_bulk(loaded)
 
 def _check_performance_dashboard():
-    global _last_dashboard_check
     if not PHASE_4_ENABLED or performance_monitor is None:
         return
     now = datetime.now()
@@ -697,7 +727,6 @@ def _check_performance_dashboard():
             print(f"[PHASE 4] Dashboard error: {e}")
 
 def _check_performance_alerts():
-    global _last_alert_check
     if not PHASE_4_ENABLED or alert_manager is None:
         return
     now = datetime.now()
@@ -1275,7 +1304,7 @@ def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high,
         "grade": grade, "signal_type": signal_type,
         "validation": validation_result
     }
-    _state.set_armed_signal(ticker, armed_signal_data
+    _state.set_armed_signal(ticker, armed_signal_data)
     _persist_armed_signal(ticker, armed_signal_data)
 
     print(f"[ARMED] {ticker} ID:{position_id}")
@@ -1300,14 +1329,13 @@ def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high,
             print(f"[PHASE 4] Alert check error: {e}")
 
 def clear_armed_signals():
-    global _armed_loaded
+    """FIX #3: Refactored to use parameterized queries"""
     _state.clear_armed_signals()
-    _armed_loaded = False
     try:
         from app.data.db_connection import get_conn
         conn = get_conn()
         cursor = conn.cursor()
-        cursor.execute("DELETE FROM armed_signals_persist")
+        safe_execute(cursor, "DELETE FROM armed_signals_persist")
         conn.commit()
         conn.close()
     except Exception as e:
@@ -1315,14 +1343,13 @@ def clear_armed_signals():
     print("[ARMED] Cleared")
 
 def clear_watching_signals():
-    global _watches_loaded
+    """FIX #3: Refactored to use parameterized queries"""
     _state.clear_watching_signals()
-    _watches_loaded = False
     try:
         from app.data.db_connection import get_conn
         conn = get_conn()
         cursor = conn.cursor()
-        cursor.execute("DELETE FROM watching_signals_persist")
+        safe_execute(cursor, "DELETE FROM watching_signals_persist")
         conn.commit()
         conn.close()
     except Exception as e:
@@ -1524,22 +1551,21 @@ def process_ticker(ticker: str):
                         scan_mode = "OR_ANCHORED"
                         or_high_ref, or_low_ref = or_high, or_low
                     else:
-                        if ticker not in watching_signals:
-                            w_entry = {
-                                "direction": direction,
-                                "breakout_idx": breakout_idx,
-                                "breakout_bar_dt": _strip_tz(bars_session[breakout_idx]["datetime"]),
-                                "or_high": or_high,
-                                "or_low": or_low,
-                                "signal_type": "CFW6_OR",
-                            }
-                            _state.set_watching_signal(ticker, w_entry
-                            _persist_watch(ticker, w_entry)
-                            send_bos_watch_alert(
-                                ticker, direction,
-                                bars_session[breakout_idx]["close"],
-                                or_high, or_low, "CFW6_OR"
-                            )
+                        w_entry = {
+                            "direction": direction,
+                            "breakout_idx": breakout_idx,
+                            "breakout_bar_dt": _strip_tz(bars_session[breakout_idx]["datetime"]),
+                            "or_high": or_high,
+                            "or_low": or_low,
+                            "signal_type": "CFW6_OR",
+                        }
+                        _state.set_watching_signal(ticker, w_entry)
+                        _persist_watch(ticker, w_entry)
+                        send_bos_watch_alert(
+                            ticker, direction,
+                            bars_session[breakout_idx]["close"],
+                            or_high, or_low, "CFW6_OR"
+                        )
                         return
                 else:
                     print(f"[{ticker}] No ORB")
