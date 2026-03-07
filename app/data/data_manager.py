@@ -3,7 +3,7 @@ Data Manager - Consolidated Data Fetching, Storage, and Database Management
 
 Design principles:
   - Postgres (or SQLite locally) is the SINGLE source of truth for all bars.
-  - NO in-memory live bar accumulator â€” every bar is persisted to DB immediately.
+  - NO in-memory live bar accumulator — every bar is persisted to DB immediately.
   - TODAY's bars are supplied by ws_feed.py (EODHD WebSocket real-time feed).
     startup_backfill_today() fetches 30 days of HISTORICAL data (up to yesterday)
     so OR and prior-day context are available even after a midday restart.
@@ -20,13 +20,18 @@ Design principles:
   - WEBSOCKET-FIRST OPTIMIZATION: Live data queries check WebSocket feed before DB/API.
 
 EODHD endpoint rules:
-  - /api/intraday/ : primary bar source â€” prior-day data is always available;
+  - /api/intraday/ : primary bar source — prior-day data is always available;
     same-day data availability depends on plan (All-In-One may serve it sooner).
-  - /api/eod/ : end-of-day OHLCV historical data â€” used by get_daily_ohlc().
-  - /api/real-time/ : live price snapshot â€” used by bulk_fetch_live_snapshots().
-  - WebSocket (ws_feed.py): real-time tick stream â€” the primary source for today's bars.
-  - from/to MUST be Unix timestamps (int) â€” date strings cause 422 errors.
+  - /api/eod/ : end-of-day OHLCV historical data — used by get_daily_ohlc().
+  - /api/real-time/ : live price snapshot — used by bulk_fetch_live_snapshots().
+  - WebSocket (ws_feed.py): real-time tick stream — the primary source for today's bars.
+  - from/to MUST be Unix timestamps (int) — date strings cause 422 errors.
   - Returns ET-naive datetimes (extended hours 4 AM - 8 PM ET, ~960 bars/day).
+
+FIX #4: CONNECTION LIFECYCLE MANAGEMENT
+  - All database operations now use try/finally to guarantee connection return
+  - Prevents connection pool exhaustion from leaked connections
+  - Better error handling with connection cleanup
 """
 import time
 import os
@@ -38,7 +43,7 @@ from typing import List, Dict, Optional
 from utils import config
 from app.data import db_connection
 from app.data.db_connection import (
-    get_conn, ph, dict_cursor, serial_pk,
+    get_conn, return_conn, ph, dict_cursor, serial_pk,
     upsert_bar_sql, upsert_bar_5m_sql, upsert_metadata_sql
 )
 
@@ -46,7 +51,7 @@ ET = ZoneInfo("America/New_York")
 
 _logged_skip = set()  # Track tickers we've logged skip messages for
 
-# Per-ticker update TTL â€” prevents hammering EODHD during rapid scan cycles.
+# Per-ticker update TTL — prevents hammering EODHD during rapid scan cycles.
 _last_update: Dict[str, datetime] = {}
 UPDATE_TTL = timedelta(minutes=2)
 
@@ -98,80 +103,86 @@ class DataManager:
 
     def initialize_database(self):
         """Create all necessary database tables."""
-        conn = get_conn(self.db_path)
-        cursor = conn.cursor()
+        conn = None
+        try:
+            conn = get_conn(self.db_path)
+            cursor = conn.cursor()
 
-        # 1m bars â€” primary store
-        cursor.execute(f"""
-            CREATE TABLE IF NOT EXISTS intraday_bars (
-                id          {serial_pk()},
-                ticker      TEXT      NOT NULL,
-                datetime    TIMESTAMP NOT NULL,
-                open        REAL      NOT NULL,
-                high        REAL      NOT NULL,
-                low         REAL      NOT NULL,
-                close       REAL      NOT NULL,
-                volume      INTEGER   NOT NULL,
-                created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(ticker, datetime)
-            )
-        """)
-        cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_ticker_datetime
-            ON intraday_bars(ticker, datetime DESC)
-        """)
+            # 1m bars — primary store
+            cursor.execute(f"""
+                CREATE TABLE IF NOT EXISTS intraday_bars (
+                    id          {serial_pk()},
+                    ticker      TEXT      NOT NULL,
+                    datetime    TIMESTAMP NOT NULL,
+                    open        REAL      NOT NULL,
+                    high        REAL      NOT NULL,
+                    low         REAL      NOT NULL,
+                    close       REAL      NOT NULL,
+                    volume      INTEGER   NOT NULL,
+                    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(ticker, datetime)
+                )
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_ticker_datetime
+                ON intraday_bars(ticker, datetime DESC)
+            """)
 
-        # Materialized 5m bars
-        cursor.execute(f"""
-            CREATE TABLE IF NOT EXISTS intraday_bars_5m (
-                id          {serial_pk()},
-                ticker      TEXT      NOT NULL,
-                datetime    TIMESTAMP NOT NULL,
-                open        REAL      NOT NULL,
-                high        REAL      NOT NULL,
-                low         REAL      NOT NULL,
-                close       REAL      NOT NULL,
-                volume      INTEGER   NOT NULL,
-                created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(ticker, datetime)
-            )
-        """)
-        cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_ticker_datetime_5m
-            ON intraday_bars_5m(ticker, datetime DESC)
-        """)
+            # Materialized 5m bars
+            cursor.execute(f"""
+                CREATE TABLE IF NOT EXISTS intraday_bars_5m (
+                    id          {serial_pk()},
+                    ticker      TEXT      NOT NULL,
+                    datetime    TIMESTAMP NOT NULL,
+                    open        REAL      NOT NULL,
+                    high        REAL      NOT NULL,
+                    low         REAL      NOT NULL,
+                    close       REAL      NOT NULL,
+                    volume      INTEGER   NOT NULL,
+                    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(ticker, datetime)
+                )
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_ticker_datetime_5m
+                ON intraday_bars_5m(ticker, datetime DESC)
+            """)
 
-        # Fetch state
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS fetch_metadata (
-                ticker        TEXT PRIMARY KEY,
-                last_fetch    TIMESTAMP,
-                last_bar_time TIMESTAMP,
-                bar_count     INTEGER DEFAULT 0
-            )
-        """)
+            # Fetch state
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS fetch_metadata (
+                    ticker        TEXT PRIMARY KEY,
+                    last_fetch    TIMESTAMP,
+                    last_bar_time TIMESTAMP,
+                    bar_count     INTEGER DEFAULT 0
+                )
+            """)
 
-        # DB version
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS db_version (version INTEGER UNIQUE)
-        """)
-        cursor.execute("SELECT version FROM db_version LIMIT 1")
-        row = cursor.fetchone()
-        current_version = (
-            row[0] if isinstance(row, (list, tuple)) else row["version"]
-        ) if row else 0
-        if current_version < 2:
-            cursor.execute("DELETE FROM intraday_bars")
-            cursor.execute("DELETE FROM intraday_bars_5m")
-            cursor.execute("DELETE FROM fetch_metadata")
-            cursor.execute("DELETE FROM db_version")
-            cursor.execute("INSERT INTO db_version (version) VALUES (2)")
-            print("[DATA] Migration v2: Cleared UTC bars â€” switching to ET-naive storage")
+            # DB version
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS db_version (version INTEGER UNIQUE)
+            """)
+            cursor.execute("SELECT version FROM db_version LIMIT 1")
+            row = cursor.fetchone()
+            current_version = (
+                row[0] if isinstance(row, (list, tuple)) else row["version"]
+            ) if row else 0
+            if current_version < 2:
+                cursor.execute("DELETE FROM intraday_bars")
+                cursor.execute("DELETE FROM intraday_bars_5m")
+                cursor.execute("DELETE FROM fetch_metadata")
+                cursor.execute("DELETE FROM db_version")
+                cursor.execute("INSERT INTO db_version (version) VALUES (2)")
+                print("[DATA] Migration v2: Cleared UTC bars — switching to ET-naive storage")
 
-        conn.commit()
-        conn.close()
-        db_type = "PostgreSQL" if db_connection.USE_POSTGRES else self.db_path
-        print(f"[DATA] Database initialized: {db_type}")
+            conn.commit()
+            
+            db_type = "PostgreSQL" if db_connection.USE_POSTGRES else self.db_path
+            print(f"[DATA] Database initialized: {db_type}")
+        
+        finally:
+            if conn:
+                return_conn(conn)
 
     # =============================================================
     # EODHD FETCH
@@ -265,7 +276,7 @@ class DataManager:
             except Exception as e:
                 print(f"[DATA] [{idx}/{len(tickers)}] {ticker} backfill error: {e}")
 
-        print("[DATA] Startup backfill complete â€” WebSocket feed handles today's bars\n")
+        print("[DATA] Startup backfill complete — WebSocket feed handles today's bars\n")
 
     def startup_intraday_backfill_today(self, tickers: List[str]):
         """
@@ -295,7 +306,7 @@ class DataManager:
         if filled:
             print(f"[DATA] Today REST backfill complete: {filled}/{len(tickers)} tickers\n")
         else:
-            print(f"[DATA] Today REST backfill: no same-day data from EODHD â€” WS-only session\n")
+            print(f"[DATA] Today REST backfill: no same-day data from EODHD — WS-only session\n")
 
     # =============================================================
     # CACHE-AWARE STARTUP & SYNC
@@ -320,7 +331,7 @@ class DataManager:
         now_et = datetime.now(ET)
         timeframe = '1m'
         
-        print(f"\n[CACHE] ðŸš€ Smart startup backfill: {len(tickers)} tickers | {days} days")
+        print(f"\n[CACHE] 🚀 Smart startup backfill: {len(tickers)} tickers | {days} days")
         
         cache_hits = 0
         cache_misses = 0
@@ -400,8 +411,8 @@ class DataManager:
                 print(f"[CACHE] [{idx}/{len(tickers)}] {ticker} error: {e}")
         
         # Print summary
-        print(f"\n[CACHE] âœ… Startup complete!")
-        print(f"[CACHE] ðŸ“Š Stats:")
+        print(f"\n[CACHE] ✅ Startup complete!")
+        print(f"[CACHE] 📊 Stats:")
         print(f"[CACHE]   - Cache hits: {cache_hits}/{len(tickers)} ({cache_hits/len(tickers)*100:.1f}%)")
         print(f"[CACHE]   - Cache misses: {cache_misses}")
         print(f"[CACHE]   - Gap fills: {gap_fills}")
@@ -451,7 +462,7 @@ class DataManager:
         if not (config.MARKET_OPEN <= now_et.time() <= dtime(17, 0)):
             return
         
-        print(f"[CACHE] ðŸ”„ Background sync: {len(tickers)} tickers")
+        print(f"[CACHE] 🔄 Background sync: {len(tickers)} tickers")
         
         synced = 0
         for ticker in tickers:
@@ -480,7 +491,7 @@ class DataManager:
                 print(f"[CACHE] Background sync error for {ticker}: {e}")
         
         if synced > 0:
-            print(f"[CACHE] âœ… Background sync complete: {synced}/{len(tickers)} updated")
+            print(f"[CACHE] ✅ Background sync complete: {synced}/{len(tickers)} updated")
 
     def warmup_cache(self, tickers: List[str], days: int = 60):
         """
@@ -491,7 +502,7 @@ class DataManager:
         """
         from app.data.candle_cache import candle_cache
         
-        print(f"[CACHE] ðŸ”¥ Cache warmup: {len(tickers)} tickers | {days} days")
+        print(f"[CACHE] 🔥 Cache warmup: {len(tickers)} tickers | {days} days")
         
         now_et = datetime.now(ET)
         today_midnight = now_et.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -509,30 +520,35 @@ class DataManager:
             except Exception as e:
                 print(f"[CACHE] [{idx}/{len(tickers)}] {ticker} error: {e}")
         
-        print(f"[CACHE] âœ… Warmup complete!\n")
+        print(f"[CACHE] ✅ Warmup complete!\n")
 
     # =============================================================
     # INCREMENTAL UPDATE
     # =============================================================
 
     def _get_last_bar_ts(self, ticker: str) -> Optional[datetime]:
+        """FIX #4: Ensure connection is returned."""
         p = ph()
-        conn = get_conn(self.db_path)
-        cursor = dict_cursor(conn)
-        cursor.execute(
-            f"SELECT last_bar_time FROM fetch_metadata WHERE ticker = {p}",
-            (ticker,)
-        )
-        row = cursor.fetchone()
-        conn.close()
-        if not row or not row["last_bar_time"]:
-            return None
-        ts = row["last_bar_time"]
-        if isinstance(ts, str):
-            ts = datetime.fromisoformat(ts)
-        if hasattr(ts, "tzinfo") and ts.tzinfo is not None:
-            ts = ts.replace(tzinfo=None)
-        return ts
+        conn = None
+        try:
+            conn = get_conn(self.db_path)
+            cursor = dict_cursor(conn)
+            cursor.execute(
+                f"SELECT last_bar_time FROM fetch_metadata WHERE ticker = {p}",
+                (ticker,)
+            )
+            row = cursor.fetchone()
+            if not row or not row["last_bar_time"]:
+                return None
+            ts = row["last_bar_time"]
+            if isinstance(ts, str):
+                ts = datetime.fromisoformat(ts)
+            if hasattr(ts, "tzinfo") and ts.tzinfo is not None:
+                ts = ts.replace(tzinfo=None)
+            return ts
+        finally:
+            if conn:
+                return_conn(conn)
 
     def update_ticker(self, ticker: str):
         """
@@ -584,12 +600,13 @@ class DataManager:
             print(f"[DATA] {ticker}: no new bars returned")
 
     # =============================================================
-    # STORAGE
+    # STORAGE (FIX #4: GUARANTEED CONNECTION RETURN)
     # =============================================================
 
     def store_bars(self, ticker: str, bars: List[Dict], quiet: bool = False) -> int:
         """
         Upsert 1m bars into intraday_bars and update fetch_metadata.
+        FIX #4: Ensures connection is returned even on error.
 
         Args:
             ticker: Stock symbol.
@@ -631,11 +648,9 @@ class DataManager:
                 if attempt < max_retries - 1:
                     time.sleep(1)
             finally:
+                # FIX #4: GUARANTEED CONNECTION RETURN
                 if conn:
-                    try:
-                        conn.close()
-                    except Exception:
-                        pass
+                    return_conn(conn)
 
         print(f"[DATA] All {max_retries} store attempts failed for {ticker}")
         return 0
@@ -643,6 +658,7 @@ class DataManager:
     def materialize_5m_bars(self, ticker: str):
         """
         Compute 5m OHLCV from today's 1m bars and upsert into intraday_bars_5m.
+        FIX #4: Ensures connection is returned even on error.
         """
         bars_1m = self.get_today_session_bars(ticker)
         if not bars_1m:
@@ -689,14 +705,12 @@ class DataManager:
                 except Exception:
                     pass
         finally:
+            # FIX #4: GUARANTEED CONNECTION RETURN
             if conn:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
+                return_conn(conn)
 
     # =============================================================
-    # SESSION QUERIES (WEBSOCKET-OPTIMIZED)
+    # SESSION QUERIES (WEBSOCKET-OPTIMIZED) (FIX #4)
     # =============================================================
 
     def _parse_bar_rows(self, rows) -> List[Dict]:
@@ -721,74 +735,91 @@ class DataManager:
         """
         Return today's 1m bars (04:00-20:00 ET).
         NEVER falls back to a prior date.
+        FIX #4: Ensures connection is returned.
         """
         today_et  = datetime.now(ET).date()
         day_start = datetime.combine(today_et, dtime(4, 0, 0))
         day_end   = datetime.combine(today_et, dtime(20, 0, 0))
 
         p = ph()
-        conn = get_conn(self.db_path)
-        cursor = dict_cursor(conn)
-        cursor.execute(f"""
-            SELECT datetime, open, high, low, close, volume
-            FROM intraday_bars
-            WHERE ticker   = {p}
-              AND datetime >= {p}
-              AND datetime <= {p}
-            ORDER BY datetime ASC
-        """, (ticker, day_start, day_end))
-        rows = cursor.fetchall()
-        conn.close()
-        return self._parse_bar_rows(rows)
+        conn = None
+        try:
+            conn = get_conn(self.db_path)
+            cursor = dict_cursor(conn)
+            cursor.execute(f"""
+                SELECT datetime, open, high, low, close, volume
+                FROM intraday_bars
+                WHERE ticker   = {p}
+                  AND datetime >= {p}
+                  AND datetime <= {p}
+                ORDER BY datetime ASC
+            """, (ticker, day_start, day_end))
+            rows = cursor.fetchall()
+            return self._parse_bar_rows(rows)
+        finally:
+            if conn:
+                return_conn(conn)
 
     def get_today_5m_bars(self, ticker: str) -> List[Dict]:
-        """Return today's materialized 5m bars."""
+        """
+        Return today's materialized 5m bars.
+        FIX #4: Ensures connection is returned.
+        """
         today_et  = datetime.now(ET).date()
         day_start = datetime.combine(today_et, dtime(4, 0, 0))
         day_end   = datetime.combine(today_et, dtime(20, 0, 0))
 
         p = ph()
-        conn = get_conn(self.db_path)
-        cursor = dict_cursor(conn)
-        cursor.execute(f"""
-            SELECT datetime, open, high, low, close, volume
-            FROM intraday_bars_5m
-            WHERE ticker   = {p}
-              AND datetime >= {p}
-              AND datetime <= {p}
-            ORDER BY datetime ASC
-        """, (ticker, day_start, day_end))
-        rows = cursor.fetchall()
-        conn.close()
-        return self._parse_bar_rows(rows)
+        conn = None
+        try:
+            conn = get_conn(self.db_path)
+            cursor = dict_cursor(conn)
+            cursor.execute(f"""
+                SELECT datetime, open, high, low, close, volume
+                FROM intraday_bars_5m
+                WHERE ticker   = {p}
+                  AND datetime >= {p}
+                  AND datetime <= {p}
+                ORDER BY datetime ASC
+            """, (ticker, day_start, day_end))
+            rows = cursor.fetchall()
+            return self._parse_bar_rows(rows)
+        finally:
+            if conn:
+                return_conn(conn)
 
     def get_latest_bar(self, ticker: str) -> Optional[Dict]:
         """
         Get the most recent bar for a ticker.
         Checks WebSocket feed first if connected, falls back to database.
+        FIX #4: Ensures connection is returned.
         """
         ws_bar = self._get_ws_bar(ticker)
         if ws_bar:
             return ws_bar
         
         p = ph()
-        conn = get_conn(self.db_path)
-        cursor = dict_cursor(conn)
-        cursor.execute(f"""
-            SELECT datetime, open, high, low, close, volume
-            FROM intraday_bars
-            WHERE ticker = {p}
-            ORDER BY datetime DESC
-            LIMIT 1
-        """, (ticker,))
-        row = cursor.fetchone()
-        conn.close()
-        
-        if not row:
-            return None
-        
-        bars = self._parse_bar_rows([row])
-        return bars[0] if bars else None
+        conn = None
+        try:
+            conn = get_conn(self.db_path)
+            cursor = dict_cursor(conn)
+            cursor.execute(f"""
+                SELECT datetime, open, high, low, close, volume
+                FROM intraday_bars
+                WHERE ticker = {p}
+                ORDER BY datetime DESC
+                LIMIT 1
+            """, (ticker,))
+            row = cursor.fetchone()
+            
+            if not row:
+                return None
+            
+            bars = self._parse_bar_rows([row])
+            return bars[0] if bars else None
+        finally:
+            if conn:
+                return_conn(conn)
 
     def get_latest_price(self, ticker: str) -> Optional[float]:
         """Get the most recent close price for a ticker."""
@@ -932,29 +963,37 @@ class DataManager:
             print(f"[DATA] PDH/PDL cache clear error: {e}")
 
     # =============================================================
-    # UTILITIES
+    # UTILITIES (FIX #4)
     # =============================================================
 
     def cleanup_old_bars(self, days_to_keep: int = 60):
-        """Remove bars older than days_to_keep from 1m and 5m tables."""
+        """
+        Remove bars older than days_to_keep from 1m and 5m tables.
+        FIX #4: Ensures connection is returned.
+        """
         cutoff = datetime.now() - timedelta(days=days_to_keep)
         p = ph()
-        conn = get_conn(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute(
-            f"DELETE FROM intraday_bars WHERE datetime < {p}", (cutoff,)
-        )
-        cursor.execute(
-            f"DELETE FROM intraday_bars_5m WHERE datetime < {p}", (cutoff,)
-        )
-        conn.commit()
-        conn.close()
-        print(f"[CLEANUP] Removed bars older than {days_to_keep} days")
+        conn = None
+        try:
+            conn = get_conn(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute(
+                f"DELETE FROM intraday_bars WHERE datetime < {p}", (cutoff,)
+            )
+            cursor.execute(
+                f"DELETE FROM intraday_bars_5m WHERE datetime < {p}", (cutoff,)
+            )
+            conn.commit()
+            print(f"[CLEANUP] Removed bars older than {days_to_keep} days")
+        finally:
+            if conn:
+                return_conn(conn)
 
     def get_bars_from_memory(self, ticker: str, limit: int = 390) -> List[Dict]:
         """
         Return N most recent bars. Prefer get_today_session_bars() for live scanning.
         If requesting only 1 bar and WS is connected, returns WS bar immediately.
+        FIX #4: Ensures connection is returned.
         """
         if limit == 1:
             ws_bar = self._get_ws_bar(ticker)
@@ -962,54 +1001,65 @@ class DataManager:
                 return [ws_bar]
         
         p = ph()
-        conn = get_conn(self.db_path)
-        cursor = dict_cursor(conn)
-        cursor.execute(f"""
-            SELECT datetime, open, high, low, close, volume
-            FROM intraday_bars
-            WHERE ticker = {p}
-            ORDER BY datetime DESC
-            LIMIT {p}
-        """, (ticker, limit))
-        rows = cursor.fetchall()
-        conn.close()
-        return list(reversed(self._parse_bar_rows(rows)))
+        conn = None
+        try:
+            conn = get_conn(self.db_path)
+            cursor = dict_cursor(conn)
+            cursor.execute(f"""
+                SELECT datetime, open, high, low, close, volume
+                FROM intraday_bars
+                WHERE ticker = {p}
+                ORDER BY datetime DESC
+                LIMIT {p}
+            """, (ticker, limit))
+            rows = cursor.fetchall()
+            return list(reversed(self._parse_bar_rows(rows)))
+        finally:
+            if conn:
+                return_conn(conn)
 
     def get_database_stats(self) -> Dict:
-        """Get database statistics for the startup banner."""
-        conn = get_conn(self.db_path)
-        cursor = dict_cursor(conn)
+        """
+        Get database statistics for the startup banner.
+        FIX #4: Ensures connection is returned.
+        """
+        conn = None
+        try:
+            conn = get_conn(self.db_path)
+            cursor = dict_cursor(conn)
 
-        cursor.execute("SELECT COUNT(*) AS cnt FROM intraday_bars")
-        total_bars = cursor.fetchone()["cnt"]
+            cursor.execute("SELECT COUNT(*) AS cnt FROM intraday_bars")
+            total_bars = cursor.fetchone()["cnt"]
 
-        cursor.execute("SELECT COUNT(DISTINCT ticker) AS cnt FROM intraday_bars")
-        unique_tickers = cursor.fetchone()["cnt"]
+            cursor.execute("SELECT COUNT(DISTINCT ticker) AS cnt FROM intraday_bars")
+            unique_tickers = cursor.fetchone()["cnt"]
 
-        cursor.execute(
-            "SELECT MIN(datetime) AS mn, MAX(datetime) AS mx FROM intraday_bars"
-        )
-        row = cursor.fetchone()
-        date_range = (row["mn"], row["mx"])
-
-        if db_connection.USE_POSTGRES:
             cursor.execute(
-                "SELECT pg_size_pretty(pg_database_size(current_database())) AS sz"
+                "SELECT MIN(datetime) AS mn, MAX(datetime) AS mx FROM intraday_bars"
             )
-            db_size = cursor.fetchone()["sz"]
-        else:
-            db_size = (
-                f"{os.path.getsize(self.db_path) / (1024 * 1024):.1f} MB"
-                if os.path.exists(self.db_path) else "0 MB"
-            )
+            row = cursor.fetchone()
+            date_range = (row["mn"], row["mx"])
 
-        conn.close()
-        return {
-            "total_bars":     total_bars,
-            "unique_tickers": unique_tickers,
-            "date_range":     date_range,
-            "size":           db_size
-        }
+            if db_connection.USE_POSTGRES:
+                cursor.execute(
+                    "SELECT pg_size_pretty(pg_database_size(current_database())) AS sz"
+                )
+                db_size = cursor.fetchone()["sz"]
+            else:
+                db_size = (
+                    f"{os.path.getsize(self.db_path) / (1024 * 1024):.1f} MB"
+                    if os.path.exists(self.db_path) else "0 MB"
+                )
+
+            return {
+                "total_bars":     total_bars,
+                "unique_tickers": unique_tickers,
+                "date_range":     date_range,
+                "size":           db_size
+            }
+        finally:
+            if conn:
+                return_conn(conn)
 
     def get_vix_level(self) -> Optional[float]:
         """
@@ -1043,9 +1093,9 @@ class DataManager:
             return None
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ───────────────────────────────────────────────────────────────
 # Global singleton
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ───────────────────────────────────────────────────────────────
 data_manager = DataManager()
 
 
