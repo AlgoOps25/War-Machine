@@ -43,6 +43,14 @@ from app.mtf.bos_fvg_engine import scan_bos_fvg, is_force_close_time
 from app.filters.early_session_disqualifier import should_skip_cfw6_or_early
 
 # ══════════════════════════════════════════════════════════════════════════════
+# FIX #1: THREAD-SAFE STATE MANAGEMENT
+# ══════════════════════════════════════════════════════════════════════════════
+from app.core.thread_safe_state import get_state
+
+_state = get_state()
+print("[SNIPER] ✅ Thread-safe state management enabled")
+
+# ══════════════════════════════════════════════════════════════════════════════
 # INTEGRATION POINT #1: IMPORT TRACKERS
 # ══════════════════════════════════════════════════════════════════════════════
 try:
@@ -111,8 +119,7 @@ except ImportError:
     PRODUCTION_HELPERS_ENABLED = False
     print("[SNIPER] ⚠️  Production helpers not available")
 
-_last_dashboard_check = datetime.now()
-_last_alert_check = datetime.now()
+# Dashboard/alert timing now managed by thread-safe state
 DASHBOARD_UPDATE_INTERVAL_MINUTES = 30
 ALERT_CHECK_INTERVAL_MINUTES = 15
 
@@ -135,10 +142,10 @@ except ImportError:
 
 VALIDATOR_ENABLED = True
 VALIDATOR_TEST_MODE = False
-_validator_stats = {'tested': 0, 'passed': 0, 'filtered': 0, 'boosted': 0, 'penalized': 0}
+# Validator stats now managed by thread-safe state
 print("[SIGNALS] ✅ Multi-indicator validator ACTIVE (filtering enabled)")
 
-_validation_call_tracker = {}
+# Validation call tracker now managed by thread-safe state
 
 def _get_signal_id(ticker: str, direction: str, price: float) -> str:
     timestamp = datetime.now().strftime('%Y%m%d_%H%M')
@@ -146,15 +153,14 @@ def _get_signal_id(ticker: str, direction: str, price: float) -> str:
 
 def _track_validation_call(ticker: str, direction: str, price: float) -> bool:
     signal_id = _get_signal_id(ticker, direction, price)
-    if signal_id in _validation_call_tracker:
-        _validation_call_tracker[signal_id] += 1
+    call_count = _state.track_validation_call(signal_id)  # Thread-safe
+    if call_count > 1
         print(
-            f"[VALIDATOR] ⚠️  WARNING: {ticker} validated {_validation_call_tracker[signal_id]} times "
+            f"[VALIDATOR] ⚠️  WARNING: {ticker} validated {call_count} times "
             f"(possible duplicate call - signal_id: {signal_id})"
         )
         return True
     else:
-        _validation_call_tracker[signal_id] = 1
         return False
 
 OPTIONS_PRE_GATE_ENABLED = True
@@ -237,10 +243,8 @@ def passes_vwap_gate(bars: list, direction: str, current_price: float) -> tuple[
             return False, f"BEAR signal rejected: price above VWAP (${current_price:.2f} > ${vwap:.2f})"
     return True, "Unknown direction"
 
-armed_signals = {}
-watching_signals = {}
-_watches_loaded = False
-_armed_loaded = False
+# Thread-safe state is now managed by _state singleton
+# Access via: _state.get_armed_signal(ticker), _state.ticker_is_armed(ticker), etc.
 MAX_WATCH_BARS = 12
 OPTIONS_PRE_GATE_MODE = "HARD"
 
@@ -303,9 +307,11 @@ def log_proposed_trade(ticker, signal_type, direction, price, confidence, grade)
         print(f"[TRACKER] Error: {e}")
 
 def print_validation_stats():
-    if not VALIDATOR_ENABLED or _validator_stats['tested'] == 0:
+    if not VALIDATOR_ENABLED:
         return
-    stats = _validator_stats
+    stats = _state.get_validator_stats()  # Thread-safe copy
+    if stats['tested'] == 0:
+        return
     total = stats['tested']
     pass_pct = (stats['passed'] / total * 100) if total > 0 else 0
     filter_pct = (stats['filtered'] / total * 100) if total > 0 else 0
@@ -324,11 +330,12 @@ def print_validation_stats():
     print("="*80 + "\n")
 
 def print_validation_call_stats():
-    if not _validation_call_tracker:
+    tracker = _state.get_validation_call_tracker()  # Thread-safe copy
+    if not tracker:
         return
-    total_signals = len(_validation_call_tracker)
+    total_signals = len(tracker)
     duplicate_calls = [
-        (sig_id, count) for sig_id, count in _validation_call_tracker.items() 
+        (sig_id, count) for sig_id, count in tracker.items() 
         if count > 1
     ]
     print("\n" + "="*80)
@@ -523,14 +530,13 @@ def _load_armed_signals_from_db() -> dict:
         return {}
 
 def _maybe_load_armed_signals():
-    global _armed_loaded, armed_signals
-    if _armed_loaded:
+    if _state.is_armed_loaded():
         return
-    _armed_loaded = True
+    _state.set_armed_loaded(True)
     _ensure_armed_db()
     loaded = _load_armed_signals_from_db()
     if loaded:
-        armed_signals.update(loaded)
+        _state.update_armed_signals_bulk(loaded)
 
 def _ensure_watch_db():
     try:
@@ -669,25 +675,24 @@ def _load_watches_from_db() -> dict:
         return {}
 
 def _maybe_load_watches():
-    global _watches_loaded, watching_signals
-    if _watches_loaded:
+    if _state.is_watches_loaded():
         return
-    _watches_loaded = True
+    _state.set_watches_loaded(True)
     _ensure_watch_db()
     loaded = _load_watches_from_db()
     if loaded:
-        watching_signals.update(loaded)
+        _state.update_watching_signals_bulk(loaded)
 
 def _check_performance_dashboard():
     global _last_dashboard_check
     if not PHASE_4_ENABLED or performance_monitor is None:
         return
     now = datetime.now()
-    minutes_since_last = (now - _last_dashboard_check).total_seconds() / 60
+    minutes_since_last = (now - _state.get_last_dashboard_check()).total_seconds() / 60
     if minutes_since_last >= DASHBOARD_UPDATE_INTERVAL_MINUTES:
         try:
             print(performance_monitor.get_live_dashboard())
-            _last_dashboard_check = now
+            _state.update_last_dashboard_check(now)
         except Exception as e:
             print(f"[PHASE 4] Dashboard error: {e}")
 
@@ -696,7 +701,7 @@ def _check_performance_alerts():
     if not PHASE_4_ENABLED or alert_manager is None:
         return
     now = datetime.now()
-    minutes_since_last = (now - _last_alert_check).total_seconds() / 60
+    minutes_since_last = (now - _state.get_last_alert_check()).total_seconds() / 60
     if minutes_since_last >= ALERT_CHECK_INTERVAL_MINUTES:
         try:
             alerts = alert_manager.check_all_conditions()
@@ -707,7 +712,7 @@ def _check_performance_alerts():
                     send_simple_message(f"{alert['emoji']} **{alert['title']}**\n{alert['message']}")
                 except:
                     pass
-            _last_alert_check = now
+            _state.update_last_alert_check(now)
         except Exception as e:
             print(f"[PHASE 4] Alert check error: {e}")
 
@@ -963,17 +968,17 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
                 'failed_checks':         metadata['summary']['failed_checks']
             }
 
-            _validator_stats['tested'] += 1
+            _state.increment_validator_stat('tested')
             if validation_result['should_take']:
-                _validator_stats['passed'] += 1
+                _state.increment_validator_stat('passed')
             else:
-                _validator_stats['filtered'] += 1
+                _state.increment_validator_stat('filtered')
 
             conf_change = validation_result['adjusted_confidence'] - validation_result['original_confidence']
             if conf_change > 0:
-                _validator_stats['boosted'] += 1
+                _state.increment_validator_stat('boosted')
             elif conf_change < 0:
-                _validator_stats['penalized'] += 1
+                _state.increment_validator_stat('penalized')
 
             status_emoji = "✅" if validation_result['should_take'] else "❌"
             trend_emoji = "📈" if conf_change > 0 else "📉" if conf_change < 0 else "➡️"
@@ -1270,7 +1275,7 @@ def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high,
         "grade": grade, "signal_type": signal_type,
         "validation": validation_result
     }
-    armed_signals[ticker] = armed_signal_data
+    _state.set_armed_signal(ticker, armed_signal_data
     _persist_armed_signal(ticker, armed_signal_data)
 
     print(f"[ARMED] {ticker} ID:{position_id}")
@@ -1296,7 +1301,7 @@ def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high,
 
 def clear_armed_signals():
     global _armed_loaded
-    armed_signals.clear()
+    _state.clear_armed_signals()
     _armed_loaded = False
     try:
         from app.data.db_connection import get_conn
@@ -1311,7 +1316,7 @@ def clear_armed_signals():
 
 def clear_watching_signals():
     global _watches_loaded
-    watching_signals.clear()
+    _state.clear_watching_signals()
     _watches_loaded = False
     try:
         from app.data.db_connection import get_conn
@@ -1364,7 +1369,7 @@ def process_ticker(ticker: str):
                     )
                     return
 
-        if ticker in armed_signals:
+        if _state.ticker_is_armed(ticker):
             return
 
         if PRODUCTION_HELPERS_ENABLED:
@@ -1440,8 +1445,8 @@ def process_ticker(ticker: str):
             
             return
 
-        if ticker in watching_signals:
-            w = watching_signals[ticker]
+        if _state.ticker_is_watching(ticker):
+            w = _state.get_watching_signal(ticker)
             if w.get("breakout_idx") is None:
                 bar_dt_target = _strip_tz(w.get("breakout_bar_dt"))
                 resolved_idx = None
@@ -1455,21 +1460,21 @@ def process_ticker(ticker: str):
                         f"[{ticker}] ⚠️ Watch DB entry: breakout bar "
                         f"{bar_dt_target} not found in today's session — discarding"
                     )
-                    del watching_signals[ticker]
+                    _state.remove_watching_signal(ticker)
                     _remove_watch_from_db(ticker)
                 else:
-                    w["breakout_idx"] = resolved_idx
+                    _state.update_watching_signal_field(ticker, "breakout_idx", resolved_idx)
                     print(
                         f"[{ticker}] 📄 Watch restored from DB: "
                         f"breakout_idx={resolved_idx} ({bar_dt_target})"
                     )
 
-        if ticker in watching_signals:
-            w = watching_signals[ticker]
+        if _state.ticker_is_watching(ticker):
+            w = _state.get_watching_signal(ticker)
             bars_since = len(bars_session) - w["breakout_idx"]
             if bars_since > MAX_WATCH_BARS:
                 print(f"[{ticker}] ⏰ Watch expired — clearing")
-                del watching_signals[ticker]
+                _state.remove_watching_signal(ticker)
                 _remove_watch_from_db(ticker)
             else:
                 print(f"[{ticker}] 👁️ WATCHING [{bars_since}/{MAX_WATCH_BARS}]")
@@ -1481,7 +1486,7 @@ def process_ticker(ticker: str):
                     w["or_high"], w["or_low"], w["signal_type"],
                     bars_session, w["breakout_idx"]
                 )
-                del watching_signals[ticker]
+                _state.remove_watching_signal(ticker)
                 _remove_watch_from_db(ticker)
                 return
 
@@ -1528,7 +1533,7 @@ def process_ticker(ticker: str):
                                 "or_low": or_low,
                                 "signal_type": "CFW6_OR",
                             }
-                            watching_signals[ticker] = w_entry
+                            _state.set_watching_signal(ticker, w_entry
                             _persist_watch(ticker, w_entry)
                             send_bos_watch_alert(
                                 ticker, direction,
