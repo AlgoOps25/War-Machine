@@ -33,13 +33,19 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from app.screening import premarket_scanner as momentum_screener
+#from app.screening import premarket_scanner as momentum_screener
+
 from app.screening import volume_analyzer
 from app.screening import dynamic_screener
 from utils import config
 
 from zoneinfo import ZoneInfo
 ET = ZoneInfo("America/New_York")
+
+def _get_momentum_screener():
+    """Lazy import to avoid circular dependency."""
+    from app.screening import premarket_scanner
+    return premarket_scanner
 
 class WatchlistFunnel:
     """Manages adaptive watchlist narrowing throughout pre-market and market hours."""
@@ -202,19 +208,19 @@ class WatchlistFunnel:
                 candidates.append(ticker)
         
         # Score all candidates with professional 3-tier scanner
-        self.scored_tickers = momentum_screener.run_momentum_screener(
+        self.scored_tickers = _get_momentum_screener.run_momentum_screener(
             candidates,
             min_composite_score=stage_config["min_score"],
             use_cache=True
         )
         
         # Return top N by score
-        watchlist = momentum_screener.get_top_n_movers(
+        watchlist = _get_momentum_screener.get_top_n_movers(
             self.scored_tickers,
             n=stage_config["max_tickers"]
         )
         
-        momentum_screener.print_momentum_summary(self.scored_tickers, top_n=15)
+        _get_momentum_screener.print_momentum_summary(self.scored_tickers, top_n=15)
         
         return watchlist
     
@@ -223,7 +229,7 @@ class WatchlistFunnel:
         stage_config = self.stages["narrow"]
         
         if self.current_watchlist:
-            self.scored_tickers = momentum_screener.run_momentum_screener(
+            self.scored_tickers = _get_momentum_screener.run_momentum_screener(
                 self.current_watchlist,
                 min_composite_score=stage_config["min_score"],
                 use_cache=True
@@ -236,7 +242,7 @@ class WatchlistFunnel:
                 force_refresh=True
             )
             candidates = [t['ticker'] for t in screener_results[:50]]
-            self.scored_tickers = momentum_screener.run_momentum_screener(
+            self.scored_tickers = _get_momentum_screener.run_momentum_screener(
                 candidates,
                 min_composite_score=stage_config["min_score"],
                 use_cache=True
@@ -255,12 +261,12 @@ class WatchlistFunnel:
         
         self.scored_tickers.sort(key=lambda x: x['composite_score'], reverse=True)
         
-        watchlist = momentum_screener.get_top_n_movers(
+        watchlist = _get_momentum_screener.get_top_n_movers(
             self.scored_tickers,
             n=stage_config["max_tickers"]
         )
         
-        momentum_screener.print_momentum_summary(self.scored_tickers, top_n=10)
+        _get_momentum_screener.print_momentum_summary(self.scored_tickers, top_n=10)
         
         return watchlist
     
@@ -269,7 +275,7 @@ class WatchlistFunnel:
         stage_config = self.stages["final"]
         
         if self.current_watchlist:
-            self.scored_tickers = momentum_screener.run_momentum_screener(
+            self.scored_tickers = _get_momentum_screener.run_momentum_screener(
                 self.current_watchlist,
                 min_composite_score=stage_config["min_score"],
                 use_cache=True
@@ -277,7 +283,7 @@ class WatchlistFunnel:
         else:
             # Emergency fallback
             candidates = dynamic_screener.get_gap_candidates(min_gap_pct=3.0, limit=20)
-            self.scored_tickers = momentum_screener.run_momentum_screener(
+            self.scored_tickers = _get_momentum_screener.run_momentum_screener(
                 candidates,
                 min_composite_score=stage_config["min_score"],
                 use_cache=True
@@ -294,7 +300,7 @@ class WatchlistFunnel:
             print("[FUNNEL] ⚠️  No tickers passed final volume filter, using top scorers")
             filtered_tickers = self.scored_tickers
         
-        watchlist = momentum_screener.get_top_n_movers(
+        watchlist = _get_momentum_screener.get_top_n_movers(
             filtered_tickers,
             n=stage_config["max_tickers"]
         )
@@ -302,7 +308,7 @@ class WatchlistFunnel:
         print("\n" + "="*80)
         print("🎯 FINAL TOP 3 FOR MARKET OPEN")
         print("="*80)
-        momentum_screener.print_momentum_summary(filtered_tickers, top_n=3)
+        _get_momentum_screener.print_momentum_summary(filtered_tickers, top_n=3)
         
         return watchlist
     
@@ -329,7 +335,7 @@ class WatchlistFunnel:
         # Score candidates with professional scanner
         # Use lower threshold (25.0) for live discovery - these tickers don't have
         # premarket momentum data, so scores will be in 20-50 range initially
-        self.scored_tickers = momentum_screener.run_momentum_screener(
+        self.scored_tickers = _get_momentum_screener.run_momentum_screener(
             candidates,
             min_composite_score=stage_config["min_score"],  # Now 25.0 (matches config)
             use_cache=True
@@ -350,7 +356,7 @@ class WatchlistFunnel:
             expanded_candidates = [t['ticker'] for t in expanded_results[:100]]
             
             # Re-score with even lower threshold
-            self.scored_tickers = momentum_screener.run_momentum_screener(
+            self.scored_tickers = _get_momentum_screener.run_momentum_screener(
                 expanded_candidates,
                 min_composite_score=15.0,  # Emergency low threshold
                 use_cache=True
@@ -369,7 +375,7 @@ class WatchlistFunnel:
         self.scored_tickers.sort(key=lambda x: x['composite_score'], reverse=True)
         
         # Return top N (up to max_tickers, now 20)
-        watchlist = momentum_screener.get_top_n_movers(
+        watchlist = _get_momentum_screener.get_top_n_movers(
             self.scored_tickers,
             n=stage_config["max_tickers"]
         )
@@ -378,7 +384,7 @@ class WatchlistFunnel:
     
     def get_watchlist_metadata(self) -> Dict:
         """Get metadata about current watchlist state."""
-        cache_stats = momentum_screener.get_cache_stats()
+        cache_stats = _get_momentum_screener.get_cache_stats()
         
         return {
             'stage': self.current_stage,
