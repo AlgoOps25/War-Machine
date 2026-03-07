@@ -95,16 +95,21 @@ except ImportError:
 # ────────────────────────────────────────────────────────────────────────────────────
 # SIGNAL OUTCOME TRACKING (Deduplication, ML, Discord Reports)
 # ────────────────────────────────────────────────────────────────────────────────────
+# FIXED (lines 105-116):
 analytics = None
 if ANALYTICS_AVAILABLE and analytics_conn:
     try:
         from app.analytics import AnalyticsIntegration
-        analytics = AnalyticsIntegration(
-            analytics_conn,
-            enable_ml=True,
-            enable_discord=True
-        )
-        logger.info("[SCANNER] ✅ Signal outcome tracking enabled (Deduplication + ML + Reports)")
+        # PHASE 1.14: Guard against None import (analytics dependencies missing)
+        if AnalyticsIntegration is not None:
+            analytics = AnalyticsIntegration(
+                analytics_conn,
+                enable_ml=True,
+                enable_discord=True
+            )
+        else:
+            analytics = None
+            logger.warning("[SCANNER] ⚠️  Outcome tracking disabled: AnalyticsIntegration not available")
     except Exception as e:
         analytics = None
         logger.warning(f"[SCANNER] ⚠️  Outcome tracking disabled: {e}")
