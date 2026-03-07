@@ -20,7 +20,7 @@ from collections import defaultdict
 
 from utils import config
 from app.data import db_connection
-from app.data.db_connection import get_conn, ph, dict_cursor
+from app.data.db_connection import get_conn, return_conn, ph, dict_cursor
 
 ET = ZoneInfo("America/New_York")
 
@@ -36,59 +36,63 @@ class CandleCache:
     
     def _init_cache_tables(self):
         """Initialize cache tables if they don't exist."""
-        conn = get_conn(self.db_path)
-        cursor = conn.cursor()
-        
-        # Main cache table
-        cursor.execute(f"""
-            CREATE TABLE IF NOT EXISTS candle_cache (
-                id {db_connection.serial_pk()},
-                ticker VARCHAR(10) NOT NULL,
-                timeframe VARCHAR(5) NOT NULL,
-                datetime TIMESTAMP NOT NULL,
-                open NUMERIC(12,4) NOT NULL,
-                high NUMERIC(12,4) NOT NULL,
-                low NUMERIC(12,4) NOT NULL,
-                close NUMERIC(12,4) NOT NULL,
-                volume BIGINT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(ticker, timeframe, datetime)
-            )
-        """)
-        
-        cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_candle_lookup 
-            ON candle_cache(ticker, timeframe, datetime DESC)
-        """)
-        
-        cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_candle_timeframe 
-            ON candle_cache(timeframe, datetime DESC)
-        """)
-        
-        # Metadata tracking
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS cache_metadata (
-                ticker VARCHAR(10) NOT NULL,
-                timeframe VARCHAR(5) NOT NULL,
-                first_bar_time TIMESTAMP,
-                last_bar_time TIMESTAMP,
-                bar_count INTEGER DEFAULT 0,
-                last_cache_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                cache_status VARCHAR(20) DEFAULT 'active',
-                PRIMARY KEY(ticker, timeframe)
-            )
-        """)
-        
-        cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_cache_status 
-            ON cache_metadata(cache_status, last_cache_time)
-        """)
-        
-        conn.commit()
-        conn.close()
-        print("[CACHE] âœ… Candle cache tables initialized")
+        conn = None
+        try:
+            conn = get_conn(self.db_path)
+            cursor = conn.cursor()
+            
+            # Main cache table
+            cursor.execute(f"""
+                CREATE TABLE IF NOT EXISTS candle_cache (
+                    id {db_connection.serial_pk()},
+                    ticker VARCHAR(10) NOT NULL,
+                    timeframe VARCHAR(5) NOT NULL,
+                    datetime TIMESTAMP NOT NULL,
+                    open NUMERIC(12,4) NOT NULL,
+                    high NUMERIC(12,4) NOT NULL,
+                    low NUMERIC(12,4) NOT NULL,
+                    close NUMERIC(12,4) NOT NULL,
+                    volume BIGINT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(ticker, timeframe, datetime)
+                )
+            """)
+            
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_candle_lookup 
+                ON candle_cache(ticker, timeframe, datetime DESC)
+            """)
+            
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_candle_timeframe 
+                ON candle_cache(timeframe, datetime DESC)
+            """)
+            
+            # Metadata tracking
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS cache_metadata (
+                    ticker VARCHAR(10) NOT NULL,
+                    timeframe VARCHAR(5) NOT NULL,
+                    first_bar_time TIMESTAMP,
+                    last_bar_time TIMESTAMP,
+                    bar_count INTEGER DEFAULT 0,
+                    last_cache_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    cache_status VARCHAR(20) DEFAULT 'active',
+                    PRIMARY KEY(ticker, timeframe)
+                )
+            """)
+            
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_cache_status 
+                ON cache_metadata(cache_status, last_cache_time)
+            """)
+            
+            conn.commit()
+            print("[CACHE] ✅ Candle cache tables initialized")
+        finally:
+            if conn:
+                return_conn(conn)
     
     # =============================================================
     # PHASE 1: BASIC CACHE OPERATIONS
@@ -113,23 +117,26 @@ class CandleCache:
         """
         cutoff = datetime.now(ET) - timedelta(days=days)
         
-        p = ph()
-        conn = get_conn(self.db_path)
-        cursor = dict_cursor(conn)
-        
-        cursor.execute(f"""
-            SELECT datetime, open, high, low, close, volume
-            FROM candle_cache
-            WHERE ticker = {p} 
-              AND timeframe = {p}
-              AND datetime >= {p}
-            ORDER BY datetime ASC
-        """, (ticker, timeframe, cutoff))
-        
-        rows = cursor.fetchall()
-        conn.close()
-        
-        return self._parse_cache_rows(rows)
+        conn = None
+        try:
+            p = ph()
+            conn = get_conn(self.db_path)
+            cursor = dict_cursor(conn)
+            
+            cursor.execute(f"""
+                SELECT datetime, open, high, low, close, volume
+                FROM candle_cache
+                WHERE ticker = {p} 
+                  AND timeframe = {p}
+                  AND datetime >= {p}
+                ORDER BY datetime ASC
+            """, (ticker, timeframe, cutoff))
+            
+            rows = cursor.fetchall()
+            return self._parse_cache_rows(rows)
+        finally:
+            if conn:
+                return_conn(conn)
     
     def cache_candles(
         self, 
@@ -153,10 +160,11 @@ class CandleCache:
         if not bars:
             return 0
         
-        conn = get_conn(self.db_path)
-        cursor = dict_cursor(conn)
-        
+        conn = None
         try:
+            conn = get_conn(self.db_path)
+            cursor = dict_cursor(conn)
+            
             # Upsert candles
             p = ph()
             upsert_sql = f"""
@@ -220,11 +228,13 @@ class CandleCache:
             return len(bars)
             
         except Exception as e:
-            conn.rollback()
+            if conn:
+                conn.rollback()
             print(f"[CACHE] Error caching {ticker} {timeframe}: {e}")
             return 0
         finally:
-            conn.close()
+            if conn:
+                return_conn(conn)
     
     def get_cache_metadata(
         self, 
@@ -238,29 +248,33 @@ class CandleCache:
             Dict with first_bar_time, last_bar_time, bar_count, last_cache_time
             or None if not cached
         """
-        p = ph()
-        conn = get_conn(self.db_path)
-        cursor = dict_cursor(conn)
-        
-        cursor.execute(f"""
-            SELECT first_bar_time, last_bar_time, bar_count, last_cache_time, cache_status
-            FROM cache_metadata
-            WHERE ticker = {p} AND timeframe = {p}
-        """, (ticker, timeframe))
-        
-        row = cursor.fetchone()
-        conn.close()
-        
-        if not row:
-            return None
-        
-        return {
-            "first_bar_time": row["first_bar_time"],
-            "last_bar_time": row["last_bar_time"],
-            "bar_count": row["bar_count"],
-            "last_cache_time": row["last_cache_time"],
-            "cache_status": row["cache_status"]
-        }
+        conn = None
+        try:
+            p = ph()
+            conn = get_conn(self.db_path)
+            cursor = dict_cursor(conn)
+            
+            cursor.execute(f"""
+                SELECT first_bar_time, last_bar_time, bar_count, last_cache_time, cache_status
+                FROM cache_metadata
+                WHERE ticker = {p} AND timeframe = {p}
+            """, (ticker, timeframe))
+            
+            row = cursor.fetchone()
+            
+            if not row:
+                return None
+            
+            return {
+                "first_bar_time": row["first_bar_time"],
+                "last_bar_time": row["last_bar_time"],
+                "bar_count": row["bar_count"],
+                "last_cache_time": row["last_cache_time"],
+                "cache_status": row["cache_status"]
+            }
+        finally:
+            if conn:
+                return_conn(conn)
     
     # =============================================================
     # PHASE 2: SMART INCREMENTAL UPDATES
@@ -415,70 +429,77 @@ class CandleCache:
         """Remove cached bars older than days_to_keep."""
         cutoff = datetime.now(ET) - timedelta(days=days_to_keep)
         
-        p = ph()
-        conn = get_conn(self.db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute(f"""
-            DELETE FROM candle_cache
-            WHERE datetime < {p}
-        """, (cutoff,))
-        
-        deleted = cursor.rowcount
-        conn.commit()
-        conn.close()
-        
-        print(f"[CACHE] Cleaned up {deleted} bars older than {days_to_keep} days")
-        return deleted
+        conn = None
+        try:
+            p = ph()
+            conn = get_conn(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute(f"""
+                DELETE FROM candle_cache
+                WHERE datetime < {p}
+            """, (cutoff,))
+            
+            deleted = cursor.rowcount
+            conn.commit()
+            
+            print(f"[CACHE] Cleaned up {deleted} bars older than {days_to_keep} days")
+            return deleted
+        finally:
+            if conn:
+                return_conn(conn)
     
     def get_cache_stats(self) -> Dict:
         """Get cache statistics."""
-        conn = get_conn(self.db_path)
-        cursor = dict_cursor(conn)
-        
-        # Total bars
-        cursor.execute("SELECT COUNT(*) as cnt FROM candle_cache")
-        total_bars = cursor.fetchone()["cnt"]
-        
-        # Unique tickers
-        cursor.execute("SELECT COUNT(DISTINCT ticker) as cnt FROM candle_cache")
-        unique_tickers = cursor.fetchone()["cnt"]
-        
-        # Date range
-        cursor.execute("""
-            SELECT MIN(datetime) as min_dt, MAX(datetime) as max_dt 
-            FROM candle_cache
-        """)
-        row = cursor.fetchone()
-        date_range = (row["min_dt"], row["max_dt"]) if row["min_dt"] else (None, None)
-        
-        # Cache size
-        if db_connection.USE_POSTGRES:
+        conn = None
+        try:
+            conn = get_conn(self.db_path)
+            cursor = dict_cursor(conn)
+            
+            # Total bars
+            cursor.execute("SELECT COUNT(*) as cnt FROM candle_cache")
+            total_bars = cursor.fetchone()["cnt"]
+            
+            # Unique tickers
+            cursor.execute("SELECT COUNT(DISTINCT ticker) as cnt FROM candle_cache")
+            unique_tickers = cursor.fetchone()["cnt"]
+            
+            # Date range
             cursor.execute("""
-                SELECT pg_size_pretty(pg_total_relation_size('candle_cache')) as size
+                SELECT MIN(datetime) as min_dt, MAX(datetime) as max_dt 
+                FROM candle_cache
             """)
-            cache_size = cursor.fetchone()["size"]
-        else:
-            cache_size = "N/A"
-        
-        # Per-timeframe breakdown
-        cursor.execute("""
-            SELECT timeframe, COUNT(*) as cnt
-            FROM candle_cache
-            GROUP BY timeframe
-            ORDER BY timeframe
-        """)
-        tf_breakdown = {row["timeframe"]: row["cnt"] for row in cursor.fetchall()}
-        
-        conn.close()
-        
-        return {
-            "total_bars": total_bars,
-            "unique_tickers": unique_tickers,
-            "date_range": date_range,
-            "cache_size": cache_size,
-            "timeframe_breakdown": tf_breakdown
-        }
+            row = cursor.fetchone()
+            date_range = (row["min_dt"], row["max_dt"]) if row["min_dt"] else (None, None)
+            
+            # Cache size
+            if db_connection.USE_POSTGRES:
+                cursor.execute("""
+                    SELECT pg_size_pretty(pg_total_relation_size('candle_cache')) as size
+                """)
+                cache_size = cursor.fetchone()["size"]
+            else:
+                cache_size = "N/A"
+            
+            # Per-timeframe breakdown
+            cursor.execute("""
+                SELECT timeframe, COUNT(*) as cnt
+                FROM candle_cache
+                GROUP BY timeframe
+                ORDER BY timeframe
+            """)
+            tf_breakdown = {row["timeframe"]: row["cnt"] for row in cursor.fetchall()}
+            
+            return {
+                "total_bars": total_bars,
+                "unique_tickers": unique_tickers,
+                "date_range": date_range,
+                "cache_size": cache_size,
+                "timeframe_breakdown": tf_breakdown
+            }
+        finally:
+            if conn:
+                return_conn(conn)
     
     # =============================================================
     # UTILITIES
