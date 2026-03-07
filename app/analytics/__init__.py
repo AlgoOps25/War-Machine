@@ -6,7 +6,10 @@ Central import point for signal tracking and performance analytics
 try:
     from app.core.analytics_integration import AnalyticsIntegration
     ANALYTICS_AVAILABLE = True
-    __all__ = ['ANALYTICS_AVAILABLE', 'AnalyticsIntegration']  # Add to exports
-except ImportError:
+    __all__ = ['ANALYTICS_AVAILABLE', 'AnalyticsIntegration']
+except ImportError as e:
+    # Gracefully disable if analytics_integration is missing
+    print(f"[ANALYTICS] Module unavailable: {e}")
     ANALYTICS_AVAILABLE = False
-    __all__ = ['ANALYTICS_AVAILABLE']
+    AnalyticsIntegration = None
+    __all__ = ['ANALYTICS_AVAILABLE', 'AnalyticsIntegration']
