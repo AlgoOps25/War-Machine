@@ -48,7 +48,7 @@ from utils import config
 
 # Import existing modules (optional - for optimization only)
 try:
-    from ws_feed import get_current_bar
+    from app.data.wsfeed import get_current_bar
     from app.data.data_manager import data_manager
     WS_AVAILABLE = True
 except ImportError:
