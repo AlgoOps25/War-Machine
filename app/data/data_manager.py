@@ -951,16 +951,15 @@ class DataManager:
     # =============================================================
 
     def clear_prev_day_cache(self) -> None:
+        """Clear previous day OHLC cache and PDH/PDL cache in breakout detector.
+        
+        DEPRECATED: signal_generator.py is deprecated. This cache clear is no longer needed
+        since sniper.py doesn't maintain a PDH/PDL cache that needs clearing.
         """
-        Clear previous day OHLC cache and PDH/PDL cache in breakout detector.
-        Called at EOD to prepare for new trading day.
-        """
-        try:
-            from app.signals.signal_generator import signal_generator
-            signal_generator.detector.clear_pdh_pdl_cache()
-            print("[DATA] PDH/PDL cache cleared for new session")
-        except Exception as e:
-            print(f"[DATA] PDH/PDL cache clear error: {e}")
+        # PHASE 1.14: Removed deprecated signal_generator import
+        # The sniper.py signal path doesn't need PDH/PDL cache clearing
+        pass
+
 
     # =============================================================
     # UTILITIES (FIX #4)
