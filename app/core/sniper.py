@@ -19,7 +19,6 @@
 # MTF FVG PRIORITY: Highest timeframe FVG selection (5m > 3m > 2m > 1m)
 # REGIME FILTER: VIX/SPY market condition detection — avoids bad tape
 # EXPLOSIVE MOVER OVERRIDE: Score ≥80 + RVOL ≥4.0x bypasses regime filter for extreme opportunities
-# CORRELATION CHECK: Sector-aware over-leverage prevention
 # PHASE 4 MONITORING: Live performance dashboard, risk alerts
 # HOURLY GATE: Time-based confidence adjustment from historical win rates
 # WIN RATE ENHANCEMENTS (Phase 2):
@@ -207,15 +206,6 @@ print("[SNIPER] ✅ Regime filter enabled (VIX/SPY market condition detection - 
 EXPLOSIVE_SCORE_THRESHOLD = 80
 EXPLOSIVE_RVOL_THRESHOLD = 4.0
 print(f"[SNIPER] ✅ Explosive mover override enabled (score≥{EXPLOSIVE_SCORE_THRESHOLD} + RVOL≥{EXPLOSIVE_RVOL_THRESHOLD}x)")
-
-try:
-
-
-    print("[SNIPER] ✅ Correlation check enabled (prevents over-leverage)")
-except ImportError:
-    correlation_checker = None
-
-    print("[SNIPER] ⚠️  Correlation check not available")
 
 VWAP_GATE_ENABLED = True
 print("[SNIPER] ✅ VWAP directional gate enabled (Phase 2 win rate enhancement)")
@@ -745,58 +735,6 @@ def _check_performance_alerts():
         except Exception as e:
             print(f"[PHASE 4] Alert check error: {e}")
 
-def _pearson_corr(xs, ys) -> float:
-    n = len(xs)
-    if n < 5:
-        return 0.0
-    mean_x = sum(xs) / n
-    mean_y = sum(ys) / n
-    num = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys))
-    den_x = sum((x - mean_x) ** 2 for x in xs)
-    den_y = sum((y - mean_y) ** 2 for y in ys)
-    if den_x <= 0 or den_y <= 0:
-        return 0.0
-    return num / (den_x ** 0.5 * den_y ** 0.5)
-
-def _is_highly_correlated(ticker: str, open_positions: list,
-                          window_bars: int = 60, threshold: float = 0.9) -> bool:
-    bars_main = data_manager.get_today_5m_bars(ticker)
-    if len(bars_main) < 10:
-        return False
-    for pos in open_positions:
-        other = pos["ticker"]
-        if other == ticker:
-            continue
-        bars_other = data_manager.get_today_5m_bars(other)
-        if len(bars_other) < 10:
-            continue
-        by_time = {}
-        for b in bars_main:
-            by_time.setdefault(b["datetime"], {})["a"] = b
-        for b in bars_other:
-            by_time.setdefault(b["datetime"], {})["b"] = b
-        paired = [
-            (v["a"], v["b"])
-            for v in by_time.values()
-            if "a" in v and "b" in v
-        ]
-        if len(paired) < 10:
-            continue
-        xs = [pa[0]["close"] for pa in paired][-window_bars:]
-        ys = [pa[1]["close"] for pa in paired][-window_bars:]
-        if len(xs) != len(ys) or len(xs) < 5:
-            continue
-        xs_ret = [(xs[i] - xs[i-1]) / xs[i-1] for i in range(1, len(xs))]
-        ys_ret = [(ys[i] - ys[i-1]) / ys[i-1] for i in range(1, len(ys))]
-        m = min(len(xs_ret), len(ys_ret))
-        if m < 5:
-            continue
-        corr = _pearson_corr(xs_ret[-m:], ys_ret[-m:])
-        if corr >= threshold:
-            print(f"[CORR] {ticker} vs {other} corr={corr:.2f} — blocking new signal")
-            return True
-    return False
-
 def send_bos_watch_alert(ticker, direction, bos_price, struct_high, struct_low,
                           signal_type="CFW6_INTRADAY"):
     arrow = "🟢" if direction == "bull" else "🔴"
@@ -1214,29 +1152,6 @@ def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high,
         return
 
     open_positions = position_manager.get_open_positions()
-
-
-        safe, warning = correlation_checker.is_safe_to_add_position(
-            ticker=ticker,
-            open_positions=open_positions
-        )
-        if not safe:
-            print(
-                f"[ARM] 🚫 CORRELATION FILTER: {ticker} — {warning.reason}"
-            )
-            if warning.correlated_tickers:
-                print(
-                    f"[ARM]   Correlated open positions: {', '.join(warning.correlated_tickers)}"
-                )
-            return
-        if warning:
-            print(f"[ARM] ⚠️  CORRELATION WARNING: {ticker} — {warning.reason}")
-    else:
-        if _is_highly_correlated(ticker, open_positions, window_bars=60, threshold=0.9):
-            print(f"[CORR] Skipping {ticker} — highly correlated with open book")
-            return
-
-    mode_label = " [INTRADAY]" if signal_type == "CFW6_INTRADAY" else " [OR]"
     print(
         f"✅ {ticker} ARMED{mode_label}: {direction.upper()} | "
         f"Entry:${entry_price:.2f} Stop:${stop_price:.2f} "
@@ -1463,13 +1378,6 @@ def process_ticker(ticker: str):
                     print(f"[EOD] Regime summary error: {e}")
             
 
-                try:
-                    eod_positions = position_manager.get_open_positions()
-                    if eod_positions:
-                        correlation_checker.print_correlation_matrix(eod_positions)
-                except Exception as e:
-                    print(f"[EOD] Correlation matrix error: {e}")
-            
             return
 
         if _state.ticker_is_watching(ticker):
@@ -1648,3 +1556,5 @@ def send_discord(message: str):
         requests.post(config.DISCORD_WEBHOOK_URL, json={"content": message}, timeout=5)
     except Exception as e:
         print(f"[DISCORD] Error: {e}")
+
+
