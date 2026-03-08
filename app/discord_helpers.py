@@ -21,79 +21,136 @@ def send_options_signal_alert(
     options_data: Optional[Dict] = None,
     confirmation: Optional[str] = None,
     candle_type: Optional[str] = None,
-    greeks_data: Optional[Dict] = None
+    greeks_data: Optional[Dict] = None,
+    # NEW: Performance metrics
+    rvol: Optional[float] = None,
+    volume_rank: Optional[int] = None,
+    composite_score: Optional[float] = None,
+    mtf_convergence: Optional[int] = None,
+    explosive_mover: bool = False
 ):
-    """Send enhanced Discord alert with options signal (redesigned format)."""
+    """Send enhanced Discord alert with options signal (ENHANCED v2)."""
     # Determine option type (CALL/PUT)
     option_type = "CALL" if direction == "bull" else "PUT"
     color = 0x00FF00 if direction == "bull" else 0xFF0000  # Green for CALL, Red for PUT
-
+    
+    # Grade emoji
+    grade_emoji = {
+        "A+": "🟢",
+        "A": "🟡", 
+        "B": "🟠",
+        "C": "🔴"
+    }.get(grade, "⚪")
+    
+    # Build title with badges
+    title_parts = [f"{ticker} {option_type}"]
+    
+    # Add explosive mover badge
+    if explosive_mover:
+        title_parts.append("🚀")
+    
+    # Add MTF convergence badge
+    if mtf_convergence and mtf_convergence >= 3:
+        title_parts.append(f"⚡{mtf_convergence}TF")
+    
+    title = " ".join(title_parts)
+    
     # Calculate risk:reward
     risk = abs(entry - stop)
     reward_t1 = abs(t1 - entry)
     reward_t2 = abs(t2 - entry)
     rr_t1 = round(reward_t1 / risk, 2) if risk > 0 else 0
     rr_t2 = round(reward_t2 / risk, 2) if risk > 0 else 0
-
-    # Build fields with clean vertical layout
+    
+    # Build fields
     fields = []
     
-    # Entry range
+    # ══ SIGNAL QUALITY ══════════════════════════════════════════════════
+    quality_parts = []
+    
+    # Confidence bar
+    conf_pct = confidence * 100
+    conf_bars = "█" * int(conf_pct / 10)
+    quality_parts.append(f"**{conf_pct:.0f}%** {conf_bars}")
+    
+    # Grade
+    quality_parts.append(f"{grade_emoji} **{grade}**")
+    
+    # RVOL indicator
+    if rvol:
+        rvol_emoji = "🔥" if rvol >= 3.0 else "⚡" if rvol >= 2.0 else "📊"
+        quality_parts.append(f"{rvol_emoji} **{rvol:.1f}x** RVOL")
+    
+    # Composite score
+    if composite_score:
+        quality_parts.append(f"📈 **{composite_score:.0f}** score")
+    
     fields.append({
-        "name": "📥 Entry",
-        "value": f"**${entry:.2f}** (RR: {rr_t1:.1f}x)",
+        "name": "📊 Signal Quality",
+        "value": " | ".join(quality_parts),
         "inline": False
     })
     
-    # Stop Loss
+    # ══ ENTRY & TARGETS ═════════════════════════════════════════════════
+    fields.append({
+        "name": "🔥 Entry",
+        "value": f"**${entry:.2f}**",
+        "inline": True
+    })
+    
     fields.append({
         "name": "🛑 Stop Loss",
         "value": f"${stop:.2f}",
-        "inline": False
+        "inline": True
     })
     
-    # Target 1 (50% position)
     fields.append({
-        "name": "🎯 Target 1 (1.5R)",
-        "value": f"${t1:.2f} (RR: {rr_t1:.1f}x)",
-        "inline": False
+        "name": "📏 Risk",
+        "value": f"${risk:.2f}",
+        "inline": True
     })
     
-    # Target 2 (50% position)
     fields.append({
-        "name": "🎯 Target 2 (3.5R)",
-        "value": f"${t2:.2f} (RR: {rr_t2:.1f}x)",
-        "inline": False
+        "name": "🎯 T1 (50%)",
+        "value": f"${t1:.2f} (**{rr_t1:.1f}R**)",
+        "inline": True
     })
     
-    # Confidence & Grade
     fields.append({
-        "name": "📊 Confidence",
-        "value": f"**{confidence*100:.0f}%** | Grade: **{grade}**",
-        "inline": False
+        "name": "🎯 T2 (50%)",
+        "value": f"${t2:.2f} (**{rr_t2:.1f}R**)",
+        "inline": True
     })
-
-    # Add candle confirmation if present (from Nitro 3-tier model)
-    if confirmation:
-        conf_emoji = {
-            "A+": "🟢",  # Strongest
-            "A":  "🟡",  # Strong
-            "A-": "🟠"   # Acceptable
-        }.get(confirmation, "⚪")
+    
+    fields.append({
+        "name": "💰 Max Gain",
+        "value": f"**{(rr_t1 + rr_t2) / 2:.1f}R**",
+        "inline": True
+    })
+    
+    # ══ CONFIRMATION ════════════════════════════════════════════════════
+    if confirmation or mtf_convergence:
+        conf_parts = []
+        
+        if confirmation:
+            conf_emoji_map = {
+                "A+": "🟢",
+                "A": "🟡",
+                "A-": "🟠"
+            }
+            conf_parts.append(f"{conf_emoji_map.get(confirmation, '⚪')} **{confirmation}** {candle_type or 'Pattern'}")
+        
+        if mtf_convergence and mtf_convergence >= 2:
+            conf_parts.append(f"⚡ **{mtf_convergence} Timeframes** aligned")
         
         fields.append({
-            "name": f"{conf_emoji} Confirmation",
-            "value": f"**{confirmation}** — {candle_type or 'Hammer'}",
+            "name": "✅ Confirmation",
+            "value": " | ".join(conf_parts),
             "inline": False
         })
-
-    # ── GREEKS ANALYSIS ────────────────────────────────────────────────
+    
+    # ══ GREEKS QUALITY ══════════════════════════════════════════════════
     if greeks_data:
-        is_valid = greeks_data.get("is_valid", False)
-        reason = greeks_data.get("reason", "No data")
-        best_strike = greeks_data.get("best_strike")
-        
-        # Get Greeks details if available
         greeks_details = greeks_data.get("details", {})
         if greeks_details:
             delta = greeks_details.get("delta", 0)
@@ -102,73 +159,84 @@ def send_options_signal_alert(
             spread = greeks_details.get("spread_pct", 0)
             liquidity = greeks_details.get("liquidity_ok", False)
             
-            # Build quality indicators (checkmarks and warnings)
+            # Quality checks
             delta_check = "✅" if abs(delta) >= 0.30 else "⚠️"
             iv_check = "✅" if iv < 0.60 else "⚠️"
             spread_check = "✅" if spread < 5 else "⚠️"
             liq_check = "✅" if liquidity else "❌"
             
-            # Format Greeks data similar to screenshot
+            # Delta color indicator
+            abs_delta = abs(delta)
+            if abs_delta >= 0.50:
+                delta_emoji = "🟢"  # ATM/ITM
+            elif abs_delta >= 0.35:
+                delta_emoji = "🟡"  # Slightly OTM
+            else:
+                delta_emoji = "🟠"  # Further OTM
+            
             greeks_summary = (
-                f"Δ +{abs(delta):.2f} {delta_check} | IV {iv*100:.0f}% {iv_check} | {dte}DTE\n"
-                f"Spread {spread:.1f}% {spread_check} | Liquidity {liq_check}"
+                f"{delta_emoji} Δ **{abs_delta:.2f}** {delta_check} | "
+                f"IV **{iv*100:.0f}%** {iv_check} | "
+                f"**{dte}DTE**\n"
+                f"Spread **{spread:.1f}%** {spread_check} | "
+                f"Liquidity {liq_check}"
             )
             
             fields.append({
-                "name": "✅ Greeks Quality:",
+                "name": "🎲 Greeks Quality",
                 "value": greeks_summary,
                 "inline": False
             })
-
-    # ── RECOMMENDED OPTION ────────────────────────────────────────────────
+    
+    # ══ RECOMMENDED OPTION ══════════════════════════════════════════════
     if options_data:
-        contract_label = (
-            options_data.get("contract_label")
-            or f"${options_data.get('strike', '?')}"
-               f"{'C' if str(options_data.get('contract_type', '')).upper().startswith('C') else 'P'}"
-        )
-        dte = options_data.get("dte", 0)
+        strike = options_data.get('strike')
+        dte = options_data.get('dte', 0)
+        delta = options_data.get('delta', 0)
+        iv = options_data.get('iv', 0)
         
-        # Get expiry date if available
-        expiry = options_data.get("expiry", "2DTE")
-        if isinstance(dte, int) and dte > 0:
-            expiry = f"{dte}DTE"
+        option_summary = (
+            f"**{option_type}** @ **${strike}**\n"
+            f"Δ={abs(delta):.2f} | IV={iv*100:.0f}% | {dte}DTE"
+        )
         
         fields.append({
-            "name": "📋 Recommended Option",
-            "value": f"**{option_type}** @ **${options_data.get('strike', '?')}**\nValid calls available: ${options_data.get('strike', '?')} strike, Δ={abs(options_data.get('delta', 0)):.2f}, IV={options_data.get('iv', 0)*100:.0f}%, {expiry}",
+            "name": "📋 Recommended Contract",
+            "value": option_summary,
             "inline": False
         })
-
-        # ── LIMIT ENTRY RANGE ────────────────────────────────────────────
+        
+        # Limit entry with bid/ask
         bid = options_data.get("bid", 0)
         ask = options_data.get("ask", 0)
         mid = options_data.get("mid") or (round((bid + ask) / 2, 2) if bid and ask else 0)
         limit_entry = options_data.get("limit_entry", mid)
         max_entry = options_data.get("max_entry", ask)
         spread_pct = options_data.get("spread_pct", 0)
-
+        
         if ask > 0 and bid > 0:
             spread_emoji = "✅" if spread_pct < 5 else "⚠️"
+            entry_summary = (
+                f"**Place: ${limit_entry:.2f}** — Max: **${max_entry:.2f}**\n"
+                f"Bid: ${bid:.2f} | Ask: ${ask:.2f} | Spread: {spread_pct:.1f}% {spread_emoji}"
+            )
+            
             fields.append({
                 "name": "💲 Limit Entry",
-                "value": (
-                    f"**Place: ${limit_entry:.2f}** — Max: **${max_entry:.2f}**\n"
-                    f"Bid: ${bid:.2f} | Ask: ${ask:.2f} | Spread: {spread_pct:.1f}% {spread_emoji}"
-                ),
+                "value": entry_summary,
                 "inline": False
             })
-
-    # Build embed with new title format: "SYMBOL CALL/PUT"
+    
+    # Build embed
     embed = {
-        "title": f"{ticker} {option_type}",
+        "title": title,
         "color": color,
         "fields": fields,
         "footer": {
-            "text": f"War Machine Sniper  |  {datetime.now().strftime('%Y-%m-%d %I:%M %p EST')}"
+            "text": f"War Machine Sniper v2 | {datetime.now().strftime('%Y-%m-%d %I:%M %p EST')}"
         }
     }
-
+    
     _send_to_discord({"embeds": [embed]})
 
 
