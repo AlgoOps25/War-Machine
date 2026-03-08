@@ -28,6 +28,11 @@ import os
 import requests
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
+# NEW: Import optimized data manager
+from app.options.options_data_manager import OptionsDataManager
+
+# Initialize singleton instance
+_options_dm = OptionsDataManager()
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +156,124 @@ def build_options_trade(
 
     return trade
 
+def build_0dte_trade(
+    ticker: str,
+    direction: str,
+    confidence: float,
+    current_price: float = None,
+    account_balance: float = 5000.0,
+    risk_per_trade: float = 0.02
+) -> dict:
+    """
+    Build optimized 0DTE options trade using high-performance data manager.
+    
+    Key differences from regular build_options_trade:
+    - Uses parallel Greeks fetching (faster)
+    - Tighter delta ranges for 0DTE (max gamma exposure)
+    - Stricter liquidity filters (volume + OI requirements)
+    - 60-second caching to avoid redundant API calls
+    
+    Args:
+        ticker: Stock symbol
+        direction: "CALL" or "PUT"
+        confidence: Signal confidence (0-100)
+        current_price: Current stock price
+        account_balance: Trading account balance
+        risk_per_trade: Risk percentage per trade
+        
+    Returns:
+        dict: Optimized 0DTE trade recommendation
+    """
+    logger.info(
+        f"[OPTIONS] Building 0DTE {direction} for {ticker} (confidence={confidence:.1f}%)",
+        extra={'component': 'options', 'symbol': ticker, 'direction': direction}
+    )
+    
+    # Get current price if not provided
+    if current_price is None:
+        current_price = _get_current_price(ticker)
+        if current_price is None:
+            logger.error(f"[OPTIONS] Failed to fetch price for {ticker}")
+            return None
+    
+    # Use optimized data manager for 0DTE
+    contract = _options_dm.get_optimized_chain(
+        ticker=ticker,
+        direction=direction,
+        target_dte=0,  # 0DTE
+        for_0dte=True,
+        confidence=confidence
+    )
+    
+    if not contract:
+        logger.warning(f"[OPTIONS] No suitable 0DTE contract for {ticker}")
+        # Fallback to regular build
+        return build_options_trade(
+            ticker=ticker,
+            direction=direction,
+            confidence=confidence,
+            current_price=current_price,
+            account_balance=account_balance,
+            risk_per_trade=risk_per_trade
+        )
+    
+    # Extract contract details
+    strike = contract['strike']
+    expiration = contract['expiration']
+    option_price = contract['price']
+    greeks = {
+        'delta': contract['delta'],
+        'gamma': contract['gamma'],
+        'theta': contract['theta'],
+        'vega': contract['vega'],
+        'iv': contract['iv'],
+        'price': option_price,
+        'bid': contract['bid'],
+        'ask': contract['ask'],
+        'volume': contract['volume'],
+        'open_interest': contract['open_interest']
+    }
+    
+    # Calculate quantity
+    max_risk = account_balance * risk_per_trade
+    quantity = _calculate_quantity(option_price, max_risk)
+    
+    # Build contract symbol
+    exp_date = datetime.strptime(expiration, '%Y-%m-%d')
+    contract_symbol = _build_contract_symbol(ticker, expiration, direction, strike)
+    
+    # Get IV Rank
+    iv_rank = _get_iv_rank(ticker)
+    
+    # Calculate DTE
+    dte = (exp_date.date() - datetime.now(ZoneInfo("America/New_York")).date()).days
+    
+    trade = {
+        'ticker': ticker,
+        'direction': direction,
+        'strike': strike,
+        'expiration': expiration,
+        'dte': dte,
+        'contract': contract_symbol,
+        'price': option_price,
+        'greeks': greeks,
+        'iv_rank': iv_rank,
+        'risk_reward': f"1:{2.5}",
+        'quantity': quantity,
+        'total_cost': option_price * quantity * 100,
+        'max_risk': max_risk,
+        'confidence': confidence,
+        'strategy': contract.get('strategy', 'balanced'),
+        'is_0dte': True
+    }
+    
+    logger.info(
+        f"[OPTIONS] 0DTE trade built: {contract_symbol} x{quantity} @ ${option_price:.2f} "
+        f"(delta={greeks['delta']:.2f}, vol={greeks['volume']}, OI={greeks['open_interest']})",
+        extra={'component': 'options', 'symbol': ticker, 'trade': trade}
+    )
+    
+    return trade
 
 def get_greeks(ticker: str, strike: float = None, expiration: str = None, direction: str = "CALL") -> dict:
     """
@@ -551,3 +674,6 @@ def _build_contract_symbol(ticker: str, expiration: str, direction: str, strike:
     strike_str = f"{int(strike * 1000):08d}"
 
     return f"{ticker.upper()}{exp_str}{direction_char}{strike_str}"
+
+# Export both functions
+__all__ = ['build_options_trade', 'build_0dte_trade', 'get_greeks']
