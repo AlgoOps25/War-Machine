@@ -209,12 +209,12 @@ EXPLOSIVE_RVOL_THRESHOLD = 4.0
 print(f"[SNIPER] ✅ Explosive mover override enabled (score≥{EXPLOSIVE_SCORE_THRESHOLD} + RVOL≥{EXPLOSIVE_RVOL_THRESHOLD}x)")
 
 try:
-    from correlation_check import correlation_checker
-    CORRELATION_CHECK_ENABLED = True
+
+
     print("[SNIPER] ✅ Correlation check enabled (prevents over-leverage)")
 except ImportError:
     correlation_checker = None
-    CORRELATION_CHECK_ENABLED = False
+
     print("[SNIPER] ⚠️  Correlation check not available")
 
 VWAP_GATE_ENABLED = True
@@ -1215,7 +1215,7 @@ def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high,
 
     open_positions = position_manager.get_open_positions()
 
-    if CORRELATION_CHECK_ENABLED and correlation_checker:
+
         safe, warning = correlation_checker.is_safe_to_add_position(
             ticker=ticker,
             open_positions=open_positions
@@ -1462,7 +1462,7 @@ def process_ticker(ticker: str):
                 except Exception as e:
                     print(f"[EOD] Regime summary error: {e}")
             
-            if CORRELATION_CHECK_ENABLED and correlation_checker:
+
                 try:
                     eod_positions = position_manager.get_open_positions()
                     if eod_positions:
