@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 # EODHD Configuration
 EODHD_API_KEY = os.getenv('EODHD_API_KEY', '')
 EODHD_BASE_URL = 'https://eodhd.com/api/mp/unicornbay'
-REQUEST_TIMEOUT = 10  # Reduced from 30s for 0DTE speed
+REQUEST_TIMEOUT = 30  # Reduced from 30s for 0DTE speed
 
 # Cache Configuration
 CACHE_TTL = 60  # 60 seconds cache for Greeks during rapid scanning
@@ -131,44 +131,63 @@ class OptionsDataManager:
             logger.warning("[OPTIONS-DM] EODHD_API_KEY not set")
             return []
         
-        try:
-            # Calculate DTE range
-            if for_0dte:
-                min_dte, max_dte = 0, 0  # Only today
-            else:
-                min_dte = max(1, target_dte - 7)
-                max_dte = target_dte + 7
+        # Calculate DTE range
+        if for_0dte:
+            min_dte, max_dte = 0, 0  # Only today
+        else:
+            min_dte = max(1, target_dte - 7)
+            max_dte = target_dte + 7
+        
+        # Retry logic (3 attempts)
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                # Fetch contracts
+                url = f"{EODHD_BASE_URL}/options/contracts"
+                params = {
+                    'filter[underlying_symbol]': ticker,
+                    'filter[type]': direction.lower(),
+                    'filter[dte_gte]': min_dte,
+                    'filter[dte_lte]': max_dte,
+                    'page[size]': 200 if for_0dte else 100,
+                    'api_token': EODHD_API_KEY
+                }
+                
+                response = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
+                response.raise_for_status()
+                data = response.json()
+                
+                if not data or 'data' not in data:
+                    logger.warning(f"[OPTIONS-DM] No data returned for {ticker}")
+                    return []
+                
+                contracts = data['data']
+                logger.info(f"[OPTIONS-DM] Fetched {len(contracts)} contracts for {ticker}")
+                
+                # Filter by liquidity
+                filtered = self._filter_by_liquidity(contracts, for_0dte)
+                logger.info(f"[OPTIONS-DM] {len(filtered)} contracts after liquidity filter")
+                
+                return filtered
             
-            # Fetch contracts
-            url = f"{EODHD_BASE_URL}/options/contracts"
-            params = {
-                'filter[underlying_symbol]': ticker,
-                'filter[type]': direction.lower(),
-                'filter[dte_gte]': min_dte,
-                'filter[dte_lte]': max_dte,
-                'page[size]': 200 if for_0dte else 100,  # More contracts for 0DTE
-                'api_token': EODHD_API_KEY
-            }
-            
-            response = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
-            response.raise_for_status()
-            data = response.json()
-            
-            if not data or 'data' not in data:
+            except requests.exceptions.Timeout:
+                logger.warning(f"[OPTIONS-DM] Timeout attempt {attempt + 1}/{max_retries} for {ticker}")
+                if attempt < max_retries - 1:
+                    time.sleep(2)  # Wait 2s before retry
+                    continue
+                logger.error(f"[OPTIONS-DM] All retries exhausted for {ticker}")
                 return []
             
-            contracts = data['data']
-            logger.info(f"[OPTIONS-DM] Fetched {len(contracts)} contracts for {ticker}")
+            except requests.exceptions.HTTPError as e:
+                logger.error(f"[OPTIONS-DM] HTTP error for {ticker}: {e}")
+                return []
             
-            # Filter by liquidity
-            filtered = self._filter_by_liquidity(contracts, for_0dte)
-            logger.info(f"[OPTIONS-DM] {len(filtered)} contracts after liquidity filter")
-            
-            return filtered
-            
-        except Exception as e:
-            logger.error(f"[OPTIONS-DM] Failed to fetch chain for {ticker}: {e}")
-            return []
+            except Exception as e:
+                logger.error(f"[OPTIONS-DM] Failed to fetch chain for {ticker}: {e}")
+                return []
+        
+        return []
+
     
     def _filter_by_liquidity(
         self,
