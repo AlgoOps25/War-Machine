@@ -208,7 +208,7 @@ class WatchlistFunnel:
                 candidates.append(ticker)
         
         # Score all candidates with professional 3-tier scanner
-        self.scored_tickers = _get_momentum_screener.run_momentum_screener(
+        self.scored_tickers = _get_momentum_screener().run_momentum_screener(
             candidates,
             min_composite_score=stage_config["min_score"],
             use_cache=True
@@ -229,7 +229,7 @@ class WatchlistFunnel:
         stage_config = self.stages["narrow"]
         
         if self.current_watchlist:
-            self.scored_tickers = _get_momentum_screener.run_momentum_screener(
+            self.scored_tickers = _get_momentum_screener().run_momentum_screener(
                 self.current_watchlist,
                 min_composite_score=stage_config["min_score"],
                 use_cache=True
@@ -242,7 +242,7 @@ class WatchlistFunnel:
                 force_refresh=True
             )
             candidates = [t['ticker'] for t in screener_results[:50]]
-            self.scored_tickers = _get_momentum_screener.run_momentum_screener(
+            self.scored_tickers = _get_momentum_screener().run_momentum_screener(
                 candidates,
                 min_composite_score=stage_config["min_score"],
                 use_cache=True
@@ -275,7 +275,7 @@ class WatchlistFunnel:
         stage_config = self.stages["final"]
         
         if self.current_watchlist:
-            self.scored_tickers = _get_momentum_screener.run_momentum_screener(
+            self.scored_tickers = _get_momentum_screener().run_momentum_screener(
                 self.current_watchlist,
                 min_composite_score=stage_config["min_score"],
                 use_cache=True
@@ -283,7 +283,7 @@ class WatchlistFunnel:
         else:
             # Emergency fallback
             candidates = dynamic_screener.get_gap_candidates(min_gap_pct=3.0, limit=20)
-            self.scored_tickers = _get_momentum_screener.run_momentum_screener(
+            self.scored_tickers = _get_momentum_screener().run_momentum_screener(
                 candidates,
                 min_composite_score=stage_config["min_score"],
                 use_cache=True
@@ -335,7 +335,7 @@ class WatchlistFunnel:
         # Score candidates with professional scanner
         # Use lower threshold (25.0) for live discovery - these tickers don't have
         # premarket momentum data, so scores will be in 20-50 range initially
-        self.scored_tickers = _get_momentum_screener.run_momentum_screener(
+        self.scored_tickers = _get_momentum_screener().run_momentum_screener(
             candidates,
             min_composite_score=stage_config["min_score"],  # Now 25.0 (matches config)
             use_cache=True
@@ -356,7 +356,7 @@ class WatchlistFunnel:
             expanded_candidates = [t['ticker'] for t in expanded_results[:100]]
             
             # Re-score with even lower threshold
-            self.scored_tickers = _get_momentum_screener.run_momentum_screener(
+            self.scored_tickers = _get_momentum_screener().run_momentum_screener(
                 expanded_candidates,
                 min_composite_score=15.0,  # Emergency low threshold
                 use_cache=True
