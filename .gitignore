@@ -326,3 +326,24 @@ rollback_*.ps1
 production_indicator_backtest*.py
 
 .vscode
+
+Add-Content .gitignore @"
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environment (if not already there)
+.venv/
+venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+*.code-workspace
+"@
+
