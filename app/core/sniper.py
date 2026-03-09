@@ -44,7 +44,13 @@ from app.risk.position_manager import position_manager
 from utils import config
 from app.mtf.bos_fvg_engine import scan_bos_fvg, is_force_close_time
 from app.filters.early_session_disqualifier import should_skip_cfw6_or_early
-
+from app.screening.screener_integration import get_ticker_screener_metadata
+from app.analytics.explosive_mover_tracker import (
+    track_explosive_override,
+    update_override_outcome,
+    print_explosive_override_summary,
+    get_daily_override_stats
+)
 
 try:
     from app.validation.volume_profile import get_volume_analyzer
@@ -1241,7 +1247,7 @@ def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high,
     log_proposed_trade(ticker, signal_type, direction, entry_price, confidence, grade)
     
     # Extract screener metadata for rich alerts
-    metadata = _get_ticker_screener_metadata(ticker)
+    metadata = get_ticker_screener_metadata(ticker)
     
     # Extract MTF convergence data
     mtf_convergence_count = None
@@ -1453,7 +1459,7 @@ def process_ticker(ticker: str):
                 if cooldown_tracker:
                     cooldown_tracker.print_eod_report()
                 if explosive_tracker:
-                    explosive_tracker.print_eod_report()
+                    print_explosive_override_summary()
                 if grade_gate_tracker:
                     grade_gate_tracker.print_eod_report()
             
