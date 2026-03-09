@@ -29,6 +29,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from typing import Dict, List
 from collections import Counter
+from dataclasses import asdict
 
 from app.data.db_connection import get_conn, return_conn, ph, dict_cursor
 from app.signals.comprehensive_detector import get_comprehensive_detector, ComprehensiveSignal
@@ -329,6 +330,9 @@ def main():
     results_by_grade = {'A+': [], 'A': [], 'B': [], 'C': []}
     results_by_session = {'OR': [], 'Intraday': []}
     
+    # Store detailed signal data for analysis
+    detailed_signals = []
+    
     for signal in all_signals:
         bars = ticker_bars.get(signal.ticker, [])
         if not bars:
@@ -342,6 +346,43 @@ def main():
         
         session = 'OR' if signal.is_opening_range else 'Intraday'
         results_by_session[session].append(result)
+        
+        # Create detailed signal record
+        signal_data = {
+            'ticker': signal.ticker,
+            'timestamp': signal.timestamp.isoformat(),
+            'time': signal.timestamp.strftime('%H:%M'),
+            'direction': signal.direction,
+            'entry_price': signal.entry_price,
+            'stop_price': signal.stop_price,
+            'target_1': signal.target_1,
+            'target_2': signal.target_2,
+            'grade': signal.grade,
+            'confidence': signal.confidence,
+            'bos_price': signal.bos_price,
+            'bos_strength': signal.bos_strength,
+            'fvg_low': signal.fvg_low,
+            'fvg_high': signal.fvg_high,
+            'fvg_size_pct': signal.fvg_size_pct,
+            'confirmation_grade': signal.confirmation_grade,
+            'confirmation_score': signal.confirmation_score,
+            'volume_ratio': signal.volume_ratio,
+            'volume_profile_zone': signal.volume_profile_zone,
+            'price_vs_vwap': signal.price_vs_vwap,
+            'vwap_band': signal.vwap_band,
+            'is_opening_range': signal.is_opening_range,
+            'or_classification': signal.or_classification,
+            'or_boost': signal.or_boost,
+            'mtf_score': signal.mtf_score,
+            'trend_1min': signal.trend_1min,
+            'trend_5min': signal.trend_5min,
+            'trend_15min': signal.trend_15min,
+            'result_r': result['r_multiple'],
+            'exit_reason': result['exit_reason'],
+            'hold_time': result['hold_time']
+        }
+        
+        detailed_signals.append(signal_data)
     
     # Calculate metrics
     all_metrics = calculate_metrics(all_results)
@@ -382,13 +423,14 @@ def main():
         print(f"  Avg R: {m['avg_r']:+.2f}R")
         print()
     
-    # Save results
+    # Save results with detailed signal data
     output = {
         'total_signals': len(all_signals),
         'grade_distribution': dict(grade_counts),
         'all_metrics': all_metrics,
         'grade_metrics': grade_metrics,
-        'session_metrics': session_metrics
+        'session_metrics': session_metrics,
+        'signals': detailed_signals  # NEW: Save all signal details
     }
     
     with open('backtest_comprehensive.json', 'w') as f:
