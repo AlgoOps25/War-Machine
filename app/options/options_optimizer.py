@@ -4,13 +4,86 @@ Parallel Greeks fetching, smart strike filtering, delta/gamma targeting.
 
 PHASE 3B - March 8, 2026
 Michael's 0DTE trading optimization
+
+TEST MODE: Use --test flag for simulated data when market is closed
 """
 import asyncio
 import aiohttp
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime, timedelta
 import time
-from utils import config
+import random
+
+
+def generate_test_strike_data(
+    ticker: str,
+    strike: float,
+    current_price: float,
+    option_type: str,
+    expiration: str
+) -> Dict:
+    """
+    Generate realistic test data for a strike when market is closed.
+    
+    Uses realistic Greeks calculations based on moneyness to simulate
+    actual market conditions for testing/demo purposes.
+    """
+    # Calculate moneyness (distance from ATM)
+    if option_type == "call":
+        moneyness = (strike - current_price) / current_price
+        # Calls: ITM (negative moneyness) = higher delta
+        base_delta = max(0.05, min(0.95, 0.50 - (moneyness * 2)))
+    else:
+        moneyness = (current_price - strike) / current_price
+        # Puts: ITM (positive moneyness) = higher delta (negative)
+        base_delta = -max(0.05, min(0.95, 0.50 - (moneyness * 2)))
+    
+    # Add some randomness to simulate market variance
+    delta = base_delta + random.uniform(-0.05, 0.05)
+    delta = max(-0.95, min(0.95, delta))
+    
+    # Calculate realistic Greeks
+    gamma = abs(delta) * (1 - abs(delta)) * 0.04  # Max gamma near ATM
+    theta = -abs(delta) * 0.15  # Time decay proportional to delta
+    vega = abs(delta) * (1 - abs(delta)) * 0.25  # Max vega near ATM
+    iv = 0.25 + random.uniform(-0.05, 0.10)  # 20-35% IV range
+    
+    # Generate bid/ask based on moneyness (ATM = tighter spreads)
+    if abs(moneyness) < 0.02:  # ATM
+        mid = 2.50 + random.uniform(-0.50, 0.50)
+        spread = 0.05
+    elif abs(moneyness) < 0.05:  # Near ATM
+        mid = 1.80 + random.uniform(-0.40, 0.40)
+        spread = 0.08
+    else:  # OTM/ITM
+        mid = 0.80 + random.uniform(-0.30, 0.30)
+        spread = 0.12
+    
+    bid = max(0.01, mid - spread)
+    ask = mid + spread
+    
+    # Volume and OI (higher near ATM)
+    if abs(moneyness) < 0.05:
+        volume = random.randint(500, 5000)
+        oi = random.randint(1000, 10000)
+    else:
+        volume = random.randint(100, 1000)
+        oi = random.randint(200, 2000)
+    
+    return {
+        "strike": strike,
+        "delta": delta,
+        "gamma": gamma,
+        "theta": theta,
+        "vega": vega,
+        "iv": iv,
+        "bid": round(bid, 2),
+        "ask": round(ask, 2),
+        "volume": volume,
+        "oi": oi,
+        "last": round(mid, 2)
+    }
+
 
 class OptionsChainOptimizer:
     """
@@ -18,12 +91,20 @@ class OptionsChainOptimizer:
     - Parallel Greeks fetching (7 strikes simultaneously)
     - Smart strike filtering (only relevant strikes)
     - Delta/gamma targeting (0.30-0.50 sweet spot)
+    - Test mode for weekend/offline development
     """
     
-    def __init__(self):
-        self.api_key = config.EODHD_API_KEY
+    def __init__(self, test_mode: bool = False):
+        # Import config only when needed to avoid circular imports
+        try:
+            from utils import config
+            self.api_key = config.EODHD_API_KEY
+        except:
+            self.api_key = None
+        
         self.base_url = "https://eodhd.com/api/mp/unicornbay/options-contracts"
         self.session: Optional[aiohttp.ClientSession] = None
+        self.test_mode = test_mode
         
         # Performance tracking
         self.stats = {
@@ -32,10 +113,14 @@ class OptionsChainOptimizer:
             "strikes_filtered": 0,
             "time_saved_sec": 0.0
         }
+        
+        if self.test_mode:
+            print("[OPTIONS-OPT] 🧪 TEST MODE: Using simulated data")
     
     async def __aenter__(self):
         """Async context manager entry"""
-        self.session = aiohttp.ClientSession()
+        if not self.test_mode:
+            self.session = aiohttp.ClientSession()
         return self
     
     async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -84,7 +169,8 @@ class OptionsChainOptimizer:
         ticker: str,
         strike: float,
         expiration: str,
-        option_type: str
+        option_type: str,
+        current_price: Optional[float] = None
     ) -> Optional[Dict]:
         """
         Fetch Greeks for a single strike asynchronously.
@@ -94,10 +180,19 @@ class OptionsChainOptimizer:
             strike: Strike price
             expiration: Expiration date (YYYY-MM-DD)
             option_type: "call" or "put"
+            current_price: Current stock price (used in test mode)
         
         Returns:
             Dict with Greeks or None on error
         """
+        # TEST MODE: Generate simulated data
+        if self.test_mode:
+            if current_price is None:
+                return None
+            await asyncio.sleep(0.05)  # Simulate network delay
+            return generate_test_strike_data(ticker, strike, current_price, option_type, expiration)
+        
+        # PRODUCTION MODE: Real API call
         if not self.session:
             print("[OPTIONS-OPT] ⚠️  Session not initialized - use async with")
             return None
@@ -198,7 +293,7 @@ class OptionsChainOptimizer:
         
         # Fetch all strikes in parallel
         tasks = [
-            self.fetch_strike_greeks_async(ticker, strike, expiration, option_type)
+            self.fetch_strike_greeks_async(ticker, strike, expiration, option_type, current_price=current_price)
             for strike in strikes
         ]
         
@@ -333,14 +428,26 @@ def get_optimal_strikes_sync(
     current_price: float,
     direction: str,
     target_delta_min: float = 0.30,
-    target_delta_max: float = 0.50
+    target_delta_max: float = 0.50,
+    test_mode: bool = False
 ) -> List[Dict]:
     """
     Synchronous wrapper for get_optimal_strikes_parallel.
     Use this in existing non-async code.
+    
+    Args:
+        ticker: Stock symbol
+        current_price: Current stock price
+        direction: "bull" (calls) or "bear" (puts)
+        target_delta_min: Minimum delta (default 0.30)
+        target_delta_max: Maximum delta (default 0.50)
+        test_mode: Use simulated data instead of API (default False)
+    
+    Returns:
+        List of strike dicts sorted by score (best first)
     """
     async def _run():
-        async with OptionsChainOptimizer() as optimizer:
+        async with OptionsChainOptimizer(test_mode=test_mode) as optimizer:
             return await optimizer.fetch_optimal_strikes_parallel(
                 ticker, current_price, direction, target_delta_min, target_delta_max
             )
@@ -350,6 +457,29 @@ def get_optimal_strikes_sync(
 
 # Example usage
 if __name__ == "__main__":
+    import sys
+    
+    # Check for test mode flag
+    test_mode = "--test" in sys.argv or "--demo" in sys.argv
+    
+    print("=" * 70)
+    print("0DTE OPTIONS CHAIN OPTIMIZER - TEST SUITE")
+    print("=" * 70)
+    
+    if test_mode:
+        print("🧪 RUNNING IN TEST MODE (simulated data)\n")
+    else:
+        now = datetime.now()
+        is_weekend = now.weekday() >= 5  # Saturday=5, Sunday=6
+        market_hours = 9 <= now.hour < 16
+        
+        if is_weekend or not market_hours:
+            print("🔴 WARNING: Market is closed")
+            print("💡 Run with --test flag to see simulated data demo")
+            print("   Example: python -m app.options.options_optimizer --test\n")
+        else:
+            print("🟢 Market is open - using LIVE DATA\n")
+    
     print("Testing 0DTE Options Chain Optimizer...\n")
     
     # Test with AAPL
@@ -357,19 +487,42 @@ if __name__ == "__main__":
     current_price = 225.50
     direction = "bull"  # Looking for calls
     
-    strikes = get_optimal_strikes_sync(ticker, current_price, direction)
+    print(f"Ticker:   {ticker}")
+    print(f"Price:    ${current_price}")
+    print(f"Strategy: {direction.upper()} (calls)")
+    print(f"Target Δ: 0.30 - 0.50\n")
+    
+    strikes = get_optimal_strikes_sync(ticker, current_price, direction, test_mode=test_mode)
     
     if strikes:
-        print(f"\n✅ Found {len(strikes)} optimal strikes:")
+        print(f"\n✅ SUCCESS: Found {len(strikes)} optimal strikes")
+        print("=" * 70)
+        
         for i, strike in enumerate(strikes[:3], 1):
-            print(f"\n{i}. ${strike['strike']:.2f} Strike")
-            print(f"   Delta: {strike['delta']:.3f}")
-            print(f"   Gamma: {strike['gamma']:.4f}")
-            print(f"   Bid/Ask: ${strike['bid']:.2f}/${strike['ask']:.2f}")
-            print(f"   Mid: ${strike['mid']:.2f}")
-            print(f"   Spread: {strike['spread_pct']:.1f}%")
-            print(f"   Volume: {strike['volume']:,}")
-            print(f"   OI: {strike['oi']:,}")
-            print(f"   Score: {strike['score']:.1f}/100")
+            print(f"\n#{i} STRIKE: ${strike['strike']:.2f}")
+            print(f"   Score:     {strike['score']:.1f}/100")
+            print(f"   Delta:     {strike['delta']:.3f}")
+            print(f"   Gamma:     {strike['gamma']:.4f}")
+            print(f"   Theta:     {strike['theta']:.3f}")
+            print(f"   IV:        {strike['iv']*100:.1f}%")
+            print(f"   Bid/Ask:   ${strike['bid']:.2f} / ${strike['ask']:.2f}")
+            print(f"   Mid:       ${strike['mid']:.2f}")
+            print(f"   Spread:    {strike['spread_pct']:.1f}%")
+            print(f"   Volume:    {strike['volume']:,}")
+            print(f"   OI:        {strike['oi']:,}")
+        
+        if len(strikes) > 3:
+            print(f"\n   ... and {len(strikes) - 3} more strikes")
+        
+        print("\n" + "=" * 70)
+        print("RECOMMENDATION:")
+        best = strikes[0]
+        print(f"BUY {ticker} ${int(best['strike'])}C")
+        print(f"LIMIT PRICE: ${best['mid']:.2f} (mid)")
+        print(f"MAX PRICE:   ${best['ask']:.2f} (ask)")
+        print("=" * 70)
     else:
-        print("\n❌ No optimal strikes found")
+        print("\n❌ FAILURE: No optimal strikes found")
+        if not test_mode:
+            print("💡 This is expected on weekends - try --test flag for demo")
+        print("=" * 70)
