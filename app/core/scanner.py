@@ -142,6 +142,82 @@ API_KEY = os.getenv("EODHD_API_KEY", "")
 EMERGENCY_FALLBACK = ["SPY", "QQQ", "AAPL", "MSFT", "NVDA", "TSLA", "META", "AMD"]
 
 # ────────────────────────────────────────────────────────────────────────────────────
+# HELPER FUNCTIONS FOR RICH ALERTS
+# ────────────────────────────────────────────────────────────────────────────────────
+def _extract_premarket_metrics(watchlist_data: dict) -> dict:
+    """Extract performance metrics from watchlist metadata for pre-market alerts."""
+    try:
+        all_tickers = watchlist_data.get('all_tickers_with_scores', [])
+        if not all_tickers:
+            return None
+        
+        explosive_count = sum(1 for t in all_tickers 
+                             if t.get('score', 0) >= 80 and t.get('rvol', 0) >= 4.0)
+        avg_rvol = sum(t.get('rvol', 0) for t in all_tickers) / len(all_tickers)
+        avg_score = sum(t.get('score', 0) for t in all_tickers) / len(all_tickers)
+        
+        metadata = watchlist_data.get('metadata', {})
+        top_3 = metadata.get('top_3_tickers', [])
+        top_3_summary = ', '.join([
+            f"{t['ticker']} ({t['rvol']:.1f}x)" 
+            for t in all_tickers[:3] if 'ticker' in t and 'rvol' in t
+        ]) if all_tickers else 'N/A'
+        
+        return {
+            'explosive_count': explosive_count,
+            'explosive_rvol_threshold': 4.0,
+            'avg_rvol': avg_rvol,
+            'avg_score': avg_score,
+            'top_3_summary': top_3_summary
+        }
+    except Exception as e:
+        logger.error(f"[METRICS] Pre-market extraction error: {e}")
+        return None
+
+
+def _get_eod_summary_metrics() -> dict:
+    """Extract EOD performance metrics from position manager and watchlist."""
+    try:
+        # Get today's closed positions
+        from app.risk.position_manager import position_manager
+        closed_positions = position_manager.get_closed_positions_today()
+        
+        if not closed_positions:
+            return None
+        
+        # Calculate top performers
+        sorted_by_pnl = sorted(
+            closed_positions, 
+            key=lambda p: p.get('pnl', 0), 
+            reverse=True
+        )
+        top_3 = sorted_by_pnl[:3]
+        top_performers = '\n'.join([
+            f"  {i+1}. {p['ticker']}: ${p.get('pnl', 0):+.2f} ({p.get('grade', 'N/A')})"
+            for i, p in enumerate(top_3)
+        ])
+        
+        # Get watchlist metadata if available
+        try:
+            watchlist_data = get_watchlist_with_metadata(force_refresh=False)
+            all_tickers = watchlist_data.get('all_tickers_with_scores', [])
+            avg_rvol = sum(t.get('rvol', 0) for t in all_tickers) / len(all_tickers) if all_tickers else 0
+            explosive_count = sum(1 for t in all_tickers 
+                                 if t.get('score', 0) >= 80 and t.get('rvol', 0) >= 4.0)
+        except Exception:
+            avg_rvol = 0
+            explosive_count = 0
+        
+        return {
+            'top_performers': top_performers,
+            'avg_rvol': avg_rvol,
+            'explosive_count': explosive_count
+        }
+    except Exception as e:
+        logger.error(f"[METRICS] EOD extraction error: {e}")
+        return None
+
+# ────────────────────────────────────────────────────────────────────────────────────
 # PHASE 1.11: DATA STORAGE SPAM REDUCTION
 # ────────────────────────────────────────────────────────────────────────────────────
 data_update_counter = 0
@@ -467,17 +543,32 @@ def start_scanner_loop():
                         }
                         emoji = stage_emoji.get(metadata['stage'], '📊')
 
+                        # NEW: Extract rich metrics for pre-market alert
+                        pm_metrics = _extract_premarket_metrics(watchlist_data)
+                        
                         msg = (
                             f"{emoji} **{metadata['stage_description']}**\n"
                             f"✅ Watchlist: {len(premarket_watchlist)} tickers\n"
                             f"{', '.join(premarket_watchlist[:20])}"
-                            f"{'...' if len(premarket_watchlist) > 20 else ''}"
+                            f"{'...' if len(premarket_watchlist) > 20 else ''}\n"
                         )
+                        
+                        # Add performance insights
+                        if pm_metrics:
+                            msg += (
+                                f"\n**Screener Insights:**\n"
+                                f"🔥 Explosive: {pm_metrics['explosive_count']} "
+                                f"(RVOL ≥{pm_metrics['explosive_rvol_threshold']}x)\n"
+                                f"📊 Avg RVOL: {pm_metrics['avg_rvol']:.1f}x | "
+                                f"Avg Score: {pm_metrics['avg_score']:.0f}\n"
+                                f"🎯 Top 3: {pm_metrics['top_3_summary']}"
+                            )
 
                         if volume_signals:
                             msg += f"\n\n⚠️ {len(volume_signals)} volume signals active"
 
                         send_simple_message(msg)
+
 
                         logger.info(
                             f"[SIGNALS] Pre-market scan on {len(premarket_watchlist)} tickers...",
@@ -818,24 +909,39 @@ def start_scanner_loop():
                             traceback.print_exc()
 
                     # 2. EOD PNL REPORT
-                    try:
-                        daily_stats = position_manager.get_daily_stats()
-                        eod_report  = (
-                            f"📊 **EOD Report {current_day}**\n"
-                            f"Trades: {daily_stats['trades']} | "
-                            f"WR: {daily_stats['win_rate']:.1f}% | "
-                            f"P&L: ${daily_stats['total_pnl']:+.2f}"
-                        )
                         try:
-                            eod_report += f"\n{position_manager.generate_report()}"
-                        except Exception:
-                            pass
-                        send_simple_message(eod_report)
-                    except Exception as e:
-                        logger.error(
-                            f"[EOD] EOD report error: {e}",
-                            extra={"component": "eod_report"}
-                        )
+                            daily_stats = position_manager.get_daily_stats()
+                            
+                            # NEW: Fetch screener metadata for EOD report
+                            eod_metadata = _get_eod_summary_metrics()
+                            
+                            eod_report = (
+                                f"📊 **EOD Report {current_day}**\n"
+                                f"Trades: {daily_stats['trades']} | "
+                                f"WR: {daily_stats['win_rate']:.1f}% | "
+                                f"P&L: ${daily_stats['total_pnl']:+.2f}\n"
+                            )
+                            
+                            # Add performance insights
+                            if eod_metadata:
+                                eod_report += (
+                                    f"\n**Top Performers:**\n"
+                                    f"{eod_metadata.get('top_performers', 'N/A')}\n"
+                                    f"\n**Screener Stats:**\n"
+                                    f"Avg RVOL: {eod_metadata.get('avg_rvol', 0):.1f}x | "
+                                    f"Explosive Movers: {eod_metadata.get('explosive_count', 0)}"
+                                )
+                            
+                            try:
+                                eod_report += f"\n{position_manager.generate_report()}"
+                            except Exception:
+                                pass
+                            send_simple_message(eod_report)
+                        except Exception as e:
+                            logger.error(
+                                f"[EOD] EOD report error: {e}",
+                                extra={"component": "eod_report"}
+                            )
 
                     # 3. AI LEARNING
                     if HAS_AI_LEARNING:
