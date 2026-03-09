@@ -33,8 +33,9 @@ except ImportError:
     _RTH_GUARD_ENABLED = False
     def _is_rth_now(): return True  # Assume RTH if filter unavailable
 
+# FIXED: Correct import path for signal_analytics
 try:
-    from signal_analytics import signal_tracker
+    from app.signals.signal_analytics import signal_tracker
     SIGNAL_TRACKING_ENABLED = True
     print("[POSITION] ✅ Signal trade tracking enabled (signal_analytics)")
 except ImportError:
