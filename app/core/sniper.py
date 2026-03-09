@@ -43,6 +43,17 @@ from utils import config
 from app.mtf.bos_fvg_engine import scan_bos_fvg, is_force_close_time
 from app.filters.early_session_disqualifier import should_skip_cfw6_or_early
 
+
+try:
+    from app.validation.volume_profile import get_volume_analyzer
+    VOLUME_PROFILE_ENABLED = True
+    print("[SNIPER] ✅ Volume profile validation enabled")
+except ImportError:
+    VOLUME_PROFILE_ENABLED = False
+    print("[SNIPER] ⚠️  Volume profile disabled")
+    def get_volume_analyzer():
+        return None
+
 # ══════════════════════════════════════════════════════════════════════════════
 # FIX #1: THREAD-SAFE STATE MANAGEMENT
 # ══════════════════════════════════════════════════════════════════════════════
