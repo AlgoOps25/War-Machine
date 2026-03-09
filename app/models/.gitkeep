@@ -1,5 +1,0 @@
-# ML model artifacts directory
-# Models are trained and saved here by train_ml_booster.py
-# Files:
-#   - confidence_booster.pkl (trained XGBoost model)
-#   - feature_importance.csv (feature importance scores)
