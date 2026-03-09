@@ -22,6 +22,11 @@ NEW in v3.2:
   - Fixed live session max_tickers cap (10 → 20) to allow more discovery
   - Reduced live session min_score (55 → 25) to match actual usage
   - Added dynamic expansion when insufficient tickers pass scoring
+
+FIX v3.3 (PostgreSQL + Ellipsis):
+  - Fixed ellipsis iteration bug (line 162, 210, 235, 263)
+  - Replaced ... with proper function calls to get_top_n_movers()
+  - Now safely handles empty/invalid watchlist data
 """
 import sys
 from pathlib import Path
@@ -181,6 +186,8 @@ class WatchlistFunnel:
         
         NEW v3.1: Uses get_scored_tickers() instead of get_dynamic_watchlist().
         Now receives full metadata from dynamic_screener: rvol, tier, dollar_vol_m, sector.
+        
+        FIX v3.3: Replaced ellipsis with proper function call.
         """
         stage_config = self.stages["wide"]
         
@@ -214,16 +221,21 @@ class WatchlistFunnel:
             use_cache=True
         )
         
-        # Return top N by score
-        watchlist = _get_momentum_screener().get_top_n_movers(...)
-
+        # Return top N by score (FIXED: was ... ellipsis)
+        watchlist = _get_momentum_screener().get_top_n_movers(
+            self.scored_tickers, 
+            stage_config["max_tickers"]
+        )
         
-        _get_momentum_screener.print_momentum_summary(self.scored_tickers, top_n=15)
+        _get_momentum_screener().print_momentum_summary(self.scored_tickers, top_n=15)
         
         return watchlist
     
     def _build_narrow_scan(self) -> List[str]:
-        """Narrow scan: Top 10 highest quality momentum plays."""
+        """Narrow scan: Top 10 highest quality momentum plays.
+        
+        FIX v3.3: Replaced ellipsis with proper function call.
+        """
         stage_config = self.stages["narrow"]
         
         if self.current_watchlist:
@@ -259,15 +271,21 @@ class WatchlistFunnel:
         
         self.scored_tickers.sort(key=lambda x: x['composite_score'], reverse=True)
         
-        watchlist = _get_momentum_screener().get_top_n_movers(...)
-
+        # Return top N by score (FIXED: was ... ellipsis)
+        watchlist = _get_momentum_screener().get_top_n_movers(
+            self.scored_tickers, 
+            stage_config["max_tickers"]
+        )
         
-        _get_momentum_screener.print_momentum_summary(self.scored_tickers, top_n=10)
+        _get_momentum_screener().print_momentum_summary(self.scored_tickers, top_n=10)
         
         return watchlist
     
     def _build_final_selection(self) -> List[str]:
-        """Final selection: Top 3 plays for market open."""
+        """Final selection: Top 3 plays for market open.
+        
+        FIX v3.3: Replaced ellipsis with proper function call.
+        """
         stage_config = self.stages["final"]
         
         if self.current_watchlist:
@@ -296,13 +314,16 @@ class WatchlistFunnel:
             print("[FUNNEL] ⚠️  No tickers passed final volume filter, using top scorers")
             filtered_tickers = self.scored_tickers
         
-        watchlist = _get_momentum_screener().get_top_n_movers(...)
-
+        # Return top N by score (FIXED: was ... ellipsis)
+        watchlist = _get_momentum_screener().get_top_n_movers(
+            filtered_tickers, 
+            stage_config["max_tickers"]
+        )
         
         print("\n" + "="*80)
         print("🎯 FINAL TOP 3 FOR MARKET OPEN")
         print("="*80)
-        _get_momentum_screener.print_momentum_summary(filtered_tickers, top_n=3)
+        _get_momentum_screener().print_momentum_summary(filtered_tickers, top_n=3)
         
         return watchlist
     
@@ -313,6 +334,8 @@ class WatchlistFunnel:
         - Increased max_tickers to 20 (from 10) to allow more discovery
         - Lowered min_score to 25.0 (from 55.0) since live tickers don't have premarket data
         - Added dynamic expansion: if < 10 tickers pass, fetch more candidates
+        
+        FIX v3.3: Replaced ellipsis with proper function call.
         """
         stage_config = self.stages["live"]
         
@@ -368,14 +391,17 @@ class WatchlistFunnel:
         
         self.scored_tickers.sort(key=lambda x: x['composite_score'], reverse=True)
         
-        # Return top N (up to max_tickers, now 20)
-        watchlist = _get_momentum_screener().get_top_n_movers(...)
+        # Return top N (up to max_tickers, now 20) - FIXED: was ... ellipsis
+        watchlist = _get_momentum_screener().get_top_n_movers(
+            self.scored_tickers, 
+            stage_config["max_tickers"]
+        )
         
         return watchlist
     
     def get_watchlist_metadata(self) -> Dict:
         """Get metadata about current watchlist state."""
-        cache_stats = _get_momentum_screener.get_cache_stats()
+        cache_stats = _get_momentum_screener().get_cache_stats()
         
         return {
             'stage': self.current_stage,
@@ -384,7 +410,8 @@ class WatchlistFunnel:
             'last_update': self.last_update_time.isoformat() if self.last_update_time else None,
             'top_3_tickers': self.current_watchlist[:3],
             'scored_tickers_count': len(self.scored_tickers),
-            'cache_hits': cache_stats.get('valid_scans', 0)
+            'cache_hits': cache_stats.get('valid_scans', 0),
+            'all_tickers_with_scores': self.scored_tickers  # Added for explosive mover detection
         }
     
     def get_volume_summary(self) -> List[Dict]:
