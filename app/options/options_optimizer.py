@@ -1,11 +1,17 @@
 """
-0DTE Options Chain Optimizer
+0DTE Options Chain Optimizer - PRODUCTION READY
 Parallel Greeks fetching, smart strike filtering, delta/gamma targeting.
 
 PHASE 3B - March 8, 2026
 Michael's 0DTE trading optimization
 
-TEST MODE: Use --test flag for simulated data when market is closed
+PRODUCTION FEATURES:
+- API endpoint auto-detection (tries both URL formats)
+- Comprehensive error handling and recovery
+- Response validation and sanitization
+- Detailed logging for debugging
+- Test mode for offline development
+- Graceful fallback on failures
 """
 import asyncio
 import aiohttp
@@ -87,12 +93,23 @@ def generate_test_strike_data(
 
 class OptionsChainOptimizer:
     """
-    Optimized options chain fetcher for 0DTE trading.
+    Optimized options chain fetcher for 0DTE trading - PRODUCTION READY.
+    
+    Features:
     - Parallel Greeks fetching (7 strikes simultaneously)
     - Smart strike filtering (only relevant strikes)
     - Delta/gamma targeting (0.30-0.50 sweet spot)
-    - Test mode for weekend/offline development
+    - API endpoint auto-detection
+    - Comprehensive error handling
+    - Response validation
+    - Test mode for offline development
     """
+    
+    # API endpoint candidates (will try both)
+    ENDPOINTS = [
+        "https://eodhd.com/api/mp/unicornbay/options/contracts",  # validation.py format
+        "https://eodhd.com/api/mp/unicornbay/options-contracts"   # alternative format
+    ]
     
     def __init__(self, test_mode: bool = False):
         # Import config only when needed to avoid circular imports
@@ -102,7 +119,7 @@ class OptionsChainOptimizer:
         except:
             self.api_key = None
         
-        self.base_url = "https://eodhd.com/api/mp/unicornbay/options-contracts"
+        self.base_url = None  # Will be detected on first API call
         self.session: Optional[aiohttp.ClientSession] = None
         self.test_mode = test_mode
         
@@ -111,16 +128,23 @@ class OptionsChainOptimizer:
             "total_fetches": 0,
             "parallel_fetches": 0,
             "strikes_filtered": 0,
-            "time_saved_sec": 0.0
+            "time_saved_sec": 0.0,
+            "api_errors": 0,
+            "validation_errors": 0
         }
         
         if self.test_mode:
             print("[OPTIONS-OPT] 🧪 TEST MODE: Using simulated data")
+        else:
+            print("[OPTIONS-OPT] 🚀 PRODUCTION MODE: Live API enabled")
     
     async def __aenter__(self):
         """Async context manager entry"""
         if not self.test_mode:
-            self.session = aiohttp.ClientSession()
+            # Set timeout and connection limits for production
+            timeout = aiohttp.ClientTimeout(total=10, connect=5)
+            connector = aiohttp.TCPConnector(limit=10, limit_per_host=5)
+            self.session = aiohttp.ClientSession(timeout=timeout, connector=connector)
         return self
     
     async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -164,6 +188,100 @@ class OptionsChainOptimizer:
         
         return (min_strike, max_strike)
     
+    async def _detect_working_endpoint(self, ticker: str, expiration: str) -> Optional[str]:
+        """
+        Auto-detect which API endpoint format works.
+        Tries both URL formats and returns the working one.
+        """
+        if not self.session:
+            return None
+        
+        print("[OPTIONS-OPT] 🔍 Detecting API endpoint...")
+        
+        for endpoint in self.ENDPOINTS:
+            try:
+                params = {
+                    "filter[underlying_symbol]": ticker,
+                    "filter[expdate]": expiration,
+                    "filter[strike]": 100.0,  # Test strike
+                    "filter[type]": "call",
+                    "apitoken": self.api_key,
+                    "limit": 1
+                }
+                
+                async with self.session.get(endpoint, params=params, timeout=5) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        # Check if response has expected structure
+                        if isinstance(data, dict) and ("data" in data or "items" in data):
+                            print(f"[OPTIONS-OPT] ✅ Working endpoint: {endpoint}")
+                            return endpoint
+            except Exception as e:
+                print(f"[OPTIONS-OPT] ❌ Endpoint failed: {endpoint} - {e}")
+                continue
+        
+        print("[OPTIONS-OPT] ⚠️  No working endpoint found")
+        return None
+    
+    def _validate_and_sanitize_response(self, data: Dict, strike: float) -> Optional[Dict]:
+        """
+        Validate and sanitize API response data.
+        Returns None if data is invalid.
+        """
+        try:
+            # Handle different response structures
+            if "data" in data:
+                items = data["data"]
+            elif "items" in data:
+                items = data["items"]
+            elif isinstance(data, list):
+                items = data
+            else:
+                self.stats["validation_errors"] += 1
+                return None
+            
+            if not items or len(items) == 0:
+                return None
+            
+            # Get attributes from first item
+            item = items[0]
+            attrs = item.get("attributes", item)  # Handle nested or flat structure
+            
+            # Extract and validate fields
+            def safe_float(value, default=0.0):
+                try:
+                    return float(value) if value is not None else default
+                except (ValueError, TypeError):
+                    return default
+            
+            def safe_int(value, default=0):
+                try:
+                    return int(value) if value is not None else default
+                except (ValueError, TypeError):
+                    return default
+            
+            # Build validated response
+            validated = {
+                "strike": strike,
+                "delta": safe_float(attrs.get("delta") or attrs.get("Delta")),
+                "gamma": safe_float(attrs.get("gamma") or attrs.get("Gamma")),
+                "theta": safe_float(attrs.get("theta") or attrs.get("Theta")),
+                "vega": safe_float(attrs.get("vega") or attrs.get("Vega")),
+                "iv": safe_float(attrs.get("volatility") or attrs.get("implied_volatility") or attrs.get("iv")),
+                "bid": safe_float(attrs.get("bid") or attrs.get("Bid")),
+                "ask": safe_float(attrs.get("ask") or attrs.get("Ask")),
+                "volume": safe_int(attrs.get("volume") or attrs.get("Volume")),
+                "oi": safe_int(attrs.get("openinterest") or attrs.get("open_interest") or attrs.get("OpenInterest")),
+                "last": safe_float(attrs.get("last") or attrs.get("Last"))
+            }
+            
+            return validated
+            
+        except Exception as e:
+            print(f"[OPTIONS-OPT] ⚠️  Response validation error: {e}")
+            self.stats["validation_errors"] += 1
+            return None
+    
     async def fetch_strike_greeks_async(
         self,
         ticker: str,
@@ -197,6 +315,13 @@ class OptionsChainOptimizer:
             print("[OPTIONS-OPT] ⚠️  Session not initialized - use async with")
             return None
         
+        # Auto-detect endpoint on first call
+        if self.base_url is None:
+            self.base_url = await self._detect_working_endpoint(ticker, expiration)
+            if self.base_url is None:
+                print("[OPTIONS-OPT] ❌ API endpoint detection failed")
+                return None
+        
         params = {
             "filter[underlying_symbol]": ticker,
             "filter[expdate]": expiration,
@@ -206,35 +331,34 @@ class OptionsChainOptimizer:
             "limit": 1
         }
         
-        try:
-            async with self.session.get(self.base_url, params=params, timeout=5) as response:
-                if response.status != 200:
-                    return None
-                
-                data = await response.json()
-                items = data.get("data", [])
-                
-                if not items:
-                    return None
-                
-                attrs = items[0].get("attributes", {})
-                
-                return {
-                    "strike": strike,
-                    "delta": attrs.get("delta", 0),
-                    "gamma": attrs.get("gamma", 0),
-                    "theta": attrs.get("theta", 0),
-                    "vega": attrs.get("vega", 0),
-                    "iv": attrs.get("volatility", 0),
-                    "bid": attrs.get("bid", 0),
-                    "ask": attrs.get("ask", 0),
-                    "volume": attrs.get("volume", 0),
-                    "oi": attrs.get("openinterest", 0),
-                    "last": attrs.get("last", 0)
-                }
-        except Exception as e:
-            print(f"[OPTIONS-OPT] ❌ Error fetching {ticker} {strike}{option_type[0].upper()}: {e}")
-            return None
+        max_retries = 2
+        for attempt in range(max_retries):
+            try:
+                async with self.session.get(self.base_url, params=params, timeout=5) as response:
+                    if response.status == 429:  # Rate limit
+                        await asyncio.sleep(0.5)
+                        continue
+                    
+                    if response.status != 200:
+                        if attempt == max_retries - 1:
+                            self.stats["api_errors"] += 1
+                        continue
+                    
+                    data = await response.json()
+                    return self._validate_and_sanitize_response(data, strike)
+                    
+            except asyncio.TimeoutError:
+                if attempt == max_retries - 1:
+                    print(f"[OPTIONS-OPT] ⏱️  Timeout: {ticker} ${strike}")
+                    self.stats["api_errors"] += 1
+                return None
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    print(f"[OPTIONS-OPT] ❌ Error: {ticker} ${strike} - {e}")
+                    self.stats["api_errors"] += 1
+                return None
+        
+        return None
     
     async def fetch_optimal_strikes_parallel(
         self,
@@ -297,12 +421,18 @@ class OptionsChainOptimizer:
             for strike in strikes
         ]
         
-        results = await asyncio.gather(*tasks)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
         self.stats["parallel_fetches"] += len(tasks)
         
         # Filter valid results with target delta range
         valid_strikes = []
-        for result in results:
+        for i, result in enumerate(results):
+            # Handle exceptions from gather
+            if isinstance(result, Exception):
+                print(f"[OPTIONS-OPT] ⚠️  Strike ${strikes[i]:.2f} error: {result}")
+                self.stats["api_errors"] += 1
+                continue
+            
             if result is None:
                 continue
             
@@ -349,6 +479,8 @@ class OptionsChainOptimizer:
                   f"Δ={best['delta']:.3f} γ={best['gamma']:.4f} "
                   f"Bid/Ask=${best['bid']:.2f}/${best['ask']:.2f} "
                   f"Score={best['score']:.1f}")
+        else:
+            print(f"[OPTIONS-OPT] ⚠️  No valid strikes found (filtered: {self.stats['strikes_filtered']})")
         
         return valid_strikes
     
@@ -405,7 +537,15 @@ class OptionsChainOptimizer:
                 round(self.stats["parallel_fetches"] / self.stats["total_fetches"], 1)
                 if self.stats["total_fetches"] > 0 else 0
             ),
-            "time_saved_min": round(self.stats["time_saved_sec"] / 60, 2)
+            "time_saved_min": round(self.stats["time_saved_sec"] / 60, 2),
+            "error_rate": (
+                round(self.stats["api_errors"] / self.stats["parallel_fetches"], 3)
+                if self.stats["parallel_fetches"] > 0 else 0
+            ),
+            "validation_error_rate": (
+                round(self.stats["validation_errors"] / self.stats["parallel_fetches"], 3)
+                if self.stats["parallel_fetches"] > 0 else 0
+            )
         }
     
     def print_stats(self):
@@ -418,6 +558,8 @@ class OptionsChainOptimizer:
         print(f"Strikes Fetched:        {stats['parallel_fetches']}")
         print(f"Avg Strikes/Fetch:      {stats['avg_strikes_per_fetch']}")
         print(f"Strikes Filtered:       {stats['strikes_filtered']}")
+        print(f"API Errors:             {stats['api_errors']} ({stats['error_rate']:.1%})")
+        print(f"Validation Errors:      {stats['validation_errors']} ({stats['validation_error_rate']:.1%})")
         print(f"Time Saved:             {stats['time_saved_min']:.2f} minutes")
         print("="*70 + "\n")
 
@@ -452,7 +594,11 @@ def get_optimal_strikes_sync(
                 ticker, current_price, direction, target_delta_min, target_delta_max
             )
     
-    return asyncio.run(_run())
+    try:
+        return asyncio.run(_run())
+    except Exception as e:
+        print(f"[OPTIONS-OPT] ❌ Fatal error: {e}")
+        return []
 
 
 # Example usage
