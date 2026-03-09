@@ -325,3 +325,4 @@ rollback_*.ps1
 *_backup_*/
 production_indicator_backtest*.py
 
+.vscode
