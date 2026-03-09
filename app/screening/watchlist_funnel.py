@@ -215,10 +215,8 @@ class WatchlistFunnel:
         )
         
         # Return top N by score
-        watchlist = _get_momentum_screener.get_top_n_movers(
-            self.scored_tickers,
-            n=stage_config["max_tickers"]
-        )
+        watchlist = _get_momentum_screener().get_top_n_movers(...)
+
         
         _get_momentum_screener.print_momentum_summary(self.scored_tickers, top_n=15)
         
@@ -261,10 +259,8 @@ class WatchlistFunnel:
         
         self.scored_tickers.sort(key=lambda x: x['composite_score'], reverse=True)
         
-        watchlist = _get_momentum_screener.get_top_n_movers(
-            self.scored_tickers,
-            n=stage_config["max_tickers"]
-        )
+        watchlist = _get_momentum_screener().get_top_n_movers(...)
+
         
         _get_momentum_screener.print_momentum_summary(self.scored_tickers, top_n=10)
         
@@ -300,10 +296,8 @@ class WatchlistFunnel:
             print("[FUNNEL] ⚠️  No tickers passed final volume filter, using top scorers")
             filtered_tickers = self.scored_tickers
         
-        watchlist = _get_momentum_screener.get_top_n_movers(
-            filtered_tickers,
-            n=stage_config["max_tickers"]
-        )
+        watchlist = _get_momentum_screener().get_top_n_movers(...)
+
         
         print("\n" + "="*80)
         print("🎯 FINAL TOP 3 FOR MARKET OPEN")
@@ -375,10 +369,7 @@ class WatchlistFunnel:
         self.scored_tickers.sort(key=lambda x: x['composite_score'], reverse=True)
         
         # Return top N (up to max_tickers, now 20)
-        watchlist = _get_momentum_screener.get_top_n_movers(
-            self.scored_tickers,
-            n=stage_config["max_tickers"]
-        )
+        watchlist = _get_momentum_screener().get_top_n_movers(...)
         
         return watchlist
     
