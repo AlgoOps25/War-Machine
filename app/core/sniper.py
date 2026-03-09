@@ -1139,19 +1139,22 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         signal_type=signal_type,
         validation_result=validation_result,
         bos_confirmation=bos_confirmation,
-        bos_candle_type=bos_candle_type
+        bos_candle_type=bos_candle_type,
+        mtf_result=mtf_result
     )
     return True
 
 def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high,
                entry_price, stop_price, t1, t2, confidence, grade,
                options_rec=None, signal_type="CFW6_OR", validation_result=None,
-               bos_confirmation=None, bos_candle_type=None):
+               bos_confirmation=None, bos_candle_type=None, mtf_result=None):
+
     if abs(entry_price - stop_price) < entry_price * 0.001:
         print(f"[ARM] ⚠️ {ticker} stop too tight — skipping")
         return
 
     open_positions = position_manager.get_open_positions()
+    mode_label = " [OR]" if signal_type == "CFW6_OR" else " [INTRADAY]"
     print(
         f"✅ {ticker} ARMED{mode_label}: {direction.upper()} | "
         f"Entry:${entry_price:.2f} Stop:${stop_price:.2f} "
@@ -1160,6 +1163,15 @@ def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high,
 
     log_proposed_trade(ticker, signal_type, direction, entry_price, confidence, grade)
     
+    # Extract screener metadata for rich alerts
+    metadata = _get_ticker_screener_metadata(ticker)
+    
+    # Extract MTF convergence data
+    mtf_convergence_count = None
+    if mtf_result and mtf_result.get('convergence'):
+        # Count of timeframes that showed convergence
+        mtf_convergence_count = len(mtf_result.get('timeframes', []))
+    
     if PRODUCTION_HELPERS_ENABLED:
         _send_alert_safe(
             send_options_signal_alert,
@@ -1167,7 +1179,13 @@ def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high,
             entry=entry_price, stop=stop_price, t1=t1, t2=t2,
             confidence=confidence, timeframe="5m", grade=grade, 
             options_data=options_rec,
-            confirmation=bos_confirmation, candle_type=bos_candle_type
+            confirmation=bos_confirmation, candle_type=bos_candle_type,
+            # NEW: Performance metrics
+            rvol=metadata.get('rvol'),
+            volume_rank=None,
+            composite_score=metadata.get('score'),
+            mtf_convergence=mtf_convergence_count,
+            explosive_mover=metadata.get('qualified', False)
         )
     else:
         try:
@@ -1199,10 +1217,17 @@ def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high,
                 confidence=confidence, timeframe="5m", grade=grade, 
                 options_data=options_rec,
                 confirmation=bos_confirmation, candle_type=bos_candle_type,
-                greeks_data=greeks_data
+                greeks_data=greeks_data,
+                # NEW: Performance metrics
+                rvol=metadata.get('rvol'),
+                volume_rank=None,
+                composite_score=metadata.get('score'),
+                mtf_convergence=mtf_convergence_count,
+                explosive_mover=metadata.get('qualified', False)
             )
         except Exception as e:
             print(f"[DISCORD] ❌ Alert failed: {e}")
+
 
     position_id = position_manager.open_position(
         ticker=ticker, direction=direction,
