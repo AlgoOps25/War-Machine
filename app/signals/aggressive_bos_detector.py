@@ -9,8 +9,11 @@ Simplified BOS detection:
 - Finds FVG (3-candle gap) immediately
 - Requires strong candle confirmation
 
-This will catch MANY more signals than the strict MTF engine.
-Use multi-indicator scoring to filter quality.
+FIXED: Proper FVG retest confirmation logic
+- Track FVG state across bars
+- Wait for pullback INTO FVG zone
+- Confirm with strong directional candle
+- Enter on next bar
 
 Author: War Machine Team
 Date: March 9, 2026
@@ -39,7 +42,12 @@ class AggressiveBOSDetector:
             
             # Confirmation
             'require_strong_candle': True,  # Require green/red candle
+            'fvg_retest_lookback': 20,      # How far back to look for FVG retest
         }
+        
+        # Track active FVG zones
+        self.active_fvg = None
+        self.fvg_found_at = None
     
     def detect_breakout(self, bars: List[Dict]) -> Optional[Dict]:
         """
@@ -164,63 +172,70 @@ class AggressiveBOSDetector:
         
         return None
     
-    def check_confirmation(self, bars: List[Dict], fvg: Dict) -> Optional[Dict]:
+    def check_fvg_retest_and_confirm(self, bars: List[Dict], fvg: Dict, fvg_bar_idx: int) -> Optional[Dict]:
         """
-        Check if price has pulled back into FVG and confirmed.
+        FIXED: Proper FVG retest and confirmation logic.
         
-        Simpler logic:
-        1. Check if any recent bar touched FVG
-        2. Check if current bar is moving back in breakout direction
-        3. Grade the confirmation candle
+        Logic:
+        1. FVG must have been created at least 2 bars ago
+        2. Look for a bar that pulled back INTO the FVG zone
+        3. That bar must have CLOSED (we're looking at historical bars)
+        4. Grade that closed bar
+        5. If confirmed (A+/A/A-), trigger entry on NEXT bar
+        6. We need at least 2 bars after FVG (retest bar + entry bar)
+        
+        Returns:
+            Confirmation dict with entry details, or None
         """
-        if len(bars) < 2:
+        current_bar_idx = len(bars) - 1
+        
+        # Need at least 2 bars after FVG was created
+        if current_bar_idx < fvg_bar_idx + 2:
             return None
         
         direction = fvg['direction']
         fvg_low = fvg['fvg_low']
         fvg_high = fvg['fvg_high']
         
-        # Check last few bars for FVG touch
-        lookback = min(10, len(bars) - 1)
-        recent_bars = bars[-lookback:]
+        # Look at bars AFTER FVG was created
+        bars_after_fvg = bars[fvg_bar_idx+1:]
         
-        # Find bars that touched FVG
-        touched_fvg = False
-        confirmation_bar = None
-        
-        for i in range(len(recent_bars) - 1, -1, -1):
-            bar = recent_bars[i]
-            
-            if direction == 'bull':
-                # Price pulled back into FVG (low touched zone)
-                if bar['low'] <= fvg_high and bar['high'] >= fvg_low:
-                    touched_fvg = True
-                    confirmation_bar = bar
-                    break
-            
-            elif direction == 'bear':
-                # Price pulled back into FVG (high touched zone)
-                if bar['high'] >= fvg_low and bar['low'] <= fvg_high:
-                    touched_fvg = True
-                    confirmation_bar = bar
-                    break
-        
-        if not touched_fvg or not confirmation_bar:
+        if len(bars_after_fvg) < 2:
             return None
         
-        # Grade the confirmation
-        grade = self._grade_candle(confirmation_bar, direction)
+        # Check if the PREVIOUS bar (bars_after_fvg[-2]) retested FVG
+        # And we're now on the ENTRY bar (bars_after_fvg[-1])
+        
+        retest_bar = bars_after_fvg[-2]
+        entry_bar = bars_after_fvg[-1]
+        
+        # Check if retest bar touched FVG
+        touched_fvg = False
+        
+        if direction == 'bull':
+            # Bull: price pulled back into FVG from above
+            if retest_bar['low'] <= fvg_high and retest_bar['high'] >= fvg_low:
+                touched_fvg = True
+        
+        elif direction == 'bear':
+            # Bear: price pulled back into FVG from below
+            if retest_bar['high'] >= fvg_low and retest_bar['low'] <= fvg_high:
+                touched_fvg = True
+        
+        if not touched_fvg:
+            return None
+        
+        # Grade the retest bar
+        grade = self._grade_candle(retest_bar, direction)
         
         if grade['score'] == 0:
             return None  # No valid confirmation
         
-        # Entry on current bar
-        current_bar = bars[-1]
-        
+        # Entry on current bar (the bar AFTER retest)
         return {
-            'entry_price': current_bar['open'],
-            'entry_bar': current_bar,
-            'confirmation_bar': confirmation_bar,
+            'entry_price': entry_bar['open'],
+            'entry_bar': entry_bar,
+            'confirmation_bar': retest_bar,
             'grade': grade['grade'],
             'score': grade['score'],
             'candle_type': grade['type']
@@ -310,7 +325,7 @@ class AggressiveBOSDetector:
     
     def scan(self, ticker: str, bars: List[Dict]) -> Optional[Dict]:
         """
-        Full scan for BOS+FVG signal.
+        Full scan for BOS+FVG signal with PROPER confirmation wait logic.
         
         Returns:
             Signal dict if valid setup found, None otherwise
@@ -318,45 +333,70 @@ class AggressiveBOSDetector:
         if len(bars) < 30:
             return None
         
-        # Step 1: Detect breakout
+        # Step 1: Check if we have an active FVG waiting for retest
+        if self.active_fvg is not None:
+            # Check for confirmation on active FVG
+            confirmation = self.check_fvg_retest_and_confirm(
+                bars, self.active_fvg, self.fvg_found_at
+            )
+            
+            if confirmation:
+                # Got confirmation! Build signal and reset
+                levels = self.calculate_stops_targets(
+                    confirmation['entry_price'],
+                    self.active_fvg['direction'],
+                    self.active_fvg
+                )
+                
+                signal = {
+                    'ticker': ticker,
+                    'timestamp': bars[-1]['datetime'],
+                    'direction': self.active_fvg['direction'],
+                    'entry_price': confirmation['entry_price'],
+                    'stop_price': levels['stop'],
+                    'target_1': levels['t1'],
+                    'target_2': levels['t2'],
+                    'bos_price': self.active_fvg.get('bos_price', 0),
+                    'bos_strength': self.active_fvg.get('bos_strength', 0),
+                    'fvg_low': self.active_fvg['fvg_low'],
+                    'fvg_high': self.active_fvg['fvg_high'],
+                    'fvg_size_pct': self.active_fvg['fvg_size_pct'],
+                    'confirmation_grade': confirmation['grade'],
+                    'confirmation_score': confirmation['score'],
+                    'candle_type': confirmation['candle_type']
+                }
+                
+                # Reset active FVG
+                self.active_fvg = None
+                self.fvg_found_at = None
+                
+                return signal
+            
+            # Still waiting for confirmation, continue
+            # Check if FVG is too old (more than 50 bars ago)
+            if len(bars) - self.fvg_found_at > 50:
+                self.active_fvg = None
+                self.fvg_found_at = None
+        
+        # Step 2: Look for new breakout + FVG
         breakout = self.detect_breakout(bars)
         if not breakout:
             return None
         
-        # Step 2: Find FVG
+        # Step 3: Find FVG
         fvg = self.find_fvg(bars, breakout['bar_idx'], breakout['direction'])
         if not fvg:
             return None
         
-        # Step 3: Check for confirmation
-        confirmation = self.check_confirmation(bars, fvg)
-        if not confirmation:
-            return None
+        # Step 4: Store FVG and wait for retest
+        fvg['bos_price'] = breakout['breakout_level']
+        fvg['bos_strength'] = breakout['strength']
         
-        # Step 4: Calculate stops/targets
-        levels = self.calculate_stops_targets(
-            confirmation['entry_price'],
-            breakout['direction'],
-            fvg
-        )
+        self.active_fvg = fvg
+        self.fvg_found_at = len(bars) - 1
         
-        return {
-            'ticker': ticker,
-            'timestamp': bars[-1]['datetime'],
-            'direction': breakout['direction'],
-            'entry_price': confirmation['entry_price'],
-            'stop_price': levels['stop'],
-            'target_1': levels['t1'],
-            'target_2': levels['t2'],
-            'bos_price': breakout['breakout_level'],
-            'bos_strength': breakout['strength'],
-            'fvg_low': fvg['fvg_low'],
-            'fvg_high': fvg['fvg_high'],
-            'fvg_size_pct': fvg['fvg_size_pct'],
-            'confirmation_grade': confirmation['grade'],
-            'confirmation_score': confirmation['score'],
-            'candle_type': confirmation['candle_type']
-        }
+        # Don't return signal yet - wait for confirmation on next scan
+        return None
 
 
 def get_aggressive_detector() -> AggressiveBOSDetector:
