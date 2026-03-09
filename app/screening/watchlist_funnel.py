@@ -27,6 +27,12 @@ FIX v3.3 (PostgreSQL + Ellipsis):
   - Fixed ellipsis iteration bug (line 162, 210, 235, 263)
   - Replaced ... with proper function calls to get_top_n_movers()
   - Now safely handles empty/invalid watchlist data
+
+NEW in v3.4 (DTE Filtering):
+  - Added options_dte_filter integration
+  - Rejects tickers without 0DTE or 1DTE options
+  - Prevents swing-trade-only tickers (TTAN, etc.) from reaching scanner
+  - Applied at end of each watchlist build stage
 """
 import sys
 from pathlib import Path
@@ -42,6 +48,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from app.screening import volume_analyzer
 from app.screening import dynamic_screener
+from app.filters.options_dte_filter import filter_watchlist_by_dte
 from utils import config
 
 from zoneinfo import ZoneInfo
@@ -159,6 +166,11 @@ class WatchlistFunnel:
             watchlist = self._build_final_selection()
         else:
             watchlist = self._build_live_watchlist()
+        
+        # NEW v3.4: Filter out tickers without 0DTE/1DTE options
+        print(f"[FUNNEL] Pre-filter: {len(watchlist)} tickers")
+        watchlist = filter_watchlist_by_dte(watchlist, max_dte=1, verbose=True)
+        print(f"[FUNNEL] Post-filter: {len(watchlist)} tickers (0-1 DTE only)")
         
         self.current_watchlist = watchlist
         self.last_update_time = datetime.now()
