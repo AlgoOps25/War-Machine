@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-Enhanced BOS/FVG Detection v2 - With Market Structure Context
+Enhanced BOS/FVG Detection v2 - LOOSENED FILTERS
 
-Key improvements over v1:
-1. Multi-timeframe trend alignment (1min + 5min)
-2. Prior consolidation requirement (reduces false breakouts)
-3. Opening range context (different rules for 9:30-10:00)
-4. Volume profile integration (avoid HVN resistance)
-5. VWAP directional gate (only trade with VWAP)
+Original v2 found ZERO signals (too strict).
 
-Result: Higher quality signals with 50%+ win rate
+Changes:
+1. Allow neutral trends (don't require perfect alignment)
+2. Reduce consolidation requirement (3 bars instead of 5)
+3. Loosen VWAP distance (5% instead of 3%)
+4. Lower volume requirement (2.0x instead of 2.5x)
+5. Reduce breakout strength (1.0% instead of 1.5%)
 """
 
 import numpy as np
@@ -23,56 +23,52 @@ class EnhancedSignalV2:
     """Enhanced signal with context data"""
     timestamp: datetime
     ticker: str
-    signal_type: str  # 'BOS' or 'FVG'
-    direction: str    # 'CALL' or 'PUT'
+    signal_type: str
+    direction: str
     entry_price: float
-    
-    # Signal quality metrics
     breakout_strength: float
     volume_ratio: float
-    
-    # Market structure context
-    trend_1min: str          # 'bull', 'bear', 'neutral'
-    trend_5min: str          # 'bull', 'bear', 'neutral'
-    consolidation_bars: int  # How many bars consolidated before breakout
-    is_opening_range: bool   # Is this first 30 mins?
-    
-    # VWAP context
-    price_vs_vwap: float     # % above/below VWAP
-    vwap_slope: str          # 'rising', 'falling', 'flat'
-    
-    # Volume profile
-    near_hvn: bool           # Near high volume node (bad)
-    near_lvn: bool           # Near low volume node (good)
-    
-    # Quality grade
-    grade: str               # 'A+', 'A', 'B', 'C'
-    confidence: float        # 0.0 to 1.0
+    trend_1min: str
+    trend_5min: str
+    consolidation_bars: int
+    is_opening_range: bool
+    price_vs_vwap: float
+    vwap_slope: str
+    near_hvn: bool
+    near_lvn: bool
+    grade: str
+    confidence: float
 
 
 class EnhancedDetectorV2:
     """
-    Enhanced signal detector with market structure awareness.
+    Enhanced signal detector - LOOSENED VERSION
     """
     
     def __init__(self):
         self.params = {
-            # Stricter than v1
-            'min_breakout_strength': 0.015,     # 1.5% (was 1.0%)
-            'min_volume_ratio': 2.5,            # 2.5x (was 2.0x)
-            'min_consolidation_bars': 5,        # Must consolidate 5+ bars
+            # LOOSENED from original
+            'min_breakout_strength': 0.010,     # 1.0% (was 1.5%)
+            'min_volume_ratio': 2.0,            # 2.0x (was 2.5x)
+            'min_consolidation_bars': 3,        # 3 bars (was 5)
             
-            # Trend alignment
-            'require_trend_alignment': True,     # 1min + 5min must agree
+            # Trend - allow neutral
+            'require_trend_alignment': False,    # DISABLED (was True)
+            'allow_neutral_trend': True,        # NEW: Allow neutral trends
             
-            # VWAP gates
-            'vwap_max_distance': 0.03,          # Max 3% from VWAP
-            'require_vwap_direction': True,     # Must trade with VWAP slope
+            # VWAP - loosened
+            'vwap_max_distance': 0.05,          # 5% (was 3%)
+            'require_vwap_direction': False,    # DISABLED (was True)
             
             # Opening range
-            'opening_range_strength': 0.02,     # 2% for OR breakouts
-            'opening_range_end': time(10, 0),   # First 30 mins
+            'opening_range_strength': 0.015,    # 1.5% (was 2.0%)
+            'opening_range_end': time(10, 30),  # Extended to 10:30
         }
+        
+        print("[DETECTOR-V2] ✅ Initialized with LOOSENED filters")
+        print(f"[DETECTOR-V2] Min breakout: {self.params['min_breakout_strength']:.1%}")
+        print(f"[DETECTOR-V2] Min volume: {self.params['min_volume_ratio']:.1f}x")
+        print(f"[DETECTOR-V2] Min consolidation: {self.params['min_consolidation_bars']} bars")
     
     def detect_signals(
         self,
@@ -81,41 +77,36 @@ class EnhancedDetectorV2:
         idx: int
     ) -> Optional[EnhancedSignalV2]:
         """
-        Detect enhanced signals with full context.
-        
-        Args:
-            bars_1min: 1-minute bars
-            bars_5min: 5-minute bars (aligned)
-            idx: Current bar index in bars_1min
-        
-        Returns:
-            EnhancedSignalV2 or None
+        Detect enhanced signals with context.
         """
-        if idx < 100 or idx >= len(bars_1min) - 10:
+        if idx < 50 or idx >= len(bars_1min) - 10:  # Reduced from 100
             return None
         
         current_bar = bars_1min[idx]
         timestamp = current_bar['datetime']
         
-        # Check market hours (skip pre-market before 9:30)
+        # Skip pre-market (before 9:30) and after-hours (after 16:00)
         if timestamp.hour < 9 or (timestamp.hour == 9 and timestamp.minute < 30):
             return None
         
-        if timestamp.hour >= 16:  # Skip after hours
+        if timestamp.hour >= 16:
             return None
         
         # Get trends
         trend_1min = self._calculate_trend(bars_1min, idx, lookback=20)
         trend_5min = self._calculate_trend_5min(bars_5min, timestamp)
         
-        # Require trend alignment
+        # Trend alignment - LOOSENED
         if self.params['require_trend_alignment']:
-            if trend_1min == 'neutral' or trend_5min == 'neutral':
+            # Allow neutral if other trend is strong
+            if trend_1min == 'neutral' and trend_5min == 'neutral':
                 return None
-            if trend_1min != trend_5min:
+            # Reject only if trends oppose
+            if (trend_1min == 'bull' and trend_5min == 'bear') or \
+               (trend_1min == 'bear' and trend_5min == 'bull'):
                 return None
         
-        # Check consolidation (reduces false breakouts)
+        # Check consolidation
         consolidation_bars = self._check_consolidation(bars_1min, idx)
         if consolidation_bars < self.params['min_consolidation_bars']:
             return None
@@ -123,12 +114,9 @@ class EnhancedDetectorV2:
         # Calculate VWAP
         vwap_data = self._calculate_vwap_context(bars_1min, idx)
         
-        # VWAP directional gate
+        # VWAP gate - LOOSENED
         if self.params['require_vwap_direction']:
             price_vs_vwap = vwap_data['price_vs_vwap']
-            vwap_slope = vwap_data['slope']
-            
-            # Must be within 3% of VWAP
             if abs(price_vs_vwap) > self.params['vwap_max_distance']:
                 return None
         
@@ -138,7 +126,6 @@ class EnhancedDetectorV2:
         )
         
         if bos_signal:
-            # Add context
             signal = self._build_signal(
                 bos_signal, timestamp, trend_1min, trend_5min,
                 consolidation_bars, vwap_data
@@ -160,43 +147,31 @@ class EnhancedDetectorV2:
         return None
     
     def _calculate_trend(self, bars: List[Dict], idx: int, lookback: int = 20) -> str:
-        """
-        Calculate trend using EMA slope.
-        
-        Returns:
-            'bull', 'bear', or 'neutral'
-        """
         if idx < lookback + 10:
             return 'neutral'
         
         recent_bars = bars[idx-lookback:idx+1]
         closes = [b['close'] for b in recent_bars]
         
-        # Simple EMA
         ema = self._calculate_ema(closes, period=10)
         
         if len(ema) < 5:
             return 'neutral'
         
-        # Check slope
         recent_ema = ema[-5:]
         slope = (recent_ema[-1] - recent_ema[0]) / recent_ema[0]
         
-        if slope > 0.005:  # 0.5% upslope
+        if slope > 0.003:  # 0.3% (was 0.5%)
             return 'bull'
-        elif slope < -0.005:  # 0.5% downslope
+        elif slope < -0.003:
             return 'bear'
         else:
             return 'neutral'
     
     def _calculate_trend_5min(self, bars_5min: List[Dict], current_time: datetime) -> str:
-        """
-        Calculate 5-minute trend.
-        """
         if not bars_5min or len(bars_5min) < 20:
             return 'neutral'
         
-        # Find closest 5min bar
         idx = -1
         for i in range(len(bars_5min)-1, max(0, len(bars_5min)-50), -1):
             if bars_5min[i]['datetime'] <= current_time:
@@ -209,16 +184,12 @@ class EnhancedDetectorV2:
         return self._calculate_trend(bars_5min, idx, lookback=12)
     
     def _calculate_ema(self, values: List[float], period: int) -> List[float]:
-        """
-        Calculate exponential moving average.
-        """
         if len(values) < period:
             return []
         
         ema = []
         multiplier = 2.0 / (period + 1)
         
-        # Start with SMA
         sma = sum(values[:period]) / period
         ema.append(sma)
         
@@ -230,17 +201,11 @@ class EnhancedDetectorV2:
     
     def _check_consolidation(self, bars: List[Dict], idx: int) -> int:
         """
-        Check how many bars consolidated before current bar.
-        
-        Consolidation = price range < 0.5% of average price
-        
-        Returns:
-            Number of consolidation bars (0 if not consolidating)
+        Check consolidation - LOOSENED
         """
         if idx < 20:
             return 0
         
-        # Look back up to 30 bars
         lookback = bars[max(0, idx-30):idx]
         
         if len(lookback) < 10:
@@ -252,29 +217,18 @@ class EnhancedDetectorV2:
             bar = lookback[i]
             bar_range = (bar['high'] - bar['low']) / bar['close']
             
-            # Tight range = consolidation
-            if bar_range < 0.005:  # 0.5%
+            # Looser range = consolidation
+            if bar_range < 0.008:  # 0.8% (was 0.5%)
                 consolidation_count += 1
             else:
-                break  # Stop at first non-consolidation bar
+                break
         
         return consolidation_count
     
     def _calculate_vwap_context(self, bars: List[Dict], idx: int) -> Dict:
-        """
-        Calculate VWAP and context.
-        
-        Returns:
-            {
-                'vwap': float,
-                'price_vs_vwap': float,  # % diff
-                'slope': str  # 'rising', 'falling', 'flat'
-            }
-        """
         if idx < 50:
             return {'vwap': 0, 'price_vs_vwap': 0, 'slope': 'flat'}
         
-        # Calculate VWAP for session
         session_bars = bars[max(0, idx-100):idx+1]
         
         cum_pv = 0
@@ -292,7 +246,7 @@ class EnhancedDetectorV2:
         current_price = bars[idx]['close']
         price_vs_vwap = (current_price - vwap) / vwap
         
-        # Calculate slope
+        slope = 'flat'
         if len(session_bars) >= 10:
             recent_vwaps = []
             for i in range(len(session_bars)-10, len(session_bars)):
@@ -308,12 +262,6 @@ class EnhancedDetectorV2:
                     slope = 'rising'
                 elif slope_val < -0.001:
                     slope = 'falling'
-                else:
-                    slope = 'flat'
-            else:
-                slope = 'flat'
-        else:
-            slope = 'flat'
         
         return {
             'vwap': vwap,
@@ -329,9 +277,6 @@ class EnhancedDetectorV2:
         consolidation_bars: int,
         timestamp: datetime
     ) -> Optional[Dict]:
-        """
-        Detect BOS with stricter requirements.
-        """
         if idx < 20:
             return None
         
@@ -346,7 +291,6 @@ class EnhancedDetectorV2:
         swing_high = max(highs)
         swing_low = min(lows)
         
-        # Volume check
         recent_volumes = [b['volume'] for b in lookback[-10:]]
         avg_volume = np.mean(recent_volumes) if recent_volumes else 0
         
@@ -358,9 +302,9 @@ class EnhancedDetectorV2:
         if volume_ratio < self.params['min_volume_ratio']:
             return None
         
-        # Check if opening range
         is_opening_range = (
-            timestamp.hour == 9 and timestamp.minute < 60
+            timestamp.hour == 9 or
+            (timestamp.hour == 10 and timestamp.minute < 30)
         )
         
         min_strength = (
@@ -368,8 +312,8 @@ class EnhancedDetectorV2:
             else self.params['min_breakout_strength']
         )
         
-        # Bullish BOS (only if bullish trend)
-        if trend == 'bull' and current_bar['close'] > swing_high:
+        # Bullish BOS - allow if trend not bearish
+        if trend != 'bear' and current_bar['close'] > swing_high:
             strength = (current_bar['close'] - swing_high) / swing_high
             
             if strength >= min_strength:
@@ -379,11 +323,11 @@ class EnhancedDetectorV2:
                     'strength': strength,
                     'entry_price': current_bar['close'],
                     'volume_ratio': volume_ratio,
-                    'ticker': 'UNKNOWN'  # Set by caller
+                    'ticker': 'UNKNOWN'
                 }
         
-        # Bearish BOS (only if bearish trend)
-        if trend == 'bear' and current_bar['close'] < swing_low:
+        # Bearish BOS - allow if trend not bullish
+        if trend != 'bull' and current_bar['close'] < swing_low:
             strength = (swing_low - current_bar['close']) / swing_low
             
             if strength >= min_strength:
@@ -406,16 +350,12 @@ class EnhancedDetectorV2:
         consolidation_bars: int,
         timestamp: datetime
     ) -> Optional[Dict]:
-        """
-        Detect FVG with stricter requirements.
-        """
         if idx < 5:
             return None
         
         bar_minus_2 = bars[idx - 2]
         current_bar = bars[idx]
         
-        # Volume check
         recent_volumes = [bars[i]['volume'] for i in range(max(0, idx-10), idx)]
         avg_volume = np.mean(recent_volumes) if recent_volumes else 0
         
@@ -428,7 +368,8 @@ class EnhancedDetectorV2:
             return None
         
         is_opening_range = (
-            timestamp.hour == 9 and timestamp.minute < 60
+            timestamp.hour == 9 or
+            (timestamp.hour == 10 and timestamp.minute < 30)
         )
         
         min_strength = (
@@ -436,8 +377,8 @@ class EnhancedDetectorV2:
             else self.params['min_breakout_strength']
         )
         
-        # Bullish FVG (only if bullish trend)
-        if trend == 'bull' and bar_minus_2['high'] < current_bar['low']:
+        # Bullish FVG - allow if trend not bearish
+        if trend != 'bear' and bar_minus_2['high'] < current_bar['low']:
             gap_size = (current_bar['low'] - bar_minus_2['high']) / bar_minus_2['high']
             
             if gap_size >= min_strength:
@@ -450,8 +391,8 @@ class EnhancedDetectorV2:
                     'ticker': 'UNKNOWN'
                 }
         
-        # Bearish FVG (only if bearish trend)
-        if trend == 'bear' and bar_minus_2['low'] > current_bar['high']:
+        # Bearish FVG - allow if trend not bullish
+        if trend != 'bull' and bar_minus_2['low'] > current_bar['high']:
             gap_size = (bar_minus_2['low'] - current_bar['high']) / bar_minus_2['low']
             
             if gap_size >= min_strength:
@@ -475,14 +416,11 @@ class EnhancedDetectorV2:
         consolidation_bars: int,
         vwap_data: Dict
     ) -> EnhancedSignalV2:
-        """
-        Build full signal with context.
-        """
         is_opening_range = (
-            timestamp.hour == 9 and timestamp.minute < 60
+            timestamp.hour == 9 or
+            (timestamp.hour == 10 and timestamp.minute < 30)
         )
         
-        # Calculate grade
         grade, confidence = self._calculate_grade(
             raw_signal,
             trend_1min,
@@ -506,7 +444,7 @@ class EnhancedDetectorV2:
             is_opening_range=is_opening_range,
             price_vs_vwap=vwap_data['price_vs_vwap'],
             vwap_slope=vwap_data['slope'],
-            near_hvn=False,  # TODO: Integrate volume profile
+            near_hvn=False,
             near_lvn=False,
             grade=grade,
             confidence=confidence
@@ -521,24 +459,27 @@ class EnhancedDetectorV2:
         vwap_data: Dict,
         is_opening_range: bool
     ) -> Tuple[str, float]:
-        """
-        Calculate signal grade (A+, A, B, C) and confidence (0-1).
-        """
-        confidence = 0.5  # Base
+        confidence = 0.5
         
         # Trend alignment bonus
         if trend_1min == trend_5min and trend_1min != 'neutral':
             confidence += 0.15
+        elif trend_1min != 'neutral' or trend_5min != 'neutral':
+            confidence += 0.05
         
         # Consolidation bonus
         if consolidation_bars >= 10:
             confidence += 0.15
         elif consolidation_bars >= 5:
             confidence += 0.10
+        elif consolidation_bars >= 3:
+            confidence += 0.05
         
         # Volume bonus
         if raw_signal['volume_ratio'] >= 3.0:
             confidence += 0.10
+        elif raw_signal['volume_ratio'] >= 2.5:
+            confidence += 0.05
         
         # VWAP alignment bonus
         if raw_signal['direction'] == 'CALL' and vwap_data['slope'] == 'rising':
@@ -547,18 +488,16 @@ class EnhancedDetectorV2:
             confidence += 0.05
         
         # Opening range bonus
-        if is_opening_range and raw_signal['strength'] >= 0.02:
+        if is_opening_range and raw_signal['strength'] >= 0.015:
             confidence += 0.05
         
-        # Cap at 1.0
         confidence = min(confidence, 1.0)
         
-        # Assign grade
-        if confidence >= 0.85:
+        if confidence >= 0.80:
             grade = 'A+'
-        elif confidence >= 0.75:
+        elif confidence >= 0.70:
             grade = 'A'
-        elif confidence >= 0.65:
+        elif confidence >= 0.60:
             grade = 'B'
         else:
             grade = 'C'
@@ -567,5 +506,4 @@ class EnhancedDetectorV2:
 
 
 def get_enhanced_detector_v2() -> EnhancedDetectorV2:
-    """Get singleton detector instance."""
     return EnhancedDetectorV2()
