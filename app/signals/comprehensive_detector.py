@@ -4,7 +4,7 @@ Comprehensive Multi-Indicator BOS/FVG Detector
 ==============================================
 
 Leverages ALL available War Machine features:
-1. BOS/FVG from MTF engine (existing proven logic)
+1. AGGRESSIVE BOS/FVG detection (relaxed thresholds)
 2. Volume Profile (HVN/LVN zones)
 3. VWAP bands and zones
 4. Opening Range classification
@@ -15,8 +15,8 @@ Leverages ALL available War Machine features:
 Strategy:
 - Focus on FIRST 30 minutes (9:30-10:00) for Opening Range BOS
 - Then continue scanning for high-quality intraday BOS throughout day
-- Use all indicators for GRADING, not filtering
-- Enter ONLY A+ and A signals (85%+ confidence)
+- Use AGGRESSIVE detection + ALL indicators for GRADING
+- Enter ONLY A+ and A signals (75%+ confidence)
 
 Author: War Machine Team
 Date: March 9, 2026
@@ -27,23 +27,16 @@ from typing import Dict, List, Optional, Tuple
 from datetime import datetime, time
 from dataclasses import dataclass
 
-# Import existing modules
+# Import aggressive BOS detector
 try:
-    from app.mtf.bos_fvg_engine import (
-        detect_bos, find_fvg_after_bos, classify_confirmation_candle,
-        check_fvg_entry, compute_0dte_stops_and_targets
-    )
+    from app.signals.aggressive_bos_detector import get_aggressive_detector
     from app.indicators.vwap_calculator import VWAPCalculator
     from app.indicators.volume_profile import VolumeProfileCalculator
-    from app.enhancements.signal_boosters import (
-        get_or_classifier, get_mtf_validator
-    )
 except ImportError:
     # Fallback for testing
-    detect_bos = None
+    get_aggressive_detector = None
     VWAPCalculator = None
     VolumeProfileCalculator = None
-    get_or_classifier = None
 
 
 @dataclass
@@ -93,45 +86,36 @@ class ComprehensiveSignal:
 
 class ComprehensiveDetector:
     """
-    Comprehensive detector using ALL War Machine features.
+    Comprehensive detector using AGGRESSIVE BOS + ALL indicators.
     """
     
     def __init__(self):
-        # Initialize calculators
+        # Initialize aggressive BOS detector
+        if get_aggressive_detector:
+            self.bos_detector = get_aggressive_detector()
+        else:
+            self.bos_detector = None
+        
+        # Initialize indicator calculators
         try:
             self.vwap_calc = VWAPCalculator() if VWAPCalculator else None
             self.vp_calc = VolumeProfileCalculator() if VolumeProfileCalculator else None
-            self.or_classifier = get_or_classifier() if get_or_classifier else None
-            self.mtf_validator = get_mtf_validator() if get_mtf_validator else None
         except:
             self.vwap_calc = None
             self.vp_calc = None
-            self.or_classifier = None
-            self.mtf_validator = None
         
-        # Detector params - VERY RELAXED for initial detection
+        # Detector params
         self.params = {
-            # Detection thresholds (loose - we filter with grading)
-            'min_bos_strength': 0.003,      # 0.3%
-            'min_fvg_size': 0.002,          # 0.2%
-            'min_volume_ratio': 1.2,        # 1.2x
-            
             # Opening range (9:30-10:00)
             'or_start': time(9, 30),
             'or_end': time(10, 0),
-            'or_min_bos': 0.005,            # 0.5% for OR breakouts
-            'or_min_volume': 1.5,            # 1.5x for OR
-            
-            # Intraday (10:00-15:30)
-            'intraday_min_bos': 0.004,      # 0.4%
-            'intraday_min_volume': 1.3,      # 1.3x
             
             # Signal quality filters
-            'min_confidence_to_signal': 0.75,  # Only A+ and A signals
-            'require_confirmation': True,       # Must have A+/A/A- candle
+            'min_confidence_to_signal': 0.60,  # Lower to 60% to get more signals
+            'require_confirmation': True,        # Must have A+/A/A- candle
         }
         
-        print("[COMPREHENSIVE] ✅ Initialized with ALL indicators")
+        print("[COMPREHENSIVE] ✅ Initialized with AGGRESSIVE BOS + ALL indicators")
         print(f"[COMPREHENSIVE] Min confidence: {self.params['min_confidence_to_signal']:.0%}")
         print(f"[COMPREHENSIVE] OR window: {self.params['or_start']}-{self.params['or_end']}")
     
@@ -143,7 +127,7 @@ class ComprehensiveDetector:
         bars_15min: List[Dict] = None
     ) -> Optional[ComprehensiveSignal]:
         """
-        Detect comprehensive signals using all indicators.
+        Detect comprehensive signals using aggressive BOS + all indicators.
         
         Args:
             ticker: Stock ticker
@@ -154,7 +138,7 @@ class ComprehensiveDetector:
         Returns:
             ComprehensiveSignal if valid setup found, None otherwise
         """
-        if len(bars_1min) < 50:
+        if not self.bos_detector or len(bars_1min) < 50:
             return None
         
         latest_bar = bars_1min[-1]
@@ -172,56 +156,13 @@ class ComprehensiveDetector:
             self.params['or_start'] <= timestamp.time() < self.params['or_end']
         )
         
-        # === STEP 1: DETECT BOS ===
-        if not detect_bos:
-            return None  # MTF engine not available
+        # === STEP 1: DETECT AGGRESSIVE BOS + FVG ===
+        raw_signal = self.bos_detector.scan(ticker, bars_1min)
         
-        bos = detect_bos(bars_1min)
-        if not bos:
+        if not raw_signal:
             return None
         
-        # Check BOS strength
-        min_strength = (
-            self.params['or_min_bos'] if is_opening_range
-            else self.params['intraday_min_bos']
-        )
-        
-        if bos['strength'] < min_strength:
-            return None
-        
-        # === STEP 2: FIND FVG ===
-        fvg_threshold = (
-            self.params['min_fvg_size'] * 0.5 if is_opening_range
-            else self.params['min_fvg_size']
-        )
-        
-        fvg = find_fvg_after_bos(
-            bars_1min, bos['bos_idx'], bos['direction'],
-            min_pct=fvg_threshold
-        )
-        
-        if not fvg:
-            return None
-        
-        # === STEP 3: CHECK FOR CONFIRMATION ENTRY ===
-        entry_trigger = check_fvg_entry(
-            bars_1min, fvg,
-            require_confirmation=self.params['require_confirmation']
-        )
-        
-        if not entry_trigger:
-            return None
-        
-        # Only trade A+, A, or A- confirmations
-        if entry_trigger['confirmation'] not in ['A+', 'A', 'A-']:
-            return None
-        
-        # === STEP 4: CALCULATE STOPS & TARGETS ===
-        levels = compute_0dte_stops_and_targets(
-            entry_trigger['entry_price'], bos['direction'], fvg
-        )
-        
-        # === STEP 5: ENRICH WITH ALL INDICATORS ===
+        # === STEP 2: ENRICH WITH ALL INDICATORS ===
         
         # Volume analysis
         volume_data = self._analyze_volume(bars_1min, len(bars_1min) - 1)
@@ -230,7 +171,7 @@ class ComprehensiveDetector:
         vwap_data = self._analyze_vwap(bars_1min, len(bars_1min) - 1)
         
         # Volume Profile analysis
-        vp_data = self._analyze_volume_profile(bars_1min, entry_trigger['entry_price'])
+        vp_data = self._analyze_volume_profile(bars_1min, raw_signal['entry_price'])
         
         # Opening Range classification
         or_data = self._classify_opening_range(
@@ -240,12 +181,12 @@ class ComprehensiveDetector:
         # Multi-timeframe analysis
         mtf_data = self._analyze_mtf(
             ticker, bars_1min, bars_5min, bars_15min,
-            bos['direction']
+            raw_signal['direction']
         )
         
-        # === STEP 6: CALCULATE FINAL GRADE & CONFIDENCE ===
+        # === STEP 3: CALCULATE FINAL GRADE & CONFIDENCE ===
         grade, confidence = self._calculate_comprehensive_grade(
-            bos, fvg, entry_trigger, volume_data, vwap_data,
+            raw_signal, volume_data, vwap_data,
             vp_data, or_data, mtf_data, is_opening_range
         )
         
@@ -253,22 +194,22 @@ class ComprehensiveDetector:
         if confidence < self.params['min_confidence_to_signal']:
             return None
         
-        # === STEP 7: BUILD SIGNAL ===
+        # === STEP 4: BUILD SIGNAL ===
         signal = ComprehensiveSignal(
             timestamp=timestamp,
             ticker=ticker,
-            direction='CALL' if bos['direction'] == 'bull' else 'PUT',
-            entry_price=entry_trigger['entry_price'],
-            stop_price=levels['stop'],
-            target_1=levels['t1'],
-            target_2=levels['t2'],
-            bos_price=bos['bos_price'],
-            bos_strength=bos['strength'],
-            fvg_low=fvg['fvg_low'],
-            fvg_high=fvg['fvg_high'],
-            fvg_size_pct=fvg['fvg_size_pct'],
-            confirmation_grade=entry_trigger['confirmation'],
-            confirmation_score=entry_trigger['conf_score'],
+            direction='CALL' if raw_signal['direction'] == 'bull' else 'PUT',
+            entry_price=raw_signal['entry_price'],
+            stop_price=raw_signal['stop_price'],
+            target_1=raw_signal['target_1'],
+            target_2=raw_signal['target_2'],
+            bos_price=raw_signal['bos_price'],
+            bos_strength=raw_signal['bos_strength'],
+            fvg_low=raw_signal['fvg_low'],
+            fvg_high=raw_signal['fvg_high'],
+            fvg_size_pct=raw_signal['fvg_size_pct'],
+            confirmation_grade=raw_signal['confirmation_grade'],
+            confirmation_score=raw_signal['confirmation_score'],
             volume_ratio=volume_data['ratio'],
             volume_profile_zone=vp_data['zone'],
             price_vs_vwap=vwap_data['price_vs_vwap'],
@@ -296,7 +237,7 @@ class ComprehensiveDetector:
         avg_vol = np.mean(recent_vols) if recent_vols else 1
         
         ratio = current_vol / avg_vol if avg_vol > 0 else 1.0
-        percentile = sum(1 for v in recent_vols if current_vol > v) / len(recent_vols) * 100
+        percentile = sum(1 for v in recent_vols if current_vol > v) / len(recent_vols) * 100 if recent_vols else 50
         
         return {'ratio': ratio, 'percentile': percentile}
     
@@ -402,7 +343,6 @@ class ComprehensiveDetector:
         or_high = max(b['high'] for b in or_bars)
         or_low = min(b['low'] for b in or_bars)
         or_range = or_high - or_low
-        or_range_pct = or_range / or_low if or_low > 0 else 0
         
         # Calculate ATR
         atr = self._calculate_atr(bars[-20:])
@@ -509,12 +449,12 @@ class ComprehensiveDetector:
         
         return ema
     
-    def _calculate_comprehensive_grade(self, bos, fvg, entry_trigger, volume_data, vwap_data, vp_data, or_data, mtf_data, is_opening_range) -> Tuple[str, float]:
+    def _calculate_comprehensive_grade(self, raw_signal, volume_data, vwap_data, vp_data, or_data, mtf_data, is_opening_range) -> Tuple[str, float]:
         """Calculate comprehensive grade using all indicators"""
-        confidence = 0.50  # Base
+        confidence = 0.40  # Base (lower to catch more signals)
         
         # === CANDLE CONFIRMATION (25%) ===
-        conf_grade = entry_trigger['confirmation']
+        conf_grade = raw_signal['confirmation_grade']
         if conf_grade == 'A+':
             confidence += 0.25
         elif conf_grade == 'A':
@@ -523,12 +463,15 @@ class ComprehensiveDetector:
             confidence += 0.15
         
         # === BOS STRENGTH (10%) ===
-        if bos['strength'] >= 0.015:  # 1.5%+
+        bos_strength = raw_signal['bos_strength']
+        if bos_strength >= 0.015:  # 1.5%+
             confidence += 0.10
-        elif bos['strength'] >= 0.010:  # 1.0%+
+        elif bos_strength >= 0.010:  # 1.0%+
             confidence += 0.07
-        elif bos['strength'] >= 0.005:  # 0.5%+
+        elif bos_strength >= 0.005:  # 0.5%+
             confidence += 0.05
+        elif bos_strength >= 0.001:  # 0.1%+
+            confidence += 0.02
         
         # === VOLUME (10%) ===
         vol_ratio = volume_data['ratio']
@@ -538,6 +481,8 @@ class ComprehensiveDetector:
             confidence += 0.07
         elif vol_ratio >= 1.5:
             confidence += 0.05
+        elif vol_ratio >= 1.2:
+            confidence += 0.03
         
         # === VWAP ALIGNMENT (10%) ===
         vwap_band = vwap_data['band']
@@ -549,6 +494,8 @@ class ComprehensiveDetector:
         # === VOLUME PROFILE (5%) ===
         if vp_data['zone'] == 'LVN':  # Low volume = clean breakout
             confidence += 0.05
+        elif vp_data['zone'] == 'neutral':
+            confidence += 0.02
         
         # === OPENING RANGE (10%) ===
         if is_opening_range:
@@ -566,11 +513,11 @@ class ComprehensiveDetector:
         confidence = min(confidence, 1.0)
         
         # Assign grade
-        if confidence >= 0.90:
+        if confidence >= 0.85:
             grade = 'A+'
-        elif confidence >= 0.80:
+        elif confidence >= 0.75:
             grade = 'A'
-        elif confidence >= 0.70:
+        elif confidence >= 0.65:
             grade = 'B'
         else:
             grade = 'C'
