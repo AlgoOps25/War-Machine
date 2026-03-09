@@ -7,7 +7,9 @@ PHASE 1.14 (MAR 9, 2026):
 - Discord alert integration
 - Database signal tracking
 
-This replaces the temporary stubs with actual working signal generation.
+PHASE 1.15 (MAR 9, 2026):
+- Updated Discord alert to use new send_equity_bos_fvg_alert()
+- Now displays company name + all signal fields in rich embed
 """
 import logging
 from typing import Optional, Dict
@@ -89,25 +91,10 @@ def process_ticker(ticker: str) -> Optional[Dict]:
         return None
 
 def _send_signal_alert(signal: Dict):
-    """Send Discord alert for signal"""
+    """Send Discord alert for signal using enhanced embed formatter"""
     try:
-        from app.discord_helpers import send_simple_message
-        
-        direction_emoji = "🟢" if signal['direction'] == 'bull' else "🔴"
-        grade = signal['confirmation_grade']
-        score = signal['confirmation_score']
-        
-        msg = (
-            f"{direction_emoji} **{signal['ticker']} {signal['direction'].upper()} SIGNAL** (Grade: {grade} - {score})\n"
-            f"📍 Entry: ${signal['entry_price']:.2f}\n"
-            f"🛑 Stop: ${signal['stop_price']:.2f}\n"
-            f"🎯 T1: ${signal['target_1']:.2f} | T2: ${signal['target_2']:.2f}\n"
-            f"📊 FVG: ${signal['fvg_low']:.2f} - ${signal['fvg_high']:.2f} ({signal['fvg_size_pct']:.2f}%)\n"
-            f"🔥 BOS Strength: {signal.get('bos_strength', 0)*100:.2f}%\n"
-            f"🕐 {signal['timestamp']}"
-        )
-        
-        send_simple_message(msg)
+        from app.discord_helpers import send_equity_bos_fvg_alert
+        send_equity_bos_fvg_alert(signal)
         logger.info(f"[DISCORD] ✅ Signal alert sent for {signal['ticker']}")
         
     except Exception as e:
