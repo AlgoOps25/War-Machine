@@ -1,0 +1,233 @@
+Architecture Analysis
+================================================================================
+
+DIRECTORY STRUCTURE
+--------------------------------------------------------------------------------
+
+./ (1 files)
+  - audit_repo.py
+
+app/ (3 files)
+  - discord_helpers.py
+  - discord_helpers_backup.py
+  - health_check.py
+
+app\ai/ (1 files)
+  - ai_learning.py
+
+app\analytics/ (14 files)
+  - ab_test_framework.py
+  - cooldown_tracker.py
+  - eod_discord_report.py
+  - explosive_mover_tracker.py
+  - explosive_tracker.py
+  - funnel_analytics.py
+  - grade_gate_tracker.py
+  - performance_alerts.py
+  - performance_monitor.py
+  - rth_filter.py
+  ... and 4 more files
+
+app\backtesting/ (5 files)
+  - backtest_engine.py
+  - parameter_optimizer.py
+  - performance_metrics.py
+  - signal_replay.py
+  - walk_forward.py
+
+app\core/ (9 files)
+  - __main__.py
+  - analytics_integration.py
+  - error_recovery.py
+  - scanner.py
+  - scanner_optimizer.py
+  - signal_generator_cooldown.py
+  - sniper.py
+  - sniper_stubs.py
+  - thread_safe_state.py
+
+app\data/ (8 files)
+  - candle_cache.py
+  - data_manager.py
+  - database.py
+  - db_connection.py
+  - sql_safe.py
+  - unusual_options.py
+  - ws_feed.py
+  - ws_quote_feed.py
+
+app\enhancements/ (1 files)
+  - signal_boosters.py
+
+app\filters/ (4 files)
+  - correlation.py
+  - early_session_disqualifier.py
+  - entry_timing_optimizer.py
+  - options_dte_filter.py
+
+app\indicators/ (2 files)
+  - volume_profile.py
+  - vwap_calculator.py
+
+app\ml/ (8 files)
+  - analyze_signal_failures.py
+  - check_database.py
+  - ml_confidence_boost.py
+  - ml_signal_scorer.py
+  - ml_signal_scorer_v2.py
+  - ml_trainer.py
+  - train_from_analytics.py
+  - train_ml_booster.py
+
+app\mtf/ (4 files)
+  - bos_fvg_engine.py
+  - mtf_compression.py
+  - mtf_fvg_priority.py
+  - mtf_integration.py
+
+app\options/ (7 files)
+  - dte_historical_advisor.py
+  - gex_engine.py
+  - iv_tracker.py
+  - options_data_manager.py
+  - options_dte_selector.py
+  - options_intelligence.py
+  - options_optimizer.py
+
+app\risk/ (4 files)
+  - dynamic_thresholds.py
+  - position_manager.py
+  - trade_calculator.py
+  - vix_sizing.py
+
+app\screening/ (8 files)
+  - dynamic_screener.py
+  - gap_analyzer.py
+  - news_catalyst.py
+  - premarket_scanner.py
+  - screener_integration.py
+  - sector_rotation.py
+  - volume_analyzer.py
+  - watchlist_funnel.py
+
+app\signals/ (12 files)
+  - aggressive_bos_detector.py
+  - breakout_detector.py
+  - comprehensive_detector.py
+  - enhanced_bos_fvg_v2.py
+  - hybrid_bos_detector.py
+  - mtf_validator.py
+  - opening_range.py
+  - realistic_bos_fvg.py
+  - signal_analytics.py
+  - signal_generator.py
+  ... and 2 more files
+
+app\validation/ (6 files)
+  - cfw6_confirmation.py
+  - entry_timing.py
+  - greeks_precheck.py
+  - hourly_gate.py
+  - validation.py
+  - volume_profile.py
+
+backups\cleanup_backup_20260309_105038/ (7 files)
+  - MIGRATION_SCRIPT_FIX_1.py
+  - breakout_detector.py
+  - sniper_backup_20260306_232502.py
+  - sniper_backup_20260306_232640.py
+  - test_0dte_options.py
+  - test_discord_alerts.py
+  - trigger_test_alert.py
+
+backups\cleanup_backup_20260309_105038\tests/ (4 files)
+  - diagnostics.py
+  - test_days_1_4_end_to_end.py
+  - test_phase_1_14.py
+  - test_phase_3e_mtf_consolidation.py
+
+migrations/ (1 files)
+  - add_dte_tracking_columns.py
+
+scripts/ (7 files)
+  - debug_bos_scan.py
+  - debug_comprehensive.py
+  - extract_positions_from_db.py
+  - extract_signals_from_logs.py
+  - generate_ml_training_data.py
+  - scanner_startup_template.py
+  - system_health_check.py
+
+scripts\analysis/ (2 files)
+  - analyze_ml_training_data.py
+  - inspect_signal_outcomes.py
+
+scripts\backtesting/ (16 files)
+  - analyze_losers.py
+  - analyze_signal_patterns.py
+  - backtest_comprehensive.py
+  - backtest_enhanced_filters.py
+  - backtest_optimized_params.py
+  - backtest_realistic_detector.py
+  - backtest_v2_detector.py
+  - backtest_with_eodhd.py
+  - debug_v2_detector.py
+  - extract_candles_from_db.py
+  ... and 6 more files
+
+scripts\config/ (2 files)
+  - super_indicator_config.py
+  - super_indicator_filters.py
+
+scripts\database/ (3 files)
+  - inspect_database_schema.py
+  - load_historical_data.py
+  - setup_database.py
+
+scripts\maintenance/ (1 files)
+  - update_sniper_greeks.py
+
+scripts\optimization/ (1 files)
+  - smart_optimization.py
+
+tests/ (17 files)
+  - db_diagnostic.py
+  - dte_selector.py
+  - generate_test_trades.py
+  - test_discord_reports.py
+  - test_discord_simple.py
+  - test_failover.py
+  - test_full_pipeline.py
+  - test_greeks_discord.py
+  - test_greeks_integration.py
+  - test_ml_predictions.py
+  ... and 7 more files
+
+utils/ (4 files)
+  - config.py
+  - db_postgres_fix.py
+  - production_helpers.py
+  - watchlist_fix.py
+
+
+IMPORT ANALYSIS
+--------------------------------------------------------------------------------
+
+Top External Dependencies:
+  datetime: 117 imports
+  typing: 96 imports
+  traceback: 58 imports
+  sys: 54 imports
+  zoneinfo: 51 imports
+  os: 37 imports
+  numpy: 33 imports
+  json: 25 imports
+  pathlib: 23 imports
+  requests: 21 imports
+  pandas: 20 imports
+  logging: 20 imports
+  collections: 17 imports
+
+Internal Module Usage:
+  utils: used by 22 files
+  app: used by 66 files

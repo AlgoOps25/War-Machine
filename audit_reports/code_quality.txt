@@ -1,0 +1,4 @@
+Code Quality Analysis (Pylint)
+================================================================================
+
+Warning: pylint timed out - repo too large

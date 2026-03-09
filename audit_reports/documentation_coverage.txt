@@ -1,0 +1,24 @@
+Documentation Coverage Analysis
+================================================================================
+
+Functions: 844/1169 documented (72.2%)
+Classes: 81/88 documented (92.0%)
+
+FILES WITH NO DOCSTRINGS (Top 10):
+--------------------------------------------------------------------------------
+  backups\cleanup_backup_20260309_105038\sniper_backup_20260306_232502.py: 48 undocumented functions
+  backups\cleanup_backup_20260309_105038\sniper_backup_20260306_232640.py: 48 undocumented functions
+  scripts\backtesting\backtest_realistic_detector.py: 8 undocumented functions
+  app\ml\train_ml_booster.py: 6 undocumented functions
+  scripts\backtesting\backtest_comprehensive.py: 6 undocumented functions
+  tests\test_ml_training.py: 6 undocumented functions
+  backups\cleanup_backup_20260309_105038\tests\test_days_1_4_end_to_end.py: 5 undocumented functions
+  tests\test_failover.py: 3 undocumented functions
+  scripts\debug_bos_scan.py: 2 undocumented functions
+  scripts\debug_comprehensive.py: 2 undocumented functions
+
+PROJECT DOCUMENTATION:
+--------------------------------------------------------------------------------
+  README: Missing
+  CONTRIBUTING: Missing
+  LICENSE: Missing

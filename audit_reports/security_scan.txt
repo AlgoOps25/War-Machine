@@ -1,0 +1,27 @@
+Security Vulnerability Scan
+================================================================================
+
+Error running bandit: Command '['bandit', '-r', 'C:\\Dev\\War-Machine', '-f', 'txt', '-ll']' timed out after 120 seconds
+
+MANUAL SECURITY CHECKS
+--------------------------------------------------------------------------------
+  WARNING: hardcoded_secret: Found in 14 files
+      - audit_repo.py
+      - audit_repo.py
+      - audit_repo.py
+      - audit_repo.py
+      - app\health_check.py
+      ... and 9 more
+  WARNING: sql_injection: Found in 81 files
+      - audit_repo.py
+      - audit_repo.py
+      - audit_repo.py
+      - app\health_check.py
+      - app\ai\ai_learning.py
+      ... and 76 more
+  WARNING: unsafe_yaml: Found in 2 files
+      - audit_repo.py
+      - audit_repo.py
+  WARNING: eval_usage: Found in 2 files
+      - audit_repo.py
+      - audit_repo.py

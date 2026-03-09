@@ -1,0 +1,6 @@
+severity,category,file,message
+MEDIUM,Security,"audit_repo.py, audit_repo.py, audit_repo.py",Potential hardcoded_secret pattern detected
+MEDIUM,Security,"audit_repo.py, audit_repo.py, audit_repo.py",Potential sql_injection pattern detected
+MEDIUM,Security,"audit_repo.py, audit_repo.py",Potential unsafe_yaml pattern detected
+MEDIUM,Security,"audit_repo.py, audit_repo.py",Potential eval_usage pattern detected
+CRITICAL,Trading System,app/risk/risk_manager.py,Critical file missing: risk_manager
