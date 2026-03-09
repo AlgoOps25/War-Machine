@@ -73,23 +73,50 @@ def send_options_signal_alert(
     conf_bars = "█" * int(conf_pct / 10)
     quality_parts.append(f"**{conf_pct:.0f}%** {conf_bars}")
     
-    # Grade
-    quality_parts.append(f"{grade_emoji} **{grade}**")
+    # Grade with explosive badge
+    if explosive_mover:
+        quality_parts.append(f"{grade_emoji} **{grade}** 🚀")
+    else:
+        quality_parts.append(f"{grade_emoji} **{grade}**")
     
-    # RVOL indicator
+    # RVOL indicator (enhanced)
     if rvol:
-        rvol_emoji = "🔥" if rvol >= 3.0 else "⚡" if rvol >= 2.0 else "📊"
-        quality_parts.append(f"{rvol_emoji} **{rvol:.1f}x** RVOL")
+        if rvol >= 4.0:
+            rvol_emoji = "🚀"  # Explosive tier
+            rvol_label = "EXPLOSIVE"
+        elif rvol >= 3.0:
+            rvol_emoji = "🔥"  # Hot tier
+            rvol_label = "HOT"
+        elif rvol >= 2.0:
+            rvol_emoji = "⚡"  # Active tier
+            rvol_label = "ACTIVE"
+        else:
+            rvol_emoji = "📊"  # Normal tier
+            rvol_label = "NORMAL"
+        quality_parts.append(f"{rvol_emoji} **{rvol:.1f}x** {rvol_label}")
     
-    # Composite score
+    # Composite score with tier classification
     if composite_score:
-        quality_parts.append(f"📈 **{composite_score:.0f}** score")
+        if composite_score >= 90:
+            score_tier = "S-TIER"
+        elif composite_score >= 80:
+            score_tier = "A-TIER"
+        elif composite_score >= 70:
+            score_tier = "B-TIER"
+        else:
+            score_tier = "C-TIER"
+        quality_parts.append(f"📈 **{composite_score:.0f}** ({score_tier})")
+    
+    # Volume rank (if provided)
+    if volume_rank:
+        quality_parts.append(f"🏆 **#{volume_rank}** rank")
     
     fields.append({
         "name": "📊 Signal Quality",
         "value": " | ".join(quality_parts),
         "inline": False
     })
+
     
     # ══ ENTRY & TARGETS ═════════════════════════════════════════════════
     fields.append({
@@ -140,8 +167,20 @@ def send_options_signal_alert(
             }
             conf_parts.append(f"{conf_emoji_map.get(confirmation, '⚪')} **{confirmation}** {candle_type or 'Pattern'}")
         
-        if mtf_convergence and mtf_convergence >= 2:
-            conf_parts.append(f"⚡ **{mtf_convergence} Timeframes** aligned")
+        if mtf_convergence:
+            if mtf_convergence >= 4:
+                mtf_emoji = "🌟"  # 4+ timeframes
+                mtf_label = "ULTRA-CONVERGENCE"
+            elif mtf_convergence >= 3:
+                mtf_emoji = "⚡⚡"  # 3 timeframes
+                mtf_label = "STRONG"
+            elif mtf_convergence >= 2:
+                mtf_emoji = "⚡"  # 2 timeframes
+                mtf_label = "MODERATE"
+            else:
+                mtf_emoji = "📊"  # 1 timeframe
+                mtf_label = "SINGLE"
+            conf_parts.append(f"{mtf_emoji} **{mtf_convergence} TF** {mtf_label}")
         
         fields.append({
             "name": "✅ Confirmation",
