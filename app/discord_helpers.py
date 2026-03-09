@@ -1,13 +1,197 @@
 """
-Discord Helpers - Alert Functions for War Machine
-Handles all Discord webhook notifications.
+Discord Helpers - Enhanced Alert Functions for War Machine
+Handles all Discord webhook notifications with rich formatting.
+
+ENHANCEMENTS:
+- Company name resolution (yfinance integration)
+- Consolidated CALL/PUT formatting (green/red embeds)
+- All signal fields exposed (FVG, BOS, MTF, RVOL, greeks)
+- Clean, easy-to-read layout
 """
 import requests
+import functools
 from typing import Dict, Optional
 from datetime import datetime
 from utils import config
 
+# ══════════════════════════════════════════════════════════════════════════════
+# COMPANY NAME RESOLUTION
+# ══════════════════════════════════════════════════════════════════════════════
+try:
+    import yfinance as yf
+    YFINANCE_AVAILABLE = True
+except ImportError:
+    YFINANCE_AVAILABLE = False
+    print("[DISCORD] ⚠️  yfinance not installed - company names will show as ticker only")
 
+@functools.lru_cache(maxsize=512)
+def get_company_name(symbol: str) -> str:
+    """Resolve ticker to company name. Cached to avoid repeated API calls."""
+    if not YFINANCE_AVAILABLE:
+        return symbol
+    try:
+        ticker = yf.Ticker(symbol)
+        info = ticker.info or {}
+        return info.get("longName") or info.get("shortName") or symbol
+    except Exception:
+        return symbol
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# EQUITY BOS/FVG SIGNAL ALERT (War Machine Core Scanner)
+# ══════════════════════════════════════════════════════════════════════════════
+def send_equity_bos_fvg_alert(signal: Dict):
+    """
+    Rich BOS/FVG equity signal alert with company name and all available fields.
+    
+    Expected signal dict keys:
+      - ticker, direction, entry_price, stop_price, target_1, target_2
+      - confirmation_grade, confirmation_score
+      - fvg_low, fvg_high, fvg_size_pct
+      - bos_strength (optional)
+      - timestamp
+      - candle_type (optional)
+      - mtf_convergence (optional)
+      - rvol, volume_rank, gap_pct (optional)
+      - vix (optional)
+    """
+    ticker = signal.get("ticker", "UNKNOWN")
+    direction = signal.get("direction", "bull").lower()
+    
+    # CALL/PUT terminology
+    side = "CALL" if direction == "bull" else "PUT"
+    color = 0x00FF00 if direction == "bull" else 0xFF0000  # Green for CALL, Red for PUT
+    
+    # Get company name
+    company_name = get_company_name(ticker)
+    title = f"{ticker} - {company_name} {side} SIGNAL"
+    
+    # Core prices
+    entry = signal.get("entry_price", 0)
+    stop = signal.get("stop_price", 0)
+    t1 = signal.get("target_1", 0)
+    t2 = signal.get("target_2", 0)
+    
+    # Calculate R multiples
+    risk = abs(entry - stop) if stop else 0
+    r1 = abs(t1 - entry) / risk if risk > 0 else 0
+    r2 = abs(t2 - entry) / risk if risk > 0 else 0
+    avg_r = (r1 + r2) / 2 if risk > 0 else 0
+    
+    # Grade/score
+    grade = signal.get("confirmation_grade", "N/A")
+    score = signal.get("confirmation_score", 0)
+    
+    # FVG
+    fvg_low = signal.get("fvg_low", 0)
+    fvg_high = signal.get("fvg_high", 0)
+    fvg_pct = signal.get("fvg_size_pct", 0)
+    
+    # BOS
+    bos_strength = signal.get("bos_strength", 0) * 100  # Convert to percentage
+    
+    # Context
+    timestamp = signal.get("timestamp", datetime.now())
+    candle_type = signal.get("candle_type")
+    mtf = signal.get("mtf_convergence")
+    rvol = signal.get("rvol")
+    volume_rank = signal.get("volume_rank")
+    gap_pct = signal.get("gap_pct")
+    vix = signal.get("vix")
+    
+    # Build header line
+    header_parts = [f"Grade: **{grade}**", f"Score: **{score:.0f}**"]
+    if gap_pct is not None:
+        header_parts.append(f"Gap: **{gap_pct:+.1f}%**")
+    if isinstance(timestamp, str):
+        header_parts.append(f"Time: **{timestamp}**")
+    else:
+        header_parts.append(f"Time: **{timestamp.strftime('%Y-%m-%d %H:%M:%S')}**")
+    
+    description = "  •  ".join(header_parts)
+    
+    fields = []
+    
+    # 1) Price Levels & R/R
+    fields.append({
+        "name": "Price Levels",
+        "value": (
+            f"Entry: **${entry:.2f}**\n"
+            f"Stop: **${stop:.2f}**  (Risk **${risk:.2f}**)\n"
+            f"T1: **${t1:.2f}**  ({r1:.1f}R)\n"
+            f"T2: **${t2:.2f}**  ({r2:.1f}R)\n"
+            f"Max Reward (avg): **{avg_r:.1f}R**"
+        ),
+        "inline": False,
+    })
+    
+    # 2) BOS / FVG
+    fields.append({
+        "name": "Structure",
+        "value": (
+            f"FVG: **${fvg_low:.2f} - ${fvg_high:.2f}**  "
+            f"(*{fvg_pct:.2f}% range*)\n"
+            f"BOS Strength: **{bos_strength:.2f}%**"
+        ),
+        "inline": False,
+    })
+    
+    # 3) Market Context (RVOL, VIX, Rank)
+    context_bits = []
+    if rvol is not None:
+        tier = "EXPLOSIVE 🚀" if rvol >= 4 else "HOT 🔥" if rvol >= 3 else "ACTIVE ⚡" if rvol >= 2 else "NORMAL"
+        context_bits.append(f"RVOL: **{rvol:.1f}x** ({tier})")
+    if vix is not None:
+        context_bits.append(f"VIX: **{vix:.2f}**")
+    if volume_rank is not None:
+        context_bits.append(f"Volume Rank: **#{volume_rank}**")
+    
+    if context_bits:
+        fields.append({
+            "name": "Market Context",
+            "value": "  •  ".join(context_bits),
+            "inline": False,
+        })
+    
+    # 4) Confirmation (pattern + MTF)
+    conf_bits = []
+    if candle_type:
+        conf_bits.append(f"Pattern: **{candle_type}**")
+    if mtf:
+        if mtf >= 4:
+            mtf_label = "Ultra-confluence 🌟"
+        elif mtf == 3:
+            mtf_label = "Strong ⚡⚡"
+        elif mtf == 2:
+            mtf_label = "Moderate ⚡"
+        else:
+            mtf_label = "Single TF"
+        conf_bits.append(f"MTF: **{mtf} TF** ({mtf_label})")
+    
+    if conf_bits:
+        fields.append({
+            "name": "Confirmation",
+            "value": "  •  ".join(conf_bits),
+            "inline": False,
+        })
+    
+    # Build embed
+    embed = {
+        "title": title,
+        "description": description,
+        "color": color,
+        "fields": fields,
+        "footer": {
+            "text": f"War Machine BOS/FVG | {datetime.now().strftime('%Y-%m-%d %I:%M %p EST')}",
+        },
+    }
+    
+    _send_to_discord({"embeds": [embed]})
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# OPTIONS SIGNAL ALERT (0DTE / Short-term options plays)
+# ══════════════════════════════════════════════════════════════════════════════
 def send_options_signal_alert(
     ticker: str,
     direction: str,
@@ -22,262 +206,164 @@ def send_options_signal_alert(
     confirmation: Optional[str] = None,
     candle_type: Optional[str] = None,
     greeks_data: Optional[Dict] = None,
-    # NEW: Performance metrics
     rvol: Optional[float] = None,
     volume_rank: Optional[int] = None,
     composite_score: Optional[float] = None,
     mtf_convergence: Optional[int] = None,
-    explosive_mover: bool = False
+    explosive_mover: bool = False,
 ):
-    """Send enhanced Discord alert with options signal (ENHANCED v2)."""
-    # Determine option type (CALL/PUT)
-    option_type = "CALL" if direction == "bull" else "PUT"
-    color = 0x00FF00 if direction == "bull" else 0xFF0000  # Green for CALL, Red for PUT
+    """
+    Options signal alert with CALL/PUT formatting (green/red border).
+    Consolidated, easy-to-read layout.
+    """
+    # CALL / PUT and colors
+    option_side = "CALL" if direction.lower() == "bull" else "PUT"
+    is_call = option_side == "CALL"
+    color = 0x00FF00 if is_call else 0xFF0000
     
-    # Grade emoji
-    grade_emoji = {
-        "A+": "🟢",
-        "A": "🟡", 
-        "B": "🟠",
-        "C": "🔴"
-    }.get(grade, "⚪")
+    # Get company name
+    company_name = get_company_name(ticker)
+    title = f"{ticker} - {company_name} {option_side} SIGNAL"
     
-    # Build title with badges
-    title_parts = [f"{ticker} {option_type}"]
-    
-    # Add explosive mover badge
-    if explosive_mover:
-        title_parts.append("🚀")
-    
-    # Add MTF convergence badge
-    if mtf_convergence and mtf_convergence >= 3:
-        title_parts.append(f"⚡{mtf_convergence}TF")
-    
-    title = " ".join(title_parts)
-    
-    # Calculate risk:reward
+    # R/R
     risk = abs(entry - stop)
-    reward_t1 = abs(t1 - entry)
-    reward_t2 = abs(t2 - entry)
-    rr_t1 = round(reward_t1 / risk, 2) if risk > 0 else 0
-    rr_t2 = round(reward_t2 / risk, 2) if risk > 0 else 0
+    r1 = abs(t1 - entry) / risk if risk > 0 else 0
+    r2 = abs(t2 - entry) / risk if risk > 0 else 0
+    avg_r = (r1 + r2) / 2 if risk > 0 else 0
     
-    # Build fields
+    # Header
+    conf_pct = confidence * 100
+    header_line = f"**{conf_pct:.0f}%** confidence  •  Grade **{grade}**  •  Score **{(composite_score or conf_pct):.0f}**  •  TF **{timeframe}**"
+    
     fields = []
     
-    # ══ SIGNAL QUALITY ══════════════════════════════════════════════════
-    quality_parts = []
-    
-    # Confidence bar
-    conf_pct = confidence * 100
-    conf_bars = "█" * int(conf_pct / 10)
-    quality_parts.append(f"**{conf_pct:.0f}%** {conf_bars}")
-    
-    # Grade with explosive badge
-    if explosive_mover:
-        quality_parts.append(f"{grade_emoji} **{grade}** 🚀")
-    else:
-        quality_parts.append(f"{grade_emoji} **{grade}**")
-    
-    # RVOL indicator (enhanced)
-    if rvol:
+    # 1) Signal Quality
+    quality_bits = []
+    if rvol is not None:
         if rvol >= 4.0:
-            rvol_emoji = "🚀"  # Explosive tier
-            rvol_label = "EXPLOSIVE"
+            tier = "EXPLOSIVE"
         elif rvol >= 3.0:
-            rvol_emoji = "🔥"  # Hot tier
-            rvol_label = "HOT"
+            tier = "HOT"
         elif rvol >= 2.0:
-            rvol_emoji = "⚡"  # Active tier
-            rvol_label = "ACTIVE"
+            tier = "ACTIVE"
         else:
-            rvol_emoji = "📊"  # Normal tier
-            rvol_label = "NORMAL"
-        quality_parts.append(f"{rvol_emoji} **{rvol:.1f}x** {rvol_label}")
-    
-    # Composite score with tier classification
-    if composite_score:
-        if composite_score >= 90:
-            score_tier = "S-TIER"
-        elif composite_score >= 80:
-            score_tier = "A-TIER"
-        elif composite_score >= 70:
-            score_tier = "B-TIER"
+            tier = "NORMAL"
+        quality_bits.append(f"RVOL **{rvol:.1f}x** ({tier})")
+    if volume_rank is not None:
+        quality_bits.append(f"Volume Rank **#{volume_rank}**")
+    if mtf_convergence is not None:
+        if mtf_convergence >= 4:
+            mtf_label = "Ultra-confluence"
+        elif mtf_convergence == 3:
+            mtf_label = "Strong"
+        elif mtf_convergence == 2:
+            mtf_label = "Moderate"
         else:
-            score_tier = "C-TIER"
-        quality_parts.append(f"📈 **{composite_score:.0f}** ({score_tier})")
+            mtf_label = "Single TF"
+        quality_bits.append(f"MTF **{mtf_convergence} TF** ({mtf_label})")
     
-    # Volume rank (if provided)
-    if volume_rank:
-        quality_parts.append(f"🏆 **#{volume_rank}** rank")
-    
-    fields.append({
-        "name": "📊 Signal Quality",
-        "value": " | ".join(quality_parts),
-        "inline": False
-    })
-
-    
-    # ══ ENTRY & TARGETS ═════════════════════════════════════════════════
-    fields.append({
-        "name": "🔥 Entry",
-        "value": f"**${entry:.2f}**",
-        "inline": True
-    })
-    
-    fields.append({
-        "name": "🛑 Stop Loss",
-        "value": f"${stop:.2f}",
-        "inline": True
-    })
-    
-    fields.append({
-        "name": "📏 Risk",
-        "value": f"${risk:.2f}",
-        "inline": True
-    })
-    
-    fields.append({
-        "name": "🎯 T1 (50%)",
-        "value": f"${t1:.2f} (**{rr_t1:.1f}R**)",
-        "inline": True
-    })
-    
-    fields.append({
-        "name": "🎯 T2 (50%)",
-        "value": f"${t2:.2f} (**{rr_t2:.1f}R**)",
-        "inline": True
-    })
-    
-    fields.append({
-        "name": "💰 Max Gain",
-        "value": f"**{(rr_t1 + rr_t2) / 2:.1f}R**",
-        "inline": True
-    })
-    
-    # ══ CONFIRMATION ════════════════════════════════════════════════════
-    if confirmation or mtf_convergence:
-        conf_parts = []
-        
-        if confirmation:
-            conf_emoji_map = {
-                "A+": "🟢",
-                "A": "🟡",
-                "A-": "🟠"
-            }
-            conf_parts.append(f"{conf_emoji_map.get(confirmation, '⚪')} **{confirmation}** {candle_type or 'Pattern'}")
-        
-        if mtf_convergence:
-            if mtf_convergence >= 4:
-                mtf_emoji = "🌟"  # 4+ timeframes
-                mtf_label = "ULTRA-CONVERGENCE"
-            elif mtf_convergence >= 3:
-                mtf_emoji = "⚡⚡"  # 3 timeframes
-                mtf_label = "STRONG"
-            elif mtf_convergence >= 2:
-                mtf_emoji = "⚡"  # 2 timeframes
-                mtf_label = "MODERATE"
-            else:
-                mtf_emoji = "📊"  # 1 timeframe
-                mtf_label = "SINGLE"
-            conf_parts.append(f"{mtf_emoji} **{mtf_convergence} TF** {mtf_label}")
-        
+    if quality_bits:
         fields.append({
-            "name": "✅ Confirmation",
-            "value": " | ".join(conf_parts),
-            "inline": False
+            "name": "Signal Quality",
+            "value": " • ".join(quality_bits),
+            "inline": False,
         })
     
-    # ══ GREEKS QUALITY ══════════════════════════════════════════════════
-    if greeks_data:
-        greeks_details = greeks_data.get("details", {})
-        if greeks_details:
-            delta = greeks_details.get("delta", 0)
-            iv = greeks_details.get("iv", 0)
-            dte = greeks_details.get("dte", 0)
-            spread = greeks_details.get("spread_pct", 0)
-            liquidity = greeks_details.get("liquidity_ok", False)
-            
-            # Quality checks
-            delta_check = "✅" if abs(delta) >= 0.30 else "⚠️"
-            iv_check = "✅" if iv < 0.60 else "⚠️"
-            spread_check = "✅" if spread < 5 else "⚠️"
-            liq_check = "✅" if liquidity else "❌"
-            
-            # Delta color indicator
-            abs_delta = abs(delta)
-            if abs_delta >= 0.50:
-                delta_emoji = "🟢"  # ATM/ITM
-            elif abs_delta >= 0.35:
-                delta_emoji = "🟡"  # Slightly OTM
-            else:
-                delta_emoji = "🟠"  # Further OTM
-            
-            greeks_summary = (
-                f"{delta_emoji} Δ **{abs_delta:.2f}** {delta_check} | "
-                f"IV **{iv*100:.0f}%** {iv_check} | "
-                f"**{dte}DTE**\n"
-                f"Spread **{spread:.1f}%** {spread_check} | "
-                f"Liquidity {liq_check}"
-            )
-            
-            fields.append({
-                "name": "🎲 Greeks Quality",
-                "value": greeks_summary,
-                "inline": False
-            })
+    # 2) Price & Risk
+    fields.append({
+        "name": "Price & Risk",
+        "value": (
+            f"Entry: **${entry:.2f}**\n"
+            f"Stop: **${stop:.2f}**  (Risk **${risk:.2f}**)\n"
+            f"T1: **${t1:.2f}**  ({r1:.1f}R)\n"
+            f"T2: **${t2:.2f}**  ({r2:.1f}R)\n"
+            f"Max Reward (avg): **{avg_r:.1f}R**"
+        ),
+        "inline": False,
+    })
     
-    # ══ RECOMMENDED OPTION ══════════════════════════════════════════════
+    # 3) Confirmation
+    conf_bits = []
+    if confirmation:
+        conf_bits.append(f"Pattern: **{confirmation}** ({candle_type or 'Price Action'})")
+    if mtf_convergence:
+        conf_bits.append(f"Aligned TFs: **{mtf_convergence}**")
+    if conf_bits:
+        fields.append({
+            "name": "Confirmation",
+            "value": " • ".join(conf_bits),
+            "inline": False,
+        })
+    
+    # 4) Greeks Summary
+    if greeks_data and greeks_data.get("details"):
+        g = greeks_data["details"]
+        delta = abs(g.get("delta", 0.0))
+        iv = g.get("iv", 0.0)
+        dte = g.get("dte", 0)
+        spread = g.get("spread_pct", 0.0)
+        liq_ok = g.get("liquidity_ok", False)
+        
+        fields.append({
+            "name": "Greeks Snapshot",
+            "value": (
+                f"Δ **{delta:.2f}**  •  IV **{iv*100:.0f}%**  •  **{dte} DTE**\n"
+                f"Spread **{spread:.1f}%**  •  Liquidity **{'OK' if liq_ok else 'Thin'}**"
+            ),
+            "inline": False,
+        })
+    
+    # 5) Recommended Contract
     if options_data:
-        strike = options_data.get('strike')
-        dte = options_data.get('dte', 0)
-        delta = options_data.get('delta', 0)
-        iv = options_data.get('iv', 0)
+        strike = options_data.get("strike")
+        dte = options_data.get("dte", 0)
+        delta = abs(options_data.get("delta", 0.0))
+        iv = options_data.get("iv", 0.0)
+        bid = options_data.get("bid", 0.0)
+        ask = options_data.get("ask", 0.0)
+        spread_pct = options_data.get("spread_pct", 0.0)
         
-        option_summary = (
-            f"**{option_type}** @ **${strike}**\n"
-            f"Δ={abs(delta):.2f} | IV={iv*100:.0f}% | {dte}DTE"
-        )
+        mid = options_data.get("mid")
+        if not mid and bid and ask:
+            mid = round((bid + ask) / 2, 2)
+        limit_entry = options_data.get("limit_entry", mid or 0)
+        max_entry = options_data.get("max_entry", ask or 0)
         
         fields.append({
-            "name": "📋 Recommended Contract",
-            "value": option_summary,
-            "inline": False
+            "name": "Recommended Contract",
+            "value": (
+                f"**{option_side}** @ **${strike}**\n"
+                f"{dte} DTE  •  Δ **{delta:.2f}**  •  IV **{iv*100:.0f}%**"
+            ),
+            "inline": False,
         })
         
-        # Limit entry with bid/ask
-        bid = options_data.get("bid", 0)
-        ask = options_data.get("ask", 0)
-        mid = options_data.get("mid") or (round((bid + ask) / 2, 2) if bid and ask else 0)
-        limit_entry = options_data.get("limit_entry", mid)
-        max_entry = options_data.get("max_entry", ask)
-        spread_pct = options_data.get("spread_pct", 0)
-        
-        if ask > 0 and bid > 0:
-            spread_emoji = "✅" if spread_pct < 5 else "⚠️"
-            entry_summary = (
-                f"**Place: ${limit_entry:.2f}** — Max: **${max_entry:.2f}**\n"
-                f"Bid: ${bid:.2f} | Ask: ${ask:.2f} | Spread: {spread_pct:.1f}% {spread_emoji}"
-            )
-            
+        if bid and ask:
             fields.append({
-                "name": "💲 Limit Entry",
-                "value": entry_summary,
-                "inline": False
+                "name": "Option Entry",
+                "value": (
+                    f"Limit: **${limit_entry:.2f}**  (Max **${max_entry:.2f}**)\n"
+                    f"Bid ${bid:.2f}  •  Ask ${ask:.2f}  •  Spread {spread_pct:.1f}%"
+                ),
+                "inline": False,
             })
     
-    # Build embed
     embed = {
         "title": title,
+        "description": header_line,
         "color": color,
         "fields": fields,
         "footer": {
-            "text": f"War Machine Sniper v2 | {datetime.now().strftime('%Y-%m-%d %I:%M %p EST')}"
-        }
+            "text": f"War Machine Sniper v2 | {datetime.now().strftime('%Y-%m-%d %I:%M %p EST')}",
+        },
     }
     
     _send_to_discord({"embeds": [embed]})
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+# REMAINING ALERT FUNCTIONS (unchanged from original)
+# ══════════════════════════════════════════════════════════════════════════════
 
 def send_scaling_alert(
     ticker: str,
@@ -290,7 +376,7 @@ def send_scaling_alert(
     """Alert when T1 is hit and 50% of position is scaled out."""
     embed = {
         "title": f"✂️ SCALING OUT: {ticker}",
-        "color": 0xFFA500,  # Orange
+        "color": 0xFFA500,
         "description": (
             f"**Target 1** hit at **${price:.2f}**\n"
             f"Sold **{contracts_closed} contract(s)** — "
@@ -318,7 +404,7 @@ def send_exit_alert(
     win = total_pnl > 0
     emoji = "✅" if win else "❌"
     color = 0x00FF00 if win else 0xFF0000
-
+    
     embed = {
         "title": f"{emoji} POSITION CLOSED: {ticker}",
         "color": color,
@@ -347,14 +433,14 @@ def send_premarket_watchlist(tickers: list, scores: Optional[Dict] = None):
         if pmis != "—":
             line += f"  PMIS: {pmis}"
         ticker_lines.append(line)
-
+    
     chunk_size = 20
     chunks = [ticker_lines[i:i + chunk_size] for i in range(0, len(ticker_lines), chunk_size)]
-
+    
     for idx, chunk in enumerate(chunks):
         embed = {
             "title": f"📋 Pre-Market Watchlist ({len(tickers)} tickers)" + (f" — Part {idx+1}" if len(chunks) > 1 else ""),
-            "color": 0x1E90FF,  # Blue
+            "color": 0x1E90FF,
             "description": "\n".join(chunk),
             "footer": {
                 "text": f"War Machine Pre-Market  |  {datetime.now().strftime('%Y-%m-%d %H:%M:%S EST')}"
@@ -370,10 +456,10 @@ def send_daily_summary(stats: Dict):
     trades = stats.get("trades", 0)
     wins = stats.get("wins", 0)
     losses = stats.get("losses", 0)
-
+    
     color = 0x00FF00 if total_pnl >= 0 else 0xFF0000
     emoji = "🟢" if total_pnl >= 0 else "🔴"
-
+    
     embed = {
         "title": f"{emoji} Daily Summary — {datetime.now().strftime('%B %d, %Y')}",
         "color": color,
@@ -398,15 +484,14 @@ def send_simple_message(message: str):
 
 def _send_to_discord(payload: Dict):
     """Shared HTTP helper — all functions route through here."""
-    # Strip any invisible whitespace/newlines from URL (Railway injection bug)
     webhook_url = (config.DISCORD_WEBHOOK_URL or "").strip().rstrip("\n").rstrip("\r")
-
+    
     if not webhook_url:
         print("[DISCORD] ❌ No webhook URL configured.")
         return
-
+    
     print(f"[DISCORD] Sending to: {webhook_url[:60]}...")
-
+    
     try:
         response = requests.post(
             webhook_url,
@@ -420,17 +505,17 @@ def _send_to_discord(payload: Dict):
     except Exception as e:
         print(f"[DISCORD] Error: {e}")
 
+
 def test_webhook():
     """Call once at startup to verify Discord is working."""
     webhook_url = (config.DISCORD_WEBHOOK_URL or "").strip()
     if not webhook_url:
         print("[DISCORD] ❌ DISCORD_WEBHOOK_URL is empty!")
         return False
-
-    # Show exactly what URL we have (check for hidden characters)
+    
     print(f"[DISCORD] URL length: {len(webhook_url)} chars")
-    print(f"[DISCORD] URL ends with: {repr(webhook_url[-10:])}")  # Shows hidden chars
-
+    print(f"[DISCORD] URL ends with: {repr(webhook_url[-10:])}")
+    
     try:
         r = requests.post(webhook_url, json={"content": "🚀 War Machine Online!"}, timeout=10)
         print(f"[DISCORD] Test result: {r.status_code}")
