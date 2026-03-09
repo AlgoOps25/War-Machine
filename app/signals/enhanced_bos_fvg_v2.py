@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
 """
-Enhanced BOS/FVG Detection v2 - LOOSENED FILTERS
+Enhanced BOS/FVG Detection v2 - CONSOLIDATION DISABLED
 
-Original v2 found ZERO signals (too strict).
+v2.1 found only 1 signal (consolidation too strict).
 
 Changes:
-1. Allow neutral trends (don't require perfect alignment)
-2. Reduce consolidation requirement (3 bars instead of 5)
-3. Loosen VWAP distance (5% instead of 3%)
-4. Lower volume requirement (2.0x instead of 2.5x)
-5. Reduce breakout strength (1.0% instead of 1.5%)
+1. DISABLE consolidation requirement (was blocking everything)
+2. Keep other filters (trend awareness, VWAP, volume, market hours)
+3. Focus on quality through grading system
 """
 
 import numpy as np
@@ -20,7 +18,6 @@ from dataclasses import dataclass
 
 @dataclass
 class EnhancedSignalV2:
-    """Enhanced signal with context data"""
     timestamp: datetime
     ticker: str
     signal_type: str
@@ -42,33 +39,28 @@ class EnhancedSignalV2:
 
 class EnhancedDetectorV2:
     """
-    Enhanced signal detector - LOOSENED VERSION
+    Enhanced detector - consolidation DISABLED
     """
     
     def __init__(self):
         self.params = {
-            # LOOSENED from original
-            'min_breakout_strength': 0.010,     # 1.0% (was 1.5%)
-            'min_volume_ratio': 2.0,            # 2.0x (was 2.5x)
-            'min_consolidation_bars': 3,        # 3 bars (was 5)
+            'min_breakout_strength': 0.010,     # 1.0%
+            'min_volume_ratio': 2.0,            # 2.0x
+            'min_consolidation_bars': 0,        # DISABLED (was 3)
             
-            # Trend - allow neutral
-            'require_trend_alignment': False,    # DISABLED (was True)
-            'allow_neutral_trend': True,        # NEW: Allow neutral trends
+            'require_trend_alignment': False,
+            'allow_neutral_trend': True,
             
-            # VWAP - loosened
-            'vwap_max_distance': 0.05,          # 5% (was 3%)
-            'require_vwap_direction': False,    # DISABLED (was True)
+            'vwap_max_distance': 0.05,          # 5%
+            'require_vwap_direction': False,
             
-            # Opening range
-            'opening_range_strength': 0.015,    # 1.5% (was 2.0%)
-            'opening_range_end': time(10, 30),  # Extended to 10:30
+            'opening_range_strength': 0.015,
+            'opening_range_end': time(10, 30),
         }
         
-        print("[DETECTOR-V2] ✅ Initialized with LOOSENED filters")
+        print("[DETECTOR-V2] ✅ Initialized - Consolidation DISABLED")
         print(f"[DETECTOR-V2] Min breakout: {self.params['min_breakout_strength']:.1%}")
         print(f"[DETECTOR-V2] Min volume: {self.params['min_volume_ratio']:.1f}x")
-        print(f"[DETECTOR-V2] Min consolidation: {self.params['min_consolidation_bars']} bars")
     
     def detect_signals(
         self,
@@ -76,16 +68,13 @@ class EnhancedDetectorV2:
         bars_5min: List[Dict],
         idx: int
     ) -> Optional[EnhancedSignalV2]:
-        """
-        Detect enhanced signals with context.
-        """
-        if idx < 50 or idx >= len(bars_1min) - 10:  # Reduced from 100
+        if idx < 50 or idx >= len(bars_1min) - 10:
             return None
         
         current_bar = bars_1min[idx]
         timestamp = current_bar['datetime']
         
-        # Skip pre-market (before 9:30) and after-hours (after 16:00)
+        # Market hours only (9:30-16:00)
         if timestamp.hour < 9 or (timestamp.hour == 9 and timestamp.minute < 30):
             return None
         
@@ -96,29 +85,11 @@ class EnhancedDetectorV2:
         trend_1min = self._calculate_trend(bars_1min, idx, lookback=20)
         trend_5min = self._calculate_trend_5min(bars_5min, timestamp)
         
-        # Trend alignment - LOOSENED
-        if self.params['require_trend_alignment']:
-            # Allow neutral if other trend is strong
-            if trend_1min == 'neutral' and trend_5min == 'neutral':
-                return None
-            # Reject only if trends oppose
-            if (trend_1min == 'bull' and trend_5min == 'bear') or \
-               (trend_1min == 'bear' and trend_5min == 'bull'):
-                return None
-        
-        # Check consolidation
+        # Consolidation (for grading only, not filtering)
         consolidation_bars = self._check_consolidation(bars_1min, idx)
-        if consolidation_bars < self.params['min_consolidation_bars']:
-            return None
         
-        # Calculate VWAP
+        # VWAP
         vwap_data = self._calculate_vwap_context(bars_1min, idx)
-        
-        # VWAP gate - LOOSENED
-        if self.params['require_vwap_direction']:
-            price_vs_vwap = vwap_data['price_vs_vwap']
-            if abs(price_vs_vwap) > self.params['vwap_max_distance']:
-                return None
         
         # Detect BOS
         bos_signal = self._detect_bos_v2(
@@ -161,7 +132,7 @@ class EnhancedDetectorV2:
         recent_ema = ema[-5:]
         slope = (recent_ema[-1] - recent_ema[0]) / recent_ema[0]
         
-        if slope > 0.003:  # 0.3% (was 0.5%)
+        if slope > 0.003:
             return 'bull'
         elif slope < -0.003:
             return 'bear'
@@ -200,9 +171,7 @@ class EnhancedDetectorV2:
         return ema
     
     def _check_consolidation(self, bars: List[Dict], idx: int) -> int:
-        """
-        Check consolidation - LOOSENED
-        """
+        """For grading only - not a filter"""
         if idx < 20:
             return 0
         
@@ -217,8 +186,7 @@ class EnhancedDetectorV2:
             bar = lookback[i]
             bar_range = (bar['high'] - bar['low']) / bar['close']
             
-            # Looser range = consolidation
-            if bar_range < 0.008:  # 0.8% (was 0.5%)
+            if bar_range < 0.008:
                 consolidation_count += 1
             else:
                 break
@@ -467,7 +435,7 @@ class EnhancedDetectorV2:
         elif trend_1min != 'neutral' or trend_5min != 'neutral':
             confidence += 0.05
         
-        # Consolidation bonus
+        # Consolidation bonus (still tracked for grading)
         if consolidation_bars >= 10:
             confidence += 0.15
         elif consolidation_bars >= 5:
