@@ -23,6 +23,7 @@ PHASE 1.13 (MAR 6, 2026):
 
 PHASE 1.14 (MAR 9, 2026):
   - Fixed signal_analytics import path (app.signals.signal_analytics)
+  - TEMPORARY: Import from sniper_stubs until process_ticker implemented in sniper.py
 """
 import os
 import time
@@ -369,7 +370,8 @@ def subscribe_and_prefetch_tickers(new_tickers: list):
 
 
 def start_scanner_loop():
-    from app.core.sniper import process_ticker, clear_armed_signals, clear_watching_signals
+    # PHASE 1.14: TEMPORARY - Import from sniper_stubs until process_ticker implemented in sniper.py
+    from app.core.sniper_stubs import process_ticker, clear_armed_signals, clear_watching_signals
     from app.discord_helpers import send_simple_message
     try:
         from app.ai.ai_learning import learning_engine
