@@ -14,3 +14,6 @@ xgboost>=2.0.0
 
 # Real-time data
 websockets>=12.0
+
+# Company data
+yfinance>=0.2.40
