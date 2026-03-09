@@ -2,6 +2,8 @@
 Trade Calculator - Consolidated Stop Loss, Targets, and Adaptive Parameters
 Replaces: targets.py, adaptive_parameters.py
 Implements CFW6 stop/target logic + ATR-based adaptive thresholds
+
+UPDATED: Added T3 = 1-hour structure level (per YouTube video methodology)
 """
 import numpy as np
 from datetime import time as dtime
@@ -190,11 +192,13 @@ def calculate_targets_by_grade(
     direction: str
 ) -> Tuple[float, float]:
     """
-    T1 = 2R, T2 = 3.5R for all grades (per CFW6 video rules).
+    T1 = 1R (1:1), T2 = 2R (2:1) for all grades.
+    Updated from previous (2R, 3.5R) to match YouTube video methodology.
+    T3 is calculated separately as 1-hour structure level.
     """
     risk        = abs(entry_price - stop_price)
-    t1_distance = risk * 2.0
-    t2_distance = risk * 3.5
+    t1_distance = risk * 1.0  # 1R
+    t2_distance = risk * 2.0  # 2R
 
     if direction == "bull":
         t1 = entry_price + t1_distance
@@ -203,36 +207,166 @@ def calculate_targets_by_grade(
         t1 = entry_price - t1_distance
         t2 = entry_price - t2_distance
 
-    print(f"[TARGETS] {grade}: T1=${t1:.2f} (2R) | T2=${t2:.2f} (3.5R) | Risk/contract=${risk:.2f}")
+    print(f"[TARGETS] {grade}: T1=${t1:.2f} (1R) | T2=${t2:.2f} (2R) | Risk/contract=${risk:.2f}")
     return t1, t2
 
 
+def get_next_hourly_high(ticker: str, bars: List[Dict], current_price: float) -> float:
+    """
+    Find next 1-hour resistance level above current price.
+    
+    Matches video methodology: "I like to go for the next key level which is an hourly high"
+    
+    Algorithm:
+    1. Group 5-minute bars into 1-hour candles
+    2. Find nearest hourly high above current price
+    3. Fallback to recent swing high if no clear resistance
+    
+    Args:
+        ticker: Ticker symbol (for logging)
+        bars: List of 5-minute bars
+        current_price: Current entry price
+    
+    Returns:
+        float: Next hourly high resistance level
+    """
+    try:
+        # Group into 1-hour candles (12 x 5min bars = 1 hour)
+        hour_bars = []
+        for i in range(0, len(bars), 12):
+            chunk = bars[i:i+12]
+            if len(chunk) < 6:  # Need at least 30min of data
+                continue
+            hour_high = max(b["high"] for b in chunk)
+            hour_low = min(b["low"] for b in chunk)
+            hour_bars.append({"high": hour_high, "low": hour_low})
+        
+        if not hour_bars:
+            # Fallback: use recent swing high
+            recent_high = max(b["high"] for b in bars[-24:])
+            print(f"[T3] {ticker} - No hourly bars, using recent swing high: ${recent_high:.2f}")
+            return recent_high
+        
+        # Find nearest hourly high above current price
+        resistance_levels = [bar["high"] for bar in hour_bars if bar["high"] > current_price]
+        
+        if resistance_levels:
+            t3 = min(resistance_levels)  # Closest resistance
+            print(f"[T3] {ticker} - Next 1H resistance: ${t3:.2f} (from {len(resistance_levels)} levels)")
+            return t3
+        
+        # Fallback: use highest recent high + buffer
+        recent_high = max(b["high"] for b in bars[-24:])
+        t3 = recent_high * 1.005  # 0.5% above recent high
+        print(f"[T3] {ticker} - No resistance above, using extended target: ${t3:.2f}")
+        return t3
+        
+    except Exception as e:
+        print(f"[T3] {ticker} - Error calculating 1H level: {e}")
+        # Emergency fallback: 3R
+        risk = abs(current_price - bars[-1]["low"])  # Rough risk estimate
+        return current_price + (risk * 3.0)
+
+
+def get_next_hourly_low(ticker: str, bars: List[Dict], current_price: float) -> float:
+    """
+    Find next 1-hour support level below current price.
+    
+    Same logic as get_next_hourly_high but for bearish targets.
+    """
+    try:
+        # Group into 1-hour candles
+        hour_bars = []
+        for i in range(0, len(bars), 12):
+            chunk = bars[i:i+12]
+            if len(chunk) < 6:
+                continue
+            hour_high = max(b["high"] for b in chunk)
+            hour_low = min(b["low"] for b in chunk)
+            hour_bars.append({"high": hour_high, "low": hour_low})
+        
+        if not hour_bars:
+            recent_low = min(b["low"] for b in bars[-24:])
+            print(f"[T3] {ticker} - No hourly bars, using recent swing low: ${recent_low:.2f}")
+            return recent_low
+        
+        # Find nearest hourly low below current price
+        support_levels = [bar["low"] for bar in hour_bars if bar["low"] < current_price]
+        
+        if support_levels:
+            t3 = max(support_levels)  # Closest support
+            print(f"[T3] {ticker} - Next 1H support: ${t3:.2f} (from {len(support_levels)} levels)")
+            return t3
+        
+        # Fallback: use lowest recent low - buffer
+        recent_low = min(b["low"] for b in bars[-24:])
+        t3 = recent_low * 0.995  # 0.5% below recent low
+        print(f"[T3] {ticker} - No support below, using extended target: ${t3:.2f}")
+        return t3
+        
+    except Exception as e:
+        print(f"[T3] {ticker} - Error calculating 1H level: {e}")
+        # Emergency fallback: 3R
+        risk = abs(current_price - bars[-1]["high"])
+        return current_price - (risk * 3.0)
+
+
 def compute_stop_and_targets(
+    ticker: str,
     bars: List[Dict],
     direction: str,
     or_high: float,
     or_low: float,
     entry_price: float,
     grade: str = "A"
-) -> Tuple[float, float, float]:
+) -> Tuple[float, float, float, float]:
     """
     Main entry point: compute stop and targets.
+    
+    Returns: (stop_price, t1, t2, t3)
+    - stop_price: Stop loss level
+    - t1: Target 1 (1R - 1:1 risk/reward)
+    - t2: Target 2 (2R - 2:1 risk/reward)
+    - t3: Target 3 (1-hour structure level)
+    
     ATR is derived from session-only bars (09:30-16:00 ET) so pre-market
     volatility does not widen stops.
-    Returns: (stop_price, t1, t2)
     """
     atr        = calculate_atr(bars, period=14)
     stop_price = calculate_stop_loss_by_grade(
         entry_price, grade, direction, or_low, or_high, atr
     )
+    
+    # T1 = 1R, T2 = 2R (fixed R-multiples)
     t1, t2 = calculate_targets_by_grade(entry_price, stop_price, grade, direction)
-    return stop_price, t1, t2
+    
+    # T3 = Next 1-hour structure level (dynamic)
+    if direction == "bull":
+        t3 = get_next_hourly_high(ticker, bars, entry_price)
+    else:
+        t3 = get_next_hourly_low(ticker, bars, entry_price)
+    
+    # Validation: Ensure T3 is beyond T2 (otherwise use T2 + 20%)
+    if direction == "bull":
+        if t3 <= t2:
+            t3 = t2 * 1.002  # 0.2% above T2
+            print(f"[T3] {ticker} - Adjusted to ${t3:.2f} (1H level was below T2)")
+    else:
+        if t3 >= t2:
+            t3 = t2 * 0.998  # 0.2% below T2
+            print(f"[T3] {ticker} - Adjusted to ${t3:.2f} (1H level was above T2)")
+    
+    return stop_price, t1, t2, t3
 
+
+# ============================================================================
+# BACKWARD COMPATIBILITY (Deprecated - use compute_stop_and_targets)
+# ============================================================================
 
 def get_next_1hour_target(bars: List[Dict], direction: str) -> float:
     """
-    ADVANCED: Get next 1-hour high/low for dynamic T2 target.
-    Optional alternative to fixed 3.5R.
+    DEPRECATED: Use get_next_hourly_high/low instead.
+    Kept for backward compatibility.
     """
     hour_bars = []
     for i in range(0, len(bars), 60):
