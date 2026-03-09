@@ -1,0 +1,64 @@
+{
+  "total_signals": 1,
+  "grade_distribution": {
+    "A+": 1
+  },
+  "all_signals": {
+    "total_trades": 1,
+    "wins": 0,
+    "losses": 1,
+    "win_rate": 0.0,
+    "avg_r": -1.0000000000000118,
+    "total_r": -1.0000000000000118,
+    "sharpe": 0.0,
+    "max_dd": 0,
+    "exit_breakdown": {
+      "STOP": 1
+    }
+  },
+  "by_grade": {
+    "A+": {
+      "total_trades": 1,
+      "wins": 0,
+      "losses": 1,
+      "win_rate": 0.0,
+      "avg_r": -1.0000000000000118,
+      "total_r": -1.0000000000000118,
+      "sharpe": 0.0,
+      "max_dd": 0,
+      "exit_breakdown": {
+        "STOP": 1
+      }
+    },
+    "A": {
+      "total_trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "win_rate": 0.0,
+      "avg_r": 0.0,
+      "total_r": 0.0,
+      "sharpe": 0.0,
+      "max_dd": 0.0
+    },
+    "B": {
+      "total_trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "win_rate": 0.0,
+      "avg_r": 0.0,
+      "total_r": 0.0,
+      "sharpe": 0.0,
+      "max_dd": 0.0
+    },
+    "C": {
+      "total_trades": 0,
+      "wins": 0,
+      "losses": 0,
+      "win_rate": 0.0,
+      "avg_r": 0.0,
+      "total_r": 0.0,
+      "sharpe": 0.0,
+      "max_dd": 0.0
+    }
+  }
+}

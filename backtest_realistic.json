@@ -1,0 +1,65 @@
+{
+  "total_signals": 5,
+  "grade_distribution": {
+    "A": 3,
+    "B": 2
+  },
+  "all_signals": {
+    "total_trades": 5,
+    "wins": 1,
+    "win_rate": 0.2,
+    "avg_r": -0.6000000000000032,
+    "total_r": -3.000000000000016,
+    "sharpe": -11.905880899790734,
+    "max_dd": 2.0000000000000044,
+    "exit_breakdown": {
+      "STOP": 4,
+      "T1": 1
+    }
+  },
+  "by_grade": {
+    "A+": {
+      "total_trades": 0,
+      "wins": 0,
+      "win_rate": 0.0,
+      "avg_r": 0.0,
+      "total_r": 0.0,
+      "sharpe": 0.0,
+      "max_dd": 0.0
+    },
+    "A": {
+      "total_trades": 3,
+      "wins": 1,
+      "win_rate": 0.3333333333333333,
+      "avg_r": -0.33333333333333975,
+      "total_r": -1.0000000000000193,
+      "sharpe": -5.612486080161015,
+      "max_dd": 1.0000000000000024,
+      "exit_breakdown": {
+        "STOP": 2,
+        "T1": 1
+      }
+    },
+    "B": {
+      "total_trades": 2,
+      "wins": 0,
+      "win_rate": 0.0,
+      "avg_r": -0.9999999999999982,
+      "total_r": -1.9999999999999964,
+      "sharpe": -1196515513336555.5,
+      "max_dd": 1.0000000000000115,
+      "exit_breakdown": {
+        "STOP": 2
+      }
+    },
+    "C": {
+      "total_trades": 0,
+      "wins": 0,
+      "win_rate": 0.0,
+      "avg_r": 0.0,
+      "total_r": 0.0,
+      "sharpe": 0.0,
+      "max_dd": 0.0
+    }
+  }
+}

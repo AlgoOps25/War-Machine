@@ -1,0 +1,69 @@
+{
+  "atr_multiplier": 3.0,
+  "total_signals": 8,
+  "hourly_distribution": {
+    "4": 5,
+    "14": 1,
+    "17": 2
+  },
+  "baseline": {
+    "total_trades": 8,
+    "wins": 3,
+    "losses": 5,
+    "win_rate": 0.375,
+    "avg_r": -0.2500000000000059,
+    "total_r": -2.000000000000048,
+    "sharpe": -4.098780306383935,
+    "max_dd": 4.000000000000019,
+    "avg_hold_time": 43.875,
+    "exit_breakdown": {
+      "STOP": 5,
+      "T1": 3
+    }
+  },
+  "volume_profile_only": {
+    "total_trades": 8,
+    "wins": 3,
+    "losses": 5,
+    "win_rate": 0.375,
+    "avg_r": -0.2500000000000059,
+    "total_r": -2.000000000000048,
+    "sharpe": -4.098780306383935,
+    "max_dd": 4.000000000000019,
+    "avg_hold_time": 43.875,
+    "exit_breakdown": {
+      "STOP": 5,
+      "T1": 3
+    }
+  },
+  "entry_timing_only": {
+    "total_trades": 8,
+    "wins": 3,
+    "losses": 5,
+    "win_rate": 0.375,
+    "avg_r": -0.2500000000000059,
+    "total_r": -2.000000000000048,
+    "sharpe": -4.098780306383935,
+    "max_dd": 4.000000000000019,
+    "avg_hold_time": 43.875,
+    "exit_breakdown": {
+      "STOP": 5,
+      "T1": 3
+    }
+  },
+  "both_filters": {
+    "total_trades": 8,
+    "wins": 3,
+    "losses": 5,
+    "win_rate": 0.375,
+    "avg_r": -0.2500000000000059,
+    "total_r": -2.000000000000048,
+    "sharpe": -4.098780306383935,
+    "max_dd": 4.000000000000019,
+    "avg_hold_time": 43.875,
+    "exit_breakdown": {
+      "STOP": 5,
+      "T1": 3
+    }
+  }
+}

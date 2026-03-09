@@ -1,0 +1,90 @@
+{
+  "atr_multiplier": 3.0,
+  "total_signals": 91,
+  "hourly_distribution": {
+    "4": 43,
+    "5": 2,
+    "6": 2,
+    "7": 2,
+    "8": 9,
+    "9": 16,
+    "14": 1,
+    "16": 12,
+    "17": 4
+  },
+  "baseline": {
+    "total_trades": 91,
+    "wins": 29,
+    "losses": 62,
+    "win_rate": 0.31868131868131866,
+    "avg_r": -0.36263736263736296,
+    "total_r": -33.00000000000003,
+    "sharpe": -6.17716740164112,
+    "max_dd": 35.00000000000002,
+    "avg_hold_time": 42.24175824175824,
+    "exit_breakdown": {
+      "STOP": 62,
+      "T1": 29
+    }
+  },
+  "premarket_filter": {
+    "total_trades": 32,
+    "wins": 7,
+    "losses": 25,
+    "win_rate": 0.21875,
+    "avg_r": -0.5625000000000006,
+    "total_r": -18.00000000000002,
+    "sharpe": -10.8,
+    "max_dd": 19.000000000000018,
+    "avg_hold_time": 7.46875,
+    "exit_breakdown": {
+      "STOP": 25,
+      "T1": 7
+    }
+  },
+  "volume_profile_only": {
+    "total_trades": 16,
+    "wins": 5,
+    "losses": 11,
+    "win_rate": 0.3125,
+    "avg_r": -0.3749999999999998,
+    "total_r": -5.999999999999997,
+    "sharpe": -6.4215546121140585,
+    "max_dd": 7.000000000000014,
+    "avg_hold_time": 53.125,
+    "exit_breakdown": {
+      "STOP": 11,
+      "T1": 5
+    }
+  },
+  "entry_timing_only": {
+    "total_trades": 91,
+    "wins": 29,
+    "losses": 62,
+    "win_rate": 0.31868131868131866,
+    "avg_r": -0.36263736263736296,
+    "total_r": -33.00000000000003,
+    "sharpe": -6.17716740164112,
+    "max_dd": 35.00000000000002,
+    "avg_hold_time": 42.24175824175824,
+    "exit_breakdown": {
+      "STOP": 62,
+      "T1": 29
+    }
+  },
+  "all_filters": {
+    "total_trades": 9,
+    "wins": 1,
+    "losses": 8,
+    "win_rate": 0.1111111111111111,
+    "avg_r": -0.7777777777777789,
+    "total_r": -7.00000000000001,
+    "sharpe": -19.643701280563125,
+    "max_dd": 7.000000000000016,
+    "avg_hold_time": 8.777777777777779,
+    "exit_breakdown": {
+      "STOP": 8,
+      "T1": 1
+    }
+  }
+}
