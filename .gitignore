@@ -1,7 +1,19 @@
+# ================================================================================
+# WAR MACHINE - COMPREHENSIVE .GITIGNORE
+# Last Updated: 2026-03-09
+# ================================================================================
+
+# ────────────────────────────────────────────────────────────────────────────────
+# PYTHON CORE
+# ────────────────────────────────────────────────────────────────────────────────
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 *$py.class
+*.pyc
+*.pyo
+*.pyd
 
 # C extensions
 *.so
@@ -28,330 +40,62 @@ wheels/
 *.manifest
 *.spec
 
-# Unit test / coverage reports
+# ────────────────────────────────────────────────────────────────────────────────
+# TESTING & COVERAGE
+# ────────────────────────────────────────────────────────────────────────────────
+
 htmlcov/
 .tox/
 .coverage
 .coverage.*
 .cache
+.pytest_cache/
 nosetests.xml
 coverage.xml
 *.cover
 .hypothesis/
+test_output/
 
-# Translations
-*.mo
-*.pot
+# ────────────────────────────────────────────────────────────────────────────────
+# ENVIRONMENTS
+# ────────────────────────────────────────────────────────────────────────────────
 
-# Django stuff:
-*.log
-local_settings.py
-
-# Flask stuff:
-instance/
-.webassets-cache
-
-# Scrapy stuff:
-.scrapy
-
-# Sphinx documentation
-docs/_build/
-
-# PyBuilder
-target/
-
-# Jupyter Notebook
-.ipynb_checkpoints
-
-# pyenv
-.python-version
-
-# celery beat schedule file
-celerybeat-schedule
-
-# SageMath parsed files
-*.sage.py
-
-# Environments
 .env
-.venv
-env/
+.venv/
 venv/
+env/
 ENV/
 env.bak/
 venv.bak/
+.python-version
 
-# Spyder project settings
-.spyderproject
-.spyproject
+# ────────────────────────────────────────────────────────────────────────────────
+# IDEs & EDITORS
+# ────────────────────────────────────────────────────────────────────────────────
 
-# Rope project settings
-.ropeproject
-
-# mkdocs documentation
-/site
-
-# mypy
-.mypy_cache/
-.dmypy.json
-dmypy.json
-
-# IDEs
 .vscode/
 .idea/
+.spyderproject/
+.spyproject/
+.ropeproject/
 *.swp
 *.swo
 *~
-
-# === WAR MACHINE SPECIFIC ===
-
-# Database files
-*.db
-*.db-shm
-*.db-wal
-*.db-journal
-*.sqlite
-*.sqlite3
-market_memory.db*
-war_machine_trades.db*
-trades.db*
-
-# Backup files (IMPORTANT - prevents cluttering repo)
-*.backup
-*.backup_*
-*.bak
-*.old
-*_backup.*
-*-backup/
-War-Machine-backup/
-archive/backups/
-
-# Configuration backups
-policy.json
-*.json.bak
-learning_data.json
-
-# Logs
-*.log
-logs/
-
-# Temporary files
-*.tmp
-temp/
-tmp/
-
-# OS files
-.DS_Store
-Thumbs.db
-
-# Notes and scratch files
-Notes.txt
-SCRATCH.md
-TODO.txt
-
-# Local test outputs
-test_output/
-backtests/
-
-# Backtest cache files (V1 and V2)
-*.pkl.gz
-.backtest_cache/
-backtest_cache_v2/
-backtest_results*.csv
-backtest_summary.txt
-top_configs.json
-
-# Optimization results (keep or remove based on preference)
-focused_optimization_v2_results.csv
-*_optimization_*.csv
-
-# Analysis reports
-full_analysis_report*.txt
-
-# Backup files (IMPORTANT - prevents cluttering repo)
-*.backup
-*.backup_*
-*.bak
-*.old
-*_backup.*
-*-backup/
-War-Machine-backup/
-archive/backups/
-
-# Configuration backups
-policy.json
-*.json.bak
-learning_data.json
-
-# Logs
-*.log
-logs/
-
-# Temporary files
-*.tmp
-temp/
-tmp/
-
-# OS files
-.DS_Store
-Thumbs.db
-
-# Notes and scratch files
-Notes.txt
-SCRATCH.md
-TODO.txt
-
-# Local test outputs
-test_output/
-backtests/
-
-# Backtest cache files
-*.pkl.gz
-.backtest_cache/
-backtest_results*.csv
-backtest_summary.txt
-top_configs.json
-
-# Analysis reports
-full_analysis_report*.txt
-
-# === V2 OPTIMIZATION CACHE (ADD THIS) ===
-backtest_cache_v2/
-focused_optimization_v2_results.csv
-
-# Advanced MTF results
-advanced_mtf_results*.csv
-
-# Old/test versions of scripts
-*_fixed.py
-*_working.py
-realistic_backtest_v*.py
-
-# Recommendation files
-optimal_config_recommendation.json
-top_*_configurations.csv
-archive/
-backup/
-data_cache/
-signal_outcomes.csv
-target_discovery_summary.txt
-*.db
-__pycache__/
-*.pyc
-
-
-# ─────────────────────────────────────────────────────────────────
-# War Machine - Additional Ignores (Added 2026-03-04)
-# ─────────────────────────────────────────────────────────────────
-
-# Migration/cleanup artifacts
-migration_backup_*/
-migration_log_*.txt
-rollback_migration.ps1
-organize_repository.ps1
-cleanup_priority.ps1
-
-# Python cache and compiled files
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-
-# Testing artifacts
-.pytest_cache/
-.coverage
-htmlcov/
-
-# Logs
-*.log
-
-# Database backups
-*.db.backup
-*.sqlite.backup
-
-
-
-# 
-# War Machine - Comprehensive Cleanup (2026-03-04)
-# 
-
-# Cache folders
-backtests/
-data_cache/
-database/
-backtest_cache*/
-*_cache/
-*.cache/
-
-# Results and outputs
-results/
-signal_outcomes.csv
-target_discovery_summary.txt
-*_summary.txt
-top_*.csv
-top_*.json
-optimal_*.json
-
-# Old databases
-*.db
-*.sqlite
-*.db.backup
-*.sqlite.backup
-market_memory.db
-war_machine.db
-
-# Python cache (root level should not exist)
-/__pycache__/
-*.pyc
-*.pyo
-*.pyd
-
-# ML model artifacts (keep only active models)
-models/*_v2.pkl
-models/*_rf.pkl
-models/label_encoders*.pkl
-models/feature_importance*.json
-models/model_metadata*.json
-models/feature_scaler.pkl
-
-# Large data files
-*.parquet
-cached_candles.json
-
-# Temporary/stale scripts
-cleanup_*.ps1
-organize_*.ps1
-rollback_*.ps1
-*_backup_*/
-production_indicator_backtest*.py
-
-.vscode
-
-Add-Content .gitignore @"
-
-# Python cache
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-
-# Virtual environment (if not already there)
-.venv/
-venv/
-ENV/
-env/
-
-# IDE
-.vscode/
 *.code-workspace
-"@
 
+# ────────────────────────────────────────────────────────────────────────────────
+# JUPYTER & NOTEBOOKS
+# ────────────────────────────────────────────────────────────────────────────────
 
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-*.pyc
+.ipynb_checkpoints/
+
+# ────────────────────────────────────────────────────────────────────────────────
+# DOCUMENTATION
+# ────────────────────────────────────────────────────────────────────────────────
+
+docs/_build/
+/site
+*.mo
+*.pot
+
+# ─────────────────────.backtest_cache/
