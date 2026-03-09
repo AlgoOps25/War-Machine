@@ -207,3 +207,4 @@ advanced_mtf_results*.csv
 *_fixed.py
 *_working.py
 realistic_backtest_v*
+backups/
