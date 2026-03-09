@@ -13,6 +13,7 @@ Leverages ALL available War Machine features:
 
 Author: War Machine Team
 Date: March 9, 2026
+Fixed: Reversed confirmation grading based on backtest data (A- outperforms A+)
 """
 
 import numpy as np
@@ -97,6 +98,7 @@ class ComprehensiveDetector:
         print("[COMPREHENSIVE] ✅ Initialized with HYBRID BOS (aggressive + proven MTF)")
         print(f"[COMPREHENSIVE] Min confidence: {self.params['min_confidence_to_signal']:.0%}")
         print(f"[COMPREHENSIVE] OR window: {self.params['or_start']}-{self.params['or_end']}")
+        print("[COMPREHENSIVE] ⚠️  FIXED: Reversed confirmation grading (A- > A > A+)")
     
     def detect_signals(
         self,
@@ -390,16 +392,29 @@ class ComprehensiveDetector:
         return ema
     
     def _calculate_comprehensive_grade(self, raw_signal, volume_data, vwap_data, vp_data, or_data, mtf_data, is_opening_range) -> Tuple[str, float]:
-        """Calculate comprehensive grade using all indicators"""
+        """
+        Calculate comprehensive grade using all indicators.
+        
+        FIXED: Reversed confirmation grading based on backtest data:
+        - A- confirmation: 100% WR, +1.64R (BEST)
+        - A confirmation: 46.2% WR, +0.26R
+        - A+ confirmation: 37.9% WR, -0.05R (WORST)
+        
+        The more "perfect" the candle, the worse it performs.
+        Likely because over-confirmation = exhaustion.
+        """
         confidence = 0.40
         
-        # Candle confirmation (25%)
+        # Candle confirmation (25%) - REVERSED GRADING
         conf_grade = raw_signal['confirmation_grade']
-        if conf_grade == 'A+':
+        if conf_grade == 'A-':
+            # Best performer: minimal confirmation = fresh breakout
             confidence += 0.25
         elif conf_grade == 'A':
+            # Mid performer
             confidence += 0.20
-        elif conf_grade == 'A-':
+        elif conf_grade == 'A+':
+            # Worst performer: too much confirmation = exhaustion
             confidence += 0.15
         
         # BOS strength (10%)
