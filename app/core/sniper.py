@@ -26,6 +26,8 @@
 #   - VWAP DIRECTIONAL GATE: Price must be above/below VWAP for bull/bear signals
 #   - HYBRID CONFIDENCE: Grade-based spread (A+: 92-95%, A-: 85-88%) instead of fixed values
 #   - INTRADAY GRADE GATE REMOVED: A-, B+, B grades now flow through confidence gate
+# VOLUME PROFILE (Step 6.6): Price must be near POC or high-volume nodes for valid entries
+# ENTRY TIMING (Step 6.7): Time-based WR adjustment + session quality filtering
 #
 # FIX #3: SQL INJECTION PREVENTION - All queries now use parameterized execution
 import traceback
@@ -52,6 +54,16 @@ except ImportError:
     VOLUME_PROFILE_ENABLED = False
     print("[SNIPER] ⚠️  Volume profile disabled")
     def get_volume_analyzer():
+        return None
+
+try:
+    from app.validation.entry_timing import get_entry_timing_validator
+    ENTRY_TIMING_ENABLED = True
+    print("[SNIPER] ✅ Entry timing validation enabled")
+except ImportError:
+    ENTRY_TIMING_ENABLED = False
+    print("[SNIPER] ⚠️  Entry timing disabled")
+    def get_entry_timing_validator():
         return None
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -849,6 +861,34 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
             print(f"[{ticker}] OPTIONS-GATE error (non-fatal): {_gate_err}")
             _pre_options_data = None
 
+    # ══════════════════════════════════════════════════════════════════════════════
+    # STEP 6.6: VOLUME PROFILE VALIDATION (BEFORE CONFIRMATION)
+    # ══════════════════════════════════════════════════════════════════════════════
+    if VOLUME_PROFILE_ENABLED:
+        try:
+            analyzer = get_volume_analyzer()
+            if analyzer:
+                fvg_midpoint = (zone_low + zone_high) / 2.0
+                is_valid, vp_reason, vp_data = analyzer.validate_entry(
+                    ticker=ticker,
+                    direction=direction,
+                    entry_price=fvg_midpoint,
+                    bars=bars_session
+                )
+                vp_emoji = "✅" if is_valid else "❌"
+                print(f"[{ticker}] {vp_emoji} VOLUME PROFILE: {vp_reason}")
+                if vp_data:
+                    print(
+                        f"[{ticker}] VP Details: POC=${vp_data.get('poc', 0):.2f} | "
+                        f"Distance={vp_data.get('distance_from_poc_pct', 0):.1%} | "
+                        f"Volume Rank={vp_data.get('volume_rank', 'N/A')}"
+                    )
+                if not is_valid:
+                    print(f"[{ticker}] 🚫 Signal dropped: Volume profile validation failed")
+                    return False
+        except Exception as vp_err:
+            print(f"[{ticker}] Volume profile validation error (non-fatal): {vp_err}")
+
     result = wait_for_confirmation(
         bars_session, direction, (zone_low, zone_high), breakout_idx + 1
     )
@@ -858,6 +898,32 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         return False
 
     print(f"[{ticker}] ✅ CONFIRMATION: {base_grade} grade @ ${entry_price:.2f}")
+
+    # ══════════════════════════════════════════════════════════════════════════════
+    # STEP 6.7: ENTRY TIMING VALIDATION (AFTER CONFIRMATION PASSES)
+    # ══════════════════════════════════════════════════════════════════════════════
+    if ENTRY_TIMING_ENABLED:
+        try:
+            timing_validator = get_entry_timing_validator()
+            if timing_validator:
+                is_valid, timing_reason, timing_data = timing_validator.validate_entry_time(
+                    current_time=_now_et(),
+                    signal_type=signal_type,
+                    grade=base_grade
+                )
+                timing_emoji = "✅" if is_valid else "❌"
+                print(f"[{ticker}] {timing_emoji} ENTRY TIMING: {timing_reason}")
+                if timing_data:
+                    print(
+                        f"[{ticker}] Timing Details: Hour={timing_data.get('hour')}:00 | "
+                        f"Win Rate={timing_data.get('hour_win_rate', 0):.1%} | "
+                        f"Quality={timing_data.get('session_quality', 'unknown')}"
+                    )
+                if not is_valid:
+                    print(f"[{ticker}] 🚫 Signal dropped: Entry timing validation failed")
+                    return False
+        except Exception as timing_err:
+            print(f"[{ticker}] Entry timing validation error (non-fatal): {timing_err}")
 
     vwap_passes, vwap_reason = passes_vwap_gate(bars_session, direction, entry_price)
     if not vwap_passes:
@@ -1592,5 +1658,4 @@ def send_discord(message: str):
         requests.post(config.DISCORD_WEBHOOK_URL, json={"content": message}, timeout=5)
     except Exception as e:
         print(f"[DISCORD] Error: {e}")
-
 
