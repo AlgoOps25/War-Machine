@@ -2,20 +2,20 @@
 """
 00b_backfill_eodhd.py  —  Backfill 5m bars from EODHD → campaign_data.db
 ========================================================================
-Pulls native 5m (or 1m aggregated) intraday bars from EODHD for core
-tickers and writes them into campaign_data.db for offline backtesting.
+Pulls 5m (or 1m aggregated) intraday bars from EODHD for core tickers
+and writes them into campaign_data.db for offline backtesting.
 
 EODHD intraday endpoint:
   GET https://eodhd.com/api/intraday/{TICKER}.US
-      ?interval=5m&from=YYYY-MM-DD&to=YYYY-MM-DD&api_token=KEY&fmt=json
+      ?interval=5m&from=<unix_ts>&to=<unix_ts>&api_token=KEY&fmt=json
 
-NOTE: EODHD intraday max window is ~180 days per request.
-      Requesting more than that returns HTTP 422.
+  IMPORTANT: from/to MUST be Unix timestamps (epoch seconds), NOT date strings.
+  Max window: 5m=600 days, 1m=120 days, 1h=7200 days
 
 USAGE
   python scripts/backtesting/campaign/00b_backfill_eodhd.py --probe
   python scripts/backtesting/campaign/00b_backfill_eodhd.py
-  python scripts/backtesting/campaign/00b_backfill_eodhd.py --days 180
+  python scripts/backtesting/campaign/00b_backfill_eodhd.py --days 365
   python scripts/backtesting/campaign/00b_backfill_eodhd.py --tickers AAPL,NVDA,SPY
 """
 
@@ -33,7 +33,9 @@ except ImportError:
 ET           = ZoneInfo('America/New_York')
 DEFAULT_OUT  = os.path.join(os.path.dirname(__file__), 'campaign_data.db')
 EODHD_BASE   = 'https://eodhd.com/api/intraday'
-MAX_DAYS     = 180   # EODHD intraday hard limit per request
+
+# EODHD max windows per interval (days)
+MAX_DAYS = {'5m': 600, '1m': 120, '1h': 7200}
 
 CORE_TICKERS = [
     'AAPL','MSFT','NVDA','TSLA','META','SPY','AMD','QQQ',
@@ -64,6 +66,11 @@ def get_api_key():
     return key
 
 
+def to_unix(dt: datetime) -> int:
+    """Convert a datetime (naive or aware) to UTC Unix timestamp."""
+    return int(dt.timestamp())
+
+
 def open_or_create_db(path):
     conn = sqlite3.connect(path)
     conn.execute('PRAGMA journal_mode=WAL')
@@ -88,18 +95,19 @@ def open_or_create_db(path):
 
 # ── EODHD fetch ───────────────────────────────────────────────────────────
 
-def fetch_eodhd(ticker, api_key, from_date, to_date, interval='5m', retries=3):
+def fetch_eodhd(ticker, api_key, from_dt: datetime, to_dt: datetime,
+               interval='5m', retries=3):
     """
     Fetch intraday bars from EODHD.
-    from_date / to_date must be 'YYYY-MM-DD' strings.
+    from_dt / to_dt are datetime objects; converted to Unix timestamps internally.
     Returns (bars_list, interval_used).
     """
     url    = f'{EODHD_BASE}/{ticker}.US'
     params = {
         'api_token' : api_key,
         'interval'  : interval,
-        'from'      : from_date,
-        'to'        : to_date,
+        'from'      : to_unix(from_dt),
+        'to'        : to_unix(to_dt),
         'fmt'       : 'json',
     }
     for attempt in range(retries):
@@ -115,12 +123,11 @@ def fetch_eodhd(ticker, api_key, from_date, to_date, interval='5m', retries=3):
                 return [], interval
             elif r.status_code == 422:
                 if interval == '5m':
-                    # Try 1m as fallback (will aggregate locally)
                     print(f'    5m returned 422 — retrying with 1m...')
-                    return fetch_eodhd(ticker, api_key, from_date, to_date,
+                    return fetch_eodhd(ticker, api_key, from_dt, to_dt,
                                        interval='1m', retries=retries)
-                print(f'    HTTP 422 on 1m — date range too large or ticker invalid.')
-                print(f'    Max window is {MAX_DAYS} days. Try --days 60 to test.')
+                print(f'    HTTP 422 on 1m — check ticker symbol or date range.')
+                print(f'    from={to_unix(from_dt)}  to={to_unix(to_dt)}')
                 return [], interval
             elif r.status_code == 429:
                 wait = 2 ** attempt
@@ -167,11 +174,11 @@ def aggregate_1m_to_5m(bars_1m):
 
 def probe_ticker(ticker, api_key, days=60):
     """Test a single ticker with a safe date window."""
-    now       = datetime.now(ET)
-    to_date   = now.strftime('%Y-%m-%d')
-    from_date = (now - timedelta(days=days)).strftime('%Y-%m-%d')
-    print(f'  Probing {ticker}  ({from_date} → {to_date}, {days}d window)...')
-    bars, iv = fetch_eodhd(ticker, api_key, from_date, to_date, interval='5m')
+    now      = datetime.now(ET)
+    from_dt  = now - timedelta(days=days)
+    print(f'  Probing {ticker}  ({from_dt.strftime("%Y-%m-%d")} → {now.strftime("%Y-%m-%d")}, {days}d window)...')
+    print(f'  Unix timestamps: from={to_unix(from_dt)}  to={to_unix(now)}')
+    bars, iv = fetch_eodhd(ticker, api_key, from_dt, now, interval='5m')
     if not bars:
         print(f'    ❌ No data returned.')
         return
@@ -190,15 +197,15 @@ def probe_ticker(ticker, api_key, days=60):
 # ── backfill ────────────────────────────────────────────────────────────────
 
 def backfill(tickers, days_back, out_path, api_key):
-    # Clamp to EODHD's hard limit
-    if days_back > MAX_DAYS:
-        print(f'  ⚠️  Clamping days from {days_back} → {MAX_DAYS} (EODHD intraday max)')
-        days_back = MAX_DAYS
+    max_5m = MAX_DAYS['5m']
+    if days_back > max_5m:
+        print(f'  ⚠️  Clamping days from {days_back} → {max_5m} (EODHD 5m max window)')
+        days_back = max_5m
 
-    now       = datetime.now(ET)
-    to_date   = now.strftime('%Y-%m-%d')
-    from_date = (now - timedelta(days=days_back)).strftime('%Y-%m-%d')
-    print(f'  Date range : {from_date} → {to_date}  ({days_back} days)')
+    now     = datetime.now(ET)
+    from_dt = now - timedelta(days=days_back)
+    print(f'  Date range : {from_dt.strftime("%Y-%m-%d")} → {now.strftime("%Y-%m-%d")}  ({days_back} days)')
+    print(f'  Unix range : {to_unix(from_dt)} → {to_unix(now)}')
     print()
 
     conn = open_or_create_db(out_path)
@@ -209,7 +216,7 @@ def backfill(tickers, days_back, out_path, api_key):
         print(f'  [{i+1:>2}/{len(tickers)}] {ticker:<8}', end='  ', flush=True)
         t0 = time.time()
 
-        bars, iv = fetch_eodhd(ticker, api_key, from_date, to_date, interval='5m')
+        bars, iv = fetch_eodhd(ticker, api_key, from_dt, now, interval='5m')
 
         if not bars:
             print('0 bars — skipped')
@@ -217,7 +224,6 @@ def backfill(tickers, days_back, out_path, api_key):
             time.sleep(0.5)
             continue
 
-        # Aggregate locally if 1m was returned
         if iv == '1m':
             bars = aggregate_1m_to_5m(bars)
 
@@ -260,12 +266,12 @@ def backfill(tickers, days_back, out_path, api_key):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--days',    type=int,  default=180,
-                        help=f'Days of history to fetch (max {MAX_DAYS}, default 180)')
+    parser.add_argument('--days',    type=int,  default=365,
+                        help=f'Days of history to fetch (5m max={MAX_DAYS["5m"]}, default 365)')
     parser.add_argument('--tickers', type=str,  default=None)
     parser.add_argument('--out',     type=str,  default=DEFAULT_OUT)
     parser.add_argument('--probe',   action='store_true',
-                        help='Test API with a 60-day window before committing to full fetch')
+                        help='Test API connectivity before committing to full fetch')
     parser.add_argument('--probe-days', type=int, default=60,
                         help='Window size for probe test (default 60)')
     args = parser.parse_args()
@@ -288,7 +294,7 @@ def main():
     print('WAR MACHINE — EODHD 5m BACKFILL')
     print('='*72)
     print(f'Tickers   : {len(tickers)}  — {tickers}')
-    print(f'Days back : {args.days}  (max {MAX_DAYS})')
+    print(f'Days back : {args.days}')
     print(f'Output    : {args.out}')
     print()
 
