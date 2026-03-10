@@ -483,6 +483,7 @@ def scan_bos_fvg(ticker: str, bars: List[Dict],
     return {
         "ticker":          ticker,
         "direction":       bos["direction"],
+        "bos_idx":         bos["bos_idx"],       # FIX: sniper.py line 1570 reads this key
         "entry":           entry_trigger["entry_price"],
         "stop":            levels["stop"],
         "t1":              levels["t1"],
@@ -495,8 +496,8 @@ def scan_bos_fvg(ticker: str, bars: List[Dict],
         "bos_strength":    round(bos["strength"] * 100, 3),
         "entry_type":      "BOS+FVG",
         "signal_time":     latest_bar["datetime"],
-        "confirmed_at":    entry_trigger["confirmed_at"],  # NEW
-        "entry_at":        entry_trigger["entry_at"],       # NEW
+        "confirmed_at":    entry_trigger["confirmed_at"],
+        "entry_at":        entry_trigger["entry_at"],
         "dte":             0,
         "confirmation":    entry_trigger["confirmation"],
         "conf_score":      entry_trigger["conf_score"],

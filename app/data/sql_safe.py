@@ -22,6 +22,24 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# ── Module-level placeholder helper ───────────────────────────────────────────
+# Reads USE_POSTGRES once at import time so pooled connections (which don't
+# carry a reliable class name) always get the right placeholder character.
+try:
+    from app.data.db_connection import USE_POSTGRES as _USE_POSTGRES
+except ImportError:
+    _USE_POSTGRES = False
+
+def ph() -> str:
+    """
+    Return the correct SQL placeholder for the active database backend.
+    Use this everywhere instead of get_placeholder(conn).
+
+    Returns:
+        "%s" when PostgreSQL mode is active, "?" for SQLite.
+    """
+    return "%s" if _USE_POSTGRES else "?"
+
 
 def safe_execute(cursor, query: str, params: Optional[Tuple] = None) -> None:
     """
@@ -334,23 +352,10 @@ class SafeQueryBuilder:
 def get_placeholder(conn) -> str:
     """
     Get the correct placeholder character for the database connection.
-    
-    Args:
-        conn: Database connection
-    
-    Returns:
-        "?" for SQLite, "%s" for PostgreSQL
+    Delegates to ph() which reads USE_POSTGRES at module level — safe
+    for pooled connections that don't carry a reliable class name.
     """
-    # Check if PostgreSQL
-    if hasattr(conn, '_use_postgres') and conn._use_postgres:
-        return "%s"
-    # Check connection type
-    if hasattr(conn, '__class__'):
-        conn_type = conn.__class__.__name__.lower()
-        if 'postgres' in conn_type or 'psycopg' in conn_type:
-            return "%s"
-    # Default to SQLite
-    return "?"
+    return ph()
 
 
 if __name__ == "__main__":
