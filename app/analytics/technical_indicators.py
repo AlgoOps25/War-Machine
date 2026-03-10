@@ -1,4 +1,4 @@
-﻿"""
+"""
 Technical Indicators Module - EODHD API Integration
 
 Fetches pre-calculated technical indicators from EODHD API.
@@ -23,14 +23,19 @@ Cache Strategy:
   - After hours:              10-minute TTL
 
 Fine-Tuning Notes:
-  - ADX threshold raised to 25 (was 20) â€” filters more choppy markets
-  - Volume ratio threshold raised to 1.5 (was 1.3) â€” stronger confirmation
+  - ADX threshold raised to 25 (was 20) – filters more choppy markets
+  - Volume ratio threshold raised to 1.5 (was 1.3) – stronger confirmation
   - RSI replaces CCI as primary momentum oscillator (more widely tested)
   - EMA 50/200 added as macro trend filter layer
   - MACD crossover detects momentum shifts vs raw MACD value
   - Stochastic crossover detects precise K/D inflection points
   - RVOL (relative volume) added: today volume vs same time yesterday
   - RSI divergence warns of exhaustion before reversal
+
+M6 FIX (Mar 10 2026): Added _ensure_oldest_first() defensive sort guard.
+  Raw bar lists from data_manager have no guaranteed sort order.
+  check_rsi_divergence() and check_rvol() now normalise to oldest-first
+  before any index-based high/low or volume lookups.
 """
 import requests
 from typing import Dict, List, Optional, Any, Tuple
@@ -41,9 +46,40 @@ from utils import config
 ET = ZoneInfo("America/New_York")
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ══════════════════════════════════════════════════════════════════════════════
+# BAR SORT GUARD  (M6)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _ensure_oldest_first(bars: list) -> list:
+    """
+    Return a copy of *bars* sorted oldest → newest.
+
+    data_manager returns bars with no guaranteed ordering; callers that do
+    index-based arithmetic (high/low lookups, cumulative volume) must call
+    this first.  The sort key prefers the 'datetime' field and falls back to
+    'date'.  If neither key is present the list is returned as-is so callers
+    degrade gracefully rather than crash.
+    """
+    if not bars:
+        return bars
+
+    sample = bars[0]
+    if 'datetime' in sample:
+        key = 'datetime'
+    elif 'date' in sample:
+        key = 'date'
+    else:
+        return bars  # no sortable key — return unchanged
+
+    try:
+        return sorted(bars, key=lambda b: b[key])
+    except Exception:
+        return bars  # sorting failed — return unchanged
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # CACHING LAYER
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ══════════════════════════════════════════════════════════════════════════════
 
 class IndicatorCache:
     """Time-aware cache for technical indicators with adaptive TTL."""
@@ -91,9 +127,9 @@ class IndicatorCache:
 _indicator_cache = IndicatorCache()
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ══════════════════════════════════════════════════════════════════════════════
 # CORE FETCH
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ══════════════════════════════════════════════════════════════════════════════
 
 def fetch_technical_indicator(
     ticker: str,
@@ -139,34 +175,34 @@ def fetch_technical_indicator(
         return None
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ══════════════════════════════════════════════════════════════════════════════
 # EXISTING INDICATOR WRAPPERS
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ══════════════════════════════════════════════════════════════════════════════
 
 def fetch_adx(ticker: str, period: int = 14, use_cache: bool = True) -> Optional[List[Dict]]:
-    """ADX â€” trend strength. Values: 0-100 (>25 trending, >40 strong trend)."""
+    """ADX – trend strength. Values: 0-100 (>25 trending, >40 strong trend)."""
     return fetch_technical_indicator(ticker, 'adx', use_cache=use_cache, period=period)
 
 
 def fetch_bbands(ticker: str, period: int = 20, deviation: float = 2.0, use_cache: bool = True) -> Optional[List[Dict]]:
-    """Bollinger Bands â€” uband, mband, lband."""
+    """Bollinger Bands – uband, mband, lband."""
     return fetch_technical_indicator(
         ticker, 'bbands', use_cache=use_cache, period=period, deviation=deviation
     )
 
 
 def fetch_avgvol(ticker: str, period: int = 20, use_cache: bool = True) -> Optional[List[Dict]]:
-    """Average Volume â€” avgvol key."""
+    """Average Volume – avgvol key."""
     return fetch_technical_indicator(ticker, 'avgvol', use_cache=use_cache, period=period)
 
 
 def fetch_cci(ticker: str, period: int = 20, use_cache: bool = True) -> Optional[List[Dict]]:
-    """CCI â€” momentum oscillator. >100 overbought, <-100 oversold."""
+    """CCI – momentum oscillator. >100 overbought, <-100 oversold."""
     return fetch_technical_indicator(ticker, 'cci', use_cache=use_cache, period=period)
 
 
 def fetch_dmi(ticker: str, period: int = 14, use_cache: bool = True) -> Optional[List[Dict]]:
-    """DMI â€” plus_di vs minus_di for trend direction."""
+    """DMI – plus_di vs minus_di for trend direction."""
     return fetch_technical_indicator(ticker, 'dmi', use_cache=use_cache, period=period)
 
 
@@ -177,7 +213,7 @@ def fetch_macd(
     signal_period: int = 9,
     use_cache: bool = True
 ) -> Optional[List[Dict]]:
-    """MACD â€” macd, signal, histogram keys."""
+    """MACD – macd, signal, histogram keys."""
     return fetch_technical_indicator(
         ticker, 'macd', use_cache=use_cache,
         fast_period=fast_period, slow_period=slow_period, signal_period=signal_period
@@ -190,7 +226,7 @@ def fetch_sar(
     maximum: float = 0.20,
     use_cache: bool = True
 ) -> Optional[List[Dict]]:
-    """Parabolic SAR â€” sar key."""
+    """Parabolic SAR – sar key."""
     return fetch_technical_indicator(
         ticker, 'sar', use_cache=use_cache,
         acceleration=acceleration, maximum=maximum
@@ -204,20 +240,20 @@ def fetch_stochastic(
     slow_dperiod: int = 3,
     use_cache: bool = True
 ) -> Optional[List[Dict]]:
-    """Stochastic â€” k and d keys. >80 overbought, <20 oversold."""
+    """Stochastic – k and d keys. >80 overbought, <20 oversold."""
     return fetch_technical_indicator(
         ticker, 'stochastic', use_cache=use_cache,
         fast_kperiod=fast_kperiod, slow_kperiod=slow_kperiod, slow_dperiod=slow_dperiod
     )
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-# NEW INDICATORS â€” RSI, EMA
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ══════════════════════════════════════════════════════════════════════════════
+# NEW INDICATORS – RSI, EMA
+# ══════════════════════════════════════════════════════════════════════════════
 
 def fetch_rsi(ticker: str, period: int = 14, use_cache: bool = True) -> Optional[List[Dict]]:
     """
-    Fetch RSI (Relative Strength Index) â€” preferred momentum indicator.
+    Fetch RSI (Relative Strength Index) – preferred momentum indicator.
 
     More reliable than CCI for day/swing trading:
       - Standard period: 14
@@ -251,9 +287,9 @@ def fetch_ema(
     return fetch_technical_indicator(ticker, 'ema', use_cache=use_cache, period=period)
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ══════════════════════════════════════════════════════════════════════════════
 # BATCH FETCHING
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ══════════════════════════════════════════════════════════════════════════════
 
 def batch_fetch_indicators(
     tickers: List[str],
@@ -294,13 +330,13 @@ def batch_fetch_indicators(
     return results
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-# ANALYSIS HELPERS â€” existing
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ══════════════════════════════════════════════════════════════════════════════
+# ANALYSIS HELPERS – existing
+# ══════════════════════════════════════════════════════════════════════════════
 
 def get_latest_value(indicator_data: Optional[List[Dict]], key: str) -> Optional[float]:
     """
-    Extract latest value from indicator data (descending order â†’ index 0).
+    Extract latest value from indicator data (descending order → index 0).
     """
     if not indicator_data or not isinstance(indicator_data, list):
         return None
@@ -331,7 +367,7 @@ def check_trend_strength(
 ) -> Tuple[bool, Optional[float]]:
     """
     Check trend strength via ADX.
-    Fine-tuned threshold: 25 (was 20) â€” filters choppy range-bound markets.
+    Fine-tuned threshold: 25 (was 20) – filters choppy range-bound markets.
     """
     adx_data = fetch_adx(ticker)
     if not adx_data:
@@ -347,7 +383,7 @@ def check_volume_confirmation(
 ) -> Tuple[bool, Optional[float]]:
     """
     Check volume vs 20-day average.
-    Fine-tuned threshold: 1.5x (was 1.3x) â€” stronger institutional confirmation.
+    Fine-tuned threshold: 1.5x (was 1.3x) – stronger institutional confirmation.
     """
     avgvol_data = fetch_avgvol(ticker)
     if not avgvol_data:
@@ -379,9 +415,9 @@ def get_trend_direction(ticker: str) -> Optional[str]:
     return None
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-# NEW ANALYSIS HELPERS â€” RSI, EMA, MACD crossover, Stochastic crossover, RVOL
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ══════════════════════════════════════════════════════════════════════════════
+# NEW ANALYSIS HELPERS – RSI, EMA, MACD crossover, Stochastic crossover, RVOL
+# ══════════════════════════════════════════════════════════════════════════════
 
 def check_rsi_zone(
     ticker: str,
@@ -392,7 +428,7 @@ def check_rsi_zone(
     """
     Check RSI zone relative to signal direction.
 
-    Replaces CCI as the primary momentum filter â€” RSI is better-tested
+    Replaces CCI as the primary momentum filter – RSI is better-tested
     for day/swing trading setups and more universally respected.
 
     Args:
@@ -404,10 +440,10 @@ def check_rsi_zone(
     Returns:
         (zone_result, rsi_value)
         zone_result: 'FAVORABLE' | 'UNFAVORABLE' | 'NEUTRAL'
-          - BUY  + oversold  (<30) â†’ FAVORABLE   (+confidence)
-          - BUY  + overbought(>70) â†’ UNFAVORABLE (-confidence)
-          - SELL + overbought(>70) â†’ FAVORABLE   (+confidence)
-          - SELL + oversold  (<30) â†’ UNFAVORABLE (-confidence)
+          - BUY  + oversold  (<30) → FAVORABLE   (+confidence)
+          - BUY  + overbought(>70) → UNFAVORABLE (-confidence)
+          - SELL + overbought(>70) → FAVORABLE   (+confidence)
+          - SELL + oversold  (<30) → UNFAVORABLE (-confidence)
     """
     rsi_data = fetch_rsi(ticker)
     if not rsi_data:
@@ -437,17 +473,17 @@ def check_rsi_divergence(
     lookback_bars: int = 10
 ) -> Tuple[Optional[str], Optional[Dict]]:
     """
-    Detect RSI divergence â€” early warning of trend exhaustion/reversal.
+    Detect RSI divergence – early warning of trend exhaustion/reversal.
 
     Divergence occurs when price makes a new high/low but RSI does NOT confirm,
     indicating weakening momentum before the actual reversal appears in price.
 
     Types:
       - Bearish Divergence: Price makes higher high, RSI makes lower high
-        â†’ Warns of uptrend exhaustion, favor SELL signals
+        → Warns of uptrend exhaustion, favor SELL signals
       
       - Bullish Divergence: Price makes lower low, RSI makes higher low
-        â†’ Warns of downtrend exhaustion, favor BUY signals
+        → Warns of downtrend exhaustion, favor BUY signals
 
     Args:
         ticker: Stock symbol
@@ -462,28 +498,32 @@ def check_rsi_divergence(
         Use to BOOST counter-trend signals or WARN on exhausted trends.
 
     Usage in validation:
-      - BUY signal + BULLISH_DIV  â†’ +confidence (reversal setup)
-      - BUY signal + BEARISH_DIV  â†’ -confidence (buying into exhaustion)
-      - SELL signal + BEARISH_DIV â†’ +confidence (reversal setup)
-      - SELL signal + BULLISH_DIV â†’ -confidence (selling into exhaustion)
+      - BUY signal + BULLISH_DIV  → +confidence (reversal setup)
+      - BUY signal + BEARISH_DIV  → -confidence (buying into exhaustion)
+      - SELL signal + BEARISH_DIV → +confidence (reversal setup)
+      - SELL signal + BULLISH_DIV → -confidence (selling into exhaustion)
     """
     try:
-        # Need price data to compare with RSI
         from app.data.data_manager import data_manager
-        bars = data_manager.get_bars_from_memory(ticker, limit=lookback_bars + 1)
-        if not bars or len(bars) < lookback_bars:
+        raw_bars = data_manager.get_bars_from_memory(ticker, limit=lookback_bars + 1)
+        if not raw_bars or len(raw_bars) < lookback_bars:
             return None, None
+
+        # M6: normalise to oldest-first before index-based high/low lookups
+        bars = _ensure_oldest_first(raw_bars)
 
         rsi_data = fetch_rsi(ticker)
         if not rsi_data or len(rsi_data) < lookback_bars:
             return None, None
 
-        # Align bars and RSI (both descending, newest first)
-        recent_bars = bars[:lookback_bars]
-        recent_rsi  = rsi_data[:lookback_bars]
+        # RSI from EODHD is newest-first; reverse to match oldest-first bars
+        recent_rsi_desc = rsi_data[:lookback_bars]
+        recent_rsi = list(reversed(recent_rsi_desc))
+
+        recent_bars = bars[-lookback_bars:]
 
         # Extract prices and RSI values
-        prices = [b['close'] for b in recent_bars]
+        prices     = [b['close'] for b in recent_bars]
         rsi_values = [r.get('rsi') for r in recent_rsi if r.get('rsi') is not None]
 
         if len(prices) != len(rsi_values) or len(prices) < lookback_bars:
@@ -497,35 +537,29 @@ def check_rsi_divergence(
 
         details = {
             'price_high': round(prices[price_high_idx], 2),
-            'price_low': round(prices[price_low_idx], 2),
-            'rsi_high': round(rsi_values[rsi_high_idx], 2),
-            'rsi_low': round(rsi_values[rsi_low_idx], 2),
+            'price_low':  round(prices[price_low_idx], 2),
+            'rsi_high':   round(rsi_values[rsi_high_idx], 2),
+            'rsi_low':    round(rsi_values[rsi_low_idx], 2),
             'lookback_bars': lookback_bars
         }
 
         # BEARISH DIVERGENCE: Price higher high, RSI lower high
-        # (Price at peak more recently than RSI peak = momentum weakening)
-        if price_high_idx < rsi_high_idx:
-            # Price made new high more recently
+        # In oldest-first order: higher index = more recent
+        if price_high_idx > rsi_high_idx:
             if prices[price_high_idx] > prices[rsi_high_idx]:
-                # Confirm RSI didn't make new high
                 if rsi_values[price_high_idx] < rsi_values[rsi_high_idx]:
-                    details['type'] = 'BEARISH_DIV'
+                    details['type']    = 'BEARISH_DIV'
                     details['warning'] = 'Price new high, RSI lower high (uptrend exhaustion)'
                     return 'BEARISH_DIV', details
 
         # BULLISH DIVERGENCE: Price lower low, RSI higher low
-        # (Price at trough more recently than RSI trough = momentum strengthening)
-        if price_low_idx < rsi_low_idx:
-            # Price made new low more recently
+        if price_low_idx > rsi_low_idx:
             if prices[price_low_idx] < prices[rsi_low_idx]:
-                # Confirm RSI didn't make new low
                 if rsi_values[price_low_idx] > rsi_values[rsi_low_idx]:
-                    details['type'] = 'BULLISH_DIV'
+                    details['type']    = 'BULLISH_DIV'
                     details['warning'] = 'Price new low, RSI higher low (downtrend exhaustion)'
                     return 'BULLISH_DIV', details
 
-        # No divergence detected
         details['type'] = 'NO_DIV'
         return 'NO_DIV', details
 
@@ -585,7 +619,7 @@ def check_macd_crossover(
     """
     Detect recent MACD signal-line crossover within lookback bars.
 
-    More actionable than raw MACD value â€” crossovers mark the actual
+    More actionable than raw MACD value – crossovers mark the actual
     momentum shift that precedes directional moves.
 
     Args:
@@ -615,18 +649,15 @@ def check_macd_crossover(
         return None, None
 
     details = {
-        'macd':         round(latest_macd, 4),
-        'signal':       round(latest_signal, 4),
-        'histogram':    round(latest_macd - latest_signal, 4),
+        'macd':           round(latest_macd, 4),
+        'signal':         round(latest_signal, 4),
+        'histogram':      round(latest_macd - latest_signal, 4),
         'prev_histogram': round(prev_macd - prev_signal, 4)
     }
 
-    # Check for recent bullish crossover (MACD crossed above signal)
     prev_below    = prev_macd < prev_signal
     current_above = latest_macd > latest_signal
-
-    # Check for recent bearish crossover (MACD crossed below signal)
-    prev_above   = prev_macd > prev_signal
+    prev_above    = prev_macd > prev_signal
     current_below = latest_macd < latest_signal
 
     if prev_below and current_above:
@@ -634,9 +665,9 @@ def check_macd_crossover(
     elif prev_above and current_below:
         result = 'BEARISH_CROSS'
     elif latest_macd > 0 and latest_signal > 0:
-        result = 'ABOVE_ZERO'   # Bullish momentum, no fresh cross
+        result = 'ABOVE_ZERO'
     elif latest_macd < 0 and latest_signal < 0:
-        result = 'BELOW_ZERO'   # Bearish momentum, no fresh cross
+        result = 'BELOW_ZERO'
     else:
         result = 'NO_CROSS'
 
@@ -653,7 +684,7 @@ def check_stochastic_crossover(
     """
     Detect Stochastic K/D crossover in overbought/oversold zones.
 
-    More precise than raw stochastic values â€” crossovers inside extreme
+    More precise than raw stochastic values – crossovers inside extreme
     zones identify high-probability reversal or continuation entries.
 
     Args:
@@ -688,9 +719,7 @@ def check_stochastic_crossover(
         'd': round(d_current, 2),
     }
 
-    # Bullish K/D crossover inside oversold zone
     bullish_cross = (k_prev < d_prev) and (k_current > d_current) and (k_current < oversold + 10)
-    # Bearish K/D crossover inside overbought zone
     bearish_cross = (k_prev > d_prev) and (k_current < d_current) and (k_current > overbought - 10)
 
     if bullish_cross:
@@ -713,7 +742,7 @@ def check_rvol(
     min_rvol: float = 1.2
 ) -> Tuple[Optional[float], bool]:
     """
-    Calculate Relative Volume (RVOL) â€” today's volume vs same time yesterday.
+    Calculate Relative Volume (RVOL) – today's volume vs same time yesterday.
 
     RVOL > 1.0 = more active than usual at this time of day
     RVOL > 1.5 = significantly elevated (institutional interest)
@@ -726,6 +755,11 @@ def check_rvol(
 
     Returns:
         (rvol_value, is_elevated)
+
+    M6: Both bars_today and bars_yesterday are normalised to oldest-first
+    before taking cumulative volume so the comparison uses the same number
+    of bars from the START of each session regardless of how data_manager
+    returns them.
     """
     if not bars_today:
         return None, False
@@ -738,35 +772,38 @@ def check_rvol(
         et = ZoneInfo("America/New_York")
         yesterday = (datetime.now(et) - timedelta(days=1)).strftime('%Y-%m-%d')
 
-        # Same number of bars yesterday
         bars_yesterday = data_manager.get_bars_for_date(ticker, yesterday)
         if not bars_yesterday:
             return None, False
 
-        n = len(bars_today)
-        bars_yesterday_same = bars_yesterday[:n]
+        # M6: sort both lists oldest-first before comparing
+        sorted_today     = _ensure_oldest_first(bars_today)
+        sorted_yesterday = _ensure_oldest_first(bars_yesterday)
+
+        n = len(sorted_today)
+        bars_yesterday_same = sorted_yesterday[:n]
 
         if not bars_yesterday_same:
             return None, False
 
-        vol_today     = sum(b.get('volume', 0) for b in bars_today)
+        vol_today     = sum(b.get('volume', 0) for b in sorted_today)
         vol_yesterday = sum(b.get('volume', 0) for b in bars_yesterday_same)
 
         if vol_yesterday == 0:
             return None, False
 
-        rvol       = vol_today / vol_yesterday
+        rvol        = vol_today / vol_yesterday
         is_elevated = rvol >= min_rvol
 
         return round(rvol, 2), is_elevated
 
-    except Exception as e:
+    except Exception:
         return None, False
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ══════════════════════════════════════════════════════════════════════════════
 # CACHE MANAGEMENT
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ══════════════════════════════════════════════════════════════════════════════
 
 def clear_indicator_cache():
     """Clear all cached indicators. Call at EOD."""
@@ -778,56 +815,42 @@ def get_cache_stats() -> Dict:
     return _indicator_cache.get_stats()
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ══════════════════════════════════════════════════════════════════════════════
 # USAGE EXAMPLE
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ══════════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
     test_ticker = "AAPL"
     test_price  = 175.50
     print(f"Testing technical indicators for {test_ticker}...\n")
 
-    # ADX
     is_trending, adx = check_trend_strength(test_ticker)
-    print(f"ADX: {adx} | {'âœ… TRENDING' if is_trending else 'âŒ WEAK'} (threshold: 25)")
+    print(f"ADX: {adx} | {'✅ TRENDING' if is_trending else '❌ WEAK'} (threshold: 25)")
 
-    # RSI
     rsi_zone, rsi_val = check_rsi_zone(test_ticker, 'BUY')
     print(f"RSI: {rsi_val} | Zone: {rsi_zone}")
 
-    # RSI Divergence
     div_result, div_details = check_rsi_divergence(test_ticker, 'BUY')
     print(f"RSI Divergence: {div_result}")
     if div_details:
         print(f"  Details: {div_details}")
 
-    # EMA 50
     ema_aligned, ema_val = check_ema_position(test_ticker, test_price, 'BUY', period=50)
     print(f"EMA50: {ema_val} | Aligned: {ema_aligned}")
 
-    # EMA 200
     ema200_aligned, ema200_val = check_ema_position(test_ticker, test_price, 'BUY', period=200)
     print(f"EMA200: {ema200_val} | Aligned: {ema200_aligned}")
 
-    # MACD crossover
     macd_result, macd_details = check_macd_crossover(test_ticker, 'BUY')
     print(f"MACD: {macd_result} | {macd_details}")
 
-    # Stochastic crossover
     stoch_result, stoch_details = check_stochastic_crossover(test_ticker, 'BUY')
     print(f"Stoch: {stoch_result} | {stoch_details}")
 
-    # BB Squeeze
     is_squeezed, bw = check_bollinger_squeeze(test_ticker)
     print(f"BB Squeeze: {is_squeezed} | Width: {bw}")
 
-    # DMI
     direction = get_trend_direction(test_ticker)
     print(f"DMI Direction: {direction}")
 
-    # Cache stats
     print(f"\nCache: {get_cache_stats()}")
-
-
-
-
