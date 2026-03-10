@@ -1,4 +1,4 @@
-﻿"""
+"""
 Multi-Timeframe (MTF) Integration Module
 Real BOS+FVG pattern detection across multiple timeframes
 
@@ -25,16 +25,34 @@ from typing import List, Dict, Optional, Tuple
 from zoneinfo import ZoneInfo
 from utils import config
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ══════════════════════════════════════════════════════════════════════════════
 # PHASE 3E: Import consolidated timeframe compression functions
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ══════════════════════════════════════════════════════════════════════════════
 from .mtf_compression import compress_to_3m, compress_to_2m, compress_to_1m
 
 ET = ZoneInfo("America/New_York")
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ══════════════════════════════════════════════════════════════════════════════
+# GRADE RANKING
+# Lower rank = better grade. Used for correct numeric comparison so that
+# 'A+' (rank 0) always beats 'A' (rank 1) and 'A-' (rank 2).
+# BUG FIX: Previous code used string comparison `grade < best_grade` which
+# evaluates 'A+' < 'A-' as False in Python ('+' > '-' lexicographically),
+# causing the selector to always keep the first grade found rather than best.
+# ══════════════════════════════════════════════════════════════════════════════
+GRADE_RANK: Dict[str, int] = {'A+': 0, 'A': 1, 'A-': 2}
+
+
+def _is_better_grade(candidate: str, current_best: Optional[str]) -> bool:
+    """Return True if candidate grade is strictly better than current_best."""
+    if current_best is None:
+        return True
+    return GRADE_RANK.get(candidate, 99) < GRADE_RANK.get(current_best, 99)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # STATS TRACKING
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ══════════════════════════════════════════════════════════════════════════════
 
 _mtf_stats = {
     'analyzed': 0,
@@ -66,9 +84,9 @@ def _check_cache_rollover():
         _cache_date = today
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ══════════════════════════════════════════════════════════════════════════════
 # OPENING RANGE CALCULATION
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ══════════════════════════════════════════════════════════════════════════════
 
 def _bar_time(bar: dict) -> Optional[time]:
     """Extract time from bar datetime."""
@@ -86,9 +104,9 @@ def compute_or(bars: List[dict]) -> Tuple[Optional[float], Optional[float]]:
     return max(b["high"] for b in or_bars), min(b["low"] for b in or_bars)
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ══════════════════════════════════════════════════════════════════════════════
 # BOS+FVG PATTERN DETECTION
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ══════════════════════════════════════════════════════════════════════════════
 
 def detect_breakout(bars: List[dict], or_high: float, or_low: float) -> Tuple[Optional[str], Optional[int]]:
     """Detect OR breakout. Returns (direction, breakout_idx)."""
@@ -213,12 +231,12 @@ def scan_tf_for_signal(bars: List[dict], tf_name: str) -> Optional[Dict]:
         if direction == 'bull':
             if bar['low'] <= fvg_high and bar['low'] >= fvg_low:
                 grade = grade_confirmation_candle(bar, direction)
-                if grade and (best_grade is None or grade < best_grade):  # A+ < A < A-
+                if grade and _is_better_grade(grade, best_grade):
                     best_grade = grade
         else:
             if bar['high'] >= fvg_low and bar['high'] <= fvg_high:
                 grade = grade_confirmation_candle(bar, direction)
-                if grade and (best_grade is None or grade < best_grade):
+                if grade and _is_better_grade(grade, best_grade):
                     best_grade = grade
     
     # If no confirmation found, signal incomplete
@@ -237,9 +255,9 @@ def scan_tf_for_signal(bars: List[dict], tf_name: str) -> Optional[Dict]:
     }
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ══════════════════════════════════════════════════════════════════════════════
 # MTF CONVERGENCE LOGIC
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ══════════════════════════════════════════════════════════════════════════════
 
 def check_mtf_convergence(
     ticker: str,
@@ -288,8 +306,8 @@ def check_mtf_convergence(
             confirmed_signals.append(signal)
             confirmed_timeframes.append(tf_name)
             
-            # Track best confirmation grade across all TFs
-            if best_confirmation_grade is None or signal['confirmation_grade'] < best_confirmation_grade:
+            # Track best confirmation grade across all TFs using rank-based comparison
+            if _is_better_grade(signal['confirmation_grade'], best_confirmation_grade):
                 best_confirmation_grade = signal['confirmation_grade']
     
     # Calculate convergence metrics
@@ -338,9 +356,9 @@ def check_mtf_convergence(
     }
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ══════════════════════════════════════════════════════════════════════════════
 # PUBLIC API
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ══════════════════════════════════════════════════════════════════════════════
 
 def enhance_signal_with_mtf(
     ticker: str,
@@ -449,10 +467,6 @@ def reset_daily_stats():
     }
 
 
-print("[MTF] âœ… Multi-timeframe BOS+FVG convergence system enabled")
+print("[MTF] ✅ Multi-timeframe BOS+FVG convergence system enabled")
 print("[MTF] Strategy: Scans 5m/3m/2m/1m for same OR breakout + FVG pattern")
 print("[MTF] Boost: +2% (2 TFs), +3% (3 TFs), +5% (4 TFs - A+ setup)")
-
-
-
-
