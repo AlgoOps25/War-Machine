@@ -27,6 +27,11 @@ NOTE (M9, Mar 10 2026): build_0dte_trade() is DEAD CODE — it is never called
 by the live signal pipeline. All active options logic goes through
 get_options_recommendation() in app.validation.validation. build_0dte_trade
 has been deprecated and removed from __all__. Do not add new callers.
+
+NOTE (M8, Mar 10 2026): _get_iv_rank() is now wired to iv_tracker.compute_ivr().
+It stores each IV observation to the iv_history table and returns a real
+DB-backed IVR (0-100). Falls back to 50.0 (neutral) while history is still
+accumulating (< MIN_OBSERVATIONS data points) or on any exception.
 """
 import logging
 import os
@@ -115,7 +120,7 @@ def build_options_trade(
     # ═══════════════════════════════════════════════════════════════════
     # STEP 4: GET IV RANK
     # ═══════════════════════════════════════════════════════════════════
-    iv_rank = _get_iv_rank(ticker)
+    iv_rank = _get_iv_rank(ticker, greeks)
 
     # ═══════════════════════════════════════════════════════════════════
     # STEP 5: GET OPTION PRICE
@@ -264,7 +269,7 @@ def build_0dte_trade(
     contract_symbol = _build_contract_symbol(ticker, expiration, direction, strike)
 
     # Get IV Rank
-    iv_rank = _get_iv_rank(ticker)
+    iv_rank = _get_iv_rank(ticker, greeks)
 
     # Calculate DTE
     dte = (exp_date.date() - datetime.now(ZoneInfo("America/New_York")).date()).days
@@ -650,18 +655,68 @@ def _calculate_fallback_expiration(target_dte: int) -> str:
     return expiration.strftime('%Y-%m-%d')
 
 
-def _get_iv_rank(ticker: str) -> float:
+def _get_iv_rank(ticker: str, greeks: dict = None) -> float:
     """
-    Get IV Rank (0-100, where current IV falls in 1-year range).
+    Get IV Rank (0-100) via iv_tracker — DB-backed rolling 30-day IVR.
 
-    IV Rank formula:
-    (Current IV - 1Y Low IV) / (1Y High IV - 1Y Low IV) * 100
+    M8 FIX (Mar 10 2026): Previously returned hardcoded 50.0.
+    Now:
+      1. Extracts current_iv from the greeks dict already in hand
+         (avoids a redundant API call — iv field is always present
+         after _select_strike_with_greeks()).
+      2. Stores the observation so the rolling iv_history table grows
+         on every trade build.
+      3. Calls compute_ivr() for the real DB-backed rank.
+      4. Falls back to 50.0 (neutral) while history is still building
+         (< MIN_OBSERVATIONS data points) or on any exception.
 
-    Note: This would require historical IV tracking.
-    Returns 50.0 (neutral) as fallback for now.
+    Args:
+        ticker: Stock symbol
+        greeks: Greeks dict from _select_strike_with_greeks() — used to
+                extract current IV without an extra API round-trip.
+                If None, falls back to a direct get_greeks() call.
+
+    Returns:
+        float: IV Rank 0-100, or 50.0 as neutral fallback.
     """
-    # TODO: Implement historical IV tracking in database
-    return 50.0
+    try:
+        from app.options.iv_tracker import store_iv_observation, compute_ivr
+
+        # Extract current IV (percentage → decimal for iv_tracker)
+        if greeks and greeks.get('iv') is not None:
+            current_iv = greeks['iv'] / 100.0  # iv_tracker expects decimal (e.g. 0.40)
+        else:
+            # Fallback: fetch Greeks explicitly (no greeks dict passed)
+            fetched = get_greeks(ticker)
+            current_iv = fetched.get('iv', 0) / 100.0
+
+        if not current_iv or current_iv <= 0:
+            logger.debug(f"[OPTIONS] IVR: no valid IV for {ticker}, using neutral fallback")
+            return 50.0
+
+        # Persist this observation — builds the rolling history
+        store_iv_observation(ticker, current_iv)
+
+        # Compute real IVR from DB history
+        ivr, observations, is_reliable = compute_ivr(ticker, current_iv)
+
+        if is_reliable and ivr is not None:
+            logger.debug(
+                f"[OPTIONS] IVR for {ticker}: {ivr:.1f} "
+                f"(current_iv={current_iv:.3f}, obs={observations})"
+            )
+            return round(ivr, 1)
+
+        # Not enough history yet — log and return neutral
+        logger.debug(
+            f"[OPTIONS] IVR for {ticker}: still building history "
+            f"({observations} obs, need 10) — using neutral 50.0"
+        )
+        return 50.0
+
+    except Exception as e:
+        logger.warning(f"[OPTIONS] IVR compute failed for {ticker}: {e} — using neutral 50.0")
+        return 50.0
 
 
 def _calculate_quantity(option_price: float, max_risk: float) -> int:
