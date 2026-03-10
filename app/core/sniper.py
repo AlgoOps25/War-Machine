@@ -18,7 +18,7 @@
 # CANDLE CONFIRMATION: 3-tier Nitro Trades candle quality model (A+/A/A- grading)
 # MTF FVG PRIORITY: Highest timeframe FVG selection (5m > 3m > 2m > 1m)
 # REGIME FILTER: VIX/SPY market condition detection — avoids bad tape
-# EXPLOSIVE MOVER OVERRIDE: Score ≥80 + RVOL ≥4.0x bypasses regime filter for extreme opportunities
+# EXPLOSIVE MOVER OVERRIDE: Score >=80 + RVOL >=4.0x bypasses regime filter for extreme opportunities
 # PHASE 4 MONITORING: Live performance dashboard, risk alerts
 # HOURLY GATE: Time-based confidence adjustment from historical win rates
 # WIN RATE ENHANCEMENTS (Phase 2):
@@ -31,6 +31,7 @@
 #
 # RESTORE (Mar 10 2026): Full file recovered from commit 6a235067 after accidental truncation
 # FIXED IMPORTS: signal_analytics, dynamic_thresholds, hourly_gate, production_helpers
+# FIXED (Mar 10 2026): All get_conn() calls now use try/finally: return_conn(conn) — no leaks
 import traceback
 import requests
 import json
@@ -228,7 +229,7 @@ print("[SNIPER] ✅ Regime filter enabled (VIX/SPY market condition detection - 
 
 EXPLOSIVE_SCORE_THRESHOLD = 80
 EXPLOSIVE_RVOL_THRESHOLD = 4.0
-print(f"[SNIPER] ✅ Explosive mover override enabled (score≥{EXPLOSIVE_SCORE_THRESHOLD} + RVOL≥{EXPLOSIVE_RVOL_THRESHOLD}x)")
+print(f"[SNIPER] ✅ Explosive mover override enabled (score>={EXPLOSIVE_SCORE_THRESHOLD} + RVOL>={EXPLOSIVE_RVOL_THRESHOLD}x)")
 
 VWAP_GATE_ENABLED = True
 print("[SNIPER] ✅ VWAP directional gate enabled (Phase 2 win rate enhancement)")
@@ -304,8 +305,9 @@ def _get_ticker_screener_metadata(ticker: str) -> dict:
         return {'score': 0, 'rvol': 0.0, 'qualified': False, 'tier': 'N/A'}
 
 def log_proposed_trade(ticker, signal_type, direction, price, confidence, grade):
+    from app.data.db_connection import get_conn, return_conn, serial_pk
+    conn = None
     try:
-        from app.data.db_connection import get_conn, serial_pk
         conn = get_conn()
         cursor = conn.cursor()
         p = get_placeholder(conn)
@@ -321,9 +323,11 @@ def log_proposed_trade(ticker, signal_type, direction, price, confidence, grade)
                             p)
         safe_execute(cursor, query, (ticker, signal_type, direction, price, confidence, grade))
         conn.commit()
-        conn.close()
     except Exception as e:
         print(f"[TRACKER] Error: {e}")
+    finally:
+        if conn:
+            return_conn(conn)
 
 def print_validation_stats():
     if not VALIDATOR_ENABLED:
@@ -372,8 +376,9 @@ def print_validation_call_stats():
     print("="*80 + "\n")
 
 def _ensure_armed_db():
+    from app.data.db_connection import get_conn, return_conn
+    conn = None
     try:
-        from app.data.db_connection import get_conn
         conn = get_conn()
         cursor = conn.cursor()
         cursor.execute("""
@@ -393,13 +398,16 @@ def _ensure_armed_db():
             )
         """)
         conn.commit()
-        conn.close()
     except Exception as e:
         print(f"[ARMED-DB] Init error: {e}")
+    finally:
+        if conn:
+            return_conn(conn)
 
 def _persist_armed_signal(ticker: str, data: dict):
+    from app.data.db_connection import get_conn, return_conn
+    conn = None
     try:
-        from app.data.db_connection import get_conn
         conn = get_conn()
         cursor = conn.cursor()
         p = get_placeholder(conn)
@@ -441,25 +449,31 @@ def _persist_armed_signal(ticker: str, data: dict):
             validation_json
         ))
         conn.commit()
-        conn.close()
     except Exception as e:
         print(f"[ARMED-DB] Persist error for {ticker}: {e}")
+    finally:
+        if conn:
+            return_conn(conn)
 
 def _remove_armed_from_db(ticker: str):
+    from app.data.db_connection import get_conn, return_conn
+    conn = None
     try:
-        from app.data.db_connection import get_conn
         conn = get_conn()
         cursor = conn.cursor()
         p = get_placeholder(conn)
         safe_execute(cursor, f"DELETE FROM armed_signals_persist WHERE ticker = {p}", (ticker,))
         conn.commit()
-        conn.close()
     except Exception as e:
         print(f"[ARMED-DB] Remove error for {ticker}: {e}")
+    finally:
+        if conn:
+            return_conn(conn)
 
 def _cleanup_stale_armed_signals():
+    from app.data.db_connection import get_conn, return_conn
+    conn = None
     try:
-        from app.data.db_connection import get_conn
         open_positions = position_manager.get_open_positions()
         open_position_ids = {pos["id"] for pos in open_positions}
         conn = get_conn()
@@ -479,13 +493,16 @@ def _cleanup_stale_armed_signals():
                         tuple(params))
             conn.commit()
             print(f"[ARMED-DB] 🧹 Auto-cleaned {len(stale_tickers)} closed position(s): {', '.join(stale_tickers)}")
-        conn.close()
     except Exception as e:
         print(f"[ARMED-DB] Cleanup error: {e}")
+    finally:
+        if conn:
+            return_conn(conn)
 
 def _load_armed_signals_from_db() -> dict:
+    from app.data.db_connection import get_conn, return_conn, dict_cursor as _dc, USE_POSTGRES as _USE_PG
+    conn = None
     try:
-        from app.data.db_connection import get_conn, dict_cursor as _dc, USE_POSTGRES as _USE_PG
         _cleanup_stale_armed_signals()
         conn = get_conn()
         cursor = _dc(conn)
@@ -506,7 +523,6 @@ def _load_armed_signals_from_db() -> dict:
                 WHERE  DATE(saved_at) = {p}
             """
         rows = safe_query(cursor, query, (today_et,))
-        conn.close()
         loaded = {}
         for row in rows:
             validation = None
@@ -536,6 +552,9 @@ def _load_armed_signals_from_db() -> dict:
     except Exception as e:
         print(f"[ARMED-DB] Load error: {e}")
         return {}
+    finally:
+        if conn:
+            return_conn(conn)
 
 def _maybe_load_armed_signals():
     if _state.is_armed_loaded():
@@ -547,8 +566,9 @@ def _maybe_load_armed_signals():
         _state.update_armed_signals_bulk(loaded)
 
 def _ensure_watch_db():
+    from app.data.db_connection import get_conn, return_conn
+    conn = None
     try:
-        from app.data.db_connection import get_conn
         conn = get_conn()
         cursor = conn.cursor()
         cursor.execute("""
@@ -563,13 +583,16 @@ def _ensure_watch_db():
             )
         """)
         conn.commit()
-        conn.close()
     except Exception as e:
         print(f"[WATCH-DB] Init error: {e}")
+    finally:
+        if conn:
+            return_conn(conn)
 
 def _persist_watch(ticker: str, data: dict):
+    from app.data.db_connection import get_conn, return_conn
+    conn = None
     try:
-        from app.data.db_connection import get_conn
         conn = get_conn()
         cursor = conn.cursor()
         p = get_placeholder(conn)
@@ -594,25 +617,31 @@ def _persist_watch(ticker: str, data: dict):
             data["signal_type"],
         ))
         conn.commit()
-        conn.close()
     except Exception as e:
         print(f"[WATCH-DB] Persist error for {ticker}: {e}")
+    finally:
+        if conn:
+            return_conn(conn)
 
 def _remove_watch_from_db(ticker: str):
+    from app.data.db_connection import get_conn, return_conn
+    conn = None
     try:
-        from app.data.db_connection import get_conn
         conn = get_conn()
         cursor = conn.cursor()
         p = get_placeholder(conn)
         safe_execute(cursor, f"DELETE FROM watching_signals_persist WHERE ticker = {p}", (ticker,))
         conn.commit()
-        conn.close()
     except Exception as e:
         print(f"[WATCH-DB] Remove error for {ticker}: {e}")
+    finally:
+        if conn:
+            return_conn(conn)
 
 def _cleanup_stale_watches():
+    from app.data.db_connection import get_conn, return_conn
+    conn = None
     try:
-        from app.data.db_connection import get_conn
         watch_window_minutes = MAX_WATCH_BARS * 5
         cutoff_time = _now_et() - timedelta(minutes=watch_window_minutes)
         conn = get_conn()
@@ -623,15 +652,18 @@ def _cleanup_stale_watches():
                     (cutoff_time,))
         deleted_count = cursor.rowcount
         conn.commit()
-        conn.close()
         if deleted_count > 0:
             print(f"[WATCH-DB] 🧹 Auto-cleaned {deleted_count} stale watch(es) (older than {watch_window_minutes}min)")
     except Exception as e:
         print(f"[WATCH-DB] Cleanup error: {e}")
+    finally:
+        if conn:
+            return_conn(conn)
 
 def _load_watches_from_db() -> dict:
+    from app.data.db_connection import get_conn, return_conn, dict_cursor as _dc, USE_POSTGRES as _USE_PG
+    conn = None
     try:
-        from app.data.db_connection import get_conn, dict_cursor as _dc, USE_POSTGRES as _USE_PG
         _cleanup_stale_watches()
         conn = get_conn()
         cursor = _dc(conn)
@@ -650,7 +682,6 @@ def _load_watches_from_db() -> dict:
                 WHERE  DATE(saved_at) = {p}
             """
         rows = safe_query(cursor, query, (today_et,))
-        conn.close()
         loaded = {}
         for row in rows:
             loaded[row["ticker"]] = {
@@ -670,6 +701,9 @@ def _load_watches_from_db() -> dict:
     except Exception as e:
         print(f"[WATCH-DB] Load error: {e}")
         return {}
+    finally:
+        if conn:
+            return_conn(conn)
 
 def _maybe_load_watches():
     if _state.is_watches_loaded():
@@ -1069,7 +1103,6 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         f"= {final_confidence:.2f}"
     )
 
-    # FIXED: was bare `from dynamic_thresholds` — now uses correct app path
     try:
         from app.risk.dynamic_thresholds import get_dynamic_threshold
         eff_min = get_dynamic_threshold(signal_type, final_grade)
@@ -1269,28 +1302,34 @@ def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high,
 
 def clear_armed_signals():
     _state.clear_armed_signals()
+    from app.data.db_connection import get_conn, return_conn
+    conn = None
     try:
-        from app.data.db_connection import get_conn
         conn = get_conn()
         cursor = conn.cursor()
         safe_execute(cursor, "DELETE FROM armed_signals_persist")
         conn.commit()
-        conn.close()
     except Exception as e:
         print(f"[ARMED-DB] Clear error: {e}")
+    finally:
+        if conn:
+            return_conn(conn)
     print("[ARMED] Cleared")
 
 def clear_watching_signals():
     _state.clear_watching_signals()
+    from app.data.db_connection import get_conn, return_conn
+    conn = None
     try:
-        from app.data.db_connection import get_conn
         conn = get_conn()
         cursor = conn.cursor()
         safe_execute(cursor, "DELETE FROM watching_signals_persist")
         conn.commit()
-        conn.close()
     except Exception as e:
         print(f"[WATCH-DB] Clear error: {e}")
+    finally:
+        if conn:
+            return_conn(conn)
     print("[WATCHING] Cleared")
 
 def process_ticker(ticker: str):
