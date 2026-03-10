@@ -7,6 +7,8 @@ Replaces static config thresholds with dynamic adjustments based on:
 - Market volatility (VIX level)
 - Time of day (morning vs afternoon vs power hour)
 - Recent signal quality (last 5 signals)
+
+FIXED (Mar 10 2026): All get_conn() calls now use try/finally: return_conn(conn) — no leaks.
 """
 
 from datetime import datetime, time, timedelta
@@ -96,22 +98,27 @@ def _get_winrate_adjustment(signal_type, grade):
     Returns 0.00 if insufficient data (<10 trades).
     """
     try:
-        from app.data.db_connection import get_conn, dict_cursor
+        from app.data.db_connection import get_conn, return_conn, dict_cursor
 
-        conn = get_conn()
-        cursor = dict_cursor(conn)
+        conn = None
+        rows = []
+        try:
+            conn = get_conn()
+            cursor = dict_cursor(conn)
 
-        # Get last 20 closed trades for this signal_type + grade
-        cursor.execute("""
-            SELECT outcome FROM trades
-            WHERE signal_type = ? AND grade = ?
-            AND status = 'CLOSED'
-            ORDER BY id DESC
-            LIMIT 20
-        """, (signal_type, grade))
+            # Get last 20 closed trades for this signal_type + grade
+            cursor.execute("""
+                SELECT outcome FROM trades
+                WHERE signal_type = ? AND grade = ?
+                AND status = 'CLOSED'
+                ORDER BY id DESC
+                LIMIT 20
+            """, (signal_type, grade))
 
-        rows = cursor.fetchall()
-        conn.close()
+            rows = cursor.fetchall()
+        finally:
+            if conn:
+                return_conn(conn)
 
         if len(rows) < 10:
             return 0.00
@@ -142,22 +149,27 @@ def _get_recent_quality_adjustment():
     Returns 0.00 if insufficient data.
     """
     try:
-        from app.data.db_connection import get_conn, dict_cursor
+        from app.data.db_connection import get_conn, return_conn, dict_cursor
 
-        conn = get_conn()
-        cursor = dict_cursor(conn)
+        conn = None
+        rows = []
+        try:
+            conn = get_conn()
+            cursor = dict_cursor(conn)
 
-        two_hours_ago = _now_et() - timedelta(hours=2)
+            two_hours_ago = _now_et() - timedelta(hours=2)
 
-        cursor.execute("""
-            SELECT confidence FROM proposed_trades
-            WHERE timestamp > ?
-            ORDER BY timestamp DESC
-            LIMIT 5
-        """, (two_hours_ago,))
+            cursor.execute("""
+                SELECT confidence FROM proposed_trades
+                WHERE timestamp > ?
+                ORDER BY timestamp DESC
+                LIMIT 5
+            """, (two_hours_ago,))
 
-        rows = cursor.fetchall()
-        conn.close()
+            rows = cursor.fetchall()
+        finally:
+            if conn:
+                return_conn(conn)
 
         if len(rows) < 3:
             return 0.00

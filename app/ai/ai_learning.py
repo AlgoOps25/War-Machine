@@ -3,6 +3,7 @@ AI Learning Module - Improves Entry Quality Over Time
 Analyzes win/loss patterns and adjusts strategy parameters
 
 CONSOLIDATED: Now includes learning_policy functions (compute_confidence, grade_to_label)
+FIXED (Mar 10 2026): All get_conn() calls now use try/finally: return_conn(conn) — no leaks.
 """
 
 import json
@@ -88,6 +89,7 @@ class AILearningEngine:
         """Create AI learning state table in PostgreSQL."""
         if not db_connection.USE_POSTGRES:
             return
+        conn = None
         try:
             conn = db_connection.get_conn()
             cursor = conn.cursor()
@@ -100,9 +102,11 @@ class AILearningEngine:
                 )
             """)
             conn.commit()
-            conn.close()
         except Exception as e:
             print(f"[AI] Error creating learning table: {e}")
+        finally:
+            if conn:
+                db_connection.return_conn(conn)
 
     def load_data(self) -> Dict:
         """Load learning data from PostgreSQL or JSON file."""
@@ -121,12 +125,12 @@ class AILearningEngine:
         }
 
         if db_connection.USE_POSTGRES:
+            conn = None
             try:
                 conn = db_connection.get_conn()
                 cursor = db_connection.dict_cursor(conn)
                 cursor.execute("SELECT data FROM ai_learning_state WHERE id = 1")
                 row = cursor.fetchone()
-                conn.close()
                 if row:
                     d = row["data"]
                     if not isinstance(d, dict):
@@ -134,6 +138,9 @@ class AILearningEngine:
                     return {**default_data, **d}
             except Exception as e:
                 print(f"[AI] Error loading from PostgreSQL: {e}")
+            finally:
+                if conn:
+                    db_connection.return_conn(conn)
             return default_data
 
         if os.path.exists(self.db_path):
@@ -151,6 +158,7 @@ class AILearningEngine:
         self.data["last_update"] = datetime.now().isoformat()
 
         if db_connection.USE_POSTGRES:
+            conn = None
             try:
                 conn = db_connection.get_conn()
                 cursor = conn.cursor()
@@ -162,9 +170,11 @@ class AILearningEngine:
                         updated_at = CURRENT_TIMESTAMP
                 """, (json.dumps(self.data),))
                 conn.commit()
-                conn.close()
             except Exception as e:
                 print(f"[AI] Error saving to PostgreSQL: {e}")
+            finally:
+                if conn:
+                    db_connection.return_conn(conn)
             return
 
         try:

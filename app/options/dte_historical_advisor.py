@@ -3,11 +3,13 @@ DTE Historical Advisor - Learn optimal DTE from trade outcomes
 
 Queries positions database to recommend DTE based on historical win rates
 under similar market conditions (hour, ADX, VIX, target distance).
+
+FIXED (Mar 10 2026): All get_conn() calls now use try/finally: return_conn(conn) — no leaks.
 """
 from typing import Dict
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-from app.data.db_connection import get_conn, ph, dict_cursor
+from app.data.db_connection import get_conn, return_conn, ph, dict_cursor
 
 ET = ZoneInfo("America/New_York")
 
@@ -37,24 +39,31 @@ class DTEHistoricalAdvisor:
         context = f"{hour_bucket}_{adx_bucket}_{vix_bucket}_{target_bucket}"
         
         p = ph()
-        conn = get_conn(self.db_path)
-        cursor = dict_cursor(conn)
-        cutoff = (datetime.now(ET) - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
-        
-        where = ["status = 'CLOSED'", f"DATE(exit_time) >= {p}", "dte_selected IS NOT NULL", 
-                 "adx_at_entry IS NOT NULL", "vix_at_entry IS NOT NULL", "target_pct_t1 IS NOT NULL"]
-        params = [cutoff]
-        if direction:
-            where.append(f"direction = {p}")
-            params.append(direction)
-        if grade:
-            where.append(f"grade = {p}")
-            params.append(grade)
-        
-        query = f"SELECT dte_selected, pnl, adx_at_entry, vix_at_entry, target_pct_t1, CAST(strftime('%H', entry_time) AS INTEGER) as hr FROM positions WHERE {' AND '.join(where)}"
-        cursor.execute(query, tuple(params))
-        trades = cursor.fetchall()
-        conn.close()
+        conn = None
+        trades = []
+        try:
+            conn = get_conn(self.db_path)
+            cursor = dict_cursor(conn)
+            cutoff = (datetime.now(ET) - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+            
+            where = ["status = 'CLOSED'", f"DATE(exit_time) >= {p}", "dte_selected IS NOT NULL", 
+                     "adx_at_entry IS NOT NULL", "vix_at_entry IS NOT NULL", "target_pct_t1 IS NOT NULL"]
+            params = [cutoff]
+            if direction:
+                where.append(f"direction = {p}")
+                params.append(direction)
+            if grade:
+                where.append(f"grade = {p}")
+                params.append(grade)
+            
+            query = f"SELECT dte_selected, pnl, adx_at_entry, vix_at_entry, target_pct_t1, CAST(strftime('%H', entry_time) AS INTEGER) as hr FROM positions WHERE {' AND '.join(where)}"
+            cursor.execute(query, tuple(params))
+            trades = cursor.fetchall()
+        except Exception as e:
+            print(f"[DTE-ADVISOR] DB query error: {e}")
+        finally:
+            if conn:
+                return_conn(conn)
         
         if not trades:
             return {'has_preference': False, 'reason': 'No historical trades', 'context': context, 'confidence': 0.0}
