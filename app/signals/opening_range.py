@@ -25,6 +25,12 @@ PHASE 1.17 FIXES (MAR 10, 2026):
   BUG #4: calculate_support_resistance() in breakout_detector.py only used rolling 12 bars.
            Opening range is now exposed via get_session_levels() so breakout_detector can
            always anchor to the 9:30 session high/low regardless of current time.
+  BUG #5 (Phase 1.17 final): or_cache DYNAMIC entries never expired intraday.
+           If system restarted at 9:42 it stayed DYNAMIC all day even after 60+ real bars
+           accumulated that would qualify for TIGHT/NORMAL/WIDE.
+           Fix: DYNAMIC entries expire after OR_CACHE_DYNAMIC_TTL (30 min) so classify_or()
+           re-evaluates on the next call and may promote to a real classification.
+           TIGHT/NORMAL/WIDE entries never expire — they reflect the true 9:30-9:40 window.
 """
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime, time, timedelta
@@ -34,6 +40,10 @@ import numpy as np
 from app.data.data_manager import data_manager
 
 ET = ZoneInfo("America/New_York")
+
+# How long (minutes) a DYNAMIC cache entry is valid before re-evaluation.
+# TIGHT/NORMAL/WIDE entries never expire (the true 9:30-9:40 window is immutable).
+OR_CACHE_DYNAMIC_TTL = timedelta(minutes=30)
 
 
 class OpeningRangeDetector:
@@ -49,6 +59,14 @@ class OpeningRangeDetector:
       - Measure OR range (high - low)
       - Compare OR range to ATR
       - Classify as TIGHT / NORMAL / WIDE / DYNAMIC
+
+    Cache behaviour (Phase 1.17 fix):
+      - TIGHT / NORMAL / WIDE: cached permanently for the session (true OR window,
+        values cannot change after 9:40).
+      - DYNAMIC: cached for OR_CACHE_DYNAMIC_TTL (30 min). After expiry, the next
+        call to classify_or() re-evaluates using all accumulated session bars.
+        This allows a 9:42 restart to eventually promote from DYNAMIC -> TIGHT/NORMAL/WIDE
+        once enough bars are available.
 
     Trading Rules:
       - TIGHT OR:   Scan every 30s at 9:40+, +5% confidence boost
@@ -77,6 +95,8 @@ class OpeningRangeDetector:
         self.scan_freq_wide   = 45
 
         # Session cache
+        # Structure: ticker -> OR result dict
+        # DYNAMIC entries also carry '_cached_at' (datetime) for TTL check.
         self.or_cache:     Dict[str, Dict] = {}   # ticker -> OR data
         self.alerts_sent:  Dict[str, bool] = {}   # ticker -> alert sent flag
 
@@ -85,6 +105,7 @@ class OpeningRangeDetector:
         print(f"[OR] Thresholds: TIGHT<{self.tight_threshold} ATR, WIDE>{self.wide_threshold} ATR")
         print(f"[OR] Scan frequencies: Tight={self.scan_freq_tight}s, Normal={self.scan_freq_normal}s")
         print(f"[OR] Mid-session fallback: DYNAMIC range (9:30->now) if OR missed")
+        print(f"[OR] DYNAMIC cache TTL: {int(OR_CACHE_DYNAMIC_TTL.total_seconds() // 60)} min")
 
     # ------------------------------------------------------------------
     # PUBLIC API
@@ -94,10 +115,15 @@ class OpeningRangeDetector:
         """
         Classify Opening Range for a ticker.
 
-        Phase 1.17: Now has two paths:
+        Phase 1.17: Two paths:
           1. OR window complete (>= 9:40): extract 9:30-9:40 bars  (original logic, fixed key)
           2. OR window missed (restart after 9:40 with no OR bars): fall back to
              full session range 9:30->now, labelled DYNAMIC.
+
+        Cache behaviour:
+          - TIGHT/NORMAL/WIDE: cached for the full session (immutable after 9:40).
+          - DYNAMIC: cached for OR_CACHE_DYNAMIC_TTL (30 min), then re-evaluated
+            so bars that accumulated after restart can promote to a real classification.
 
         Returns:
             OR classification dict or None if no session bars at all.
@@ -109,9 +135,19 @@ class OpeningRangeDetector:
         if not self._is_or_complete(current_time):
             return None
 
-        # Return cached result if available
+        # Return cached result if still valid
         if ticker in self.or_cache:
-            return self.or_cache[ticker]
+            cached = self.or_cache[ticker]
+            if cached.get('classification') != 'DYNAMIC':
+                # TIGHT / NORMAL / WIDE never expire
+                return cached
+            # DYNAMIC: check TTL
+            cached_at = cached.get('_cached_at')
+            if cached_at and (current_time.replace(tzinfo=None) - cached_at.replace(tzinfo=None)) < OR_CACHE_DYNAMIC_TTL:
+                return cached
+            # TTL expired — evict and re-evaluate
+            print(f"[OR] {ticker} DYNAMIC cache expired — re-evaluating with accumulated bars")
+            del self.or_cache[ticker]
 
         # ── Get today's session bars ──────────────────────────────────
         bars_1m = data_manager.get_today_session_bars(ticker)
@@ -124,13 +160,12 @@ class OpeningRangeDetector:
         or_bars = self._extract_or_bars(bars_1m)
 
         if or_bars:
-            # Happy path — OR window was captured
+            # Happy path — OR window was captured (or was just re-evaluated and
+            # enough bars now exist to build a real OR)
             return self._classify_from_bars(ticker, or_bars, classification_label=None,
                                             current_time=current_time)
 
         # ── Fallback: mid-session restart, OR was missed ──────────────
-        # Use the full 9:30->now session range as a proxy structure reference.
-        # This ensures breakout_detector always has anchored high/low levels.
         print(f"[OR] {ticker} - OR window missed (mid-session restart) — using DYNAMIC session range")
         session_bars = self._extract_session_bars(bars_1m)
 
@@ -336,25 +371,25 @@ class OpeningRangeDetector:
 
         # Determine classification
         if classification_label == "DYNAMIC":
-            classification      = "DYNAMIC"
-            scan_frequency      = self.scan_freq_normal
+            classification        = "DYNAMIC"
+            scan_frequency        = self.scan_freq_normal
             confidence_adjustment = 0.0
-            min_confidence      = 0.60
+            min_confidence        = 0.60
         elif or_range_atr < self.tight_threshold:
-            classification      = 'TIGHT'
-            scan_frequency      = self.scan_freq_tight
+            classification        = 'TIGHT'
+            scan_frequency        = self.scan_freq_tight
             confidence_adjustment = self.tight_or_boost
-            min_confidence      = 0.60
+            min_confidence        = 0.60
         elif or_range_atr > self.wide_threshold:
-            classification      = 'WIDE'
-            scan_frequency      = self.scan_freq_wide
+            classification        = 'WIDE'
+            scan_frequency        = self.scan_freq_wide
             confidence_adjustment = 0.0
-            min_confidence      = self.wide_or_min_confidence
+            min_confidence        = self.wide_or_min_confidence
         else:
-            classification      = 'NORMAL'
-            scan_frequency      = self.scan_freq_normal
+            classification        = 'NORMAL'
+            scan_frequency        = self.scan_freq_normal
             confidence_adjustment = 0.0
-            min_confidence      = 0.60
+            min_confidence        = 0.60
 
         result = {
             'ticker':               ticker,
@@ -370,6 +405,9 @@ class OpeningRangeDetector:
             'min_confidence':       min_confidence,
             'bar_count':            len(bars),
             'timestamp':            current_time.isoformat(),
+            # Internal TTL field — only meaningful for DYNAMIC entries.
+            # Stored as tz-naive ET datetime for consistent comparison.
+            '_cached_at':           current_time.replace(tzinfo=None),
         }
 
         # Cache it
@@ -390,6 +428,7 @@ class OpeningRangeDetector:
             print(f"[OR]   \u23f3 Consolidation likely — min confidence raised to {min_confidence*100:.0f}%")
         elif classification == 'DYNAMIC':
             print(f"[OR]   \U0001f504 Mid-session fallback — {len(bars)} bars from 9:30 used as range")
+            print(f"[OR]   \U0001f551 Will re-evaluate in {int(OR_CACHE_DYNAMIC_TTL.total_seconds() // 60)} min")
 
         return result
 
@@ -411,7 +450,6 @@ class OpeningRangeDetector:
 
         or_bars = []
         for bar in bars_1m:
-            # FIX: use 'datetime' key, not 'timestamp'
             dt = bar.get('datetime')
             if dt is None:
                 continue
@@ -450,11 +488,9 @@ class OpeningRangeDetector:
         not just after 14 intraday bars accumulate. Falls back to today's bars
         if historical unavailable.
         """
-        # Primary: historical bars from DB (1m, last 60 bars for good ATR)
         bars = data_manager.get_bars_from_memory(ticker, limit=60)
 
         if not bars or len(bars) < 5:
-            # Secondary: today's session bars
             bars = data_manager.get_today_session_bars(ticker)
 
         if not bars or len(bars) < 2:
