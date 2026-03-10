@@ -15,6 +15,12 @@ PHASE C1 FIX (MAR 10, 2026):
   - FIXED: _load_session_state() now re-populates self.positions from DB on startup
   - Prevents phantom trade / wrong sizing after mid-session Railway restart or crash
   - Streak, performance_multiplier, and circuit breaker math all survive restarts
+
+FIXED M5 (MAR 10, 2026):
+  - close_all_eod() now resets consecutive_wins, consecutive_losses, and
+    performance_multiplier to neutral (1.0) after all positions are closed.
+  - Previously EOD-closed positions incremented streak counters, carrying
+    yesterday's losing/winning streak into next morning's sizing math.
 """
 from utils import config
 from datetime import datetime, timedelta
@@ -784,6 +790,17 @@ class PositionManager:
             ticker = pos["ticker"]
             price  = current_prices.get(ticker, pos["entry_price"])
             self.close_position(pos["id"], price, "EOD CLOSE")
+
+        # ── M5 FIX: Reset streak counters after EOD force-close ──────────────
+        # close_position() with exit_reason="EOD CLOSE" increments consecutive_wins
+        # or consecutive_losses, which would carry over into the next morning's
+        # position sizing via performance_multiplier. Reset to neutral here so
+        # each new day starts with a clean 1.0x multiplier.
+        self.consecutive_wins = 0
+        self.consecutive_losses = 0
+        self.performance_multiplier = 1.0
+        print("[POSITION] 🔄 EOD streak reset — performance_multiplier → 1.0x for next session")
+        # ─────────────────────────────────────────────────────────────────────
 
 
     def get_open_positions(self) -> List[Dict]:

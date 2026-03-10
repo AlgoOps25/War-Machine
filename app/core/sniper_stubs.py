@@ -9,6 +9,10 @@ sniper.py. These stubs are only reached if that import fails
 so Railway doesn't crash-loop.
 
 Do NOT add signal logic here. Fix sniper.py instead.
+
+FIXED M3 (Mar 10 2026): Module-level CRITICAL log + one-shot Discord alert
+fired on import so the broken-import condition is immediately visible at
+startup, not silently deferred until the first ticker scan.
 """
 import logging
 from typing import Optional, Dict
@@ -18,6 +22,26 @@ logger = logging.getLogger(__name__)
 
 _armed_signals: Dict = {}
 _watching_fvgs: Dict = {}
+
+# ── M3 FIX: Startup-level warning ────────────────────────────────────────────
+# Fires exactly once when this module is imported (i.e. when sniper.py failed).
+logger.critical(
+    "[STUBS] ⚠️  sniper_stubs.py loaded — sniper.py import FAILED. "
+    "All process_ticker calls will be no-ops. Check Railway logs for the "
+    "ImportError that caused the fallback."
+)
+
+try:
+    from app.discord_helpers import send_simple_message as _dsend
+    _dsend(
+        "🚨 **WAR MACHINE STARTUP WARNING**\n"
+        "sniper.py failed to import — falling back to stubs.\n"
+        "No signals will fire until the import error is resolved.\n"
+        "Check Railway deployment logs immediately."
+    )
+except Exception as _discord_err:
+    logger.warning(f"[STUBS] Discord startup alert failed (non-fatal): {_discord_err}")
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 def process_ticker(ticker: str) -> Optional[Dict]:

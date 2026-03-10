@@ -22,6 +22,11 @@ Usage:
         direction="CALL",
         confidence=75
     )
+
+NOTE (M9, Mar 10 2026): build_0dte_trade() is DEAD CODE — it is never called
+by the live signal pipeline. All active options logic goes through
+get_options_recommendation() in app.validation.validation. build_0dte_trade
+has been deprecated and removed from __all__. Do not add new callers.
 """
 import logging
 import os
@@ -162,6 +167,7 @@ def build_options_trade(
 
     return trade
 
+
 def build_0dte_trade(
     ticker: str,
     direction: str,
@@ -171,28 +177,25 @@ def build_0dte_trade(
     risk_per_trade: float = 0.02
 ) -> dict:
     """
-    Build optimized 0DTE options trade using high-performance data manager.
+    DEPRECATED — DEAD CODE (M9, Mar 10 2026).
 
-    Key differences from regular build_options_trade:
-    - Uses parallel Greeks fetching (faster)
-    - Tighter delta ranges for 0DTE (max gamma exposure)
-    - Stricter liquidity filters (volume + OI requirements)
-    - 60-second caching to avoid redundant API calls
+    This function is never called by the live War Machine signal pipeline.
+    All active options recommendations flow through:
+        app.validation.validation.get_options_recommendation()
 
-    Args:
-        ticker: Stock symbol
-        direction: "CALL" or "PUT"
-        confidence: Signal confidence (0-100)
-        current_price: Current stock price
-        account_balance: Trading account balance
-        risk_per_trade: Risk percentage per trade
-
-    Returns:
-        dict: Optimized 0DTE trade recommendation
+    Do NOT add callers. This function will be removed in a future cleanup pass.
     """
-    logger.info(
-        f"[OPTIONS] Building 0DTE {direction} for {ticker} (confidence={confidence:.1f}%)",
-        extra={'component': 'options', 'symbol': ticker, 'direction': direction}
+    import warnings
+    warnings.warn(
+        "build_0dte_trade() is deprecated dead code and will be removed. "
+        "Use get_options_recommendation() from app.validation.validation instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    logger.warning(
+        "[OPTIONS] build_0dte_trade() called — this is deprecated dead code (M9). "
+        "Caller should use get_options_recommendation() instead. "
+        f"ticker={ticker} direction={direction} confidence={confidence}"
     )
 
     # Get current price if not provided
@@ -292,6 +295,7 @@ def build_0dte_trade(
     )
 
     return trade
+
 
 def get_greeks(ticker: str, strike: float = None, expiration: str = None, direction: str = "CALL") -> dict:
     """
@@ -693,5 +697,6 @@ def _build_contract_symbol(ticker: str, expiration: str, direction: str, strike:
 
     return f"{ticker.upper()}{exp_str}{direction_char}{strike_str}"
 
-# Export both functions
-__all__ = ['build_options_trade', 'build_0dte_trade', 'get_greeks']
+
+# Export public API — build_0dte_trade intentionally excluded (deprecated dead code, M9)
+__all__ = ['build_options_trade', 'get_greeks']
