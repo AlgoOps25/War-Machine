@@ -35,6 +35,10 @@ PHASE 1.16 (MAR 9, 2026):
   - FIXED: startup_backfill wrapped in 45s timeout thread (no more hang)
   - FIXED: start_ws_feed / start_quote_feed wrapped in 20s timeout threads
   - Startup banner updated to v1.16
+
+PHASE 1.16b (MAR 9, 2026):
+  - FIXED: Python 3.10 SyntaxError — backslashes in f-strings not allowed
+  - Pre-assign all conditional expressions to variables before f-string use
 """
 import os
 import time
@@ -69,7 +73,7 @@ from app.risk.position_manager import position_manager as _pm
 
 logger = logging.getLogger(__name__)
 
-# ─────────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 ANALYTICS_AVAILABLE = False
 analytics_conn = None
 DATABASE_URL = os.getenv('DATABASE_URL')
@@ -84,25 +88,25 @@ if DATABASE_URL:
             separator = '&' if '?' in conn_url else '?'
             conn_url = f"{conn_url}{separator}sslmode=require"
         analytics_conn = psycopg2.connect(conn_url)
-        logger.info("DATABASE ✓ Connected - Analytics ONLINE")
+        logger.info("DATABASE \u2713 Connected - Analytics ONLINE")
         ANALYTICS_AVAILABLE = True
     except Exception as e:
-        logger.error(f"DATABASE ✗ FAILED: {e}")
+        logger.error(f"DATABASE \u2717 FAILED: {e}")
         logger.error("DATABASE Analytics DISABLED - continuing without tracking")
         ANALYTICS_AVAILABLE = False
 else:
-    logger.warning("DATABASE ✗ DATABASE_URL not set - Analytics DISABLED")
+    logger.warning("DATABASE \u2717 DATABASE_URL not set - Analytics DISABLED")
     ANALYTICS_AVAILABLE = False
 logger.info("=" * 50)
 
 try:
     from app.signals.signal_analytics import signal_tracker
     LEGACY_ANALYTICS_ENABLED = True
-    logger.info("[SCANNER] ✅ Legacy signal analytics enabled")
+    logger.info("[SCANNER] \u2705 Legacy signal analytics enabled")
 except ImportError:
     LEGACY_ANALYTICS_ENABLED = False
     signal_tracker = None
-    logger.info("[SCANNER] ⚠️  signal_analytics not available")
+    logger.info("[SCANNER] \u26a0\ufe0f  signal_analytics not available")
 
 analytics = None
 if ANALYTICS_AVAILABLE and analytics_conn:
@@ -118,7 +122,7 @@ if ANALYTICS_AVAILABLE and analytics_conn:
             analytics = None
     except Exception as e:
         analytics = None
-        logger.warning(f"[SCANNER] ⚠️  Outcome tracking disabled: {e}")
+        logger.warning(f"[SCANNER] \u26a0\ufe0f  Outcome tracking disabled: {e}")
 
 VALIDATION_AVAILABLE = False
 OPTIONS_AVAILABLE = False
@@ -126,29 +130,29 @@ OPTIONS_AVAILABLE = False
 try:
     from app.validation import validate_signal
     VALIDATION_AVAILABLE = True
-    logger.info("[SCANNER] ✅ Validation gates loaded")
+    logger.info("[SCANNER] \u2705 Validation gates loaded")
 except ImportError:
-    logger.warning("[SCANNER] ⚠️  Validation module not available")
+    logger.warning("[SCANNER] \u26a0\ufe0f  Validation module not available")
     validate_signal = None
 
 try:
     from app.options import build_options_trade
     OPTIONS_AVAILABLE = True
-    logger.info("[SCANNER] ✅ Options intelligence loaded")
+    logger.info("[SCANNER] \u2705 Options intelligence loaded")
 except ImportError:
-    logger.warning("[SCANNER] ⚠️  Options module not available")
+    logger.warning("[SCANNER] \u26a0\ufe0f  Options module not available")
     build_options_trade = None
 
 API_KEY = os.getenv("EODHD_API_KEY", "")
 EMERGENCY_FALLBACK = ["SPY", "QQQ", "AAPL", "MSFT", "NVDA", "TSLA", "META", "AMD"]
 
 
-# ─────────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 # TIMEOUT-GUARDED STARTUP HELPER
-# ─────────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 def _run_with_timeout(fn, timeout_seconds: int, label: str):
     """
-    Run fn() in a daemon thread.  If it doesn’t finish within
+    Run fn() in a daemon thread.  If it doesn't finish within
     timeout_seconds we log a warning and continue — we never block
     the main thread forever.
     """
@@ -157,13 +161,13 @@ def _run_with_timeout(fn, timeout_seconds: int, label: str):
     t.join(timeout=timeout_seconds)
     if t.is_alive():
         logger.warning(
-            f"[STARTUP] ⚠️  {label} did not finish within {timeout_seconds}s — continuing anyway"
+            f"[STARTUP] \u26a0\ufe0f  {label} did not finish within {timeout_seconds}s \u2014 continuing anyway"
         )
 
 
-# ─────────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 # HELPER FUNCTIONS
-# ─────────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 def _extract_premarket_metrics(watchlist_data: dict) -> dict:
     try:
         all_tickers = watchlist_data.get('all_tickers_with_scores', [])
@@ -281,16 +285,16 @@ def subscribe_and_prefetch_tickers(new_tickers: list):
     try:
         subscribe_tickers(new_tickers)
         subscribe_quote_tickers(new_tickers)
-        logger.info(f"[WS-SUBSCRIBE] ✅ Subscribed {len(new_tickers)} new tickers: {', '.join(new_tickers)}")
+        logger.info(f"[WS-SUBSCRIBE] \u2705 Subscribed {len(new_tickers)} new tickers: {', '.join(new_tickers)}")
         logger.info(f"[PREFETCH] Fetching 30d historical bars for {len(new_tickers)} tickers...")
         data_manager.startup_backfill_with_cache(new_tickers, days=30)
         logger.info(f"[PREFETCH] Fetching today's intraday bars for {len(new_tickers)} tickers...")
         data_manager.startup_intraday_backfill_today(new_tickers)
         logger.info("[WS-SUBSCRIBE] Waiting 3s for initial bars to flow...")
         time.sleep(3)
-        logger.info(f"[WS-SUBSCRIBE] ✅ Prefetch complete for {len(new_tickers)} tickers")
+        logger.info(f"[WS-SUBSCRIBE] \u2705 Prefetch complete for {len(new_tickers)} tickers")
     except Exception as e:
-        logger.error(f"[WS-SUBSCRIBE] ⚠️ Error subscribing/prefetching tickers: {e}")
+        logger.error(f"[WS-SUBSCRIBE] \u26a0\ufe0f Error subscribing/prefetching tickers: {e}")
         import traceback
         traceback.print_exc()
 
@@ -302,9 +306,9 @@ def start_scanner_loop():
     # ────────────────────────────────────────────────────────────────────────
     try:
         from app.core.sniper import process_ticker, clear_armed_signals, clear_watching_signals
-        logger.info("[SCANNER] ✅ process_ticker loaded from sniper.py (CFW6 engine active)")
+        logger.info("[SCANNER] \u2705 process_ticker loaded from sniper.py (CFW6 engine active)")
     except ImportError as e:
-        logger.error(f"[SCANNER] ❌ sniper.py import failed: {e} — falling back to sniper_stubs")
+        logger.error(f"[SCANNER] \u274c sniper.py import failed: {e} \u2014 falling back to sniper_stubs")
         from app.core.sniper_stubs import process_ticker, clear_armed_signals, clear_watching_signals
 
     from app.discord_helpers import send_simple_message
@@ -318,50 +322,68 @@ def start_scanner_loop():
 
     # ════════════════════════════════════════════════════════════════════════
     # STARTUP HEALTH CHECK BANNER
+    # NOTE: Pre-assign all conditional values to variables first.
+    #       Python 3.10 does NOT allow backslashes inside f-string expressions.
     # ════════════════════════════════════════════════════════════════════════
     logger.info("=" * 60)
-    logger.info("WAR MACHINE CFW6 SCANNER v1.16 - STARTUP")
+    logger.info("WAR MACHINE CFW6 SCANNER v1.16b - STARTUP")
     logger.info("=" * 60)
-    logger.info("✓ DATA-INGEST    WebSocket starting (tickers TBD)")
+    logger.info("\u2713 DATA-INGEST    WebSocket starting (tickers TBD)")
 
     try:
         cache_dir = os.path.join(os.path.dirname(__file__), '..', '..', 'cache')
         if os.path.exists(cache_dir):
             cache_files = len([f for f in os.listdir(cache_dir) if f.endswith('.parquet')])
-            logger.info(f"✓ CACHE          {cache_files} cached ticker files, 30d history")
+            logger.info(f"\u2713 CACHE          {cache_files} cached ticker files, 30d history")
         else:
             logger.info("? CACHE          Directory not found (will be created)")
     except Exception as e:
         logger.info(f"? CACHE          Status unknown: {e}")
 
-    logger.info(f"{'\u2713' if API_KEY else '\u2717'} SCREENER       {'EODHD API configured (' + API_KEY[:8] + '...)' if API_KEY else 'EODHD_API_KEY not set'}")
+    # Pre-assign to avoid backslash-in-f-string on Python 3.10
+    screener_icon = "\u2713" if API_KEY else "\u2717"
+    screener_msg  = ("EODHD API configured (" + API_KEY[:8] + "...)") if API_KEY else "EODHD_API_KEY not set"
+    logger.info(f"{screener_icon} SCREENER       {screener_msg}")
 
     try:
         from app.filters import regime_filter  # noqa: F401
-        logger.info("✓ REGIME-FILTER  ADX/VIX monitoring active")
+        logger.info("\u2713 REGIME-FILTER  ADX/VIX monitoring active")
     except Exception:
         logger.info("? REGIME-FILTER  Module not found (may be inline)")
 
-    logger.info(f"{'\u2713' if ANALYTICS_AVAILABLE else '\u2717'} DATABASE        {'Connected - Analytics tracking enabled' if ANALYTICS_AVAILABLE else 'OFFLINE - no volume/signal/P&L tracking'}")
+    db_icon = "\u2713" if ANALYTICS_AVAILABLE else "\u2717"
+    db_msg  = "Connected - Analytics tracking enabled" if ANALYTICS_AVAILABLE else "OFFLINE - no volume/signal/P&L tracking"
+    logger.info(f"{db_icon} DATABASE        {db_msg}")
+
     discord_webhook = os.getenv('DISCORD_WEBHOOK_URL')
-    logger.info(f"{'\u2713' if discord_webhook else '\u2717'} DISCORD         {'Alert notifications ready' if discord_webhook else 'NOT CONFIGURED - no alerts'}")
-    logger.info(f"{'\u2713' if OPTIONS_AVAILABLE else '\u2717'} OPTIONS-GATE    {'Integrated - Greeks analysis active' if OPTIONS_AVAILABLE else 'NOT INTEGRATED'}")
-    logger.info(f"{'\u2713' if VALIDATION_AVAILABLE else '\u2717'} VALIDATION     {'Integrated - CFW6 confirmation active' if VALIDATION_AVAILABLE else 'NOT INTEGRATED'}")
+    disc_icon = "\u2713" if discord_webhook else "\u2717"
+    disc_msg  = "Alert notifications ready" if discord_webhook else "NOT CONFIGURED - no alerts"
+    logger.info(f"{disc_icon} DISCORD         {disc_msg}")
+
+    opts_icon = "\u2713" if OPTIONS_AVAILABLE else "\u2717"
+    opts_msg  = "Integrated - Greeks analysis active" if OPTIONS_AVAILABLE else "NOT INTEGRATED"
+    logger.info(f"{opts_icon} OPTIONS-GATE    {opts_msg}")
+
+    val_icon = "\u2713" if VALIDATION_AVAILABLE else "\u2717"
+    val_msg  = "Integrated - CFW6 confirmation active" if VALIDATION_AVAILABLE else "NOT INTEGRATED"
+    logger.info(f"{val_icon} VALIDATION      {val_msg}")
+
     logger.info("=" * 60)
-    logger.info(f"Trading session: 09:30 - 16:00 ET")
-    logger.info(f"Scanner mode: {'Pre-market' if is_premarket() else 'Live'}")
+    pm_mode = "Pre-market" if is_premarket() else "Live"
+    logger.info("Trading session: 09:30 - 16:00 ET")
+    logger.info(f"Scanner mode: {pm_mode}")
     logger.info("=" * 60)
-    logger.info("Candle Cache:  ✅ ENABLED (95%+ API reduction on redeploy)")
-    logger.info("WS Failover:   ✅ ENABLED (REST API fallback on disconnect)")
-    logger.info("Spread Gate:   ✅ ENABLED (us-quote bid/ask filter active)")
-    logger.info("Dynamic WS:    ✅ ENABLED (live session ticker subscription)")
-    logger.info("Risk Manager:  ✅ ENABLED (unified risk layer — Phase 1.15)")
-    logger.info("CFW6 Engine:   ✅ ENABLED (sniper.py direct — Phase 1.16)")
-    logger.info("Startup Guard: ✅ ENABLED (timeout-protected startup calls)")
+    logger.info("Candle Cache:  \u2705 ENABLED (95%+ API reduction on redeploy)")
+    logger.info("WS Failover:   \u2705 ENABLED (REST API fallback on disconnect)")
+    logger.info("Spread Gate:   \u2705 ENABLED (us-quote bid/ask filter active)")
+    logger.info("Dynamic WS:    \u2705 ENABLED (live session ticker subscription)")
+    logger.info("Risk Manager:  \u2705 ENABLED (unified risk layer \u2014 Phase 1.15)")
+    logger.info("CFW6 Engine:   \u2705 ENABLED (sniper.py direct \u2014 Phase 1.16)")
+    logger.info("Startup Guard: \u2705 ENABLED (timeout-protected startup calls)")
     logger.info("=" * 60 + "\n")
 
     try:
-        send_simple_message("\u2694️ WAR MACHINE ONLINE — CFW6 v1.16 | sniper.py active | Timeout-guarded startup")
+        send_simple_message("\u2694\ufe0f WAR MACHINE ONLINE \u2014 CFW6 v1.16b | sniper.py active | Timeout-guarded startup")
     except Exception as e:
         logger.warning(f"[SCANNER] Discord unavailable: {e}")
 
@@ -372,7 +394,7 @@ def start_scanner_loop():
     loss_streak_alerted       = False
     last_subscribed_watchlist = set()
 
-    # ── STARTUP SEQUENCE (all calls timeout-guarded) ──────────────────────────
+    # ── STARTUP SEQUENCE (all calls timeout-guarded) ──────────────────────
     startup_watchlist = list(EMERGENCY_FALLBACK)
 
     _run_with_timeout(
@@ -380,14 +402,14 @@ def start_scanner_loop():
         timeout_seconds=20,
         label="start_ws_feed"
     )
-    logger.info(f"[WS] WebSocket feed started (or timed out gracefully)")
+    logger.info("[WS] WebSocket feed started (or timed out gracefully)")
 
     _run_with_timeout(
         lambda: start_quote_feed(startup_watchlist),
         timeout_seconds=20,
         label="start_quote_feed"
     )
-    logger.info(f"[QUOTE] Quote feed started (or timed out gracefully)")
+    logger.info("[QUOTE] Quote feed started (or timed out gracefully)")
 
     _run_with_timeout(
         lambda: data_manager.startup_backfill_with_cache(startup_watchlist, days=30),
@@ -405,8 +427,8 @@ def start_scanner_loop():
 
     set_backfill_complete()
     last_subscribed_watchlist = set(startup_watchlist)
-    logger.info("[STARTUP] ✅ Startup sequence complete — entering main loop")
-    # ─────────────────────────────────────────────────────────────────────────────────
+    logger.info("[STARTUP] \u2705 Startup sequence complete \u2014 entering main loop")
+    # ─────────────────────────────────────────────────────────────────────
 
     while True:
         try:
@@ -414,7 +436,7 @@ def start_scanner_loop():
             current_time_str = now_et.strftime('%I:%M:%S %p ET')
             current_day      = now_et.strftime('%Y-%m-%d')
 
-            # ── PRE-MARKET ──────────────────────────────────────────────────
+            # ── PRE-MARKET ────────────────────────────────────────────────
             if is_premarket():
                 if not premarket_built:
                     logger.info(f"[PRE-MARKET] {current_time_str} - Building Watchlist")
@@ -427,7 +449,7 @@ def start_scanner_loop():
                         if not premarket_watchlist and now_et.time() > dtime(8, 0):
                             logger.warning("\u26a0\ufe0f  WATCHLIST EMPTY after 8:00 AM - possible config issue")
                             try:
-                                send_simple_message("\u26a0\ufe0f **WATCHLIST EMPTY** after 8:00 AM ET — Check funnel configuration!")
+                                send_simple_message("\u26a0\ufe0f **WATCHLIST EMPTY** after 8:00 AM ET \u2014 Check funnel configuration!")
                             except Exception:
                                 pass
 
@@ -448,11 +470,11 @@ def start_scanner_loop():
                         emoji       = stage_emoji.get(metadata['stage'], '\U0001f4ca')
                         pm_metrics  = _extract_premarket_metrics(watchlist_data)
 
+                        ellipsis = '...' if len(premarket_watchlist) > 20 else ''
                         msg = (
                             f"{emoji} **{metadata['stage_description']}**\n"
-                            f"✅ Watchlist: {len(premarket_watchlist)} tickers\n"
-                            f"{', '.join(premarket_watchlist[:20])}"
-                            f"{'...' if len(premarket_watchlist) > 20 else ''}\n"
+                            f"\u2705 Watchlist: {len(premarket_watchlist)} tickers\n"
+                            f"{', '.join(premarket_watchlist[:20])}{ellipsis}\n"
                         )
                         if pm_metrics:
                             msg += (
@@ -495,7 +517,7 @@ def start_scanner_loop():
                                 subscribe_quote_tickers(premarket_watchlist)
                             last_subscribed_watchlist = current_set
                             metadata = watchlist_data['metadata']
-                            logger.info(f"[FUNNEL] Stage: {metadata['stage'].upper()} — {metadata['stage_description']}")
+                            logger.info(f"[FUNNEL] Stage: {metadata['stage'].upper()} \u2014 {metadata['stage_description']}")
                             for ticker in premarket_watchlist:
                                 try:
                                     process_ticker(ticker)
@@ -508,7 +530,7 @@ def start_scanner_loop():
                     time.sleep(60)
                 continue
 
-            # ── MARKET HOURS ────────────────────────────────────────────────
+            # ── MARKET HOURS ──────────────────────────────────────────────
             elif is_market_hours():
                 if not should_scan_now():
                     logger.info(f"[SCANNER] {current_time_str} - Opening Range forming, waiting...")
@@ -519,13 +541,13 @@ def start_scanner_loop():
                     if not loss_streak_alerted:
                         try:
                             send_simple_message(
-                                "\U0001f6d1 **CIRCUIT BREAKER** — 3 consecutive losses today. "
+                                "\U0001f6d1 **CIRCUIT BREAKER** \u2014 3 consecutive losses today. "
                                 "New scans halted. Open positions still monitored."
                             )
                         except Exception:
                             pass
                         loss_streak_alerted = True
-                        logger.warning("[RISK] Daily loss streak reached — halting new scans.")
+                        logger.warning("[RISK] Daily loss streak reached \u2014 halting new scans.")
                     monitor_open_positions()
                     time.sleep(60)
                     continue
@@ -614,7 +636,7 @@ def start_scanner_loop():
                 logger.info(f"[SCANNER] Sleeping {scan_interval}s...")
                 time.sleep(scan_interval)
 
-            # ── AFTER HOURS / EOD ──────────────────────────────────────────────
+            # ── AFTER HOURS / EOD ─────────────────────────────────────────
             else:
                 if last_report_day != current_day:
                     logger.info(f"\n{'='*80}")
@@ -753,7 +775,7 @@ def get_screener_tickers(min_market_cap: int = 1_000_000_000, limit: int = 50) -
             code = item.get("code")
             if code:
                 tickers.append(code.replace(".US", "").replace(".us", ""))
-        logger.info(f"[SCREENER] ✅ Fetched {len(tickers)} tickers")
+        logger.info(f"[SCREENER] \u2705 Fetched {len(tickers)} tickers")
         return tickers[:limit]
     except Exception as e:
         logger.error(f"[SCREENER] Error: {e}")
