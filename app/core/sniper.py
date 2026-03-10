@@ -34,6 +34,7 @@
 # RESTORE (Mar 10 2026): Full file recovered from commit 6a235067 after accidental truncation
 # FIXED IMPORTS: signal_analytics, dynamic_thresholds, hourly_gate, production_helpers
 # FIXED (Mar 10 2026): All get_conn() calls now use try/finally: return_conn(conn) — no leaks
+# FIXED C2 (Mar 10 2026): Discord alert now fires AFTER position open succeeds (position_id > 0)
 import traceback
 import requests
 import json
@@ -1369,6 +1370,23 @@ def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high,
     if mtf_result and mtf_result.get('convergence'):
         mtf_convergence_count = len(mtf_result.get('timeframes', []))
 
+    # ── FIX C2: Open position FIRST — only alert Discord if it succeeds ───────
+    # Previously the Discord alert fired unconditionally before open_position(),
+    # meaning risk-rejected trades (max positions, circuit breaker, sector cap,
+    # duplicate ticker, etc.) still blasted a false signal to Discord.
+    position_id = position_manager.open_position(
+        ticker=ticker, direction=direction,
+        zone_low=zone_low, zone_high=zone_high,
+        or_low=or_low, or_high=or_high,
+        entry_price=entry_price, stop_price=stop_price,
+        t1=t1, t2=t2, confidence=confidence, grade=grade, options_rec=options_rec
+    )
+
+    if position_id == -1:
+        print(f"[ARM] ❌ {ticker} position rejected by risk manager — Discord alert suppressed")
+        return
+
+    # Position confirmed open — now safe to fire Discord alert
     if PRODUCTION_HELPERS_ENABLED:
         _send_alert_safe(
             send_options_signal_alert,
@@ -1422,14 +1440,6 @@ def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high,
             )
         except Exception as e:
             print(f"[DISCORD] ❌ Alert failed: {e}")
-
-    position_id = position_manager.open_position(
-        ticker=ticker, direction=direction,
-        zone_low=zone_low, zone_high=zone_high,
-        or_low=or_low, or_high=or_high,
-        entry_price=entry_price, stop_price=stop_price,
-        t1=t1, t2=t2, confidence=confidence, grade=grade, options_rec=options_rec
-    )
 
     armed_signal_data = {
         "position_id": position_id, "direction": direction,
