@@ -28,6 +28,7 @@
 #   - INTRADAY GRADE GATE REMOVED: A-, B+, B grades now flow through confidence gate
 # VOLUME PROFILE (Step 6.6): Price must be near POC or high-volume nodes for valid entries
 # ENTRY TIMING (Step 6.7): Time-based WR adjustment + session quality filtering
+# MTF TREND (Step 8.5): Multi-timeframe trend alignment boost (1m/5m/15m/30m)
 #
 # RESTORE (Mar 10 2026): Full file recovered from commit 6a235067 after accidental truncation
 # FIXED IMPORTS: signal_analytics, dynamic_thresholds, hourly_gate, production_helpers
@@ -73,6 +74,16 @@ except ImportError:
     print("[SNIPER] ⚠️  Entry timing disabled")
     def get_entry_timing_validator():
         return None
+
+try:
+    from app.core.sniper_mtf_trend_patch import run_mtf_trend_step
+    MTF_TREND_ENABLED = True
+    print("[SNIPER] ✅ MTF trend validator enabled (Step 8.5)")
+except ImportError:
+    MTF_TREND_ENABLED = False
+    print("[SNIPER] ⚠️  MTF trend validator disabled")
+    def run_mtf_trend_step(ticker, direction, entry_price, confidence, signal_data):
+        return confidence, signal_data
 
 # ══════════════════════════════════════════════════════════════════════════════
 # FIX #1: THREAD-SAFE STATE MANAGEMENT
@@ -910,6 +921,7 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
     else:
         print(f"[{ticker}] ✅ VWAP GATE: {vwap_reason}")
 
+    # ── Step 8: Confirmation layers ──────────────────────────────────────────
     conf_result = grade_signal_with_confirmations(
         ticker=ticker, direction=direction, bars=bars_session,
         current_price=entry_price, breakout_idx=breakout_idx, base_grade=base_grade
@@ -919,6 +931,18 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         return False
     final_grade = conf_result["final_grade"]
 
+    # ── Step 8.5: MTF trend alignment ─────────────────────────────────────────
+    # Boosts confidence +5/+10/+15% when 1m/5m/15m/30m trend all agree.
+    # Non-gating: low score logs a warning but does NOT kill the signal.
+    _mtf_trend_signal_data = {}
+    base_confidence_pre_mtf_trend = compute_confidence(final_grade, "5m", ticker)
+    base_confidence_pre_mtf_trend, _mtf_trend_signal_data = run_mtf_trend_step(
+        ticker, direction, entry_price,
+        base_confidence_pre_mtf_trend, _mtf_trend_signal_data
+    )
+    _mtf_trend_boost = _mtf_trend_signal_data.get('mtf_trend', {}).get('boost', 0.0)
+
+    # ── Step 9: MTF FVG convergence boost ────────────────────────────────────
     mtf_result = enhance_signal_with_mtf(
         ticker=ticker,
         direction=direction,
@@ -960,8 +984,8 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
     latest_bar = bars_session[-1]
     current_volume = latest_bar.get("volume", 0)
     signal_direction = "LONG" if direction == "bull" else "SHORT"
-    base_confidence = compute_confidence(final_grade, "5m", ticker)
-    original_confidence = base_confidence
+    base_confidence = base_confidence_pre_mtf_trend  # already has MTF trend boost applied
+    original_confidence = compute_confidence(final_grade, "5m", ticker)
 
     validation_result = None
     if VALIDATOR_ENABLED:
@@ -1094,6 +1118,7 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
 
     print(
         f"[CONFIDENCE-v2] Base:{base_confidence:.2f} "
+        f"+ MTF-Trend:{_mtf_trend_boost:+.3f} "
         f"+ Ticker:{ticker_adj:+.3f}({ticker_multiplier:.2f}) "
         f"+ Mode:{mode_adj:+.3f}({mode_decay:.2f}) "
         f"+ IVR:{ivr_adj:+.3f}[{ivr_label}] "
