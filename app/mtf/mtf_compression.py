@@ -16,6 +16,12 @@ you will go for the 5-minute. The highest time frame is going to be
 the most powerful one."
 
 This module enables that multi-timeframe scanning capability.
+
+FIX H2 (MAR 10, 2026):
+  - Removed duplicate TIMEFRAME_PRIORITY / TIMEFRAME_WEIGHTS assignments.
+    The second (lower) block was silently overwriting the extended 1h/30m/15m
+    entries that were added for higher-timeframe support. The module-level
+    constants now reflect ALL supported timeframes in a single definition.
 """
 
 from typing import List, Dict, Optional
@@ -116,31 +122,6 @@ def build_partial_higher_tf_bar(bars_5m: List[dict], target_tf: str) -> Optional
         'is_complete': len(available) == required,
         'bars_available': len(available)
     }
-
-
-# Update metadata
-TIMEFRAME_PRIORITY = ['1h', '30m', '15m', '5m', '3m', '2m', '1m']  # Highest to lowest
-
-TIMEFRAME_WEIGHTS = {
-    '1h': 2.00,   # Strongest (new)
-    '30m': 1.50,  # Very strong (new)
-    '15m': 1.25,  # Strong (new)
-    '5m': 1.00,
-    '3m': 0.85,
-    '2m': 0.70,
-    '1m': 0.55
-}
-
-# Time-based availability windows
-TIMEFRAME_MIN_MINUTES = {
-    '1h': 60,
-    '30m': 30,
-    '15m': 15,
-    '5m': 5,
-    '3m': 3,
-    '2m': 2,
-    '1m': 1
-}
 
 
 print("[MTF-COMPRESSION] ✅ Extended compression module loaded")
@@ -265,13 +246,31 @@ def compress_to_all_timeframes(bars_5m: List[dict]) -> Dict[str, List[dict]]:
     }
 
 
-# Timeframe metadata
-TIMEFRAME_PRIORITY = ['5m', '3m', '2m', '1m']  # Highest to lowest
+# H2 FIX: Single authoritative TIMEFRAME_PRIORITY and TIMEFRAME_WEIGHTS.
+# Previous file had two separate assignments; the second (lower) block contained
+# only the original 4 timeframes and silently wiped out the 1h/30m/15m entries
+# added in the top block. Consolidated here — highest to lowest priority.
+TIMEFRAME_PRIORITY = ['1h', '30m', '15m', '5m', '3m', '2m', '1m']  # Highest to lowest
+
 TIMEFRAME_WEIGHTS = {
-    '5m': 1.00,  # Strongest
-    '3m': 0.85,
-    '2m': 0.70,
-    '1m': 0.55   # Weakest
+    '1h':  2.00,  # Strongest
+    '30m': 1.50,
+    '15m': 1.25,
+    '5m':  1.00,
+    '3m':  0.85,
+    '2m':  0.70,
+    '1m':  0.55   # Weakest
+}
+
+# Time-based availability windows
+TIMEFRAME_MIN_MINUTES = {
+    '1h':  60,
+    '30m': 30,
+    '15m': 15,
+    '5m':  5,
+    '3m':  3,
+    '2m':  2,
+    '1m':  1
 }
 
 

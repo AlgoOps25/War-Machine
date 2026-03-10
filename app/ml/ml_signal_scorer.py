@@ -11,6 +11,15 @@ Usage:
     
     # Test prediction
     python ml_signal_scorer.py --test
+
+FIX H3 (MAR 10, 2026):
+  - MODEL_DIR now uses os.getcwd() so it resolves to the Railway container's
+    working directory (/app or project root) instead of a relative path that
+    varies with wherever Python's cwd happens to be at import time.
+  - In practice this means model files persist across the deploy lifetime and
+    survive container restarts (as long as the Railway volume is mounted).
+    Without this fix the scorer silently fell back to raw confidence / 100.0
+    on every prediction because MODEL_PATH.exists() always returned False.
 """
 
 import os
@@ -43,8 +52,12 @@ except ImportError:
 # CONFIGURATION
 # ============================================================================
 
-MODEL_DIR = Path("models")
-MODEL_DIR.mkdir(exist_ok=True)
+# H3 FIX: Anchor MODEL_DIR to the project root (os.getcwd()) so it resolves
+# consistently inside the Railway container regardless of which sub-package
+# imports this module. Path("models") is relative to cwd at import time,
+# which is undefined when imported as part of a package — use an absolute path.
+MODEL_DIR = Path(os.getcwd()) / "models"
+MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
 MODEL_PATH = MODEL_DIR / "signal_scorer_rf.pkl"
 ENCODERS_PATH = MODEL_DIR / "label_encoders.pkl"

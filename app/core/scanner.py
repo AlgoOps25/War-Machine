@@ -31,6 +31,11 @@ PHASE 1.19 (MAR 10, 2026):
   - FIX C5: health_heartbeat() called at top of every main loop cycle
   - Railway now gets a real 200/503 signal from GET /health instead of
     always-200 (health endpoint was missing entirely before this fix)
+
+PHASE 1.20 (MAR 10, 2026):
+  - FIX H1: analytics_conn wrapped in reconnect helper — survives Railway DB
+    restarts, idle-connection timeouts, and transient TCP drops without crashing
+    the scanner process. A dead connection is detected before use and replaced.
 """
 import os
 import time
@@ -69,6 +74,8 @@ from app.risk.position_manager import position_manager as _pm
 logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────────────────────────────────────
+# H1 FIX: analytics_conn with reconnect guard
+# ─────────────────────────────────────────────────────────────────────────────
 ANALYTICS_AVAILABLE = False
 analytics_conn = None
 DATABASE_URL = os.getenv('DATABASE_URL')
@@ -79,6 +86,7 @@ if DATABASE_URL:
     try:
         import psycopg2
         analytics_conn = psycopg2.connect(DATABASE_URL, connect_timeout=10)
+        analytics_conn.autocommit = True  # Avoid idle-in-transaction issues
         print("[DB] ✓ Connected - Analytics ONLINE", flush=True)
         ANALYTICS_AVAILABLE = True
     except Exception as e:
@@ -89,6 +97,54 @@ else:
     print("[DB] ✗ DATABASE_URL not set - Analytics DISABLED", flush=True)
     ANALYTICS_AVAILABLE = False
 print("=" * 50, flush=True)
+
+
+def _get_analytics_conn():
+    """
+    H1 FIX: Return a live analytics connection.
+
+    Checks the module-level connection with a lightweight SELECT 1.
+    If it's dead (Railway restart, idle-connection timeout, TCP drop),
+    silently reconnects and returns the fresh connection.
+    Returns None when DATABASE_URL is unset or all reconnect attempts fail.
+    """
+    global analytics_conn, ANALYTICS_AVAILABLE
+
+    if not DATABASE_URL:
+        return None
+
+    # Fast-path: probe existing connection
+    if analytics_conn is not None:
+        try:
+            cur = analytics_conn.cursor()
+            cur.execute("SELECT 1")
+            cur.close()
+            return analytics_conn  # Still alive
+        except Exception:
+            # Connection is dead — fall through to reconnect
+            try:
+                analytics_conn.close()
+            except Exception:
+                pass
+            analytics_conn = None
+
+    # Reconnect (up to 3 attempts)
+    for attempt in range(1, 4):
+        try:
+            import psycopg2
+            analytics_conn = psycopg2.connect(DATABASE_URL, connect_timeout=10)
+            analytics_conn.autocommit = True
+            ANALYTICS_AVAILABLE = True
+            logger.info(f"[DB] Reconnected analytics connection (attempt {attempt})")
+            return analytics_conn
+        except Exception as e:
+            logger.warning(f"[DB] Reconnect attempt {attempt}/3 failed: {e}")
+            time.sleep(1)
+
+    logger.error("[DB] All reconnect attempts failed — analytics disabled for this cycle")
+    ANALYTICS_AVAILABLE = False
+    return None
+
 
 try:
     from app.signals.signal_analytics import signal_tracker
@@ -332,7 +388,7 @@ def start_scanner_loop():
     # STARTUP HEALTH CHECK BANNER
     # ════════════════════════════════════════════════════════════════════════
     print("=" * 60, flush=True)
-    print("WAR MACHINE CFW6 SCANNER v1.19 - STARTUP", flush=True)
+    print("WAR MACHINE CFW6 SCANNER v1.20 - STARTUP", flush=True)
     print("=" * 60, flush=True)
     print("✓ DATA-INGEST    WebSocket starting (tickers TBD)", flush=True)
 
@@ -386,10 +442,11 @@ def start_scanner_loop():
     print("BG Backfill:     ✅ ENABLED (fire-and-forget — Phase 1.17)", flush=True)
     print("Cache Dir Fix:   ✅ FIXED   (os.getcwd() — Phase 1.18a)", flush=True)
     print("Health HTTP:     ✅ ENABLED (GET /health → 200/503 — Phase 1.19 C5)", flush=True)
+    print("Analytics Conn:  ✅ FIXED   (reconnect guard — Phase 1.20 H1)", flush=True)
     print("=" * 60 + "\n", flush=True)
 
     try:
-        send_simple_message("⚔️ WAR MACHINE ONLINE — CFW6 v1.19 | Health endpoint live | C5 fixed")
+        send_simple_message("⚔️ WAR MACHINE ONLINE — CFW6 v1.20 | Analytics reconnect guard | H1 fixed")
     except Exception as e:
         logger.warning(f"[SCANNER] Discord unavailable: {e}")
 
@@ -590,14 +647,17 @@ def start_scanner_loop():
 
                 logger.info(f"[SCANNER] {len(watchlist)} tickers | {', '.join(watchlist[:10])}...")
 
+                # H1 FIX: use reconnect-aware accessor instead of bare analytics_conn
                 if ANALYTICS_AVAILABLE and analytics:
                     try:
-                        def get_price(ticker):
-                            from app.data.ws_feed import get_current_bar_with_fallback
-                            bar = get_current_bar_with_fallback(ticker)
-                            return bar['close'] if bar else None
-                        analytics.monitor_active_signals(get_price)
-                        analytics.check_scheduled_tasks()
+                        live_conn = _get_analytics_conn()
+                        if live_conn and analytics:
+                            def get_price(ticker):
+                                from app.data.ws_feed import get_current_bar_with_fallback
+                                bar = get_current_bar_with_fallback(ticker)
+                                return bar['close'] if bar else None
+                            analytics.monitor_active_signals(get_price)
+                            analytics.check_scheduled_tasks()
                     except Exception as e:
                         logger.error(f"[ANALYTICS] Monitor error: {e}")
 

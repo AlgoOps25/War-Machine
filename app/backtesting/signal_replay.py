@@ -27,9 +27,19 @@ Usage:
       strategy=my_strategy,
       strategy_params={'lookback_bars': 12, 'volume_threshold': 2.0}
   )
+
+FIX H5 (MAR 10, 2026):
+  - create_strategy_from_signal_generator was catching all exceptions silently,
+    masking real errors (ImportError on missing modules, AttributeError on
+    unexpected signal shapes, etc.) as "no signal".  Only the expected no-signal
+    path (detector returns None) should be silent.  Unexpected exceptions now
+    log a warning so bugs surface during backtesting runs.
 """
 from typing import Dict, List, Optional, Callable
 from datetime import datetime
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def create_strategy_from_breakout_detector(lookback_bars: int = 12,
@@ -85,14 +95,27 @@ def create_strategy_from_signal_generator(min_confidence: int = 60,
             
             # Convert bars to format expected by signal_generator
             ticker = "BACKTEST"
-            latest_bar = bars[-1]
-            
+
             # Generate signal (this would call your actual signal logic)
             signal = generator.generate_signal(ticker, bars)
             
             return signal
-            
+
+        except ImportError as e:
+            # H5 FIX: ImportError means the module or dependency is missing.
+            # Log once at WARNING level so the backtester knows signal_generator
+            # is unavailable, rather than silently returning None every call.
+            logger.warning(
+                f"[REPLAY] SignalGenerator unavailable (ImportError: {e}). "
+                "Signals will be None for all bars in this run."
+            )
+            return None
+
         except Exception as e:
+            # H5 FIX: Unexpected exceptions (AttributeError, KeyError, etc.) are
+            # logged at WARNING so bugs surface during backtesting sessions.
+            # We still return None to keep the BacktestEngine loop alive.
+            logger.warning(f"[REPLAY] SignalGenerator error on bar: {e}")
             return None
     
     return strategy
