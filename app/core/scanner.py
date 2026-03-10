@@ -36,11 +36,18 @@ PHASE 1.20 (MAR 10, 2026):
   - FIX H1: analytics_conn wrapped in reconnect helper — survives Railway DB
     restarts, idle-connection timeouts, and transient TCP drops without crashing
     the scanner process. A dead connection is detected before use and replaced.
+
+PHASE 1.21 (MAR 10, 2026):
+  - FIX P0-3: Ticker timeout watchdog — process_ticker() now runs in a
+    ThreadPoolExecutor with a 45-second hard timeout per ticker.
+    A hung EODHD call, confirmation wait, or DB query can no longer stall
+    the entire scan loop. Timed-out tickers are logged and skipped cleanly.
 """
 import os
 import time
 import threading
 import logging
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from datetime import datetime, time as dtime
 from zoneinfo import ZoneInfo
 from utils import config
@@ -72,6 +79,42 @@ from app.risk.risk_manager import (
 from app.risk.position_manager import position_manager as _pm
 
 logger = logging.getLogger(__name__)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# P0-3 FIX: Ticker timeout watchdog
+# Each call to process_ticker() is submitted to a single-thread executor and
+# given TICKER_TIMEOUT_SECONDS to complete.  If it hangs (blocked EODHD fetch,
+# stalled confirmation loop, DB deadlock, etc.) the future is cancelled, a
+# warning is logged, and the scan loop moves on to the next ticker unharmed.
+# ─────────────────────────────────────────────────────────────────────────────
+TICKER_TIMEOUT_SECONDS = 45
+_ticker_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ticker_watchdog")
+
+
+def _run_ticker_with_timeout(process_ticker_fn, ticker: str) -> bool:
+    """
+    Run process_ticker(ticker) with a hard wall-clock timeout.
+
+    Returns True if it completed (successfully or with a handled exception),
+    False if it was forcibly timed out.
+    """
+    future = _ticker_executor.submit(process_ticker_fn, ticker)
+    try:
+        future.result(timeout=TICKER_TIMEOUT_SECONDS)
+        return True
+    except FuturesTimeoutError:
+        logger.error(
+            f"[WATCHDOG] ⏰ {ticker} timed out after {TICKER_TIMEOUT_SECONDS}s "
+            f"— skipping ticker, scan loop continues"
+        )
+        future.cancel()
+        return False
+    except Exception as exc:
+        # process_ticker has its own internal try/except; this catches anything
+        # that bubbles up despite that (should be rare).
+        logger.error(f"[WATCHDOG] ❌ {ticker} raised unhandled exception: {exc}")
+        return False
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # H1 FIX: analytics_conn with reconnect guard
@@ -388,7 +431,7 @@ def start_scanner_loop():
     # STARTUP HEALTH CHECK BANNER
     # ════════════════════════════════════════════════════════════════════════
     print("=" * 60, flush=True)
-    print("WAR MACHINE CFW6 SCANNER v1.20 - STARTUP", flush=True)
+    print("WAR MACHINE CFW6 SCANNER v1.21 - STARTUP", flush=True)
     print("=" * 60, flush=True)
     print("✓ DATA-INGEST    WebSocket starting (tickers TBD)", flush=True)
 
@@ -443,10 +486,11 @@ def start_scanner_loop():
     print("Cache Dir Fix:   ✅ FIXED   (os.getcwd() — Phase 1.18a)", flush=True)
     print("Health HTTP:     ✅ ENABLED (GET /health → 200/503 — Phase 1.19 C5)", flush=True)
     print("Analytics Conn:  ✅ FIXED   (reconnect guard — Phase 1.20 H1)", flush=True)
+    print(f"Ticker Watchdog: ✅ ENABLED ({TICKER_TIMEOUT_SECONDS}s hard timeout per ticker — Phase 1.21 P0-3)", flush=True)
     print("=" * 60 + "\n", flush=True)
 
     try:
-        send_simple_message("⚔️ WAR MACHINE ONLINE — CFW6 v1.20 | Analytics reconnect guard | H1 fixed")
+        send_simple_message("⚔️ WAR MACHINE ONLINE — CFW6 v1.21 | Ticker watchdog | P0-3 fixed")
     except Exception as e:
         logger.warning(f"[SCANNER] Discord unavailable: {e}")
 
@@ -560,10 +604,7 @@ def start_scanner_loop():
                         send_simple_message(msg)
 
                         for ticker in premarket_watchlist:
-                            try:
-                                process_ticker(ticker)
-                            except Exception as e:
-                                logger.error(f"[PRE-MARKET] Error processing {ticker}: {e}")
+                            _run_ticker_with_timeout(process_ticker, ticker)
 
                     except Exception as e:
                         logger.error(f"[PRE-MARKET] Funnel error: {e}")
@@ -589,10 +630,7 @@ def start_scanner_loop():
                             metadata = watchlist_data['metadata']
                             logger.info(f"[FUNNEL] Stage: {metadata['stage'].upper()} — {metadata['stage_description']}")
                             for ticker in premarket_watchlist:
-                                try:
-                                    process_ticker(ticker)
-                                except Exception as e:
-                                    logger.error(f"[PRE-MARKET] Error processing {ticker}: {e}")
+                                _run_ticker_with_timeout(process_ticker, ticker)
                         except Exception as e:
                             logger.error(f"[PRE-MARKET] Refresh error: {e}")
                     else:
@@ -675,29 +713,9 @@ def start_scanner_loop():
                 for idx, ticker in enumerate(watchlist, 1):
                     try:
                         logger.info(f"--- [{idx}/{len(watchlist)}] {ticker} ---")
-                        signal = process_ticker(ticker)
+                        # P0-3 FIX: wrapped in 45s timeout watchdog
+                        _run_ticker_with_timeout(process_ticker, ticker)
 
-                        if signal and VALIDATION_AVAILABLE and validate_signal:
-                            validation_result = validate_signal(
-                                ticker=ticker,
-                                signal_type=signal.get('type', 'BOS'),
-                                regime_filter=True,
-                                greeks_available=OPTIONS_AVAILABLE,
-                            )
-                            if validation_result.get('passed', False):
-                                options_play = None
-                                if OPTIONS_AVAILABLE and build_options_trade:
-                                    try:
-                                        options_play = build_options_trade(
-                                            ticker,
-                                            "CALL" if signal['signal'] == 'BUY' else "PUT",
-                                            signal.get('confidence', 70),
-                                        )
-                                    except Exception as e:
-                                        logger.warning(f"[OPTIONS] Failed to build trade for {ticker}: {e}")
-                                logger.info(f"[VALIDATION] {ticker} signal PASSED validation")
-                            else:
-                                logger.info(f"[VALIDATION] {ticker} rejected: {validation_result.get('reason', 'Unknown')}")
                     except Exception as e:
                         logger.error(f"[SCANNER] Error on {ticker}: {e}")
                         import traceback

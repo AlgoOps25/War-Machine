@@ -1,1 +1,1 @@
-﻿# Test Suite
+# War Machine test suite

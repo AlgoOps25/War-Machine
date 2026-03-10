@@ -1,6 +1,17 @@
 """
 Subsystem Health Check - War Machine Startup Diagnostics
 
+⚠️  STATUS: DIAGNOSTIC UTILITY — NOT PART OF THE LIVE SCAN LOOP
+─────────────────────────────────────────────────────────────────
+This file is a standalone startup diagnostics helper.
+The LIVE health server used by Railway is:
+    app/core/health_server.py  ← imported by scanner.py (start_health_server / health_heartbeat)
+
+This file is NOT imported by scanner.py or sniper.py.
+It can be run manually for subsystem checks:
+    python -m app.health_check
+─────────────────────────────────────────────────────────────────
+
 Provides comprehensive health checks for all War Machine subsystems:
 - Database connectivity (PostgreSQL analytics)
 - Discord alerting
@@ -9,19 +20,6 @@ Provides comprehensive health checks for all War Machine subsystems:
 - Options intelligence
 - Validation layer
 - Cache system
-
-Usage:
-    from app.health_check import perform_health_check
-    
-    # Run all health checks at startup
-    health_status = perform_health_check(
-        require_database=True,  # Fail fast if DB unavailable
-        require_discord=False   # Continue without Discord
-    )
-    
-    if not health_status['critical_systems_ok']:
-        logger.error("Critical systems failed - aborting startup")
-        sys.exit(1)
 
 Phase: 1.10 - Action Item #5
 Author: War Machine Team
@@ -45,15 +43,6 @@ class HealthCheck:
         self.critical_failed = False
         
     def check_database(self, require: bool = False) -> Dict:
-        """
-        Check PostgreSQL database connectivity.
-        
-        Args:
-            require: If True, treat as critical (fail fast)
-            
-        Returns:
-            {'status': 'online'|'offline', 'message': str, 'critical': bool}
-        """
         database_url = os.getenv('DATABASE_URL')
         
         if not database_url:
@@ -70,8 +59,6 @@ class HealthCheck:
         try:
             import psycopg2
             conn = psycopg2.connect(database_url)
-            
-            # Test query
             cursor = conn.cursor()
             cursor.execute("SELECT 1")
             cursor.close()
@@ -107,15 +94,6 @@ class HealthCheck:
             return result
     
     def check_discord(self, require: bool = False) -> Dict:
-        """
-        Check Discord webhook configuration.
-        
-        Args:
-            require: If True, treat as critical
-            
-        Returns:
-            Health status dict
-        """
         webhook_url = os.getenv('DISCORD_WEBHOOK_URL')
         
         if not webhook_url:
@@ -129,7 +107,6 @@ class HealthCheck:
                 self.critical_failed = True
             return result
         
-        # Basic URL validation
         if not webhook_url.startswith('https://discord.com/api/webhooks/'):
             result = {
                 'status': 'offline',
@@ -141,7 +118,6 @@ class HealthCheck:
                 self.critical_failed = True
             return result
         
-        # Could add actual webhook test here, but that sends a message
         return {
             'status': 'online',
             'message': 'Webhook configured',
@@ -150,12 +126,6 @@ class HealthCheck:
         }
     
     def check_data_feed(self) -> Dict:
-        """
-        Check EODHD API key and data ingestion readiness.
-        
-        Returns:
-            Health status dict
-        """
         api_key = os.getenv('EODHD_API_KEY')
         
         if not api_key:
@@ -174,15 +144,8 @@ class HealthCheck:
         }
     
     def check_regime_filter(self) -> Dict:
-        """
-        Check if regime filter module is available.
-        
-        Returns:
-            Health status dict
-        """
         try:
-            # Try to import regime filter
-            from app.regime_filter import RegimeFilter  # Adjust import path as needed
+            from app.regime_filter import RegimeFilter
             return {
                 'status': 'online',
                 'message': 'ADX/VIX monitoring active',
@@ -198,12 +161,6 @@ class HealthCheck:
             }
     
     def check_options_system(self) -> Dict:
-        """
-        Check if options intelligence subsystem is wired.
-        
-        Returns:
-            Health status dict
-        """
         try:
             from app.options import options_intelligence
             return {
@@ -221,12 +178,6 @@ class HealthCheck:
             }
     
     def check_validation_system(self) -> Dict:
-        """
-        Check if validation layer is wired.
-        
-        Returns:
-            Health status dict
-        """
         try:
             from app.validation import validation
             return {
@@ -244,19 +195,12 @@ class HealthCheck:
             }
     
     def check_cache_system(self) -> Dict:
-        """
-        Check if cache system is operational.
-        
-        Returns:
-            Health status dict
-        """
         try:
-            # Basic file system check for cache directory
             cache_dir = os.path.join(os.getcwd(), 'cache')
             if os.path.exists(cache_dir):
                 return {
                     'status': 'online',
-                    'message': f'Cache directory ready',
+                    'message': 'Cache directory ready',
                     'critical': False,
                     'symbol': '✓'
                 }
@@ -279,36 +223,16 @@ class HealthCheck:
 def perform_health_check(require_database: bool = False,
                         require_discord: bool = False,
                         verbose: bool = True) -> Dict:
-    """
-    Perform comprehensive health check of all War Machine subsystems.
-    
-    Args:
-        require_database: Fail fast if database unavailable
-        require_discord: Fail fast if Discord not configured
-        verbose: Print startup banner
-        
-    Returns:
-        {
-            'critical_systems_ok': bool,
-            'subsystems': {
-                'database': {...},
-                'discord': {...},
-                ...
-            },
-            'timestamp': datetime
-        }
-    """
     checker = HealthCheck()
     
-    # Run all checks
     results = {
-        'database': checker.check_database(require=require_database),
-        'discord': checker.check_discord(require=require_discord),
-        'data_feed': checker.check_data_feed(),
+        'database':      checker.check_database(require=require_database),
+        'discord':       checker.check_discord(require=require_discord),
+        'data_feed':     checker.check_data_feed(),
         'regime_filter': checker.check_regime_filter(),
-        'options': checker.check_options_system(),
-        'validation': checker.check_validation_system(),
-        'cache': checker.check_cache_system()
+        'options':       checker.check_options_system(),
+        'validation':    checker.check_validation_system(),
+        'cache':         checker.check_cache_system()
     }
     
     if verbose:
@@ -322,53 +246,38 @@ def perform_health_check(require_database: bool = False,
 
 
 def print_health_banner(results: Dict) -> None:
-    """
-    Print colorful health check banner.
-    
-    Args:
-        results: Health check results dict
-    """
     banner_width = 70
-    
     print("\n" + "=" * banner_width)
     print("WAR MACHINE BOS/FVG SCANNER - STARTUP HEALTH CHECK".center(banner_width))
     print("=" * banner_width)
-    
-    # Format each subsystem
     print(f"\n{'SUBSYSTEM':<20} {'STATUS':<15} {'DETAILS':<35}")
     print("-" * banner_width)
     
     subsystem_names = {
-        'database': 'DATABASE',
-        'discord': 'DISCORD ALERTS',
-        'data_feed': 'DATA-INGEST',
-        'cache': 'CACHE SYSTEM',
+        'database':      'DATABASE',
+        'discord':       'DISCORD ALERTS',
+        'data_feed':     'DATA-INGEST',
+        'cache':         'CACHE SYSTEM',
         'regime_filter': 'REGIME-FILTER',
-        'options': 'OPTIONS-GATE',
-        'validation': 'VALIDATION'
+        'options':       'OPTIONS-GATE',
+        'validation':    'VALIDATION'
     }
     
     for key, name in subsystem_names.items():
         if key in results:
-            result = results[key]
-            symbol = result['symbol']
-            status = result['status'].upper()
+            result  = results[key]
+            symbol  = result['symbol']
+            status  = result['status'].upper()
             message = result['message']
-            
-            # Truncate long messages
             if len(message) > 33:
                 message = message[:30] + "..."
-            
             print(f"{symbol} {name:<18} {status:<14} {message}")
     
     print("=" * banner_width)
-    
-    # Summary
     critical_failed = any(
-        r.get('critical') and r.get('status') == 'offline' 
+        r.get('critical') and r.get('status') == 'offline'
         for r in results.values()
     )
-    
     if critical_failed:
         print("⚠️  CRITICAL SYSTEM FAILURE - Cannot proceed")
     else:
@@ -377,25 +286,14 @@ def print_health_banner(results: Dict) -> None:
             print("✓ All systems operational")
         else:
             print("⚠️  Some optional systems offline - continuing with reduced functionality")
-    
     print("=" * banner_width)
     print(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S ET')}")
     print("=" * banner_width + "\n")
 
 
-def print_session_info(session_start: str, session_end: str, 
+def print_session_info(session_start: str, session_end: str,
                       is_premarket: bool, watchlist_size: int = 0) -> None:
-    """
-    Print trading session information.
-    
-    Args:
-        session_start: Session start time
-        session_end: Session end time
-        is_premarket: Whether currently in pre-market
-        watchlist_size: Number of tickers in watchlist
-    """
     mode = "Pre-Market" if is_premarket else "Live Trading"
-    
     print(f"Trading Session: {session_start} - {session_end} ET")
     print(f"Scanner Mode: {mode}")
     if watchlist_size > 0:
@@ -403,24 +301,16 @@ def print_session_info(session_start: str, session_end: str,
     print("\n")
 
 
-# ========================================
-# USAGE EXAMPLE
-# ========================================
 if __name__ == "__main__":
-    # Test health checks
     print("Testing War Machine health checks...\n")
-    
     health_status = perform_health_check(
-        require_database=False,  # Don't fail on missing DB for testing
+        require_database=False,
         require_discord=False,
         verbose=True
     )
-    
     print("\nHealth Check Results:")
     print(f"Critical Systems OK: {health_status['critical_systems_ok']}")
     print(f"Timestamp: {health_status['timestamp']}")
-    
-    # Example session info
     print("\n" + "="*70)
     print_session_info(
         session_start="09:30",
