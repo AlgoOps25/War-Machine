@@ -1,4 +1,4 @@
-﻿"""
+"""
 Dynamic Confidence Threshold Manager
 Optimization #3: Adaptive thresholds based on performance and market conditions
 
@@ -60,7 +60,14 @@ def _get_vix_adjustment():
         if vix_data is None:
             return 0.00
 
-        vix = vix_data.get("close", 0)
+        # get_vix_level() may return a plain float OR a dict with 'close' key
+        if isinstance(vix_data, dict):
+            vix = float(vix_data.get("close", 0) or 0)
+        else:
+            vix = float(vix_data)
+
+        if vix <= 0:
+            return 0.00
 
         if vix < 15:
             return -0.02
@@ -107,14 +114,12 @@ def _get_winrate_adjustment(signal_type, grade):
         conn.close()
 
         if len(rows) < 10:
-            # Insufficient data - use neutral adjustment
             return 0.00
 
         wins = sum(1 for row in rows if row["outcome"] in ("WIN", "PARTIAL_WIN"))
         total = len(rows)
         winrate = wins / total if total > 0 else 0.0
 
-        # Map win rate to adjustment
         if winrate > 0.70:
             return -0.05
         elif winrate > 0.60:
@@ -134,16 +139,6 @@ def _get_winrate_adjustment(signal_type, grade):
 def _get_recent_quality_adjustment():
     """
     Adjust based on quality of last 5 signals (any type/grade).
-
-    If recent signals have been low quality (many filtered/gated),
-    raise threshold temporarily.
-
-    Last 5 signals:
-    - 0-1 filtered: +0.00 (good quality flow)
-    - 2-3 filtered: +0.02 (some quality issues)
-    - 4-5 filtered: +0.04 (poor quality flow, tighten up)
-
-    Checks proposed_trades table for signals proposed in last 2 hours.
     Returns 0.00 if insufficient data.
     """
     try:
@@ -152,7 +147,6 @@ def _get_recent_quality_adjustment():
         conn = get_conn()
         cursor = dict_cursor(conn)
 
-        # Get last 5 proposed signals (regardless of whether they were armed)
         two_hours_ago = _now_et() - timedelta(hours=2)
 
         cursor.execute("""
@@ -166,11 +160,8 @@ def _get_recent_quality_adjustment():
         conn.close()
 
         if len(rows) < 3:
-            # Insufficient data
             return 0.00
 
-        # Count how many were below their effective threshold
-        # (proxy: confidence < 0.65 suggests it was filtered/marginal)
         low_quality = sum(1 for row in rows if row["confidence"] < 0.65)
 
         if low_quality <= 1:
@@ -195,39 +186,23 @@ def get_dynamic_threshold(signal_type, grade):
 
     Returns:
         float: Dynamic threshold (typically 0.60-0.85)
-
-    Formula:
-        baseline (from config)
-        + time_of_day_adj (Â±0.05)
-        + vix_adj (Â±0.05)
-        + winrate_adj (Â±0.07)
-        + quality_adj (Â±0.04)
-
-        Clamped to: [ABSOLUTE_FLOOR, 0.85]
     """
-    # Get baseline from config (these are now "default" values)
     if signal_type == "CFW6_OR":
         baseline = config.MIN_CONFIDENCE_OR
     else:
         baseline = config.MIN_CONFIDENCE_INTRADAY
 
-    # Apply grade-specific baseline override if lower
     grade_baseline = config.MIN_CONFIDENCE_BY_GRADE.get(grade, baseline)
     baseline = max(baseline, grade_baseline)
 
-    # Apply dynamic adjustments
-    time_adj = _get_time_of_day_adjustment()
-    vix_adj = _get_vix_adjustment()
+    time_adj    = _get_time_of_day_adjustment()
+    vix_adj     = _get_vix_adjustment()
     winrate_adj = _get_winrate_adjustment(signal_type, grade)
     quality_adj = _get_recent_quality_adjustment()
 
-    # Calculate final threshold
     final_threshold = baseline + time_adj + vix_adj + winrate_adj + quality_adj
-
-    # Clamp to reasonable bounds
     final_threshold = max(config.CONFIDENCE_ABSOLUTE_FLOOR, min(final_threshold, 0.85))
 
-    # Log the calculation for transparency
     print(
         f"[DYNAMIC-THRESH] {signal_type}/{grade}: "
         f"base={baseline:.2f} + time={time_adj:+.2f} + vix={vix_adj:+.2f} "
@@ -238,18 +213,9 @@ def get_dynamic_threshold(signal_type, grade):
 
 
 def get_threshold_stats():
-    """
-    Return current threshold adjustments for monitoring/debugging.
-
-    Returns:
-        dict with current adjustment values
-    """
+    """Return current threshold adjustments for monitoring/debugging."""
     return {
         "time_of_day_adj": _get_time_of_day_adjustment(),
-        "vix_adj": _get_vix_adjustment(),
-        "timestamp": _now_et().isoformat()
+        "vix_adj":         _get_vix_adjustment(),
+        "timestamp":       _now_et().isoformat()
     }
-
-
-
-

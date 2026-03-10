@@ -63,7 +63,6 @@ def test_db_connection():
 test_component("Database Connection", test_db_connection)
 
 def test_db_tables():
-    """Works for both SQLite (local) and PostgreSQL (Railway)."""
     from app.data.db_connection import get_conn
     conn = get_conn()
     cur = conn.cursor()
@@ -268,13 +267,20 @@ def test_explosive_tracker():
 test_component("Explosive Mover Tracker", test_explosive_tracker)
 
 def test_signal_cooldown():
+    """Call is_on_cooldown with whatever arguments its real signature requires."""
     from app.core.signal_generator_cooldown import is_on_cooldown
     import inspect
-    sig = inspect.signature(is_on_cooldown)
+    sig    = inspect.signature(is_on_cooldown)
     params = list(sig.parameters.keys())
     print(f"   is_on_cooldown params: {params}")
-    result = is_on_cooldown('TEST')
-    assert isinstance(result, bool), "is_on_cooldown didn't return bool"
+
+    # Build kwargs for every required positional param using safe defaults
+    _defaults = {'ticker': 'TEST', 'direction': 'bull', 'signal_type': 'CFW6_OR'}
+    kwargs = {p: _defaults.get(p, 'TEST') for p in params
+              if sig.parameters[p].default is inspect.Parameter.empty}
+
+    result = is_on_cooldown(**kwargs)
+    assert isinstance(result, bool), f"is_on_cooldown didn't return bool, got {type(result)}"
 
 test_component("Signal Cooldown Tracker", test_signal_cooldown)
 
