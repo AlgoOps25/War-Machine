@@ -7,6 +7,7 @@ Timeline:
   8:00-9:15 AM: Wide scan (Top 50) - collect gap movers and volume leaders
   9:15-9:25 AM: Narrow to Top 10 - score momentum quality and technical setup
   9:25-9:30 AM: Final Top 3 - highest probability plays for opening bell
+  9:30 AM+:     LOCKED - watchlist frozen, no re-scoring until next session
 
 Integration:
   - Uses premarket_scanner.py (UNIFIED) for professional 3-tier scoring
@@ -19,8 +20,8 @@ NEW in v3.1:
   - Can apply downstream filters on dollar-vol, RVOL tier, sector diversity
 
 NEW in v3.2:
-  - Fixed live session max_tickers cap (10 → 20) to allow more discovery
-  - Reduced live session min_score (55 → 25) to match actual usage
+  - Fixed live session max_tickers cap (10 -> 20) to allow more discovery
+  - Reduced live session min_score (55 -> 25) to match actual usage
   - Added dynamic expansion when insufficient tickers pass scoring
 
 FIX v3.3 (PostgreSQL + Ellipsis):
@@ -28,14 +29,16 @@ FIX v3.3 (PostgreSQL + Ellipsis):
   - Replaced ... with proper function calls to get_top_n_movers()
   - Now safely handles empty/invalid watchlist data
 
-PHASE 1.17 (MAR 10, 2026) — DTE filter removed:
+PHASE 1.17 (MAR 10, 2026) - DTE filter removed:
   - Removed options_dte_filter integration from all funnel stages
   - DTE is a CONTRACT SELECTION concern, not a trade qualification gate
-  - A ticker with only Friday options is still valid for a same-day explosive
-    move — you just buy the nearest expiry and close before EOD
-  - The DTE filter was rejecting every non-SPY/QQQ ticker on Tues-Thurs
-    because most stocks only have weekly expirations (nearest DTE = 4)
-  - options_dte_filter.py is kept for optional contract selection logic
+
+PHASE 1.18 (MAR 10, 2026) - Watchlist lock at market open:
+  - _build_live_watchlist() now freezes the watchlist on its first run
+  - Subsequent funnel ticks in live session return the locked list immediately
+  - run_momentum_screener() is NOT called again after 9:30 ET
+  - ScannerCache TTL extended to EOD after first live build (lock_until_eod)
+  - Eliminates the 3-minute re-score / PREMARKET log flood during market hours
 """
 import sys
 from pathlib import Path
@@ -69,6 +72,10 @@ class WatchlistFunnel:
 
         self.current_stage = "wide"
         self.last_update_time: Optional[datetime] = None
+
+        # PHASE 1.18: watchlist lock — set once at first live build, never re-scored
+        self._locked_watchlist: Optional[List[str]] = None
+        self._locked_at: Optional[datetime] = None
 
         self.stages = {
             "wide": {
@@ -113,6 +120,9 @@ class WatchlistFunnel:
             return "live"
 
     def should_update(self, force: bool = False) -> bool:
+        # PHASE 1.18: once locked, never re-evaluate during live session
+        if self._locked_watchlist is not None and self.get_current_stage() == "live":
+            return False
         if force:
             return True
         current_stage = self.get_current_stage()
@@ -126,6 +136,11 @@ class WatchlistFunnel:
 
     def build_watchlist(self, force_refresh: bool = False) -> List[str]:
         """Build watchlist based on current stage and market conditions."""
+        # PHASE 1.18: return frozen watchlist immediately if locked
+        if self._locked_watchlist is not None and self.get_current_stage() == "live" and not force_refresh:
+            print(f"[FUNNEL] Using locked watchlist ({len(self._locked_watchlist)} tickers, locked at {self._locked_at.strftime('%H:%M:%S') if self._locked_at else '?'})")
+            return self._locked_watchlist
+
         if not self.should_update(force_refresh):
             print(f"[FUNNEL] Using cached watchlist ({len(self.current_watchlist)} tickers)")
             return self.current_watchlist
@@ -147,10 +162,6 @@ class WatchlistFunnel:
             watchlist = self._build_final_selection()
         else:
             watchlist = self._build_live_watchlist()
-
-        # PHASE 1.17: DTE filter removed — it was rejecting all non-SPY/QQQ tickers
-        # on days where the nearest weekly expiry is 4 DTE (Tue-Thu). Contract
-        # selection (which expiry to buy) is handled at order-entry time, not here.
 
         self.current_watchlist = watchlist
         self.last_update_time  = datetime.now()
@@ -255,12 +266,17 @@ class WatchlistFunnel:
         return watchlist
 
     def _build_live_watchlist(self) -> List[str]:
+        """
+        PHASE 1.18: Only runs ONCE at 9:30 ET.
+        Builds the live watchlist from the screener, then freezes it.
+        All subsequent calls return the locked list without re-scoring.
+        """
         stage_config = self.stages["live"]
         screener_results = dynamic_screener.get_scored_tickers(
             max_tickers=50, min_score=0, force_refresh=False
         )
         candidates = [t['ticker'] for t in screener_results[:50]]
-        print(f"[FUNNEL] Live session: scanning {len(candidates)} candidates from screener")
+        print(f"[FUNNEL] Live session scanning {len(candidates)} candidates from screener")
         self.scored_tickers = _get_momentum_screener().run_momentum_screener(
             candidates,
             min_composite_score=stage_config["min_score"],
@@ -289,10 +305,21 @@ class WatchlistFunnel:
         watchlist = _get_momentum_screener().get_top_n_movers(
             self.scored_tickers, stage_config["max_tickers"]
         )
+
+        # PHASE 1.18: freeze — lock the cache and this watchlist for the session
+        _get_momentum_screener().lock_scanner_cache()
+        self._locked_watchlist = watchlist
+        self._locked_at = datetime.now()
+        print(f"[FUNNEL] Watchlist LOCKED at {self._locked_at.strftime('%H:%M:%S')} ET — {len(watchlist)} tickers will not be re-scored until next session")
+
         return watchlist
 
     def get_watchlist_metadata(self) -> Dict:
         cache_stats = _get_momentum_screener().get_cache_stats()
+        locked_info = {
+            'watchlist_locked': self._locked_watchlist is not None,
+            'locked_at': self._locked_at.isoformat() if self._locked_at else None
+        }
         return {
             'stage':                    self.current_stage,
             'stage_description':        self.stages[self.current_stage]['description'],
@@ -301,7 +328,8 @@ class WatchlistFunnel:
             'top_3_tickers':            self.current_watchlist[:3],
             'scored_tickers_count':     len(self.scored_tickers),
             'cache_hits':               cache_stats.get('valid_scans', 0),
-            'all_tickers_with_scores':  self.scored_tickers
+            'all_tickers_with_scores':  self.scored_tickers,
+            **locked_info
         }
 
     def get_volume_summary(self) -> List[Dict]:

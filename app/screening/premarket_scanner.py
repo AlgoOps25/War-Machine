@@ -38,6 +38,12 @@ TASK 12 ENHANCEMENTS (v2):
   - News catalyst detection via news_catalyst
   - Sector rotation tracking via sector_rotation
   - Composite scoring: volume (60%) + gap (25%) + catalyst (15%)
+
+PHASE 1.18 (MAR 10, 2026) - Session lock:
+  - ScannerCache.lock_until_eod(): sets TTL to 23h so per-ticker scan cache
+    never expires mid-session after market open
+  - lock_scanner_cache(): module-level helper called by watchlist_funnel
+    at first live build to prevent mid-day re-scoring
 """
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Tuple
@@ -53,7 +59,7 @@ try:
     WS_AVAILABLE = True
 except ImportError:
     WS_AVAILABLE = False
-    print("[PREMARKET] ⚠️  WS/DB modules not available - using REST API only")
+    print("[PREMARKET] WS/DB modules not available - using REST API only")
 
 # TASK 12: Import v2 modules
 try:
@@ -61,23 +67,34 @@ try:
     from app.screening.news_catalyst import detect_catalyst
     from app.screening.sector_rotation import get_hot_sectors, is_hot_sector_stock
     V2_ENABLED = True
-    print("[PREMARKET] ✅ v2 modules loaded (gap analyzer, news catalyst, sector rotation)")
+    print("[PREMARKET] v2 modules loaded (gap analyzer, news catalyst, sector rotation)")
 except ImportError as e:
     V2_ENABLED = False
-    print(f"[PREMARKET] ⚠️  v2 modules not available: {e}")
+    print(f"[PREMARKET] v2 modules not available: {e}")
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# ===============================================================================
 # CACHING LAYER
-# ═══════════════════════════════════════════════════════════════════════════════
+# ===============================================================================
 
 class ScannerCache:
     """Caches professional scan results and fundamental data."""
 
-    def __init__(self, ttl_seconds: int = 180):  # 3-minute TTL
+    def __init__(self, ttl_seconds: int = 180):  # 3-minute TTL pre-market
         self.scan_cache: Dict[str, Dict] = {}
         self.fundamental_cache: Dict[str, Dict] = {}  # ATR, float, market cap
         self.ttl_seconds = ttl_seconds
+        self._locked = False  # PHASE 1.18: session lock flag
+
+    def lock_until_eod(self):
+        """
+        PHASE 1.18: Lock the cache for the rest of the session.
+        Sets TTL to 23 hours so no per-ticker scan entry ever expires
+        during market hours. Called once at market open (9:30 ET).
+        """
+        self._locked = True
+        self.ttl_seconds = 23 * 3600  # effectively EOD
+        print(f"[PREMARKET] Scanner cache LOCKED until EOD — TTL extended to {self.ttl_seconds}s")
 
     def get_scan(self, ticker: str) -> Optional[Dict]:
         """Get cached scan result if valid."""
@@ -109,6 +126,8 @@ class ScannerCache:
     def clear(self):
         """Clear scan cache. Fundamentals persist for the session."""
         self.scan_cache = {}
+        self._locked = False
+        self.ttl_seconds = 180
 
     def get_stats(self) -> Dict:
         """Return cache statistics."""
@@ -120,7 +139,8 @@ class ScannerCache:
             'scan_cache_entries': len(self.scan_cache),
             'valid_scans': valid_scans,
             'fundamental_cache_entries': len(self.fundamental_cache),
-            'ttl_seconds': self.ttl_seconds
+            'ttl_seconds': self.ttl_seconds,
+            'locked': self._locked  # PHASE 1.18
         }
 
 
@@ -128,9 +148,9 @@ class ScannerCache:
 _scanner_cache = ScannerCache(ttl_seconds=180)
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# ===============================================================================
 # TIER 1: VOLUME SPIKE DETECTION
-# ═══════════════════════════════════════════════════════════════════════════════
+# ===============================================================================
 
 def calculate_relative_volume(
     current_volume: int,
@@ -141,10 +161,10 @@ def calculate_relative_volume(
     Calculate RVOL (Relative Volume) - Professional standard metric.
 
     Formula: (Current Volume / Expected Volume at this time)
-    Expected Volume = Avg Daily Volume × Time Elapsed %
+    Expected Volume = Avg Daily Volume x Time Elapsed %
 
     Example: If 9:00 AM (25% of trading day), and stock normally does 1M volume/day:
-      Expected volume = 1M × 0.25 = 250K
+      Expected volume = 1M x 0.25 = 250K
       If current volume = 500K, RVOL = 500K / 250K = 2.0x
 
     Professional thresholds:
@@ -226,9 +246,9 @@ def score_volume_quality(
     return round(total_score, 1), metrics
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# ===============================================================================
 # FUNDAMENTAL DATA FETCHING (ATR, MARKET CAP, FLOAT)
-# ═══════════════════════════════════════════════════════════════════════════════
+# ===============================================================================
 
 def fetch_fundamental_data(ticker: str) -> Dict:
     """
@@ -309,7 +329,7 @@ def fetch_fundamental_data(ticker: str) -> Dict:
         }
 
         _scanner_cache.set_fundamental(ticker, fundamentals)
-        print(f"[PREMARKET] {ticker}: Calculated ADV={avg_volume:,}, ATR=${atr:.2f}, prev_close=${prev_close:.2f}")
+        print(f"[PREMARKET] {ticker}: Fundamentals - ADV={avg_volume:,}, ATR={atr:.2f}")
         return fundamentals
 
     except Exception as e:
@@ -412,9 +432,9 @@ def _get_average_volume_from_bars(ticker: str, periods: int = 20) -> int:
         return 0
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# ===============================================================================
 # PUBLIC API
-# ═══════════════════════════════════════════════════════════════════════════════
+# ===============================================================================
 
 def scan_ticker(ticker: str) -> Optional[Dict]:
     """
@@ -425,9 +445,9 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
     TASK 12: Now includes gap quality, news catalyst, and sector rotation.
 
     Bar resolution order:
-      1. WS get_current_bar()          — real-time, preferred (if available)
-      2. data_manager session bars[-1] — DB fallback for subscribed tickers
-      3. EODHD real-time REST quote    — fallback for unsubscribed tickers (PRIMARY for screener)
+      1. WS get_current_bar()          - real-time, preferred (if available)
+      2. data_manager session bars[-1] - DB fallback for subscribed tickers
+      3. EODHD real-time REST quote    - fallback for unsubscribed tickers (PRIMARY for screener)
     """
     print(f"[PREMARKET] Scanning {ticker}...")
     
@@ -446,7 +466,7 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
         try:
             current_bar = get_current_bar(ticker)
             if current_bar:
-                print(f"[PREMARKET] {ticker}: ✅ WS bar found")
+                print(f"[PREMARKET] {ticker}: WS bar found")
         except Exception as e:
             print(f"[PREMARKET] {ticker}: WS lookup error: {e}")
             pass
@@ -457,43 +477,40 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
             bars = data_manager.get_today_session_bars(ticker)
             if bars:
                 current_bar = bars[-1]
-                print(f"[PREMARKET] {ticker}: ✅ DB bar used")
+                print(f"[PREMARKET] {ticker}: DB bar used")
         except Exception as e:
             print(f"[PREMARKET] {ticker}: DB lookup error: {e}")
             pass
 
     # Fallback 2: EODHD REST API (PRIMARY for unsubscribed screener tickers)
     if not current_bar:
-        print(f"[PREMARKET] {ticker}: Attempting REST API...")
         try:
             rt_url = (
                 f"https://eodhd.com/api/real-time/{ticker}.US"
                 f"?api_token={config.EODHD_API_KEY}&fmt=json"
             )
             rt_resp = requests.get(rt_url, timeout=5)
-            print(f"[PREMARKET] {ticker}: REST API HTTP {rt_resp.status_code}")
-            
             if rt_resp.status_code == 200:
                 rt = rt_resp.json()
                 current_bar = {
                     'close':  rt.get('close') or rt.get('previousClose', 0),
                     'volume': rt.get('volume', 0)
                 }
-                print(f"[PREMARKET] {ticker}: ✅ REST quote (price=${current_bar['close']:.2f}, vol={current_bar['volume']:,})")
+                print(f"[PREMARKET] {ticker}: REST bar used")
             else:
-                print(f"[PREMARKET] {ticker}: ❌ REST API failed (HTTP {rt_resp.status_code})")
+                print(f"[PREMARKET] {ticker}: REST API failed (HTTP {rt_resp.status_code})")
         except Exception as e:
-            print(f"[PREMARKET] {ticker}: ❌ REST API error: {e}")
+            print(f"[PREMARKET] {ticker}: REST API error: {e}")
             pass
 
     if not current_bar:
-        print(f"[PREMARKET] {ticker}: ❌ No data available (all sources failed)")
+        print(f"[PREMARKET] {ticker}: No data available (all sources failed)")
         return None
 
     price  = current_bar.get('close', 0)
     volume = current_bar.get('volume', 0)
     
-    print(f"[PREMARKET] {ticker}: Bar resolved - price=${price:.2f}, volume={volume:,}")
+    print(f"[PREMARKET] {ticker}: Bar resolved - price={price:.2f}, volume={volume:,}")
 
     # Tier 1: Volume score (60% weight)
     volume_score, volume_metrics = score_volume_quality(
@@ -509,11 +526,9 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
     gap_data = None
     if V2_ENABLED and fundamentals['prev_close'] > 0:
         try:
-            # Check for news catalyst first
             catalyst = detect_catalyst(ticker)
             has_earnings = catalyst and catalyst.catalyst_type == 'earnings'
             has_news = catalyst is not None
-            
             gap_result = analyze_gap(
                 ticker,
                 fundamentals['prev_close'],
@@ -534,7 +549,6 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
         try:
             catalyst = detect_catalyst(ticker)
             if catalyst:
-                # Scale weight (0-25) to score (0-100)
                 catalyst_score = min(100, catalyst.weight * 4)
                 catalyst_data = catalyst.to_dict()
                 print(f"[PREMARKET] {ticker}: Catalyst detected - {catalyst.catalyst_type} (weight={catalyst.weight}, score={catalyst_score:.1f})")
@@ -557,13 +571,13 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
     
     # Composite score (weighted)
     composite_score = (
-        volume_score * 0.60 +  # 60% volume
-        gap_score * 0.25 +     # 25% gap quality
-        catalyst_score * 0.15 + # 15% news catalyst
-        sector_bonus           # Bonus for hot sector
+        volume_score * 0.60 +
+        gap_score * 0.25 +
+        catalyst_score * 0.15 +
+        sector_bonus
     )
     
-    print(f"[PREMARKET] {ticker}: ✅ Composite score={composite_score:.1f} (vol={volume_score:.1f}, gap={gap_score:.1f}, catalyst={catalyst_score:.1f}, sector={sector_bonus:.1f})")
+    print(f"[PREMARKET] {ticker}: Composite score={composite_score:.1f} (vol={volume_score:.1f}, gap={gap_score:.1f}, catalyst={catalyst_score:.1f}, sector={sector_bonus:.1f})")
 
     result = {
         'ticker':          ticker,
@@ -604,11 +618,11 @@ def scan_watchlist(tickers: List[str], min_score: float = 60.0) -> List[Dict]:
             if scan_result:
                 if scan_result['composite_score'] >= min_score:
                     results.append(scan_result)
-                    print(f"[PREMARKET] {ticker}: ✅ PASS (score={scan_result['composite_score']:.1f} >= {min_score})")
+                    print(f"[PREMARKET] {ticker}: PASS score={scan_result['composite_score']:.1f} >= {min_score}")
                 else:
-                    print(f"[PREMARKET] {ticker}: ❌ FILTERED (score={scan_result['composite_score']:.1f} < {min_score})")
+                    print(f"[PREMARKET] {ticker}: FILTERED score={scan_result['composite_score']:.1f} < {min_score}")
             else:
-                print(f"[PREMARKET] {ticker}: ❌ SKIPPED (scan returned None)")
+                print(f"[PREMARKET] {ticker}: SKIPPED (scan returned None)")
         except Exception as e:
             print(f"[PREMARKET] Error scanning {ticker}: {e}")
             continue
@@ -629,9 +643,18 @@ def clear_cache():
     print("[PREMARKET] All caches cleared")
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+def lock_scanner_cache():
+    """
+    PHASE 1.18: Lock the scanner cache for the rest of the session.
+    Called by watchlist_funnel._build_live_watchlist() at market open.
+    Extends per-ticker TTL to ~23h so entries never expire mid-day.
+    """
+    _scanner_cache.lock_until_eod()
+
+
+# ===============================================================================
 # COMPATIBILITY STUBS (for watchlist_funnel.py)
-# ═══════════════════════════════════════════════════════════════════════════════
+# ===============================================================================
 
 def run_momentum_screener(
     tickers: List[str],
@@ -689,13 +712,12 @@ def print_momentum_summary(scored_tickers: List[Dict], top_n: int = 10):
         print("[PREMARKET] No tickers to display")
         return
     
-    # Print hot sectors if available
     if V2_ENABLED:
         try:
             hot_sectors = get_hot_sectors()
             if hot_sectors:
                 print("\n" + "="*80)
-                print("🌡️  HOT SECTORS")
+                print("HOT SECTORS")
                 print("="*80)
                 for sector_name, momentum_pct in hot_sectors:
                     print(f"  {sector_name}: {momentum_pct:+.1f}%")
@@ -714,18 +736,13 @@ def print_momentum_summary(scored_tickers: List[Dict], top_n: int = 10):
         score = ticker_data.get('composite_score', ticker_data.get('volume_score', 0))
         rvol = ticker_data.get('rvol', 0)
         price = ticker_data.get('price', 0)
-        
-        # Gap info
         gap_data = ticker_data.get('gap_data', {})
         gap_str = f"{gap_data.get('size_pct', 0):+.1f}%" if gap_data else "N/A"
-        
-        # Catalyst info
         catalyst_data = ticker_data.get('catalyst_data', {})
         if catalyst_data:
             catalyst_str = catalyst_data.get('type', 'N/A')[:10]
         else:
             catalyst_str = "-"
-        
         print(f"{rank:<6} {ticker:<8} {score:<8.1f} {rvol:<8.2f} {gap_str:<8} {catalyst_str:<12} ${price:<9.2f}")
     
     print(f"{'='*80}\n")
