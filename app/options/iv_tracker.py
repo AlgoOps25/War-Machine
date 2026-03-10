@@ -1,4 +1,4 @@
-﻿"""
+"""
 IV Rank Tracker
 Stores historical implied volatility (IV) observations and computes IV Rank (IVR).
 
@@ -11,12 +11,12 @@ Why IVR matters for options buying:
   Buying options with high IVR means paying an inflated premium that can deflate even
   if the underlying moves in your direction.
 
-IVR â†’ Confidence Multiplier table:
-  IVR   0â€“20  : IV historically cheap     â†’ options CHEAP to buy  â†’ +15% confidence
-  IVR  20â€“40  : IV below-average           â†’ options reasonable   â†’  +8% confidence
-  IVR  40â€“60  : IV neutral                 â†’ no adjustment        â†’   0% change
-  IVR  60â€“80  : IV elevated               â†’ options expensive    â†’ -10% confidence
-  IVR  80â€“100 : IV extreme / crush risk   â†’ avoid options buy    â†’ -25% confidence
+IVR → Confidence Multiplier table:
+  IVR   0–20  : IV historically cheap     → options CHEAP to buy  → +15% confidence
+  IVR  20–40  : IV below-average           → options reasonable   →  +8% confidence
+  IVR  40–60  : IV neutral                 → no adjustment        →   0% change
+  IVR  60–80  : IV elevated               → options expensive    → -10% confidence
+  IVR  80–100 : IV extreme / crush risk   → avoid options buy    → -25% confidence
 
 Data lifecycle:
   - store_iv_observation() is called each time an options best-strike is computed
@@ -45,32 +45,27 @@ def store_iv_observation(ticker: str, iv: float) -> None:
     if not iv or iv <= 0:
         return
     try:
-        # FIX Bug #11: import serial_pk so the CREATE TABLE works on both
-        # Postgres (SERIAL PRIMARY KEY) and SQLite (INTEGER PRIMARY KEY AUTOINCREMENT).
-        # Previously hardcoded 'SERIAL PRIMARY KEY' crashed every SQLite write,
-        # silently swallowing all IV observations and leaving IVR permanently empty.
-        from app.data.db_connection import get_conn, ph, serial_pk
-        conn   = get_conn()
-        cursor = conn.cursor()
-        p      = ph()
-        cursor.execute(f"""
-            CREATE TABLE IF NOT EXISTS iv_history (
-                id          {serial_pk()},
-                ticker      TEXT        NOT NULL,
-                iv          REAL        NOT NULL,
-                recorded_at TIMESTAMP   DEFAULT CURRENT_TIMESTAMP
+        from app.data.db_connection import get_connection, ph, serial_pk
+        p = ph()
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(f"""
+                CREATE TABLE IF NOT EXISTS iv_history (
+                    id          {serial_pk()},
+                    ticker      TEXT        NOT NULL,
+                    iv          REAL        NOT NULL,
+                    recorded_at TIMESTAMP   DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_iv_history_ticker_time
+                ON iv_history (ticker, recorded_at)
+            """)
+            cursor.execute(
+                f"INSERT INTO iv_history (ticker, iv) VALUES ({p}, {p})",
+                (ticker, round(iv, 6))
             )
-        """)
-        cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_iv_history_ticker_time
-            ON iv_history (ticker, recorded_at)
-        """)
-        cursor.execute(
-            f"INSERT INTO iv_history (ticker, iv) VALUES ({p}, {p})",
-            (ticker, round(iv, 6))
-        )
-        conn.commit()
-        conn.close()
+            conn.commit()
     except Exception as e:
         print(f"[IVR] store error for {ticker}: {e}")
 
@@ -83,7 +78,7 @@ def compute_ivr(ticker: str, current_iv: float,
     Returns:
       (ivr: float|None, observations: int, is_reliable: bool)
 
-      - ivr         : 0â€“100 IV Rank, or None if insufficient history
+      - ivr         : 0–100 IV Rank, or None if insufficient history
       - observations: number of data points used in the calculation
       - is_reliable : True when observations >= MIN_OBSERVATIONS
     """
@@ -91,25 +86,23 @@ def compute_ivr(ticker: str, current_iv: float,
         return None, 0, False
 
     try:
-        from app.data.db_connection import get_conn, ph
-        conn   = get_conn()
-        cursor = conn.cursor()
-        p      = ph()
-
+        from app.data.db_connection import get_connection, ph
+        p = ph()
         cutoff = _now_et() - timedelta(days=lookback_days)
 
-        cursor.execute(
-            f"""
-            SELECT MIN(iv), MAX(iv), COUNT(*)
-            FROM   iv_history
-            WHERE  ticker      = {p}
-              AND  recorded_at >= {p}
-              AND  iv          > 0
-            """,
-            (ticker, cutoff)
-        )
-        row = cursor.fetchone()
-        conn.close()
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                f"""
+                SELECT MIN(iv), MAX(iv), COUNT(*)
+                FROM   iv_history
+                WHERE  ticker      = {p}
+                  AND  recorded_at >= {p}
+                  AND  iv          > 0
+                """,
+                (ticker, cutoff)
+            )
+            row = cursor.fetchone()
 
         if not row or row[2] is None:
             return None, 0, False
@@ -120,7 +113,6 @@ def compute_ivr(ticker: str, current_iv: float,
             return None, count, False
 
         if max_iv <= min_iv:
-            # Flat IV history â€” assign neutral rank
             return 50.0, count, True
 
         ivr = ((current_iv - min_iv) / (max_iv - min_iv)) * 100.0
@@ -155,4 +147,3 @@ def ivr_to_confidence_multiplier(ivr, is_reliable: bool) -> tuple:
         return 0.90, f"IVR-HIGH({ivr:.0f})"
     else:
         return 0.75, f"IVR-EXTREME({ivr:.0f})"
-

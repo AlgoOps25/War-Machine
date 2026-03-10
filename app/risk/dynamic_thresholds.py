@@ -31,15 +31,15 @@ def _get_time_of_day_adjustment():
     now = _now_et().time()
 
     if time(9, 30) <= now < time(11, 0):
-        return -0.03  # Morning: more opportunities
+        return -0.03
     elif time(11, 0) <= now < time(14, 0):
-        return +0.05  # Midday: stricter filter
+        return +0.05
     elif time(14, 0) <= now < time(15, 30):
-        return 0.00   # Afternoon: neutral
+        return 0.00
     elif time(15, 30) <= now < time(16, 0):
-        return -0.02  # Power hour: slight leniency
+        return -0.02
     else:
-        return +0.05  # After hours: very strict
+        return +0.05
 
 
 def _get_vix_adjustment():
@@ -60,7 +60,6 @@ def _get_vix_adjustment():
         if vix_data is None:
             return 0.00
 
-        # get_vix_level() may return a plain float OR a dict with 'close' key
         if isinstance(vix_data, dict):
             vix = float(vix_data.get("close", 0) or 0)
         else:
@@ -96,22 +95,18 @@ def _get_winrate_adjustment(signal_type, grade):
     Returns 0.00 if insufficient data (<10 trades).
     """
     try:
-        from app.data.db_connection import get_conn, dict_cursor
+        from app.data.db_connection import get_connection, dict_cursor
 
-        conn = get_conn()
-        cursor = dict_cursor(conn)
-
-        # Get last 20 closed trades for this signal_type + grade
-        cursor.execute("""
-            SELECT outcome FROM trades
-            WHERE signal_type = ? AND grade = ?
-            AND status = 'CLOSED'
-            ORDER BY id DESC
-            LIMIT 20
-        """, (signal_type, grade))
-
-        rows = cursor.fetchall()
-        conn.close()
+        with get_connection() as conn:
+            cursor = dict_cursor(conn)
+            cursor.execute("""
+                SELECT outcome FROM trades
+                WHERE signal_type = ? AND grade = ?
+                AND status = 'CLOSED'
+                ORDER BY id DESC
+                LIMIT 20
+            """, (signal_type, grade))
+            rows = cursor.fetchall()
 
         if len(rows) < 10:
             return 0.00
@@ -142,22 +137,19 @@ def _get_recent_quality_adjustment():
     Returns 0.00 if insufficient data.
     """
     try:
-        from app.data.db_connection import get_conn, dict_cursor
-
-        conn = get_conn()
-        cursor = dict_cursor(conn)
+        from app.data.db_connection import get_connection, dict_cursor
 
         two_hours_ago = _now_et() - timedelta(hours=2)
 
-        cursor.execute("""
-            SELECT confidence FROM proposed_trades
-            WHERE timestamp > ?
-            ORDER BY timestamp DESC
-            LIMIT 5
-        """, (two_hours_ago,))
-
-        rows = cursor.fetchall()
-        conn.close()
+        with get_connection() as conn:
+            cursor = dict_cursor(conn)
+            cursor.execute("""
+                SELECT confidence FROM proposed_trades
+                WHERE timestamp > ?
+                ORDER BY timestamp DESC
+                LIMIT 5
+            """, (two_hours_ago,))
+            rows = cursor.fetchall()
 
         if len(rows) < 3:
             return 0.00
