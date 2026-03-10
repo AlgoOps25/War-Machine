@@ -67,7 +67,6 @@ def test_db_tables():
     from app.data.db_connection import get_conn
     conn = get_conn()
     cur = conn.cursor()
-    # SQLite-safe: list tables without information_schema
     try:
         cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
         tables = [r[0] for r in cur.fetchall()]
@@ -81,7 +80,6 @@ def test_db_tables():
         db_type = "PostgreSQL"
     conn.close()
     print(f"   [{db_type}] Found {len(tables)} tables: {', '.join(tables[:8])}{'...' if len(tables)>8 else ''}")
-    # At minimum the DB must be reachable
     return True
 
 test_component("Database Tables Exist", test_db_tables)
@@ -101,9 +99,7 @@ def test_eodhd_credentials():
 test_component("EODHD API Credentials", test_eodhd_credentials)
 
 def test_market_data_fetch():
-    """Use data_manager (replaces deprecated app.data.market_data)."""
     from app.data.data_manager import data_manager
-    # Just verify the object initialised and has the key method
     assert hasattr(data_manager, 'startup_backfill_with_cache'), \
         "data_manager missing startup_backfill_with_cache"
     assert hasattr(data_manager, 'get_bars_from_memory'), \
@@ -119,19 +115,21 @@ print("\n[3/15] SCREENING MODULES")
 print("-"*80)
 
 def test_dynamic_screener():
-    import app.screening.dynamic_screener as ds
-    # Accept either a class or a module-level function
-    has_something = (
-        hasattr(ds, 'DynamicScreener') or
-        hasattr(ds, 'get_top_movers') or
-        hasattr(ds, 'get_gap_movers') or
-        hasattr(ds, 'screen_tickers') or
-        hasattr(ds, 'fetch_top_movers')
+    """Verify the v3.1 functional API is present (no DynamicScreener class)."""
+    from app.screening.dynamic_screener import (
+        run_all_passes,
+        get_scored_tickers,
+        get_dynamic_watchlist,
+        get_gap_candidates,
+        get_tier_a_tickers,
     )
-    if not has_something:
-        return f"No expected screener entry point found in dynamic_screener.py"
+    assert callable(run_all_passes)
+    assert callable(get_scored_tickers)
+    assert callable(get_dynamic_watchlist)
+    assert callable(get_gap_candidates)
+    assert callable(get_tier_a_tickers)
 
-test_component("Dynamic Screener Module", test_dynamic_screener)
+test_component("Dynamic Screener Module (v3.1)", test_dynamic_screener)
 
 def test_screener_integration():
     from app.screening.screener_integration import get_ticker_screener_metadata
@@ -171,9 +169,9 @@ print("-"*80)
 
 def test_mtf_module():
     import app.mtf as mtf_pkg
-    members = dir(mtf_pkg)
-    print(f"   app.mtf members: {[m for m in members if not m.startswith('_')]}")
-    return True  # report what's there without failing
+    members = [m for m in dir(mtf_pkg) if not m.startswith('_')]
+    print(f"   app.mtf members: {members}")
+    return True
 
 test_component("MTF Package (informational)", test_mtf_module)
 
@@ -186,10 +184,9 @@ print("-"*80)
 
 def test_validation():
     import app.validation as val
-    # Accept the top-level package expose OR the submodule
     fn = getattr(val, 'validate_signal', None)
     if fn is None:
-        from app.validation import validate_signal as fn  # may re-raise ImportError
+        from app.validation import validate_signal as fn
     assert callable(fn)
 
 test_component("Validation Gate", test_validation)
@@ -219,7 +216,6 @@ test_component("Options Package", test_options_package)
 
 def test_options_dm():
     from app.options.options_data_manager import OptionsDataManager
-    # Instantiate without the old cache_ttl_seconds kwarg
     dm = OptionsDataManager()
     assert dm is not None
 
@@ -234,7 +230,6 @@ print("-"*80)
 
 def test_position_manager():
     from app.risk.position_manager import position_manager
-    # Use whichever public method actually exists
     for method in ('get_open_positions', 'get_positions', 'get_all_positions',
                    'get_state', 'positions'):
         if hasattr(position_manager, method):
@@ -278,14 +273,7 @@ def test_signal_cooldown():
     sig = inspect.signature(is_on_cooldown)
     params = list(sig.parameters.keys())
     print(f"   is_on_cooldown params: {params}")
-    # Call with whatever the real signature accepts
-    if 'ticker' in params:
-        if len(params) == 1:
-            result = is_on_cooldown('TEST')
-        else:
-            result = is_on_cooldown('TEST')
-    else:
-        result = is_on_cooldown('TEST')
+    result = is_on_cooldown('TEST')
     assert isinstance(result, bool), "is_on_cooldown didn't return bool"
 
 test_component("Signal Cooldown Tracker", test_signal_cooldown)
@@ -331,7 +319,6 @@ def test_thread_safe_state():
     import app.core.thread_safe_state as tss
     members = [m for m in dir(tss) if not m.startswith('_')]
     print(f"   thread_safe_state exports: {members}")
-    # Verify at minimum the module loads
     return True
 
 test_component("Thread-Safe State Module", test_thread_safe_state)
@@ -374,7 +361,6 @@ print("\n[15/15] MAIN SCANNER")
 print("-"*80)
 
 def test_scanner_import():
-    # scanner.py has no Scanner class — it exposes start_scanner_loop()
     from app.core.scanner import start_scanner_loop
     assert callable(start_scanner_loop)
 
