@@ -28,11 +28,17 @@ import os
 import requests
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-# NEW: Import optimized data manager
-from app.options.options_data_manager import OptionsDataManager
 
-# Initialize singleton instance
-_options_dm = OptionsDataManager()
+# Guard OptionsDataManager import so a transient failure doesn't kill the whole module
+try:
+    from app.options.options_data_manager import OptionsDataManager
+    _options_dm = OptionsDataManager()
+except Exception as _odm_err:
+    import logging as _log
+    _log.getLogger(__name__).warning(
+        f"[OPTIONS] OptionsDataManager unavailable: {_odm_err} — 0DTE fast-path disabled"
+    )
+    _options_dm = None
 
 logger = logging.getLogger(__name__)
 
@@ -128,7 +134,7 @@ def build_options_trade(
     risk_reward = f"1:{2.5}"  # Placeholder - calculate based on targets
 
     # Calculate actual DTE from selected expiration
-    actual_dte = (datetime.strptime(expiration_date, '%Y-%m-%d').date() - 
+    actual_dte = (datetime.strptime(expiration_date, '%Y-%m-%d').date() -
                   datetime.now(ZoneInfo("America/New_York")).date()).days
 
     trade = {
@@ -166,13 +172,13 @@ def build_0dte_trade(
 ) -> dict:
     """
     Build optimized 0DTE options trade using high-performance data manager.
-    
+
     Key differences from regular build_options_trade:
     - Uses parallel Greeks fetching (faster)
     - Tighter delta ranges for 0DTE (max gamma exposure)
     - Stricter liquidity filters (volume + OI requirements)
     - 60-second caching to avoid redundant API calls
-    
+
     Args:
         ticker: Stock symbol
         direction: "CALL" or "PUT"
@@ -180,7 +186,7 @@ def build_0dte_trade(
         current_price: Current stock price
         account_balance: Trading account balance
         risk_per_trade: Risk percentage per trade
-        
+
     Returns:
         dict: Optimized 0DTE trade recommendation
     """
@@ -188,14 +194,26 @@ def build_0dte_trade(
         f"[OPTIONS] Building 0DTE {direction} for {ticker} (confidence={confidence:.1f}%)",
         extra={'component': 'options', 'symbol': ticker, 'direction': direction}
     )
-    
+
     # Get current price if not provided
     if current_price is None:
         current_price = _get_current_price(ticker)
         if current_price is None:
             logger.error(f"[OPTIONS] Failed to fetch price for {ticker}")
             return None
-    
+
+    # If data manager failed to load, fall back to regular build
+    if _options_dm is None:
+        logger.warning(f"[OPTIONS] OptionsDataManager not available, falling back to standard build")
+        return build_options_trade(
+            ticker=ticker,
+            direction=direction,
+            confidence=confidence,
+            current_price=current_price,
+            account_balance=account_balance,
+            risk_per_trade=risk_per_trade
+        )
+
     # Use optimized data manager for 0DTE
     contract = _options_dm.get_optimized_chain(
         ticker=ticker,
@@ -204,7 +222,7 @@ def build_0dte_trade(
         for_0dte=True,
         confidence=confidence
     )
-    
+
     if not contract:
         logger.warning(f"[OPTIONS] No suitable 0DTE contract for {ticker}")
         # Fallback to regular build
@@ -216,7 +234,7 @@ def build_0dte_trade(
             account_balance=account_balance,
             risk_per_trade=risk_per_trade
         )
-    
+
     # Extract contract details
     strike = contract['strike']
     expiration = contract['expiration']
@@ -233,21 +251,21 @@ def build_0dte_trade(
         'volume': contract['volume'],
         'open_interest': contract['open_interest']
     }
-    
+
     # Calculate quantity
     max_risk = account_balance * risk_per_trade
     quantity = _calculate_quantity(option_price, max_risk)
-    
+
     # Build contract symbol
     exp_date = datetime.strptime(expiration, '%Y-%m-%d')
     contract_symbol = _build_contract_symbol(ticker, expiration, direction, strike)
-    
+
     # Get IV Rank
     iv_rank = _get_iv_rank(ticker)
-    
+
     # Calculate DTE
     dte = (exp_date.date() - datetime.now(ZoneInfo("America/New_York")).date()).days
-    
+
     trade = {
         'ticker': ticker,
         'direction': direction,
@@ -266,13 +284,13 @@ def build_0dte_trade(
         'strategy': contract.get('strategy', 'balanced'),
         'is_0dte': True
     }
-    
+
     logger.info(
         f"[OPTIONS] 0DTE trade built: {contract_symbol} x{quantity} @ ${option_price:.2f} "
         f"(delta={greeks['delta']:.2f}, vol={greeks['volume']}, OI={greeks['open_interest']})",
         extra={'component': 'options', 'symbol': ticker, 'trade': trade}
     )
-    
+
     return trade
 
 def get_greeks(ticker: str, strike: float = None, expiration: str = None, direction: str = "CALL") -> dict:
@@ -313,11 +331,11 @@ def get_greeks(ticker: str, strike: float = None, expiration: str = None, direct
 
         # Should only be one matching contract
         attrs = contracts[0].get('attributes', {})
-        
+
         bid = attrs.get('bid', 0)
         ask = attrs.get('ask', 0)
         midpoint = attrs.get('midpoint', (bid + ask) / 2 if (bid and ask) else attrs.get('last', 5.0))
-        
+
         return {
             'delta': attrs.get('delta', 0.5),
             'gamma': attrs.get('gamma', 0.03),
@@ -442,7 +460,7 @@ def _select_strike_with_greeks(
         }
 
         logger.info(f"[OPTIONS] Fetching {direction.lower()} contracts for {ticker} (DTE {min_dte}-{max_dte})")
-        
+
         response = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
         data = response.json()
@@ -465,18 +483,18 @@ def _select_strike_with_greeks(
         # Group by expiration date
         from collections import defaultdict
         by_expiration = defaultdict(list)
-        
+
         for contract in contracts:
             attrs = contract.get('attributes', {})
             exp_date_str = attrs.get('exp_date')
-            
+
             if not exp_date_str:
                 continue
-            
+
             try:
                 exp_date = datetime.strptime(exp_date_str, '%Y-%m-%d').date()
                 dte = (exp_date - datetime.now(ZoneInfo("America/New_York")).date()).days
-                
+
                 # Only consider valid contracts
                 if dte > 0:
                     by_expiration[exp_date].append({
@@ -493,9 +511,9 @@ def _select_strike_with_greeks(
             return strike, greeks, exp_date
 
         # Find expiration closest to target date
-        closest_exp = min(by_expiration.keys(), 
+        closest_exp = min(by_expiration.keys(),
                          key=lambda d: abs((d - datetime.now(ZoneInfo("America/New_York")).date()).days - target_dte))
-        
+
         logger.info(f"[OPTIONS] Selected expiration {closest_exp} (target DTE: {target_dte}, actual: {(closest_exp - datetime.now(ZoneInfo('America/New_York')).date()).days})")
 
         # From contracts with closest expiration, find best delta match
@@ -511,12 +529,12 @@ def _select_strike_with_greeks(
             # Also prefer contracts with reasonable liquidity
             open_interest = attrs.get('open_interest', 0)
             volume = attrs.get('volume', 0)
-            
+
             # Penalty for low liquidity (but don't exclude completely)
             liquidity_penalty = 0
             if open_interest < 10:
                 liquidity_penalty = 0.05
-            
+
             adjusted_diff = delta_diff + liquidity_penalty
 
             if adjusted_diff < min_delta_diff:
@@ -542,7 +560,7 @@ def _select_strike_with_greeks(
                 'volume': attrs.get('volume', 0),
                 'open_interest': attrs.get('open_interest', 0)
             }
-            
+
             expiration_str = closest_exp.strftime('%Y-%m-%d')
             logger.info(
                 f"[OPTIONS] Selected ${strike} {direction} exp {expiration_str} "

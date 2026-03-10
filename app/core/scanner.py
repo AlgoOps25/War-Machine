@@ -20,6 +20,11 @@ PHASE 1.18 (MAR 10, 2026):
   - FIXED: DB startup block now uses print() so status always visible in Railway logs
   - FIXED: Removed sslmode=require injection (internal Railway host needs no SSL)
   - FIXED: Added connect_timeout=10 to surface connection failures immediately
+
+PHASE 1.18a (MAR 10, 2026):
+  - FIXED: Cache dir uses os.getcwd() instead of __file__ relative path (Railway compat)
+  - FIXED: os.makedirs on cache dir so it is always created if missing
+  - FIXED: Options import now logs the actual exception (not just ImportError)
 """
 import os
 import time
@@ -108,16 +113,16 @@ try:
     from app.validation import validate_signal
     VALIDATION_AVAILABLE = True
     logger.info("[SCANNER] ✅ Validation gates loaded")
-except ImportError:
-    logger.warning("[SCANNER] ⚠️  Validation module not available")
+except Exception as e:
+    logger.warning(f"[SCANNER] ⚠️  Validation module not available: {e}")
     validate_signal = None
 
 try:
     from app.options import build_options_trade
     OPTIONS_AVAILABLE = True
     logger.info("[SCANNER] ✅ Options intelligence loaded")
-except ImportError:
-    logger.warning("[SCANNER] ⚠️  Options module not available")
+except Exception as e:
+    logger.warning(f"[SCANNER] ⚠️  Options module not available: {e}")
     build_options_trade = None
 
 API_KEY = os.getenv("EODHD_API_KEY", "")
@@ -312,17 +317,16 @@ def start_scanner_loop():
     # STARTUP HEALTH CHECK BANNER
     # ════════════════════════════════════════════════════════════════════════
     print("=" * 60, flush=True)
-    print("WAR MACHINE CFW6 SCANNER v1.18 - STARTUP", flush=True)
+    print("WAR MACHINE CFW6 SCANNER v1.18a - STARTUP", flush=True)
     print("=" * 60, flush=True)
     print("✓ DATA-INGEST    WebSocket starting (tickers TBD)", flush=True)
 
+    # ── FIX: use os.getcwd() so path resolves correctly inside Railway container
     try:
-        cache_dir = os.path.join(os.path.dirname(__file__), '..', '..', 'cache')
-        if os.path.exists(cache_dir):
-            cache_files = len([f for f in os.listdir(cache_dir) if f.endswith('.parquet')])
-            print(f"✓ CACHE          {cache_files} cached ticker files, 30d history", flush=True)
-        else:
-            print("? CACHE          Directory not found (will be created)", flush=True)
+        cache_dir = os.path.join(os.getcwd(), 'cache')
+        os.makedirs(cache_dir, exist_ok=True)  # create if missing — no-op if already exists
+        cache_files = len([f for f in os.listdir(cache_dir) if f.endswith('.parquet')])
+        print(f"✓ CACHE          {cache_files} cached ticker files, 30d history", flush=True)
     except Exception as e:
         print(f"? CACHE          Status unknown: {e}", flush=True)
 
@@ -365,10 +369,11 @@ def start_scanner_loop():
     print("Risk Manager:    ✅ ENABLED (unified risk layer — Phase 1.15)", flush=True)
     print("CFW6 Engine:     ✅ ENABLED (sniper.py direct — Phase 1.16)", flush=True)
     print("BG Backfill:     ✅ ENABLED (fire-and-forget — Phase 1.17)", flush=True)
+    print("Cache Dir Fix:   ✅ FIXED   (os.getcwd() — Phase 1.18a)", flush=True)
     print("=" * 60 + "\n", flush=True)
 
     try:
-        send_simple_message("⚔️ WAR MACHINE ONLINE — CFW6 v1.18 | Background backfill | <5s startup")
+        send_simple_message("⚔️ WAR MACHINE ONLINE — CFW6 v1.18a | Cache fix | Options guard | Quote backoff")
     except Exception as e:
         logger.warning(f"[SCANNER] Discord unavailable: {e}")
 
