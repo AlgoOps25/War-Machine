@@ -26,6 +26,9 @@ Design:
   - Fail-open: if no quote data exists for a ticker, get_spread_pct() returns 0.0
     so entries are NEVER blocked by missing quote data.
   - Separate _started guard prevents duplicate threads.
+  - Exponential backoff on reconnect: 2^attempt seconds, capped at 60s.
+    Resets to 0 on a clean successful connection so normal brief disconnects
+    recover quickly while repeated 500s from EODHD don't cause a reconnect storm.
 
 Primary consumers:
   - sniper.py: is_spread_acceptable(ticker) before arming/entering signals
@@ -70,7 +73,8 @@ from utils import config
 
 ET                  = ZoneInfo("America/New_York")
 QUOTE_WS_BASE_URL   = "wss://ws.eodhistoricaldata.com/ws/us-quote"
-RECONNECT_DELAY     = 5      # seconds between reconnect attempts
+RECONNECT_DELAY_MIN = 2      # seconds — base for exponential backoff (2^0 = 1 → floored to 2)
+RECONNECT_DELAY_MAX = 60     # seconds — cap so we never wait more than a minute
 SUBSCRIBE_CHUNK     = 50     # max tickers per subscribe message (EODHD limit)
 SPREAD_HISTORY_LEN  = 20     # rolling window for spread% averaging
 
@@ -247,18 +251,29 @@ def subscribe_quote_tickers(tickers: list):
 # ── WebSocket coroutine ───────────────────────────────────────────────────────────────────
 
 async def _ws_run():
-    """Quote WebSocket coroutine. Runs in a dedicated asyncio event loop thread."""
+    """
+    Quote WebSocket coroutine. Runs in a dedicated asyncio event loop thread.
+
+    Reconnect strategy — exponential backoff:
+      delay = min(2 ** attempt, RECONNECT_DELAY_MAX)
+      attempt resets to 0 after a clean successful connection.
+    This prevents a tight reconnect storm when EODHD throws repeated 500s
+    on subscription while still recovering quickly from normal brief drops.
+    """
     global _connected, _ws_connection, _subscribed
 
-    url = f"{QUOTE_WS_BASE_URL}?api_token={config.EODHD_API_KEY}"
+    url     = f"{QUOTE_WS_BASE_URL}?api_token={config.EODHD_API_KEY}"
+    attempt = 0  # tracks consecutive failed connect/run cycles
 
     while True:
         try:
-            print(f"[QUOTE] Connecting -> {QUOTE_WS_BASE_URL}")
+            print(f"[QUOTE] Connecting -> {QUOTE_WS_BASE_URL}"
+                  + (f" (attempt {attempt + 1})" if attempt > 0 else ""))
             async with websockets.connect(
                 url, ping_interval=20, ping_timeout=10, close_timeout=5
             ) as ws:
                 _ws_connection = ws
+                attempt = 0  # clean connect — reset backoff counter
 
                 with _sub_lock:
                     _subscribed.clear()
@@ -300,8 +315,13 @@ async def _ws_run():
         except Exception as exc:
             _connected     = False
             _ws_connection = None
-            print(f"[QUOTE] Disconnected ({exc}) — reconnecting in {RECONNECT_DELAY}s")
-            await asyncio.sleep(RECONNECT_DELAY)
+
+            # Exponential backoff: 2^attempt seconds, capped at RECONNECT_DELAY_MAX
+            delay = min(2 ** attempt, RECONNECT_DELAY_MAX)
+            attempt += 1
+            print(f"[QUOTE] Disconnected ({exc}) — reconnecting in {delay}s "
+                  f"(attempt {attempt})")
+            await asyncio.sleep(delay)
 
 
 # ── Public API ───────────────────────────────────────────────────────────────────────────
