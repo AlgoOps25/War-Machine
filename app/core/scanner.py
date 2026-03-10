@@ -5,40 +5,16 @@ CANDLE CACHE: Cache-aware startup with 95%+ API reduction
 OUTCOME TRACKING: Signal deduplication, ML predictions, EOD reports
 DYNAMIC WS SUBSCRIPTION: Live session ticker subscription with bar prefetch
 
-PHASE 1.11 (MAR 5, 2026):
-  - Critical database connection with explicit logging
-  - Startup health check banner integration
-  - Validation/Options integration wiring
-  - Structured logging with component tags
-  - Data storage spam reduction (periodic summaries)
-  - Explicit zero-watchlist alerts
-
-PHASE 1.12 (MAR 5, 2026):
-  - Database SSL hotfix for Railway connections
-  - Parse DATABASE_URL and inject sslmode=require
-
-PHASE 1.13 (MAR 6, 2026):
-  - Removed deprecated signal_generator imports
-  - Scanner relies entirely on sniper.py for signal processing
-
-PHASE 1.14 (MAR 9, 2026):
-  - Fixed signal_analytics import path
-  - TEMPORARY: sniper_stubs workaround
-
-PHASE 1.15 (MAR 9, 2026):
-  - Wired all risk calls through risk_manager
-  - Fixed crash: get_closed_positions_today() -> get_daily_stats()
-  - monitor_open_positions() delegates exits to risk_manager.check_exits()
-
-PHASE 1.16 (MAR 9, 2026):
-  - FIXED: process_ticker now imported from sniper.py (retires sniper_stubs)
-  - FIXED: startup_backfill wrapped in 45s timeout thread (no more hang)
-  - FIXED: start_ws_feed / start_quote_feed wrapped in 20s timeout threads
-  - Startup banner updated to v1.16
-
 PHASE 1.16b (MAR 9, 2026):
   - FIXED: Python 3.10 SyntaxError — backslashes in f-strings not allowed
-  - Pre-assign all conditional expressions to variables before f-string use
+
+PHASE 1.17 (MAR 9, 2026):
+  - FIXED: startup_backfill demoted to fire-and-forget background daemon
+  - No more 45s timeout warning — backfill runs silently in background
+  - set_backfill_complete() called immediately; WS starts right away
+  - subscribe_and_prefetch_tickers() also non-blocking (background thread)
+  - Main loop enters in <5s regardless of EODHD API latency
+  - Banner updated to v1.17
 """
 import os
 import time
@@ -148,21 +124,24 @@ EMERGENCY_FALLBACK = ["SPY", "QQQ", "AAPL", "MSFT", "NVDA", "TSLA", "META", "AMD
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TIMEOUT-GUARDED STARTUP HELPER
+# BACKGROUND FIRE-AND-FORGET HELPER (Phase 1.17)
 # ─────────────────────────────────────────────────────────────────────────────
-def _run_with_timeout(fn, timeout_seconds: int, label: str):
+def _fire_and_forget(fn, label: str):
     """
-    Run fn() in a daemon thread.  If it doesn't finish within
-    timeout_seconds we log a warning and continue — we never block
-    the main thread forever.
+    Spawn fn() as a daemon thread and return immediately.
+    The thread runs to completion in the background; the main
+    thread is never blocked or joined.
     """
-    t = threading.Thread(target=fn, daemon=True, name=label)
+    def _wrapper():
+        try:
+            fn()
+            logger.info(f"[BG] \u2705 {label} complete")
+        except Exception as e:
+            logger.warning(f"[BG] \u26a0\ufe0f  {label} failed: {e}")
+
+    t = threading.Thread(target=_wrapper, daemon=True, name=label)
     t.start()
-    t.join(timeout=timeout_seconds)
-    if t.is_alive():
-        logger.warning(
-            f"[STARTUP] \u26a0\ufe0f  {label} did not finish within {timeout_seconds}s \u2014 continuing anyway"
-        )
+    return t
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -280,29 +259,37 @@ def monitor_open_positions():
 
 
 def subscribe_and_prefetch_tickers(new_tickers: list):
+    """
+    Subscribe tickers to WS feeds immediately (blocking, fast).
+    Historical backfill runs in the background so the scanner
+    is never held up waiting for EODHD API responses.
+    """
     if not new_tickers:
         return
     try:
+        # Subscribe is instant — do it synchronously
         subscribe_tickers(new_tickers)
         subscribe_quote_tickers(new_tickers)
-        logger.info(f"[WS-SUBSCRIBE] \u2705 Subscribed {len(new_tickers)} new tickers: {', '.join(new_tickers)}")
-        logger.info(f"[PREFETCH] Fetching 30d historical bars for {len(new_tickers)} tickers...")
-        data_manager.startup_backfill_with_cache(new_tickers, days=30)
-        logger.info(f"[PREFETCH] Fetching today's intraday bars for {len(new_tickers)} tickers...")
-        data_manager.startup_intraday_backfill_today(new_tickers)
-        logger.info("[WS-SUBSCRIBE] Waiting 3s for initial bars to flow...")
-        time.sleep(3)
-        logger.info(f"[WS-SUBSCRIBE] \u2705 Prefetch complete for {len(new_tickers)} tickers")
+        logger.info(f"[WS-SUBSCRIBE] \u2705 Subscribed {len(new_tickers)} tickers: {', '.join(new_tickers)}")
+
+        # Kick off the slow EODHD backfill in the background
+        _fire_and_forget(
+            lambda: (
+                data_manager.startup_backfill_with_cache(new_tickers, days=30),
+                data_manager.startup_intraday_backfill_today(new_tickers),
+            ),
+            label=f"prefetch-{','.join(new_tickers[:3])}"
+        )
+        logger.info(f"[PREFETCH] \U0001f504 Background backfill started for {len(new_tickers)} tickers")
     except Exception as e:
-        logger.error(f"[WS-SUBSCRIBE] \u26a0\ufe0f Error subscribing/prefetching tickers: {e}")
+        logger.error(f"[WS-SUBSCRIBE] \u26a0\ufe0f Error subscribing tickers: {e}")
         import traceback
         traceback.print_exc()
 
 
 def start_scanner_loop():
     # ────────────────────────────────────────────────────────────────────────
-    # PHASE 1.16: Import process_ticker directly from sniper.py
-    # (retires the Phase 1.14 sniper_stubs workaround)
+    # Import process_ticker directly from sniper.py
     # ────────────────────────────────────────────────────────────────────────
     try:
         from app.core.sniper import process_ticker, clear_armed_signals, clear_watching_signals
@@ -322,11 +309,9 @@ def start_scanner_loop():
 
     # ════════════════════════════════════════════════════════════════════════
     # STARTUP HEALTH CHECK BANNER
-    # NOTE: Pre-assign all conditional values to variables first.
-    #       Python 3.10 does NOT allow backslashes inside f-string expressions.
     # ════════════════════════════════════════════════════════════════════════
     logger.info("=" * 60)
-    logger.info("WAR MACHINE CFW6 SCANNER v1.16b - STARTUP")
+    logger.info("WAR MACHINE CFW6 SCANNER v1.17 - STARTUP")
     logger.info("=" * 60)
     logger.info("\u2713 DATA-INGEST    WebSocket starting (tickers TBD)")
 
@@ -340,7 +325,6 @@ def start_scanner_loop():
     except Exception as e:
         logger.info(f"? CACHE          Status unknown: {e}")
 
-    # Pre-assign to avoid backslash-in-f-string on Python 3.10
     screener_icon = "\u2713" if API_KEY else "\u2717"
     screener_msg  = ("EODHD API configured (" + API_KEY[:8] + "...)") if API_KEY else "EODHD_API_KEY not set"
     logger.info(f"{screener_icon} SCREENER       {screener_msg}")
@@ -373,17 +357,17 @@ def start_scanner_loop():
     logger.info("Trading session: 09:30 - 16:00 ET")
     logger.info(f"Scanner mode: {pm_mode}")
     logger.info("=" * 60)
-    logger.info("Candle Cache:  \u2705 ENABLED (95%+ API reduction on redeploy)")
-    logger.info("WS Failover:   \u2705 ENABLED (REST API fallback on disconnect)")
-    logger.info("Spread Gate:   \u2705 ENABLED (us-quote bid/ask filter active)")
-    logger.info("Dynamic WS:    \u2705 ENABLED (live session ticker subscription)")
-    logger.info("Risk Manager:  \u2705 ENABLED (unified risk layer \u2014 Phase 1.15)")
-    logger.info("CFW6 Engine:   \u2705 ENABLED (sniper.py direct \u2014 Phase 1.16)")
-    logger.info("Startup Guard: \u2705 ENABLED (timeout-protected startup calls)")
+    logger.info("Candle Cache:    \u2705 ENABLED (95%+ API reduction on redeploy)")
+    logger.info("WS Failover:     \u2705 ENABLED (REST API fallback on disconnect)")
+    logger.info("Spread Gate:     \u2705 ENABLED (us-quote bid/ask filter active)")
+    logger.info("Dynamic WS:      \u2705 ENABLED (live session ticker subscription)")
+    logger.info("Risk Manager:    \u2705 ENABLED (unified risk layer \u2014 Phase 1.15)")
+    logger.info("CFW6 Engine:     \u2705 ENABLED (sniper.py direct \u2014 Phase 1.16)")
+    logger.info("BG Backfill:     \u2705 ENABLED (fire-and-forget \u2014 Phase 1.17)")
     logger.info("=" * 60 + "\n")
 
     try:
-        send_simple_message("\u2694\ufe0f WAR MACHINE ONLINE \u2014 CFW6 v1.16b | sniper.py active | Timeout-guarded startup")
+        send_simple_message("\u2694\ufe0f WAR MACHINE ONLINE \u2014 CFW6 v1.17 | Background backfill | <5s startup")
     except Exception as e:
         logger.warning(f"[SCANNER] Discord unavailable: {e}")
 
@@ -394,40 +378,44 @@ def start_scanner_loop():
     loss_streak_alerted       = False
     last_subscribed_watchlist = set()
 
-    # ── STARTUP SEQUENCE (all calls timeout-guarded) ──────────────────────
+    # ── STARTUP SEQUENCE ────────────────────────────────────────────────────
+    # Phase 1.17: WS feeds start with a short join (they connect fast).
+    # All EODHD API backfill is fire-and-forget — never blocks main loop.
+    # ─────────────────────────────────────────────────────────────────────
     startup_watchlist = list(EMERGENCY_FALLBACK)
 
-    _run_with_timeout(
-        lambda: start_ws_feed(startup_watchlist),
-        timeout_seconds=20,
-        label="start_ws_feed"
+    # WS connections are fast — short join is fine
+    ws_thread = threading.Thread(
+        target=lambda: start_ws_feed(startup_watchlist),
+        daemon=True, name="start_ws_feed"
     )
+    ws_thread.start()
+    ws_thread.join(timeout=20)
     logger.info("[WS] WebSocket feed started (or timed out gracefully)")
 
-    _run_with_timeout(
-        lambda: start_quote_feed(startup_watchlist),
-        timeout_seconds=20,
-        label="start_quote_feed"
+    quote_thread = threading.Thread(
+        target=lambda: start_quote_feed(startup_watchlist),
+        daemon=True, name="start_quote_feed"
     )
+    quote_thread.start()
+    quote_thread.join(timeout=20)
     logger.info("[QUOTE] Quote feed started (or timed out gracefully)")
 
-    _run_with_timeout(
+    # Backfill is SLOW (N tickers × 30s API timeout each).
+    # Fire-and-forget: main loop enters immediately.
+    _fire_and_forget(
         lambda: data_manager.startup_backfill_with_cache(startup_watchlist, days=30),
-        timeout_seconds=45,
         label="startup_backfill"
     )
-    logger.info("[PREFETCH] Historical backfill complete (or timed out gracefully)")
-
-    _run_with_timeout(
+    _fire_and_forget(
         lambda: data_manager.startup_intraday_backfill_today(startup_watchlist),
-        timeout_seconds=30,
         label="intraday_backfill"
     )
-    logger.info("[PREFETCH] Intraday backfill complete (or timed out gracefully)")
 
+    # Mark backfill as "complete" right away so WS starts receiving bars
     set_backfill_complete()
     last_subscribed_watchlist = set(startup_watchlist)
-    logger.info("[STARTUP] \u2705 Startup sequence complete \u2014 entering main loop")
+    logger.info("[STARTUP] \u2705 WS feeds up | backfill running in background | entering main loop")
     # ─────────────────────────────────────────────────────────────────────
 
     while True:
