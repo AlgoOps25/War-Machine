@@ -25,6 +25,12 @@ PHASE 1.18a (MAR 10, 2026):
   - FIXED: Cache dir uses os.getcwd() instead of __file__ relative path (Railway compat)
   - FIXED: os.makedirs on cache dir so it is always created if missing
   - FIXED: Options import now logs the actual exception (not just ImportError)
+
+PHASE 1.19 (MAR 10, 2026):
+  - FIX C5: start_health_server() called once at startup before WS init
+  - FIX C5: health_heartbeat() called at top of every main loop cycle
+  - Railway now gets a real 200/503 signal from GET /health instead of
+    always-200 (health endpoint was missing entirely before this fix)
 """
 import os
 import time
@@ -47,6 +53,9 @@ from app.screening.watchlist_funnel import (
     get_watchlist_with_metadata,
     get_funnel
 )
+
+# ── Health server (C5 fix) ────────────────────────────────────────────────────
+from app.core.health_server import start_health_server, health_heartbeat
 
 # ── Risk layer — single import, all risk calls go through here ────────────────
 from app.risk.risk_manager import (
@@ -314,10 +323,16 @@ def start_scanner_loop():
         HAS_AI_LEARNING = False
 
     # ════════════════════════════════════════════════════════════════════════
+    # C5 FIX: Start HTTP health server before anything else so Railway's
+    # probe gets a real response from the very first second of startup.
+    # ════════════════════════════════════════════════════════════════════════
+    start_health_server()
+
+    # ════════════════════════════════════════════════════════════════════════
     # STARTUP HEALTH CHECK BANNER
     # ════════════════════════════════════════════════════════════════════════
     print("=" * 60, flush=True)
-    print("WAR MACHINE CFW6 SCANNER v1.18a - STARTUP", flush=True)
+    print("WAR MACHINE CFW6 SCANNER v1.19 - STARTUP", flush=True)
     print("=" * 60, flush=True)
     print("✓ DATA-INGEST    WebSocket starting (tickers TBD)", flush=True)
 
@@ -370,10 +385,11 @@ def start_scanner_loop():
     print("CFW6 Engine:     ✅ ENABLED (sniper.py direct — Phase 1.16)", flush=True)
     print("BG Backfill:     ✅ ENABLED (fire-and-forget — Phase 1.17)", flush=True)
     print("Cache Dir Fix:   ✅ FIXED   (os.getcwd() — Phase 1.18a)", flush=True)
+    print("Health HTTP:     ✅ ENABLED (GET /health → 200/503 — Phase 1.19 C5)", flush=True)
     print("=" * 60 + "\n", flush=True)
 
     try:
-        send_simple_message("⚔️ WAR MACHINE ONLINE — CFW6 v1.18a | Cache fix | Options guard | Quote backoff")
+        send_simple_message("⚔️ WAR MACHINE ONLINE — CFW6 v1.19 | Health endpoint live | C5 fixed")
     except Exception as e:
         logger.warning(f"[SCANNER] Discord unavailable: {e}")
 
@@ -426,6 +442,9 @@ def start_scanner_loop():
 
     while True:
         try:
+            # ── C5: heartbeat — keeps /health returning 200 ──────────────
+            health_heartbeat()
+
             now_et           = _now_et()
             current_time_str = now_et.strftime('%I:%M:%S %p ET')
             current_day      = now_et.strftime('%Y-%m-%d')
