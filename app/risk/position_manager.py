@@ -10,6 +10,11 @@ Features:
   - Circuit breaker (daily loss limits)
   - Signal tracking when trades execute (links signals to positions)
   - RTH guard: blocks new positions outside 9:30 AM - 4:00 PM ET
+
+PHASE C1 FIX (MAR 10, 2026):
+  - FIXED: _load_session_state() now re-populates self.positions from DB on startup
+  - Prevents phantom trade / wrong sizing after mid-session Railway restart or crash
+  - Streak, performance_multiplier, and circuit breaker math all survive restarts
 """
 from utils import config
 from datetime import datetime, timedelta
@@ -60,7 +65,7 @@ class PositionManager:
     def __init__(self, db_path: str = None):
         self.db_path = db_path or "market_memory.db"
         self.positions = []  # Active positions cache
-        
+
         self.account_size = getattr(config, "ACCOUNT_SIZE", 25_000)
         self.intraday_high_water_mark = self.account_size
         self.session_starting_balance = self.account_size
@@ -68,31 +73,61 @@ class PositionManager:
         self.max_open_positions = getattr(config, "MAX_OPEN_POSITIONS", 5)
         self.max_sector_exposure_pct = getattr(config, "MAX_SECTOR_EXPOSURE_PCT", 40.0)
         self.min_risk_reward_ratio = getattr(config, "MIN_RISK_REWARD_RATIO", 1.5)
-        
+
         self.consecutive_wins = 0
         self.consecutive_losses = 0
         self.performance_multiplier = 1.0  # 0.5-1.5 range based on recent performance
-        
+
         self._initialize_database()
         self._close_stale_positions()
         self._load_session_state()
 
     def _load_session_state(self) -> None:
-        """Load session starting balance and performance streak on initialization."""
+        """Load session starting balance, open positions, and performance streak on initialization."""
         try:
             stats = self.get_daily_stats()
             total_pnl = stats.get("total_pnl", 0.0)
-            
+
             self.account_size = self.session_starting_balance + total_pnl
             self.intraday_high_water_mark = max(self.intraday_high_water_mark, self.account_size)
-            
+
+            # ── C1 FIX: Re-populate in-memory cache from DB on restart ──────────
+            # Without this, a mid-session Railway redeploy loses all open position
+            # state, causing wrong sizing, wrong streak, and phantom trade risk.
+            open_db = self.get_open_positions()
+            self.positions = [
+                {
+                    "id":                  pos["id"],
+                    "ticker":              pos["ticker"],
+                    "direction":           pos["direction"],
+                    "entry":               pos["entry_price"],
+                    "stop":                pos["stop_price"],
+                    "t1":                  pos["t1_price"],
+                    "t2":                  pos["t2_price"],
+                    "contracts":           pos["contracts"],
+                    "remaining_contracts": pos["remaining_contracts"],
+                    "grade":               pos["grade"],
+                    "confidence":          pos["confidence"],
+                    "t1_hit":              bool(pos["t1_hit"]),
+                    "pnl":                 pos["pnl"] or 0.0,
+                }
+                for pos in open_db
+            ]
+            if self.positions:
+                tickers = ", ".join(p["ticker"] for p in self.positions)
+                print(f"[RISK] 🔄 Reloaded {len(self.positions)} open position(s) "
+                      f"from DB after restart: {tickers}")
+            else:
+                print("[RISK] ✅ No open positions to reload — clean session start")
+            # ─────────────────────────────────────────────────────────────────────
+
             closed_trades = self.get_todays_closed_trades()
             if closed_trades:
                 self._update_performance_streak(closed_trades)
-            
+
             print(f"[RISK] Session loaded | Balance: ${self.account_size:,.0f} | "
                   f"P&L: ${total_pnl:+.0f} | Streak: {self._format_streak()}")
-        
+
         except Exception as e:
             print(f"[RISK] Session state load error: {e}")
 
@@ -100,10 +135,10 @@ class PositionManager:
         """Update consecutive win/loss streak for dynamic sizing."""
         if not trades:
             return
-        
+
         self.consecutive_wins = 0
         self.consecutive_losses = 0
-        
+
         for trade in reversed(trades):
             pnl = trade.get("pnl", 0.0)
             if pnl > 0:
@@ -114,7 +149,7 @@ class PositionManager:
                 if self.consecutive_wins > 0:
                     break
                 self.consecutive_losses += 1
-        
+
         if self.consecutive_losses >= 3:
             self.performance_multiplier = 0.5
         elif self.consecutive_losses >= 2:
@@ -143,14 +178,14 @@ class PositionManager:
         stats = self.get_daily_stats()
         total_pnl = stats.get("total_pnl", 0.0)
         daily_loss_pct = (total_pnl / self.session_starting_balance) * 100
-        
+
         if daily_loss_pct <= -self.max_daily_loss_pct:
             reason = (
                 f"CIRCUIT BREAKER TRIGGERED: Daily loss limit reached "
                 f"({daily_loss_pct:.1f}% / -{self.max_daily_loss_pct}% max)"
             )
             return True, reason
-        
+
         return False, ""
 
     def check_max_drawdown(self) -> Tuple[bool, str]:
@@ -161,13 +196,13 @@ class PositionManager:
         stats = self.get_daily_stats()
         total_pnl = stats.get("total_pnl", 0.0)
         current_balance = self.session_starting_balance + total_pnl
-        
-        drawdown = ((current_balance - self.intraday_high_water_mark) / 
+
+        drawdown = ((current_balance - self.intraday_high_water_mark) /
                     self.intraday_high_water_mark) * 100
-        
+
         if current_balance > self.intraday_high_water_mark:
             self.intraday_high_water_mark = current_balance
-        
+
         max_drawdown_pct = getattr(config, "MAX_INTRADAY_DRAWDOWN_PCT", 5.0)
         if drawdown <= -max_drawdown_pct:
             reason = (
@@ -175,7 +210,7 @@ class PositionManager:
                 f"(${self.intraday_high_water_mark:,.0f} → ${current_balance:,.0f})"
             )
             return True, reason
-        
+
         return False, ""
 
     def can_open_position(self, ticker: str, risk_dollars: float) -> Tuple[bool, str]:
@@ -190,31 +225,31 @@ class PositionManager:
         breached, reason = self.check_circuit_breaker()
         if breached:
             return False, reason
-        
+
         breached, reason = self.check_max_drawdown()
         if breached:
             return False, reason
-        
+
         open_positions = self.get_open_positions()
         if len(open_positions) >= self.max_open_positions:
             return False, f"Max open positions reached ({self.max_open_positions})"
-        
+
         sector = self._get_ticker_sector(ticker)
         if sector:
             sector_exposure = self._calculate_sector_exposure(sector)
             position_exposure_pct = (risk_dollars / self.account_size) * 100
-            
+
             if sector_exposure + position_exposure_pct > self.max_sector_exposure_pct:
                 return False, (
                     f"Sector exposure limit ({sector}): "
                     f"{sector_exposure:.0f}% + {position_exposure_pct:.0f}% "
                     f"> {self.max_sector_exposure_pct:.0f}% max"
                 )
-        
+
         for pos in open_positions:
             if pos["ticker"] == ticker:
                 return False, f"Position already open for {ticker}"
-        
+
         return True, "OK"
 
     def _get_ticker_sector(self, ticker: str) -> Optional[str]:
@@ -228,7 +263,7 @@ class PositionManager:
         """Calculate current exposure percentage to a sector."""
         sector_tickers = SECTOR_GROUPS.get(sector, [])
         open_positions = self.get_open_positions()
-        
+
         sector_risk = 0.0
         for pos in open_positions:
             if pos["ticker"] in sector_tickers:
@@ -237,7 +272,7 @@ class PositionManager:
                 contracts = pos["remaining_contracts"]
                 risk_per_contract = abs(entry - stop) * 100
                 sector_risk += risk_per_contract * contracts
-        
+
         return (sector_risk / self.account_size) * 100
 
     def validate_risk_reward(self, entry: float, stop: float, target: float) -> Tuple[bool, float]:
@@ -247,13 +282,13 @@ class PositionManager:
         """
         risk = abs(entry - stop)
         reward = abs(target - entry)
-        
+
         if risk == 0:
             return False, 0.0
-        
+
         risk_reward = reward / risk
         is_valid = risk_reward >= self.min_risk_reward_ratio
-        
+
         return is_valid, risk_reward
 
     def has_loss_streak(self, max_consecutive_losses: int = 3) -> bool:
@@ -381,7 +416,7 @@ class PositionManager:
         """
         Calculate contract size based on confidence, grade, and risk.
         Applies performance multiplier and VIX volatility multiplier.
-        
+
         Sizing stack (multiplicative):
           base_risk_pct  (from grade/confidence tier)
           × performance_multiplier  (win/loss streak: 0.5–1.25)
@@ -549,7 +584,7 @@ class PositionManager:
                   f"({sizing['risk_percentage']:.1f}%)  "
                   f"Perf: x{sizing['performance_adj']:.2f}  VIX: x{sizing['vix_mult']:.2f}")
             print(f"  Sector: {sector}  Streak: {self._format_streak()}")
-            
+
             if options_rec:
                 opt_str = f"  Options: {contract_type} ${strike} exp {expiry}"
                 if delta:
@@ -559,7 +594,7 @@ class PositionManager:
                 if gex_context:
                     opt_str += f" | {gex_context}"
                 print(opt_str)
-            
+
             return position_id
         finally:
             if conn:
@@ -704,7 +739,7 @@ class PositionManager:
                 else:
                     self.consecutive_losses += 1
                     self.consecutive_wins = 0
-                
+
                 closed_trades = self.get_todays_closed_trades()
                 self._update_performance_streak(closed_trades)
 
@@ -732,7 +767,7 @@ class PositionManager:
                 send_exit_alert(ticker, exit_price, exit_reason, final_pnl)
             except Exception as e:
                 print(f"[POSITION] Discord exit alert failed: {e}")
-            
+
             breached, reason = self.check_circuit_breaker()
             if breached:
                 print(f"\n[RISK] 🚨 {reason}")
@@ -847,9 +882,9 @@ class PositionManager:
         losses    = stats.get("losses",    0)
         total_pnl = stats.get("total_pnl", 0.0)
         win_rate  = stats.get("win_rate",  0.0)
-        
+
         daily_return_pct = (total_pnl / self.session_starting_balance) * 100
-        max_dd_pct = ((self.account_size - self.intraday_high_water_mark) / 
+        max_dd_pct = ((self.account_size - self.intraday_high_water_mark) /
                       self.intraday_high_water_mark) * 100
 
         lines = [
@@ -907,21 +942,21 @@ class PositionManager:
         """Get formatted risk management summary."""
         stats = self.get_daily_stats()
         total_pnl = stats.get("total_pnl", 0.0)
-        
+
         current_balance = self.session_starting_balance + total_pnl
         daily_return_pct = (total_pnl / self.session_starting_balance) * 100
-        max_dd_pct = ((current_balance - self.intraday_high_water_mark) / 
+        max_dd_pct = ((current_balance - self.intraday_high_water_mark) /
                       self.intraday_high_water_mark) * 100
-        
+
         open_positions = self.get_open_positions()
         total_exposure = sum(
             abs(pos["entry_price"] - pos["stop_price"]) * 100 * pos["remaining_contracts"]
             for pos in open_positions
         )
         exposure_pct = (total_exposure / current_balance) * 100
-        
+
         circuit_breached, _ = self.check_circuit_breaker()
-        
+
         summary = "\n" + "="*60 + "\n"
         summary += "RISK MANAGEMENT SUMMARY\n"
         summary += "="*60 + "\n"
@@ -935,7 +970,7 @@ class PositionManager:
         summary += f"Performance:      {self._format_streak()}\n"
         summary += f"Circuit Breaker:  {'🚨 TRIGGERED' if circuit_breached else '✅ OK'}\n"
         summary += "="*60 + "\n"
-        
+
         return summary
 
 
