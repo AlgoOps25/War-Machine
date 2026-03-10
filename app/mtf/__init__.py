@@ -1,1 +1,1 @@
-﻿# Multi-Timeframe Analysis
+# Multi-Timeframe Analysis

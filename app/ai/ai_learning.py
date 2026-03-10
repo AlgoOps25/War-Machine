@@ -1,4 +1,4 @@
-﻿"""
+"""
 AI Learning Module - Improves Entry Quality Over Time
 Analyzes win/loss patterns and adjusts strategy parameters
 
@@ -14,9 +14,9 @@ import db_connection
 from utils import config
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# =============================================================================
 # CONFIDENCE SCORING (formerly learning_policy.py)
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# =============================================================================
 
 # Grade baseline confidence map (CFW6 video rules)
 _GRADE_BASE = {
@@ -53,16 +53,9 @@ def compute_confidence(
     Returns:
         Float in [0.0, 1.0] representing signal confidence.
     """
-    # Base score from grade
     base = _GRADE_BASE.get(grade, 0.50)
-
-    # Timeframe multiplier
     tf_mult = _TF_MULTIPLIER.get(timeframe, 1.00)
-
-    # Compute raw score
     score = base * tf_mult
-
-    # Clamp to valid range
     return round(min(max(score, 0.0), 1.0), 4)
 
 
@@ -81,9 +74,9 @@ def grade_to_label(confidence: float) -> str:
         return "reject"
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# =============================================================================
 # AI LEARNING ENGINE
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# =============================================================================
 
 class AILearningEngine:
     def __init__(self, db_path: str = "learning_data.json"):
@@ -138,19 +131,16 @@ class AILearningEngine:
                     d = row["data"]
                     if not isinstance(d, dict):
                         d = json.loads(d)
-                    # Merge: default fills any keys missing from stored data
                     return {**default_data, **d}
             except Exception as e:
                 print(f"[AI] Error loading from PostgreSQL: {e}")
             return default_data
 
-        # SQLite: load from JSON file
         if os.path.exists(self.db_path):
             try:
                 with open(self.db_path, "r") as f:
                     loaded = json.load(f)
                 if isinstance(loaded, dict):
-                    # Merge: default fills any keys missing from stored data
                     return {**default_data, **loaded}
             except Exception as e:
                 print(f"[AI] Error loading JSON: {e}")
@@ -177,7 +167,6 @@ class AILearningEngine:
                 print(f"[AI] Error saving to PostgreSQL: {e}")
             return
 
-        # SQLite: save to JSON file
         try:
             with open(self.db_path, "w") as f:
                 json.dump(self.data, f, indent=2)
@@ -206,7 +195,7 @@ class AILearningEngine:
         self.update_performance_metrics(trade_record)
         self.save_data()
 
-        print(f"[AI] Trade recorded: {trade['ticker']} {trade['direction']} â†’ "
+        print(f"[AI] Trade recorded: {trade['ticker']} {trade['direction']} -> "
               f"{'WIN' if trade_record['win'] else 'LOSS'} ${trade['pnl']:+.2f}")
 
     def update_performance_metrics(self, trade: Dict):
@@ -217,7 +206,6 @@ class AILearningEngine:
         win       = trade["win"]
         pnl       = trade["pnl"]
 
-        # Pattern (grade) performance
         if grade not in self.data["pattern_performance"]:
             self.data["pattern_performance"][grade] = {"count": 0, "wins": 0, "total_pnl": 0}
         self.data["pattern_performance"][grade]["count"] += 1
@@ -225,7 +213,6 @@ class AILearningEngine:
             self.data["pattern_performance"][grade]["wins"] += 1
         self.data["pattern_performance"][grade]["total_pnl"] += pnl
 
-        # Ticker performance
         if ticker not in self.data["ticker_performance"]:
             self.data["ticker_performance"][ticker] = {"count": 0, "wins": 0, "total_pnl": 0}
         self.data["ticker_performance"][ticker]["count"] += 1
@@ -233,7 +220,6 @@ class AILearningEngine:
             self.data["ticker_performance"][ticker]["wins"] += 1
         self.data["ticker_performance"][ticker]["total_pnl"] += pnl
 
-        # Timeframe performance
         if timeframe not in self.data["timeframe_performance"]:
             self.data["timeframe_performance"][timeframe] = {"count": 0, "wins": 0, "total_pnl": 0}
         self.data["timeframe_performance"][timeframe]["count"] += 1
@@ -252,19 +238,18 @@ class AILearningEngine:
             print("[AI] Not enough data for confirmation optimization (need 20+ trades)")
             return
 
-        # Derive baseline win rate from all recorded trades
         all_trades = self.data["trades"]
         baseline_wr = (
             sum(1 for t in all_trades if t["win"]) / len(all_trades)
             if all_trades else 0.65
         )
-        baseline_wr = max(baseline_wr, 0.01)  # guard against divide-by-zero
+        baseline_wr = max(baseline_wr, 0.01)
 
         confirmation_scores = {
-            "vwap":         {"wins": 0, "total": 0},
-            "prev_day":     {"wins": 0, "total": 0},
-            "institutional":{"wins": 0, "total": 0},
-            "options_flow": {"wins": 0, "total": 0}
+            "vwap":          {"wins": 0, "total": 0},
+            "prev_day":      {"wins": 0, "total": 0},
+            "institutional": {"wins": 0, "total": 0},
+            "options_flow":  {"wins": 0, "total": 0}
         }
 
         for trade in trades_with_confirmations:
@@ -289,7 +274,7 @@ class AILearningEngine:
 
     def optimize_fvg_threshold(self):
         """Find optimal FVG size threshold."""
-        recent_trades = self.data["trades"][-100:]  # Last 100 trades
+        recent_trades = self.data["trades"][-100:]
 
         if len(recent_trades) < 30:
             return
@@ -308,7 +293,7 @@ class AILearningEngine:
     def get_ticker_confidence_multiplier(self, ticker: str) -> float:
         """
         Get confidence multiplier based on ticker's historical performance.
-        
+
         Returns:
             1.10 if WR >= 75% (strong performer)
             1.05 if WR >= 65% (above baseline)
@@ -321,10 +306,10 @@ class AILearningEngine:
 
         perf = self.data["ticker_performance"][ticker]
         if perf["count"] < 5:
-            return 1.0  # Not enough data
+            return 1.0
 
         win_rate = perf["wins"] / perf["count"]
-        
+
         if win_rate >= 0.75:
             return 1.10
         elif win_rate >= 0.65:
@@ -333,7 +318,7 @@ class AILearningEngine:
             return 1.0
         elif win_rate >= 0.45:
             return 0.95
-        else:  # win_rate < 0.45
+        else:
             return 0.90
 
     def get_options_flow_weight(self, ticker: str) -> float:
@@ -348,20 +333,15 @@ class AILearningEngine:
         try:
             from app.options.options_data_manager import options_dm
             score_data = options_dm.get_options_score(ticker)
-            
+
             if not score_data.get('tradeable'):
-                return 1.0  # Neutral if not tradeable
-            
-            # Convert 0-100 score to 0.7-1.3 multiplier
-            # Score 50 â†’ 1.0 (neutral)
-            # Score 0  â†’ 0.7 (weak)
-            # Score 100 â†’ 1.3 (strong)
+                return 1.0
+
             score = score_data.get('score', 50)
             multiplier = 0.7 + (score / 100) * 0.6
             return round(multiplier, 2)
-            
+
         except ImportError:
-            # options_data_manager not available
             return 1.0
         except Exception as e:
             print(f"[AI] Error getting options flow weight for {ticker}: {e}")
@@ -370,9 +350,9 @@ class AILearningEngine:
     def get_optimal_parameters(self) -> Dict:
         """Get current optimal strategy parameters."""
         return {
-            "fvg_min_size_pct":       self.data["fvg_size_optimal"],
-            "orb_break_threshold":    self.data["or_break_threshold_optimal"],
-            "confirmation_weights":   self.data["confirmation_weights"]
+            "fvg_min_size_pct":    self.data["fvg_size_optimal"],
+            "orb_break_threshold": self.data["or_break_threshold_optimal"],
+            "confirmation_weights": self.data["confirmation_weights"]
         }
 
     def generate_performance_report(self) -> str:
@@ -391,7 +371,7 @@ class AILearningEngine:
         report += f"Total Trades: {total_trades}\n"
         report += f"Win Rate: {win_rate:.1f}%\n"
         report += f"Total P&L: ${total_pnl:+,.2f}\n"
-        report += f"\nGrade Performance:\n"
+        report += "\nGrade Performance:\n"
 
         for grade in ["A+", "A", "A-"]:
             if grade in self.data["pattern_performance"]:
@@ -400,7 +380,7 @@ class AILearningEngine:
                 report  += (f"  {grade}: {perf['count']} trades, "
                             f"{grade_wr:.1f}% WR, ${perf['total_pnl']:+.2f}\n")
 
-        report += f"\nTop Performing Tickers:\n"
+        report += "\nTop Performing Tickers:\n"
         sorted_tickers = sorted(
             self.data["ticker_performance"].items(),
             key=lambda x: x[1]["total_pnl"],
@@ -417,7 +397,3 @@ class AILearningEngine:
 
 # Global instance
 learning_engine = AILearningEngine()
-
-
-
-

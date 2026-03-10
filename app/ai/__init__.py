@@ -1,1 +1,1 @@
-﻿# AI Learning & Optimization
+# AI Learning & Optimization

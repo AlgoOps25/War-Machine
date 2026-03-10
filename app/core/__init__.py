@@ -1,1 +1,1 @@
-﻿# Core Scanner Engine
+# Core Scanner Engine

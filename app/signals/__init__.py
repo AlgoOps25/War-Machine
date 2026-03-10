@@ -1,1 +1,1 @@
-﻿# Signal Generation & Analytics
+# Signal Generation & Analytics

@@ -1,1 +1,1 @@
-﻿# Data Management & Pipelines
+# Data Management & Pipelines
