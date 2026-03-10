@@ -57,13 +57,13 @@ class CooldownTracker:
     def _persist_cooldown(self, ticker: str, expires_at: datetime) -> None:
         """Upsert cooldown expiry to DB."""
         try:
-            from app.data.db_connection import get_conn, return_conn
-            from app.data.sql_safe import safe_execute, get_placeholder
+            from app.data.db_connection import get_conn, return_conn, ph
+            from app.data.sql_safe import safe_execute
             conn = None
             try:
                 conn = get_conn()
                 cursor = conn.cursor()
-                p = get_placeholder(conn)
+                p = ph()
                 query = f"""
                     INSERT INTO signal_cooldown (ticker, expires_at, updated_at)
                     VALUES ({p}, {p}, CURRENT_TIMESTAMP)
@@ -82,13 +82,13 @@ class CooldownTracker:
     def _remove_cooldown_from_db(self, ticker: str) -> None:
         """Delete cooldown row for ticker."""
         try:
-            from app.data.db_connection import get_conn, return_conn
-            from app.data.sql_safe import safe_execute, get_placeholder
+            from app.data.db_connection import get_conn, return_conn, ph
+            from app.data.sql_safe import safe_execute
             conn = None
             try:
                 conn = get_conn()
                 cursor = conn.cursor()
-                p = get_placeholder(conn)
+                p = ph()
                 safe_execute(cursor, f"DELETE FROM signal_cooldown WHERE ticker = {p}", (ticker,))
                 conn.commit()
             finally:
@@ -105,13 +105,13 @@ class CooldownTracker:
         self._ensure_cooldown_db()
         self._cleanup_stale_cooldowns()
         try:
-            from app.data.db_connection import get_conn, return_conn, dict_cursor
-            from app.data.sql_safe import safe_query, get_placeholder
+            from app.data.db_connection import get_conn, return_conn, dict_cursor, ph
+            from app.data.sql_safe import safe_query
             conn = None
             try:
                 conn = get_conn()
                 cursor = dict_cursor(conn)
-                p = get_placeholder(conn)
+                p = ph()
                 now = self._now_et()
                 rows = safe_query(cursor,
                     f"SELECT ticker, expires_at FROM signal_cooldown WHERE expires_at > {p}",
@@ -137,13 +137,13 @@ class CooldownTracker:
     def _cleanup_stale_cooldowns(self) -> None:
         """Remove expired cooldown rows from DB."""
         try:
-            from app.data.db_connection import get_conn, return_conn
-            from app.data.sql_safe import safe_execute, get_placeholder
+            from app.data.db_connection import get_conn, return_conn, ph
+            from app.data.sql_safe import safe_execute
             conn = None
             try:
                 conn = get_conn()
                 cursor = conn.cursor()
-                p = get_placeholder(conn)
+                p = ph()
                 now = self._now_et()
                 safe_execute(cursor,
                     f"DELETE FROM signal_cooldown WHERE expires_at <= {p}",
@@ -176,7 +176,6 @@ class CooldownTracker:
         Fast path: in-memory dict.
         Slow path (post-restart miss): DB lookup to catch persisted state.
         """
-        # Ensure DB state is loaded once per process lifetime
         if not self._db_loaded:
             self._load_from_db()
 
