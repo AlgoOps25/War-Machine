@@ -10,22 +10,36 @@ Detects major news catalysts using EODHD News API:
 
 Integration: Used by premarket_scanner to boost watchlist scoring
 
-PHASE 1.18 (MAR 10, 2026) - Tightened earnings detection:
-  - Removed bare 'earnings' keyword — appears in too much generic commentary
-    (earnings growth, earnings estimate, earnings multiple, etc.)
-  - Now requires event-specific phrases that confirm an actual earnings
-    announcement occurred: 'reported earnings', 'beat estimates',
-    'misses estimates', 'quarterly results', 'Q1/Q2/Q3/Q4 results',
-    'eps beat', 'eps miss', 'reports q[1-4]'
-  - Added RECENCY_HOURS window (default 48h) — news older than this is
-    ignored to avoid stale catalysts from prior quarters
-  - Matched keyword is now logged for easier debugging
+PHASE 1.18 (MAR 10, 2026):
+  - Tightened earnings keywords (event-specific phrases only)
+  - Added RECENCY_HOURS window (48h) to skip stale catalysts
+  - Matched keyword logged for debugging
+  - notify_news_catalyst(): posts rich Discord embed to dedicated
+    news channel (DISCORD_NEWS_WEBHOOK_URL) whenever a catalyst fires
 """
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 import re
 import requests
 from utils import config
+
+
+# Catalyst type -> emoji for Discord embed
+_CATALYST_EMOJI = {
+    'earnings':  '📊',
+    'upgrade':   '⬆️',
+    'downgrade': '⬇️',
+    'merger':    '🤝',
+    'fda':       '💊',
+    'macro':     '🌐',
+}
+
+# Sentiment -> color (Discord embed sidebar color, decimal)
+_SENTIMENT_COLOR = {
+    'bullish': 0x2ECC71,   # green
+    'bearish': 0xE74C3C,   # red
+    'neutral': 0x95A5A6,   # grey
+}
 
 
 class NewsCatalyst:
@@ -37,13 +51,15 @@ class NewsCatalyst:
                  headline: str,
                  sentiment: str,
                  weight: int,
-                 timestamp: datetime):
+                 timestamp: datetime,
+                 matched_kw: str = ''):
         self.ticker = ticker
         self.catalyst_type = catalyst_type
         self.headline = headline
         self.sentiment = sentiment  # 'bullish', 'bearish', 'neutral'
         self.weight = weight        # +10 to +25 points
         self.timestamp = timestamp
+        self.matched_kw = matched_kw  # keyword that triggered the match
     
     def to_dict(self) -> Dict:
         return {
@@ -52,8 +68,53 @@ class NewsCatalyst:
             'headline': self.headline,
             'sentiment': self.sentiment,
             'weight': self.weight,
+            'matched_kw': self.matched_kw,
             'timestamp': self.timestamp.isoformat()
         }
+
+
+def notify_news_catalyst(catalyst: 'NewsCatalyst') -> None:
+    """
+    Post a Discord embed to the dedicated news channel when a catalyst fires.
+
+    Uses DISCORD_NEWS_WEBHOOK_URL from config.  Fails silently if the webhook
+    is not configured or the request errors — never blocks the scan loop.
+    """
+    webhook_url = getattr(config, 'DISCORD_NEWS_WEBHOOK_URL', '')
+    if not webhook_url:
+        return
+
+    emoji = _CATALYST_EMOJI.get(catalyst.catalyst_type, '📰')
+    color = _SENTIMENT_COLOR.get(catalyst.sentiment, 0x95A5A6)
+    sentiment_label = catalyst.sentiment.upper()
+
+    # Truncate headline to Discord field limit
+    headline = catalyst.headline[:250] + '…' if len(catalyst.headline) > 250 else catalyst.headline
+
+    embed = {
+        'title': f'{emoji}  {catalyst.ticker}  —  {catalyst.catalyst_type.upper()} CATALYST',
+        'description': headline,
+        'color': color,
+        'fields': [
+            {'name': 'Sentiment',    'value': sentiment_label,          'inline': True},
+            {'name': 'Score Weight', 'value': f'+{catalyst.weight} pts', 'inline': True},
+            {'name': 'Matched On',   'value': f'`{catalyst.matched_kw}`','inline': True},
+        ],
+        'footer': {
+            'text': f'War Machine  •  News Catalyst  •  {datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")}'
+        }
+    }
+
+    try:
+        resp = requests.post(
+            webhook_url,
+            json={'embeds': [embed]},
+            timeout=5
+        )
+        if resp.status_code not in (200, 204):
+            print(f'[NEWS-DISCORD] Webhook error {resp.status_code} for {catalyst.ticker}')
+    except Exception as e:
+        print(f'[NEWS-DISCORD] Failed to send alert for {catalyst.ticker}: {e}')
 
 
 class NewsCatalystDetector:
@@ -64,7 +125,6 @@ class NewsCatalystDetector:
 
     # ---- EARNINGS ----
     # Requires event-specific language, NOT bare 'earnings'.
-    # Each entry is a substring that unambiguously signals an actual event.
     EARNINGS_KEYWORDS = [
         'reported earnings',
         'reports earnings',
@@ -143,7 +203,7 @@ class NewsCatalystDetector:
         'jobs report',
         'nonfarm payroll',
     ]
-    
+
     def __init__(self):
         self.cache = {}  # ticker -> (NewsCatalyst | None, fetched_at)
         self.cache_ttl = timedelta(minutes=30)
@@ -151,10 +211,8 @@ class NewsCatalystDetector:
     def detect_catalyst(self, ticker: str, force_refresh: bool = False) -> Optional[NewsCatalyst]:
         """
         Detect news catalyst for a ticker.
-
-        Returns NewsCatalyst or None.
+        Fires a Discord notification automatically when a catalyst is found.
         """
-        # Check cache
         if not force_refresh and ticker in self.cache:
             cached_result, fetched_at = self.cache[ticker]
             if (datetime.now() - fetched_at) < self.cache_ttl:
@@ -172,6 +230,8 @@ class NewsCatalystDetector:
         
         if catalyst:
             print(f"[NEWS] {ticker}: Catalyst found - {catalyst.catalyst_type} (weight={catalyst.weight})")
+            # Fire Discord alert to news channel
+            notify_news_catalyst(catalyst)
         else:
             print(f"[NEWS] {ticker}: No catalyst found")
         
@@ -200,19 +260,10 @@ class NewsCatalystDetector:
             return []
     
     def _is_ticker_specific(self, ticker: str, title: str, content: str) -> bool:
-        """Check if the news item is actually about this ticker."""
         combined = (title + ' ' + content).lower()
-        ticker_lower = ticker.lower()
-        if ticker_lower in combined:
-            return True
-        return False
+        return ticker.lower() in combined
 
     def _is_recent(self, item: Dict) -> bool:
-        """
-        Return True if the news item's publish date is within RECENCY_HOURS.
-        Accepts ISO-8601 strings or Unix timestamps in the 'date' field.
-        Falls back to True when the field is missing (don't discard).
-        """
         raw = item.get('date') or item.get('published_at') or item.get('datetime')
         if not raw:
             return True
@@ -220,17 +271,15 @@ class NewsCatalystDetector:
             if isinstance(raw, (int, float)):
                 pub = datetime.utcfromtimestamp(raw)
             else:
-                # Strip trailing Z or timezone offset for fromisoformat compat
                 raw_clean = re.sub(r'Z$', '', str(raw))
                 raw_clean = re.sub(r'[+-]\d{2}:\d{2}$', '', raw_clean).strip()
                 pub = datetime.fromisoformat(raw_clean)
             cutoff = datetime.utcnow() - timedelta(hours=self.RECENCY_HOURS)
             return pub >= cutoff
         except Exception:
-            return True  # parse failure -> don't discard
+            return True
     
     def _analyze_news(self, ticker: str, news_items: List[Dict]) -> Optional[NewsCatalyst]:
-        """Analyze news items to detect major catalysts."""
         catalysts = []
         ticker_specific_count = 0
         
@@ -244,13 +293,10 @@ class NewsCatalystDetector:
                 continue
 
             ticker_specific_count += 1
-            title_lower = title.lower()
-            content_lower = content.lower()
-            combined = title_lower + ' ' + content_lower
-
+            combined = (title + ' ' + content).lower()
             matched_kw = None
 
-            # --- Earnings (tight match required) ---
+            # --- Earnings ---
             for kw in self.EARNINGS_KEYWORDS:
                 if kw in combined:
                     matched_kw = kw
@@ -258,12 +304,10 @@ class NewsCatalystDetector:
             if matched_kw:
                 print(f"[NEWS] {ticker}: earnings match on '{matched_kw}'")
                 catalysts.append(NewsCatalyst(
-                    ticker=ticker,
-                    catalyst_type='earnings',
+                    ticker=ticker, catalyst_type='earnings',
                     headline=title,
                     sentiment=self._detect_sentiment(combined),
-                    weight=25,
-                    timestamp=datetime.now()
+                    weight=25, timestamp=datetime.now(), matched_kw=matched_kw
                 ))
                 continue
 
@@ -275,12 +319,9 @@ class NewsCatalystDetector:
             if matched_kw:
                 print(f"[NEWS] {ticker}: upgrade match on '{matched_kw}'")
                 catalysts.append(NewsCatalyst(
-                    ticker=ticker,
-                    catalyst_type='upgrade',
-                    headline=title,
-                    sentiment='bullish',
-                    weight=20,
-                    timestamp=datetime.now()
+                    ticker=ticker, catalyst_type='upgrade',
+                    headline=title, sentiment='bullish',
+                    weight=20, timestamp=datetime.now(), matched_kw=matched_kw
                 ))
                 continue
 
@@ -294,12 +335,9 @@ class NewsCatalystDetector:
             if matched_kw:
                 print(f"[NEWS] {ticker}: downgrade match on '{matched_kw}'")
                 catalysts.append(NewsCatalyst(
-                    ticker=ticker,
-                    catalyst_type='downgrade',
-                    headline=title,
-                    sentiment='bearish',
-                    weight=15,
-                    timestamp=datetime.now()
+                    ticker=ticker, catalyst_type='downgrade',
+                    headline=title, sentiment='bearish',
+                    weight=15, timestamp=datetime.now(), matched_kw=matched_kw
                 ))
                 continue
 
@@ -313,12 +351,9 @@ class NewsCatalystDetector:
             if matched_kw:
                 print(f"[NEWS] {ticker}: merger match on '{matched_kw}'")
                 catalysts.append(NewsCatalyst(
-                    ticker=ticker,
-                    catalyst_type='merger',
-                    headline=title,
-                    sentiment='bullish',
-                    weight=25,
-                    timestamp=datetime.now()
+                    ticker=ticker, catalyst_type='merger',
+                    headline=title, sentiment='bullish',
+                    weight=25, timestamp=datetime.now(), matched_kw=matched_kw
                 ))
                 continue
 
@@ -332,12 +367,10 @@ class NewsCatalystDetector:
             if matched_kw:
                 print(f"[NEWS] {ticker}: fda match on '{matched_kw}'")
                 catalysts.append(NewsCatalyst(
-                    ticker=ticker,
-                    catalyst_type='fda',
+                    ticker=ticker, catalyst_type='fda',
                     headline=title,
                     sentiment=self._detect_sentiment(combined),
-                    weight=22,
-                    timestamp=datetime.now()
+                    weight=22, timestamp=datetime.now(), matched_kw=matched_kw
                 ))
                 continue
         
@@ -366,12 +399,6 @@ _news_detector = NewsCatalystDetector()
 def detect_catalyst(ticker: str, force_refresh: bool = False) -> Optional[NewsCatalyst]:
     """
     Public API: Detect news catalyst for a ticker.
-
-    Args:
-        ticker: Stock ticker
-        force_refresh: Skip cache and fetch fresh data
-
-    Returns:
-        NewsCatalyst object or None
+    Automatically sends Discord alert to news channel when catalyst is found.
     """
     return _news_detector.detect_catalyst(ticker, force_refresh)

@@ -83,13 +83,20 @@ ENABLE_WEBSOCKET_FEED = True  # Enable EODHD WebSocket real-time feed
 # DISCORD ALERTS
 # ========================================
 
+# Primary signals channel
 DISCORD_WEBHOOK_URL = os.getenv('DISCORD_WEBHOOK_URL', '')
+
+# Dedicated news/catalyst channel (Phase 1.18)
+DISCORD_NEWS_WEBHOOK_URL = os.getenv(
+    'DISCORD_NEWS_WEBHOOK_URL',
+    'https://discord.com/api/webhooks/1481012609158479992/3a0xzUeNK4hbWQPW3i_6uRrFeOb_nsOR3HoIOMFhoHwq4yRruEIEQ40aULSoRKPQvIhQ'
+)
 
 # ========================================
 # BASELINE SCANNER CONFIGURATION
 # ========================================
 
-# ── Backtest Campaign Champion (2026-03-10) ──────────────────────────────
+# ── Backtest Campaign Champion (2026-03-10) ────────────────────────────────────────────
 # Run   : 32,400 combos × 15 tickers × 90 days (2025-12-10 → 2026-03-09)
 # Result: 70.6% WR  |  +0.44 avg-R  |  34 trades  |  score=0.3130
 # Filter: min_trades=30, min_wr=55%  (183 qualifying combos)
