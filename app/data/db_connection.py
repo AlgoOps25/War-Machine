@@ -9,7 +9,6 @@ FIX #2: CONNECTION POOLING
 - PostgreSQL: Uses psycopg2.pool.ThreadedConnectionPool (10-50 connections)
 - SQLite: Direct connections (pooling not needed for single-user)
 - Thread-safe connection checkout/return
-- Context manager for automatic cleanup
 
 FIX #4: CONNECTION LIFECYCLE MANAGEMENT
 - Added connection leak detection and monitoring
@@ -23,6 +22,14 @@ FIX #5: POOL EXHAUSTION PREVENTION
 - Added retry logic with exponential backoff (up to 10 attempts, max 2s delay)
 - Removed redundant _pool_lock on getconn/putconn (ThreadedConnectionPool handles this)
 - Added retries stat counter for observability
+
+FIX #6: SEMAPHORE GATE (thundering-herd prevention)
+- Added threading.Semaphore(DB_SEMAPHORE_LIMIT=40) wrapping all get_conn() calls
+- Prevents startup burst (scanner + backfill hitting 40+ threads simultaneously)
+  from exceeding pool capacity and crashing with "connection pool exhausted"
+- Semaphore is acquired BEFORE getconn() and released in return_conn() / error paths
+- Limit set to 40 (below pool max of 50) to leave headroom for health-check queries
+- Adds _semaphore_waiters counter so you can see contention in pool stats
 
 NOTE: Railway provides DATABASE_URL as postgres:// — psycopg2 requires
 postgresql:// — we normalize it automatically here.
@@ -44,14 +51,20 @@ DATABASE_URL = _raw_url
 USE_POSTGRES = bool(DATABASE_URL and DATABASE_URL.startswith("postgresql://"))
 
 # ==============================================================================
-# POOL CONFIGURATION (FIX #5)
+# POOL CONFIGURATION
 # ==============================================================================
 
-POOL_MIN = 10          # Increased from 5 (FIX #5)
-POOL_MAX = 50          # Increased from 20 (FIX #5)
+POOL_MIN = 10          # Minimum connections in pool
+POOL_MAX = 50          # Maximum connections in pool
 POOL_RETRY_ATTEMPTS = 10
 POOL_RETRY_BASE_DELAY = 0.1   # seconds; doubles each attempt, capped at 2.0s
 CONNECTION_TIMEOUT_SECONDS = 300  # 5 minutes
+
+# FIX #6: Semaphore gate — caps concurrent DB checkouts below POOL_MAX
+# so that startup bursts (scanner + backfill running together) never
+# exhaust the pool even when dozens of threads call get_conn() at once.
+DB_SEMAPHORE_LIMIT = 40   # Must be <= POOL_MAX; leave headroom for health queries
+_db_semaphore = threading.Semaphore(DB_SEMAPHORE_LIMIT)
 
 _connection_pool = None
 _pool_lock = threading.Lock()  # Only used for close_pool() shutdown guard
@@ -61,6 +74,7 @@ _pool_stats = {
     "errors": 0,
     "timeouts": 0,
     "retries": 0,
+    "semaphore_waiters": 0,   # FIX #6: tracks semaphore contention
     "last_health_check": None
 }
 _checked_out_connections = {}  # conn_id -> checkout epoch time
@@ -90,8 +104,7 @@ if USE_POSTGRES:
         )
 
         print(f"[DB] PostgreSQL mode active with connection pooling ({POOL_MIN}-{POOL_MAX} connections)")
-        print("[DB] FIX #4: Enhanced pool size + lifecycle monitoring")
-        print("[DB] FIX #5: ThreadedConnectionPool + retry backoff + pool size 10-50")
+        print(f"[DB] FIX #6: Semaphore gate active (max {DB_SEMAPHORE_LIMIT} concurrent checkouts)")
 
     except psycopg2.OperationalError as e:
         print(f"[DB] PostgreSQL connection timeout or refused: {e}")
@@ -110,8 +123,11 @@ def get_conn(sqlite_path: str = "war_machine.db"):
     Get a connection from the pool (PostgreSQL) or create new (SQLite).
 
     FIX #5: Retries up to POOL_RETRY_ATTEMPTS times with exponential backoff
-    when pool is exhausted, instead of raising immediately. This prevents
-    thundering-herd failures when 40+ tickers hit the DB simultaneously.
+    when pool is exhausted, instead of raising immediately.
+
+    FIX #6: Acquires a semaphore slot BEFORE calling pool.getconn() to prevent
+    thundering-herd exhaustion during startup when 40+ threads hit the DB
+    simultaneously (scanner backfill burst).
 
     IMPORTANT: Caller must close the connection when done!
     Better to use `with get_connection() as conn:` context manager.
@@ -126,54 +142,82 @@ def get_conn(sqlite_path: str = "war_machine.db"):
         if _connection_pool is None:
             raise RuntimeError("Connection pool not initialized")
 
-        last_error = None
-
-        for attempt in range(POOL_RETRY_ATTEMPTS):
-            try:
-                # FIX #5: ThreadedConnectionPool handles its own locking internally —
-                # no _pool_lock wrapper needed here.
-                conn = _connection_pool.getconn()
-
-                if conn is None:
-                    raise RuntimeError("Pool returned None connection")
-
-                # Track checkout time (FIX #4)
-                conn_id = id(conn)
-                with _stats_lock:
-                    _pool_stats["checkouts"] += 1
-                    _checked_out_connections[conn_id] = time.time()
-                    if attempt > 0:
-                        _pool_stats["retries"] += 1
-
-                return conn
-
-            except Exception as e:
-                last_error = e
-                error_str = str(e).lower()
-
-                # Only retry on pool exhaustion — not on auth/network errors
-                if any(k in error_str for k in ("exhausted", "pool", "none")):
-                    if attempt < POOL_RETRY_ATTEMPTS - 1:
-                        delay = min(POOL_RETRY_BASE_DELAY * (2 ** attempt), 2.0)
-                        with _stats_lock:
-                            _pool_stats["errors"] += 1
-                        if attempt == 0:
-                            print(
-                                f"[DB] Pool busy, retrying... "
-                                f"(attempt {attempt + 1}/{POOL_RETRY_ATTEMPTS})"
-                            )
-                        time.sleep(delay)
-                        continue
-
-                # Non-recoverable error
+        # FIX #6: Acquire semaphore — blocks if DB_SEMAPHORE_LIMIT threads already
+        # hold connections, preventing pool exhaustion before it happens.
+        semaphore_acquired = False
+        try:
+            if not _db_semaphore.acquire(blocking=True, timeout=30):
                 with _stats_lock:
                     _pool_stats["errors"] += 1
-                print(f"[DB] Connection checkout failed after {attempt + 1} attempts: {e}")
-                raise
+                raise RuntimeError(
+                    f"DB semaphore timeout after 30s — "
+                    f"{DB_SEMAPHORE_LIMIT} concurrent connections already active"
+                )
+            semaphore_acquired = True
+            with _stats_lock:
+                _pool_stats["semaphore_waiters"] += 1
 
-        raise RuntimeError(
-            f"Connection pool exhausted after {POOL_RETRY_ATTEMPTS} retries: {last_error}"
-        )
+            last_error = None
+
+            for attempt in range(POOL_RETRY_ATTEMPTS):
+                try:
+                    conn = _connection_pool.getconn()
+
+                    if conn is None:
+                        raise RuntimeError("Pool returned None connection")
+
+                    # Track checkout time (FIX #4)
+                    conn_id = id(conn)
+                    with _stats_lock:
+                        _pool_stats["checkouts"] += 1
+                        _checked_out_connections[conn_id] = time.time()
+                        if attempt > 0:
+                            _pool_stats["retries"] += 1
+
+                    return conn
+
+                except Exception as e:
+                    last_error = e
+                    error_str = str(e).lower()
+
+                    # Only retry on pool exhaustion — not on auth/network errors
+                    if any(k in error_str for k in ("exhausted", "pool", "none")):
+                        if attempt < POOL_RETRY_ATTEMPTS - 1:
+                            delay = min(POOL_RETRY_BASE_DELAY * (2 ** attempt), 2.0)
+                            with _stats_lock:
+                                _pool_stats["errors"] += 1
+                            if attempt == 0:
+                                print(
+                                    f"[DB] Pool busy, retrying... "
+                                    f"(attempt {attempt + 1}/{POOL_RETRY_ATTEMPTS})"
+                                )
+                            time.sleep(delay)
+                            continue
+
+                    # Non-recoverable error — release semaphore before raising
+                    with _stats_lock:
+                        _pool_stats["errors"] += 1
+                    print(f"[DB] Connection checkout failed after {attempt + 1} attempts: {e}")
+                    if semaphore_acquired:
+                        _db_semaphore.release()
+                        semaphore_acquired = False
+                    raise
+
+            # All retries exhausted — release semaphore
+            if semaphore_acquired:
+                _db_semaphore.release()
+            raise RuntimeError(
+                f"Connection pool exhausted after {POOL_RETRY_ATTEMPTS} retries: {last_error}"
+            )
+
+        except Exception:
+            # Safety net: release semaphore if we acquired it but something went wrong
+            if semaphore_acquired:
+                try:
+                    _db_semaphore.release()
+                except Exception:
+                    pass
+            raise
 
     # SQLite: Create new connection (no pooling needed)
     conn = sqlite3.connect(sqlite_path)
@@ -186,7 +230,7 @@ def return_conn(conn):
     Return a connection to the pool (PostgreSQL) or close it (SQLite).
 
     FIX #4/#5: Tracks checkout duration and warns on connection leaks.
-    ThreadedConnectionPool handles its own locking — no _pool_lock needed.
+    FIX #6: Releases the semaphore slot so another waiting thread can proceed.
 
     Args:
         conn: Database connection to return/close
@@ -220,13 +264,18 @@ def return_conn(conn):
                     with _stats_lock:
                         _pool_stats["timeouts"] += 1
 
-                # FIX #5: No _pool_lock needed — ThreadedConnectionPool is thread-safe
                 _connection_pool.putconn(conn)
 
             except Exception as e:
                 print(f"[DB] Error returning connection to pool: {e}")
                 try:
                     conn.close()
+                except Exception:
+                    pass
+            finally:
+                # FIX #6: Always release the semaphore slot, even on error
+                try:
+                    _db_semaphore.release()
                 except Exception:
                     pass
     else:
@@ -287,17 +336,23 @@ def check_pool_health() -> dict:
         if (now - checkout_time) > CONNECTION_TIMEOUT_SECONDS
     ]
 
+    # FIX #6: Report semaphore headroom
+    semaphore_available = _db_semaphore._value  # approximate, not thread-safe but fine for stats
+
     health = {
         "healthy": leaked < 5 and len(stale_connections) == 0,
         "mode": "PostgreSQL",
         "pooling": True,
         "pool_size": {"min": POOL_MIN, "max": POOL_MAX},
+        "semaphore_limit": DB_SEMAPHORE_LIMIT,
+        "semaphore_available": semaphore_available,
         "checkouts": checkouts,
         "returns": returns,
         "currently_checked_out": leaked,
         "errors": stats_copy["errors"],
         "retries": stats_copy["retries"],
         "timeouts": stats_copy["timeouts"],
+        "semaphore_waiters": stats_copy["semaphore_waiters"],
         "stale_connections": len(stale_connections),
         "last_check": datetime.now().isoformat()
     }
@@ -329,12 +384,14 @@ def print_pool_stats():
     print("=" * 60)
     print(f"Status:              {'HEALTHY' if health['healthy'] else 'WARNING'}")
     print(f"Pool Size:           {health['pool_size']['min']}-{health['pool_size']['max']} connections")
+    print(f"Semaphore Gate:      {health['semaphore_limit']} max concurrent ({health['semaphore_available']} available)")
     print(f"Total Checkouts:     {health['checkouts']}")
     print(f"Total Returns:       {health['returns']}")
     print(f"Currently Out:       {health['currently_checked_out']}")
     print(f"Retry Events:        {health['retries']}")
     print(f"Errors:              {health['errors']}")
     print(f"Timeout Warnings:    {health['timeouts']}")
+    print(f"Semaphore Waiters:   {health['semaphore_waiters']}")
     print(f"Stale Connections:   {health['stale_connections']}")
     print("=" * 60 + "\n")
 
@@ -363,6 +420,12 @@ def force_close_stale_connections():
     for conn_id in stale:
         with _stats_lock:
             _checked_out_connections.pop(conn_id, None)
+        # Also release a semaphore slot for each cleared entry so the gate
+        # doesn't stay permanently blocked by leaked connections.
+        try:
+            _db_semaphore.release()
+        except Exception:
+            pass
 
     print(f"[DB] Cleared {len(stale)} stale entries")
     return len(stale)
