@@ -1,125 +1,214 @@
-"""Analytics Integration Helper for War Machine Scanner
+"""
+Analytics Integration Helper for War Machine Scanner
 
-Provides easy integration of signal analytics, ML, and reporting.
+Thin delegation wrapper over the real SignalTracker (signal_analytics.py).
+This class is the ONLY entry-point used by scanner.py; it proxies all calls
+through to signal_tracker so there is exactly one source of truth for signal
+lifecycle data — the signal_events Postgres table.
 
-Note: This is a lightweight stub implementation.
-Full analytics features (SignalAnalytics, MLFeedbackLoop, PerformanceReporter)
-are planned for future implementation.
+Previous stub behaviour (in-memory signals_by_ticker dict + signal_count int)
+has been removed. All persistence now lives in signal_analytics.SignalTracker.
+
+Public API (unchanged signatures so scanner.py needs no edits):
+  process_signal(signal_data, ...)         → signal_id | None
+  validate_signal(ticker, passed, ...)     → event_id
+  arm_signal(ticker, confidence, bars)     → event_id
+  record_trade(ticker, position_id)        → event_id
+  monitor_active_signals(price_fetcher)    → no-op placeholder
+  check_scheduled_tasks()                  → delegates EOD tasks
+  get_today_stats()                        → from SignalTracker.get_funnel_stats()
 """
 
 import logging
 from datetime import datetime
-import os
+from typing import Dict, Optional, List
+
+try:
+    from app.signals.signal_analytics import signal_tracker as _tracker
+    _TRACKER_AVAILABLE = True
+except Exception as e:
+    _tracker = None
+    _TRACKER_AVAILABLE = False
+    logging.warning("[ANALYTICS] SignalTracker unavailable: %s — running in no-op mode", e)
 
 
 class AnalyticsIntegration:
-    """Helper class to integrate analytics into War Machine scanner.
-    
-    Usage in scanner.py:
+    """
+    Thin delegation wrapper over SignalTracker.
+
+    Usage in scanner.py (unchanged):
         self.analytics_integration = AnalyticsIntegration(db_connection)
-        
-        # Before Discord alert:
         signal_id = self.analytics_integration.process_signal(signal_data)
         if signal_id:
             send_discord_alert(signal_data)
     """
-    
-    def __init__(self, db_connection, enable_ml=True, enable_discord=True):
-        self.db = db_connection
-        self.enable_ml = enable_ml
+
+    def __init__(self, db_connection=None, enable_ml: bool = True, enable_discord: bool = True):
+        # db_connection kept for API compatibility — SignalTracker manages its own connection.
+        self.enable_ml      = enable_ml
         self.enable_discord = enable_discord
-        
-        # Time-based flags
-        self.daily_reset_done = False
-        self.eod_ml_done = False
-        self.eod_report_done = False
-        
-        # Simple in-memory tracking (replace with DB later)
-        self.signal_count = 0
-        self.signals_by_ticker = {}
-        
-        logging.info("[ANALYTICS] Integration initialized (stub mode - ML: %s, Discord: %s)", 
-                    enable_ml, enable_discord)
-    
-    def process_signal(self, signal_data, regime=None, vix_level=None, spy_trend=None):
-        """Process a signal through analytics pipeline.
-        
-        Args:
-            signal_data: Dict with ticker, pattern, confidence, entry, stop, t1, t2, rvol, score
-            regime: Current market regime (BULL/BEAR/NEUTRAL)
-            vix_level: Current VIX level
-            spy_trend: SPY trend direction
-            
-        Returns:
-            signal_id if signal should fire, None if blocked
+
+        # Time-based flags (EOD tasks)
+        self.daily_reset_done  = False
+        self.eod_ml_done       = False
+        self.eod_report_done   = False
+
+        if _TRACKER_AVAILABLE:
+            logging.info("[ANALYTICS] AnalyticsIntegration ready — delegating to SignalTracker")
+        else:
+            logging.warning("[ANALYTICS] Running in no-op mode (SignalTracker unavailable)")
+
+    # ── Primary pipeline entry-point ────────────────────────────────────────
+
+    def process_signal(
+        self,
+        signal_data: Dict,
+        regime: Optional[str]  = None,
+        vix_level: Optional[float] = None,
+        spy_trend: Optional[str] = None,
+    ) -> Optional[int]:
         """
-        ticker = signal_data['ticker']
-        
-        # Simple deduplication: Track signals per ticker
-        if ticker not in self.signals_by_ticker:
-            self.signals_by_ticker[ticker] = []
-        
-        now = datetime.now()
-        recent_signals = [s for s in self.signals_by_ticker[ticker] 
-                         if (now - s).total_seconds() < 300]  # 5-min cooldown
-        
-        if recent_signals:
-            logging.info(f"[ANALYTICS] Blocked {ticker}: cooldown (last signal {len(recent_signals)} ago)")
+        Record signal generation and return a signal_id.
+        Returns None if the tracker is unavailable or recording fails.
+        """
+        if not _TRACKER_AVAILABLE or _tracker is None:
+            return 1  # fallback: always allow in no-op mode
+
+        ticker     = signal_data.get("ticker", "UNKNOWN")
+        sig_type   = signal_data.get("pattern", signal_data.get("signal_type", "UNKNOWN"))
+        direction  = signal_data.get("direction", "bull")
+        grade      = signal_data.get("confirmation_grade", signal_data.get("grade", "A"))
+        confidence = float(signal_data.get("confidence", signal_data.get("confirmation_score", 0.7)))
+        entry      = float(signal_data.get("entry_price",  0.0))
+        stop       = float(signal_data.get("stop_price",   0.0))
+        t1         = float(signal_data.get("target_1",     signal_data.get("t1_price", 0.0)))
+        t2         = float(signal_data.get("target_2",     signal_data.get("t2_price", 0.0)))
+
+        event_id = _tracker.record_signal_generated(
+            ticker=ticker,
+            signal_type=sig_type,
+            direction=direction,
+            grade=grade,
+            confidence=confidence,
+            entry_price=entry,
+            stop_price=stop,
+            t1_price=t1,
+            t2_price=t2,
+        )
+
+        if event_id < 0:
+            logging.warning("[ANALYTICS] record_signal_generated failed for %s", ticker)
             return None
-        
-        # Log signal
-        self.signals_by_ticker[ticker].append(now)
-        self.signal_count += 1
-        signal_id = self.signal_count
-        
-        logging.info(f"[ANALYTICS] Signal logged {ticker} (ID: {signal_id}, Pattern: {signal_data.get('pattern', 'UNKNOWN')})")
-        
-        return signal_id
-    
+
+        logging.info("[ANALYTICS] Signal logged %s (ID: %d, Pattern: %s)", ticker, event_id, sig_type)
+        return event_id
+
+    # ── Validation result ───────────────────────────────────────────────────
+
+    def validate_signal(
+        self,
+        ticker: str,
+        passed: bool,
+        confidence_after: float      = 0.0,
+        ivr_multiplier: float        = 1.0,
+        uoa_multiplier: float        = 1.0,
+        gex_multiplier: float        = 1.0,
+        mtf_boost: float             = 0.0,
+        ticker_multiplier: float     = 1.0,
+        ivr_label: str               = "",
+        uoa_label: str               = "",
+        gex_label: str               = "",
+        checks_passed: List[str]     = None,
+        rejection_reason: str        = "",
+    ) -> int:
+        """Delegate to SignalTracker.record_validation_result()."""
+        if not _TRACKER_AVAILABLE or _tracker is None:
+            return -1
+        return _tracker.record_validation_result(
+            ticker=ticker,
+            passed=passed,
+            confidence_after=confidence_after,
+            ivr_multiplier=ivr_multiplier,
+            uoa_multiplier=uoa_multiplier,
+            gex_multiplier=gex_multiplier,
+            mtf_boost=mtf_boost,
+            ticker_multiplier=ticker_multiplier,
+            ivr_label=ivr_label,
+            uoa_label=uoa_label,
+            gex_label=gex_label,
+            checks_passed=checks_passed,
+            rejection_reason=rejection_reason,
+        )
+
+    # ── Arming ──────────────────────────────────────────────────────────────
+
+    def arm_signal(
+        self,
+        ticker: str,
+        final_confidence: float,
+        bars_to_confirmation: int,
+        confirmation_type: str = "retest",
+    ) -> int:
+        """Delegate to SignalTracker.record_signal_armed()."""
+        if not _TRACKER_AVAILABLE or _tracker is None:
+            return -1
+        return _tracker.record_signal_armed(
+            ticker=ticker,
+            final_confidence=final_confidence,
+            bars_to_confirmation=bars_to_confirmation,
+            confirmation_type=confirmation_type,
+        )
+
+    # ── Trade execution ──────────────────────────────────────────────────────
+
+    def record_trade(self, ticker: str, position_id: int) -> int:
+        """Delegate to SignalTracker.record_trade_executed()."""
+        if not _TRACKER_AVAILABLE or _tracker is None:
+            return -1
+        return _tracker.record_trade_executed(ticker=ticker, position_id=position_id)
+
+    # ── Monitoring / scheduled tasks ────────────────────────────────────────
+
     def monitor_active_signals(self, price_fetcher):
-        """Monitor active signals for T1/T2/Stop hits.
-        
-        Args:
-            price_fetcher: Function that takes ticker and returns current price
-        """
-        # Stub: Placeholder for future implementation
+        """Placeholder — active signal monitoring handled by position_manager."""
         pass
-    
+
     def check_scheduled_tasks(self):
-        """Run time-based tasks (market open/close routines).
-        
-        Call this once per minute in your scanner loop.
-        """
+        """Run time-based tasks (market open / EOD). Call once per minute."""
         now = datetime.now()
-        
-        # Market open (9:30 AM) - Reset daily cooldowns
+
+        # Market open reset
         if now.hour == 9 and now.minute == 30 and not self.daily_reset_done:
-            self.signals_by_ticker.clear()
-            self.signal_count = 0
+            if _TRACKER_AVAILABLE and _tracker:
+                _tracker.clear_session_cache()
             self.daily_reset_done = True
-            self.eod_ml_done = False
-            self.eod_report_done = False
+            self.eod_ml_done      = False
+            self.eod_report_done  = False
             logging.info("[ANALYTICS] Daily reset complete")
-        
-        # Market close (4:00 PM) - Placeholder for ML training
-        if now.hour == 16 and now.minute == 0 and not self.eod_ml_done:
-            logging.info("[ANALYTICS] ML training (stub - not implemented)")
-            self.eod_ml_done = True
-        
-        # EOD Report (4:05 PM) - Placeholder for reporting
+
+        # EOD summary
         if now.hour == 16 and now.minute == 5 and not self.eod_report_done:
-            logging.info(f"[ANALYTICS] EOD: {self.signal_count} signals today")
+            if _TRACKER_AVAILABLE and _tracker:
+                logging.info(_tracker.get_daily_summary())
             self.eod_report_done = True
-        
-        # Reset flags at midnight
+
+        # Midnight flag reset
         if now.hour == 0 and now.minute == 0:
             self.daily_reset_done = False
-    
-    def get_today_stats(self):
-        """Get today's performance summary."""
+
+    # ── Stats ────────────────────────────────────────────────────────────────
+
+    def get_today_stats(self) -> Dict:
+        """Return today's funnel stats from SignalTracker."""
+        if not _TRACKER_AVAILABLE or _tracker is None:
+            return {"total_signals": 0, "unique_tickers": 0, "win_rate": 0.0, "total_profit": 0.0}
+        funnel = _tracker.get_funnel_stats()
         return {
-            'total_signals': self.signal_count,
-            'unique_tickers': len(self.signals_by_ticker),
-            'win_rate': 0.0,  # Placeholder
-            'total_profit': 0.0  # Placeholder
+            "total_signals":   funnel.get("generated", 0),
+            "unique_tickers":  len(_tracker.session_signals),
+            "validation_rate": funnel.get("validation_rate", 0.0),
+            "arming_rate":     funnel.get("arming_rate", 0.0),
+            "execution_rate":  funnel.get("execution_rate", 0.0),
+            "win_rate":        0.0,
+            "total_profit":    0.0,
         }

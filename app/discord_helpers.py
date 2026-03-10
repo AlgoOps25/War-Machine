@@ -7,9 +7,16 @@ ENHANCEMENTS:
 - Consolidated CALL/PUT formatting (green/red embeds)
 - All signal fields exposed (FVG, BOS, MTF, RVOL, greeks)
 - Clean, easy-to-read layout
+
+M10 FIX (Mar 10 2026):
+- _send_to_discord() now dispatches the HTTP POST on a daemon Thread.
+  A webhook outage or high latency can no longer stall the scan loop.
+  Errors are caught and logged inside the thread; the caller always
+  returns immediately.
 """
 import requests
 import functools
+import threading
 from typing import Dict, Optional
 from datetime import datetime
 from utils import config
@@ -483,27 +490,33 @@ def send_simple_message(message: str):
 
 
 def _send_to_discord(payload: Dict):
-    """Shared HTTP helper — all functions route through here."""
+    """
+    Shared HTTP helper — all functions route through here.
+
+    M10 FIX: Dispatches the POST on a daemon Thread so webhook latency
+    or outage never blocks the scan loop. The caller always returns
+    immediately. Errors are caught and logged inside the thread.
+    """
     webhook_url = (config.DISCORD_WEBHOOK_URL or "").strip().rstrip("\n").rstrip("\r")
-    
+
     if not webhook_url:
         print("[DISCORD] ❌ No webhook URL configured.")
         return
-    
-    print(f"[DISCORD] Sending to: {webhook_url[:60]}...")
-    
-    try:
-        response = requests.post(
-            webhook_url,
-            json=payload,
-            timeout=10
-        )
-        print(f"[DISCORD] Response: {response.status_code}")
-        if response.status_code not in (200, 204):
-            print(f"[DISCORD] Body: {response.text[:200]}")
-        response.raise_for_status()
-    except Exception as e:
-        print(f"[DISCORD] Error: {e}")
+
+    def _post():
+        try:
+            response = requests.post(
+                webhook_url,
+                json=payload,
+                timeout=10,
+            )
+            if response.status_code not in (200, 204):
+                print(f"[DISCORD] ⚠️  HTTP {response.status_code}: {response.text[:200]}")
+        except Exception as e:
+            print(f"[DISCORD] ⚠️  Send error (non-blocking): {e}")
+
+    t = threading.Thread(target=_post, daemon=True)
+    t.start()
 
 
 def test_webhook():
