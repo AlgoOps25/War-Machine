@@ -2,6 +2,17 @@
 Trade Calculator - Consolidated Stop Loss, Targets, and Adaptive Parameters
 Replaces: targets.py, adaptive_parameters.py
 Implements CFW6 stop/target logic + ATR-based adaptive thresholds
+
+FIXED M8 (Mar 10 2026):
+    calculate_stop_loss_by_grade() used or_low/or_high in the OR stop
+    comparison even when they were 0.0 (opening range not yet formed —
+    pre-10:00 AM signals). For bear direction this caused:
+        or_stop = or_high * 1.001 = 0.0
+        stop_price = min(atr_stop, 0.0) = 0.0
+    A $0.00 stop blows up sizing math (infinite contracts) or causes
+    the R:R guard in position_manager to reject a valid signal entirely.
+    Fix: when or_low <= 0 or or_high <= 0, skip the OR boundary
+    comparison and use the ATR stop exclusively.
 """
 import numpy as np
 from datetime import time as dtime
@@ -163,22 +174,54 @@ def calculate_stop_loss_by_grade(
     CFW6 OPTIMIZATION: Grade-based stop loss with wider ATR multipliers
     A+: 2.0x ATR | A: 2.5x ATR | A-: 3.0x ATR
     Increased from previous (1.2x, 1.5x, 1.8x) to prevent "too tight" stops.
-    Also respects Opening Range boundaries.
+    Also respects Opening Range boundaries when ORB has formed.
+
+    FIXED M8 (Mar 10 2026): or_low/or_high of 0.0 means the opening range
+    has not yet been established (pre-10 AM signal). In that case the OR
+    boundary comparison is skipped entirely so a zero stop is never
+    produced. Callers do not need to change — passing 0.0 is safe.
     """
     atr_multipliers = {"A+": 2.0, "A": 2.5, "A-": 3.0}
     atr_mult        = atr_multipliers.get(grade, 2.5)
     stop_distance   = atr * atr_mult
 
+    # ── M8 FIX: only use OR boundary when the range has actually formed ──
+    or_formed = (or_low > 0) and (or_high > 0)
+
     if direction == "bull":
-        atr_stop   = entry_price - stop_distance
-        or_stop    = or_low * 0.999
-        stop_price = max(atr_stop, or_stop)
-        print(f"[STOP] BULL {grade}: Entry ${entry_price:.2f} | ATR stop ${atr_stop:.2f} | OR stop ${or_stop:.2f} | Using ${stop_price:.2f}")
-    else:
-        atr_stop   = entry_price + stop_distance
-        or_stop    = or_high * 1.001
-        stop_price = min(atr_stop, or_stop)
-        print(f"[STOP] BEAR {grade}: Entry ${entry_price:.2f} | ATR stop ${atr_stop:.2f} | OR stop ${or_stop:.2f} | Using ${stop_price:.2f}")
+        atr_stop = entry_price - stop_distance
+        if or_formed:
+            or_stop    = or_low * 0.999
+            stop_price = max(atr_stop, or_stop)
+            print(
+                f"[STOP] BULL {grade}: Entry ${entry_price:.2f} | "
+                f"ATR stop ${atr_stop:.2f} | OR stop ${or_stop:.2f} | "
+                f"Using ${stop_price:.2f}"
+            )
+        else:
+            stop_price = atr_stop
+            print(
+                f"[STOP] BULL {grade}: Entry ${entry_price:.2f} | "
+                f"ATR stop ${atr_stop:.2f} | OR not formed — ATR only | "
+                f"Using ${stop_price:.2f}"
+            )
+    else:  # bear
+        atr_stop = entry_price + stop_distance
+        if or_formed:
+            or_stop    = or_high * 1.001
+            stop_price = min(atr_stop, or_stop)
+            print(
+                f"[STOP] BEAR {grade}: Entry ${entry_price:.2f} | "
+                f"ATR stop ${atr_stop:.2f} | OR stop ${or_stop:.2f} | "
+                f"Using ${stop_price:.2f}"
+            )
+        else:
+            stop_price = atr_stop
+            print(
+                f"[STOP] BEAR {grade}: Entry ${entry_price:.2f} | "
+                f"ATR stop ${atr_stop:.2f} | OR not formed — ATR only | "
+                f"Using ${stop_price:.2f}"
+            )
 
     return stop_price
 
@@ -219,6 +262,8 @@ def compute_stop_and_targets(
     Main entry point: compute stop and targets.
     ATR is derived from session-only bars (09:30-16:00 ET) so pre-market
     volatility does not widen stops.
+    Passing or_high=0 / or_low=0 is safe — the OR boundary is skipped
+    and ATR stop is used exclusively (M8 fix).
     Returns: (stop_price, t1, t2)
     """
     atr        = calculate_atr(bars, period=14)
