@@ -26,7 +26,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from typing import Dict, List, Optional, Tuple
 from collections import defaultdict
-from app.data.db_connection import get_conn, ph, dict_cursor, serial_pk
+from app.data.db_connection import get_conn, return_conn, ph, dict_cursor, serial_pk
 
 ET = ZoneInfo("America/New_York")
 
@@ -37,8 +37,7 @@ class FunnelTracker:
     # Funnel stages in order
     STAGES = ['SCREENED', 'BOS', 'FVG', 'VALIDATOR', 'ARMED', 'FIRED', 'FILLED']
     
-    def __init__(self, db_path: str = "market_memory.db"):
-        self.db_path = db_path
+    def __init__(self):
         self._initialize_database()
         
         # In-memory counters for fast lookups
@@ -48,38 +47,42 @@ class FunnelTracker:
     
     def _initialize_database(self):
         """Create funnel_events table."""
-        conn = get_conn(self.db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute(f"""
-            CREATE TABLE IF NOT EXISTS funnel_events (
-                id {serial_pk()},
-                ticker TEXT NOT NULL,
-                session TEXT NOT NULL,
-                stage TEXT NOT NULL,
-                passed INTEGER NOT NULL,
-                reason TEXT,
-                confidence REAL,
-                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                signal_id TEXT,
-                hour INTEGER
-            )
-        """)
-        
-        cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_funnel_session_stage
-            ON funnel_events(session, stage)
-        """)
-        
-        cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_funnel_ticker
-            ON funnel_events(ticker, session)
-        """)
-        
-        conn.commit()
-        conn.close()
-        
-        print("[FUNNEL] Funnel analytics database initialized")
+        conn = None
+        try:
+            conn = get_conn()
+            cursor = conn.cursor()
+            
+            cursor.execute(f"""
+                CREATE TABLE IF NOT EXISTS funnel_events (
+                    id {serial_pk()},
+                    ticker TEXT NOT NULL,
+                    session TEXT NOT NULL,
+                    stage TEXT NOT NULL,
+                    passed INTEGER NOT NULL,
+                    reason TEXT,
+                    confidence REAL,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    signal_id TEXT,
+                    hour INTEGER
+                )
+            """)
+            
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_funnel_session_stage
+                ON funnel_events(session, stage)
+            """)
+            
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_funnel_ticker
+                ON funnel_events(ticker, session)
+            """)
+            
+            conn.commit()
+            print("[FUNNEL] Funnel analytics database initialized")
+        except Exception as e:
+            print(f"[FUNNEL] Init error: {e}")
+        finally:
+            return_conn(conn)
     
     def _get_session(self) -> str:
         """Get current session date."""
@@ -130,18 +133,23 @@ class FunnelTracker:
             self.rejection_counts[reason] += 1
         
         # Write to database
-        p = ph()
-        conn = get_conn(self.db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute(f"""
-            INSERT INTO funnel_events
-                (ticker, session, stage, passed, reason, confidence, hour, signal_id)
-            VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
-        """, (ticker, session, stage, int(passed), reason, confidence, hour, signal_id))
-        
-        conn.commit()
-        conn.close()
+        conn = None
+        try:
+            p = ph()
+            conn = get_conn()
+            cursor = conn.cursor()
+            
+            cursor.execute(f"""
+                INSERT INTO funnel_events
+                    (ticker, session, stage, passed, reason, confidence, hour, signal_id)
+                VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
+            """, (ticker, session, stage, int(passed), reason, confidence, hour, signal_id))
+            
+            conn.commit()
+        except Exception as e:
+            print(f"[FUNNEL] record_stage error: {e}")
+        finally:
+            return_conn(conn)
     
     def get_stage_conversion(self, stage: str, session: Optional[str] = None) -> Dict:
         """
@@ -160,27 +168,34 @@ class FunnelTracker:
             }
         """
         session = session or self._get_session()
+        conn = None
+        try:
+            p = ph()
+            conn = get_conn()
+            cursor = dict_cursor(conn)
+            
+            cursor.execute(f"""
+                SELECT 
+                    COUNT(*) as total,
+                    SUM(CASE WHEN passed = 1 THEN 1 ELSE 0 END) as passed,
+                    SUM(CASE WHEN passed = 0 THEN 1 ELSE 0 END) as failed
+                FROM funnel_events
+                WHERE session = {p} AND stage = {p}
+            """, (session, stage))
+            
+            row = cursor.fetchone()
+        except Exception as e:
+            print(f"[FUNNEL] get_stage_conversion error: {e}")
+            row = None
+        finally:
+            return_conn(conn)
         
-        p = ph()
-        conn = get_conn(self.db_path)
-        cursor = dict_cursor(conn)
-        
-        cursor.execute(f"""
-            SELECT 
-                COUNT(*) as total,
-                SUM(CASE WHEN passed = 1 THEN 1 ELSE 0 END) as passed,
-                SUM(CASE WHEN passed = 0 THEN 1 ELSE 0 END) as failed
-            FROM funnel_events
-            WHERE session = {p} AND stage = {p}
-        """, (session, stage))
-        
-        row = cursor.fetchone()
-        conn.close()
+        if not row:
+            return {'total': 0, 'passed': 0, 'failed': 0, 'conversion_rate': 0}
         
         total = row['total'] or 0
         passed = row['passed'] or 0
         failed = row['failed'] or 0
-        
         conversion_rate = (passed / total * 100) if total > 0 else 0
         
         return {
@@ -202,22 +217,27 @@ class FunnelTracker:
             List of (reason, count) tuples sorted by count descending
         """
         session = session or self._get_session()
-        
-        p = ph()
-        conn = get_conn(self.db_path)
-        cursor = dict_cursor(conn)
-        
-        cursor.execute(f"""
-            SELECT reason, COUNT(*) as count
-            FROM funnel_events
-            WHERE session = {p} AND passed = 0 AND reason IS NOT NULL
-            GROUP BY reason
-            ORDER BY count DESC
-            LIMIT {p}
-        """, (session, limit))
-        
-        rows = cursor.fetchall()
-        conn.close()
+        conn = None
+        try:
+            p = ph()
+            conn = get_conn()
+            cursor = dict_cursor(conn)
+            
+            cursor.execute(f"""
+                SELECT reason, COUNT(*) as count
+                FROM funnel_events
+                WHERE session = {p} AND passed = 0 AND reason IS NOT NULL
+                GROUP BY reason
+                ORDER BY count DESC
+                LIMIT {p}
+            """, (session, limit))
+            
+            rows = cursor.fetchall()
+        except Exception as e:
+            print(f"[FUNNEL] get_rejection_reasons error: {e}")
+            rows = []
+        finally:
+            return_conn(conn)
         
         return [(row['reason'], row['count']) for row in rows]
     
@@ -283,21 +303,26 @@ class FunnelTracker:
             Dict mapping hour (0-23) to stage counts
         """
         session = session or self._get_session()
-        
-        p = ph()
-        conn = get_conn(self.db_path)
-        cursor = dict_cursor(conn)
-        
-        cursor.execute(f"""
-            SELECT hour, stage, COUNT(*) as count
-            FROM funnel_events
-            WHERE session = {p} AND passed = 1
-            GROUP BY hour, stage
-            ORDER BY hour
-        """, (session,))
-        
-        rows = cursor.fetchall()
-        conn.close()
+        conn = None
+        try:
+            p = ph()
+            conn = get_conn()
+            cursor = dict_cursor(conn)
+            
+            cursor.execute(f"""
+                SELECT hour, stage, COUNT(*) as count
+                FROM funnel_events
+                WHERE session = {p} AND passed = 1
+                GROUP BY hour, stage
+                ORDER BY hour
+            """, (session,))
+            
+            rows = cursor.fetchall()
+        except Exception as e:
+            print(f"[FUNNEL] get_hourly_breakdown error: {e}")
+            rows = []
+        finally:
+            return_conn(conn)
         
         hourly = defaultdict(lambda: defaultdict(int))
         for row in rows:

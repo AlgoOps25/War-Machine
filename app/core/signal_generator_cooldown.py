@@ -32,8 +32,9 @@ _cooldown_cache: Dict[str, Dict] = {}  # {ticker: {direction, expires_at}}
 
 def _ensure_cooldown_table():
     """Create signal_cooldowns table if it doesn't exist."""
+    from app.data.db_connection import get_conn, return_conn
+    conn = None
     try:
-        from app.data.db_connection import get_conn
         conn = get_conn()
         cursor = conn.cursor()
         cursor.execute("""
@@ -46,15 +47,17 @@ def _ensure_cooldown_table():
             )
         """)
         conn.commit()
-        conn.close()
     except Exception as e:
         print(f"[COOLDOWN-DB] Init error: {e}")
+    finally:
+        return_conn(conn)
 
 
 def _persist_cooldown(ticker: str, direction: str, signal_type: str, expires_at: datetime):
     """Upsert a cooldown entry to the DB."""
+    from app.data.db_connection import get_conn, return_conn, ph as _ph
+    conn = None
     try:
-        from app.data.db_connection import get_conn, ph as _ph
         conn = get_conn()
         cursor = conn.cursor()
         p = _ph()
@@ -71,15 +74,17 @@ def _persist_cooldown(ticker: str, direction: str, signal_type: str, expires_at:
             (ticker, direction, signal_type, expires_at)
         )
         conn.commit()
-        conn.close()
     except Exception as e:
         print(f"[COOLDOWN-DB] Persist error for {ticker}: {e}")
+    finally:
+        return_conn(conn)
 
 
 def _remove_cooldown_from_db(ticker: str):
     """Delete a cooldown entry from the DB."""
+    from app.data.db_connection import get_conn, return_conn, ph as _ph
+    conn = None
     try:
-        from app.data.db_connection import get_conn, ph as _ph
         conn = get_conn()
         cursor = conn.cursor()
         p = _ph()
@@ -87,9 +92,10 @@ def _remove_cooldown_from_db(ticker: str):
             f"DELETE FROM signal_cooldowns WHERE ticker = {p}", (ticker,)
         )
         conn.commit()
-        conn.close()
     except Exception as e:
         print(f"[COOLDOWN-DB] Remove error for {ticker}: {e}")
+    finally:
+        return_conn(conn)
 
 
 def _cleanup_expired_cooldowns():
@@ -97,27 +103,25 @@ def _cleanup_expired_cooldowns():
     Remove cooldown entries from DB that have expired.
     Runs on startup and periodically during the trading session.
     """
+    from app.data.db_connection import get_conn, return_conn, ph as _ph
+    conn = None
     try:
-        from app.data.db_connection import get_conn, ph as _ph
-        
         now = datetime.now(ZoneInfo("America/New_York"))
         conn = get_conn()
         cursor = conn.cursor()
         p = _ph()
-        
         cursor.execute(
             f"DELETE FROM signal_cooldowns WHERE expires_at < {p}",
             (now,)
         )
         deleted_count = cursor.rowcount
         conn.commit()
-        conn.close()
-        
         if deleted_count > 0:
             print(f"[COOLDOWN-DB] 🧹 Auto-cleaned {deleted_count} expired cooldown(s)")
-        
     except Exception as e:
         print(f"[COOLDOWN-DB] Cleanup error: {e}")
+    finally:
+        return_conn(conn)
 
 
 def _load_cooldowns_from_db() -> Dict[str, Dict]:
@@ -126,31 +130,29 @@ def _load_cooldowns_from_db() -> Dict[str, Dict]:
     Returns dict of ticker -> {direction, signal_type, expires_at}.
     Expired cooldowns are auto-cleaned before loading.
     """
+    from app.data.db_connection import get_conn, return_conn, dict_cursor as _dc
+    conn = None
     try:
-        from app.data.db_connection import get_conn, dict_cursor as _dc
-        
         # First, clean up expired cooldowns
         _cleanup_expired_cooldowns()
-        
+
         conn = get_conn()
         cursor = _dc(conn)
-        
         cursor.execute("""
             SELECT ticker, direction, signal_type, expires_at
             FROM signal_cooldowns
         """)
         rows = cursor.fetchall()
-        conn.close()
-        
+
         loaded = {}
         for row in rows:
             loaded[row["ticker"]] = {
                 "direction": row["direction"],
                 "signal_type": row["signal_type"],
-                "expires_at": row["expires_at"] if isinstance(row["expires_at"], datetime) 
+                "expires_at": row["expires_at"] if isinstance(row["expires_at"], datetime)
                              else datetime.fromisoformat(str(row["expires_at"]))
             }
-        
+
         if loaded:
             print(
                 f"[COOLDOWN-DB] 📄 Reloaded {len(loaded)} cooldown(s) from DB after restart: "
@@ -160,6 +162,8 @@ def _load_cooldowns_from_db() -> Dict[str, Dict]:
     except Exception as e:
         print(f"[COOLDOWN-DB] Load error: {e}")
         return {}
+    finally:
+        return_conn(conn)
 
 
 def _maybe_load_cooldowns():
@@ -274,17 +278,19 @@ def clear_all_cooldowns():
     global _cooldowns_loaded, _cooldown_cache
     _cooldown_cache.clear()
     _cooldowns_loaded = False
-    
+
+    from app.data.db_connection import get_conn, return_conn
+    conn = None
     try:
-        from app.data.db_connection import get_conn
         conn = get_conn()
         cursor = conn.cursor()
         cursor.execute("DELETE FROM signal_cooldowns")
         conn.commit()
-        conn.close()
     except Exception as e:
         print(f"[COOLDOWN-DB] Clear all error: {e}")
-    
+    finally:
+        return_conn(conn)
+
     print("[COOLDOWN] All cooldowns cleared")
 
 

@@ -14,7 +14,7 @@ Use Case:
 from typing import List, Dict, Optional, Tuple
 from datetime import datetime
 import statistics
-from app.data.db_connection import get_conn, ph
+from app.data.db_connection import get_conn, return_conn, ph
 
 
 class VolumeState:
@@ -252,11 +252,11 @@ class VolumeAnalyzer:
     
     def load_historical_bars(self, ticker: str, lookback_minutes: int = 60):
         """Load historical bars from database to initialize volume state."""
+        conn = None
         try:
             conn = get_conn()
             cursor = conn.cursor()
             
-            # Use parameterized placeholder for cross-database compatibility
             query = f"""
                 SELECT close, volume, datetime
                 FROM intraday_bars
@@ -267,39 +267,40 @@ class VolumeAnalyzer:
             
             cursor.execute(query, (ticker, lookback_minutes))
             rows = cursor.fetchall()
-            conn.close()
-            
-            if not rows:
-                return
-            
-            # Initialize tracker if needed
-            if ticker not in self.tracked_tickers:
-                self.track_ticker(ticker)
-            
-            # Add bars in chronological order
-            for row in reversed(rows):
-                # Handle both dict (PostgreSQL) and tuple (SQLite) row formats
-                if isinstance(row, dict):
-                    close_price = row['close']
-                    volume = row['volume']
-                    ts = row['datetime']
-                else:
-                    close_price = row[0]
-                    volume = row[1]
-                    ts = row[2]
-                
-                # Handle both string and datetime timestamp types
-                if isinstance(ts, str):
-                    timestamp = datetime.fromisoformat(ts)
-                else:
-                    timestamp = ts
-                
-                self.update_bar(ticker, close_price, volume, timestamp)
-            
-            print(f"[VOL] Loaded {len(rows)} historical bars for {ticker}")
-        
         except Exception as e:
             print(f"[VOL] Error loading historical bars for {ticker}: {e}")
+            rows = []
+        finally:
+            return_conn(conn)
+        
+        if not rows:
+            return
+        
+        # Initialize tracker if needed
+        if ticker not in self.tracked_tickers:
+            self.track_ticker(ticker)
+        
+        # Add bars in chronological order
+        for row in reversed(rows):
+            # Handle both dict (PostgreSQL) and tuple (SQLite) row formats
+            if isinstance(row, dict):
+                close_price = row['close']
+                volume = row['volume']
+                ts = row['datetime']
+            else:
+                close_price = row[0]
+                volume = row[1]
+                ts = row[2]
+            
+            # Handle both string and datetime timestamp types
+            if isinstance(ts, str):
+                timestamp = datetime.fromisoformat(ts)
+            else:
+                timestamp = ts
+            
+            self.update_bar(ticker, close_price, volume, timestamp)
+        
+        print(f"[VOL] Loaded {len(rows)} historical bars for {ticker}")
     
     def print_summary(self, top_n: int = 10):
         """Print formatted volume summary."""
