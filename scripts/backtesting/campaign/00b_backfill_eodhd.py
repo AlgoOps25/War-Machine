@@ -2,26 +2,22 @@
 """
 00b_backfill_eodhd.py  —  Backfill 5m bars from EODHD → campaign_data.db
 ========================================================================
-Pulls up to 1 year of native 5-minute intraday bars from the EODHD API
-for the core tickers and writes them into campaign_data.db.
+Pulls native 5m (or 1m aggregated) intraday bars from EODHD for core
+tickers and writes them into campaign_data.db for offline backtesting.
 
 EODHD intraday endpoint:
   GET https://eodhd.com/api/intraday/{TICKER}.US
-      ?interval=5m&from=UNIX&to=UNIX&api_token=KEY&fmt=json
-
-History depth (EODHD plan dependent):
-  All-World / Extended plans : up to 2 years
-  Basic plan                 : 120 days
+      ?interval=5m&from=YYYY-MM-DD&to=YYYY-MM-DD&api_token=KEY&fmt=json
 
 USAGE
+  python scripts/backtesting/campaign/00b_backfill_eodhd.py --probe
   python scripts/backtesting/campaign/00b_backfill_eodhd.py
   python scripts/backtesting/campaign/00b_backfill_eodhd.py --days 365
   python scripts/backtesting/campaign/00b_backfill_eodhd.py --tickers AAPL,NVDA,SPY
-  python scripts/backtesting/campaign/00b_backfill_eodhd.py --probe     # test API + show depth
 """
 
-import sys, os, sqlite3, argparse, time, json
-from datetime import datetime, timedelta, timezone
+import sys, os, sqlite3, argparse, time
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../..')))
@@ -41,7 +37,7 @@ CORE_TICKERS = [
 ]
 
 
-# ── helpers ────────────────────────────────────────────────────────────────
+# ── helpers ───────────────────────────────────────────────────────────────
 
 def load_dotenv():
     p = os.path.join(os.path.dirname(__file__), '../../../.env')
@@ -65,14 +61,10 @@ def get_api_key():
 
 
 def open_or_create_db(path):
-    """Open existing campaign_data.db or create fresh one."""
-    exists = os.path.exists(path)
-    conn   = sqlite3.connect(path)
+    conn = sqlite3.connect(path)
     conn.execute('PRAGMA journal_mode=WAL')
     conn.execute('PRAGMA synchronous=NORMAL')
     conn.execute('PRAGMA cache_size=-64000')
-    if not exists:
-        print(f'  Creating new DB: {path}')
     conn.execute("""
         CREATE TABLE IF NOT EXISTS intraday_bars_5m (
             ticker   TEXT    NOT NULL,
@@ -90,19 +82,20 @@ def open_or_create_db(path):
     return conn
 
 
-# ── EODHD fetch ────────────────────────────────────────────────────────────
+# ── EODHD fetch ───────────────────────────────────────────────────────────
 
-def fetch_eodhd_5m(ticker, api_key, from_ts, to_ts, retries=3):
+def fetch_eodhd(ticker, api_key, from_date, to_date, interval='5m', retries=3):
     """
-    Fetch 5m bars from EODHD for a single ticker.
-    Returns list of dicts: {datetime, open, high, low, close, volume}
+    Fetch intraday bars from EODHD.
+    from_date / to_date must be 'YYYY-MM-DD' strings.
+    Returns (bars_list, interval_used).
     """
     url    = f'{EODHD_BASE}/{ticker}.US'
     params = {
-        'interval'  : '5m',
-        'from'      : int(from_ts),
-        'to'        : int(to_ts),
         'api_token' : api_key,
+        'interval'  : interval,
+        'from'      : from_date,
+        'to'        : to_date,
         'fmt'       : 'json',
     }
     for attempt in range(retries):
@@ -111,76 +104,117 @@ def fetch_eodhd_5m(ticker, api_key, from_ts, to_ts, retries=3):
             if r.status_code == 200:
                 data = r.json()
                 if isinstance(data, list):
-                    return data
-                elif isinstance(data, dict) and 'error' in data:
+                    return data, interval
+                if isinstance(data, dict) and 'error' in data:
                     print(f'    EODHD error: {data["error"]}')
-                    return []
-                return []
+                    return [], interval
+                return [], interval
+            elif r.status_code == 422:
+                if interval == '5m':
+                    # 5m may not be on your plan — try 1m
+                    print(f'    5m returned 422 — retrying with 1m...')
+                    return fetch_eodhd(ticker, api_key, from_date, to_date,
+                                       interval='1m', retries=retries)
+                print(f'    HTTP 422 on 1m — check date range or ticker.')
+                return [], interval
             elif r.status_code == 429:
                 wait = 2 ** attempt
                 print(f'    Rate limited — waiting {wait}s...')
                 time.sleep(wait)
             else:
-                print(f'    HTTP {r.status_code} for {ticker}')
-                return []
+                print(f'    HTTP {r.status_code}: {r.text[:200]}')
+                return [], interval
         except Exception as e:
             print(f'    Request error: {e}')
-            if attempt < retries - 1:
-                time.sleep(2)
-    return []
+            if attempt < retries - 1: time.sleep(2)
+    return [], interval
 
+
+def aggregate_1m_to_5m(bars_1m):
+    """Aggregate 1m EODHD bars to 5m buckets locally."""
+    from collections import defaultdict
+    buckets = defaultdict(list)
+    for b in bars_1m:
+        try:
+            dt = datetime.strptime(b['datetime'][:19], '%Y-%m-%d %H:%M:%S')
+            floored = dt.replace(minute=(dt.minute // 5) * 5, second=0)
+            buckets[floored].append(b)
+        except Exception:
+            continue
+    result = []
+    for dt_bucket in sorted(buckets):
+        group = buckets[dt_bucket]
+        try:
+            result.append({
+                'datetime' : dt_bucket.strftime('%Y-%m-%d %H:%M:%S'),
+                'open'     : float(group[0]['open']),
+                'high'     : max(float(b['high'])  for b in group),
+                'low'      : min(float(b['low'])   for b in group),
+                'close'    : float(group[-1]['close']),
+                'volume'   : sum(int(b.get('volume', 0)) for b in group),
+            })
+        except Exception:
+            continue
+    return result
+
+
+# ── probe ──────────────────────────────────────────────────────────────────
 
 def probe_ticker(ticker, api_key):
-    """Test API key and show available history depth for one ticker."""
-    print(f'  Probing {ticker}...')
-    # Request max lookback: 2 years
-    to_ts   = int(datetime.now(timezone.utc).timestamp())
-    from_ts = int((datetime.now(timezone.utc) - timedelta(days=730)).timestamp())
-    bars    = fetch_eodhd_5m(ticker, api_key, from_ts, to_ts)
+    now       = datetime.now(ET)
+    to_date   = now.strftime('%Y-%m-%d')
+    from_date = (now - timedelta(days=730)).strftime('%Y-%m-%d')
+    print(f'  Probing {ticker}  ({from_date} → {to_date})...')
+    bars, iv = fetch_eodhd(ticker, api_key, from_date, to_date, interval='5m')
     if not bars:
-        print(f'    No data returned — check API key or plan')
+        print(f'    ❌ No data returned — check EODHD_API_KEY and intraday plan.')
         return
-    earliest = bars[0].get('datetime', bars[0].get('date', '?'))
-    latest   = bars[-1].get('datetime', bars[-1].get('date', '?'))
+    earliest = bars[0].get('datetime', '?')
+    latest   = bars[-1].get('datetime', '?')
+    bars_per_day = 78 if iv == '5m' else 390
+    days_est = len(bars) // bars_per_day
+    print(f'    Interval      : {iv}')
     print(f'    Bars returned : {len(bars):,}')
     print(f'    Earliest      : {earliest}')
     print(f'    Latest        : {latest}')
-    print(f'    ✅ API key works. Approx history: {len(bars)//78:.0f} trading days')
+    print(f'    Est. days     : ~{days_est}')
+    print(f'    ✅ API working!')
 
 
-# ── main backfill ───────────────────────────────────────────────────────────
+# ── backfill ────────────────────────────────────────────────────────────────
 
 def backfill(tickers, days_back, out_path, api_key):
-    to_ts   = int(datetime.now(timezone.utc).timestamp())
-    from_ts = int((datetime.now(timezone.utc) - timedelta(days=days_back)).timestamp())
+    now       = datetime.now(ET)
+    to_date   = now.strftime('%Y-%m-%d')
+    from_date = (now - timedelta(days=days_back)).strftime('%Y-%m-%d')
+    print(f'  Date range : {from_date} → {to_date}')
+    print()
 
     conn = open_or_create_db(out_path)
-
     total_inserted = 0
     summary        = []
 
     for i, ticker in enumerate(tickers):
         print(f'  [{i+1:>2}/{len(tickers)}] {ticker:<8}', end='  ', flush=True)
-        t0   = time.time()
-        bars = fetch_eodhd_5m(ticker, api_key, from_ts, to_ts)
+        t0 = time.time()
+
+        bars, iv = fetch_eodhd(ticker, api_key, from_date, to_date, interval='5m')
 
         if not bars:
             print('0 bars — skipped')
             summary.append((ticker, 0, 'NO DATA'))
+            time.sleep(0.5)
             continue
 
-        # Parse and insert
-        batch = []
+        # Aggregate locally if 1m was returned
+        if iv == '1m':
+            bars = aggregate_1m_to_5m(bars)
+
+        batch   = []
         skipped = 0
         for b in bars:
             try:
-                # EODHD returns 'datetime' as unix timestamp or ISO string
-                dt_raw = b.get('datetime', b.get('date'))
-                if isinstance(dt_raw, (int, float)):
-                    dt_str = datetime.fromtimestamp(dt_raw, tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%S')
-                else:
-                    dt_str = str(dt_raw)[:19]  # trim microseconds
-
+                dt_str = b['datetime'][:19]
                 batch.append((
                     ticker, dt_str,
                     float(b['open']), float(b['high']), float(b['low']),
@@ -196,31 +230,29 @@ def backfill(tickers, days_back, out_path, api_key):
         )
         conn.commit()
 
-        inserted = len(batch)
+        inserted  = len(batch)
         total_inserted += inserted
-        elapsed  = time.time() - t0
-        days_est = inserted // 78
-        print(f'{inserted:>6,} bars  (~{days_est} days)  {elapsed:.1f}s  {"⚠️ skipped="+str(skipped) if skipped else ""}')
+        elapsed   = time.time() - t0
+        days_est  = inserted // 78
+        ivlabel   = iv if iv == '5m' else '1m→5m'
+        skip_str  = f'  ⚠️ skipped={skipped}' if skipped else ''
+        print(f'{inserted:>6,} bars  (~{days_est}d)  [{ivlabel}]  {elapsed:.1f}s{skip_str}')
         summary.append((ticker, inserted, f'~{days_est}d'))
 
-        # EODHD rate limit: ~5 req/s on most plans; be polite
         time.sleep(0.3)
 
     conn.close()
     return total_inserted, summary
 
 
-# ── entry point ─────────────────────────────────────────────────────────────
+# ── main ───────────────────────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--days',    type=int, default=365,
-                        help='Days of history to fetch (default: 365)')
-    parser.add_argument('--tickers', type=str, default=None,
-                        help='Comma-separated tickers (default: 15 core)')
-    parser.add_argument('--out',     type=str, default=DEFAULT_OUT)
-    parser.add_argument('--probe',   action='store_true',
-                        help='Test API key and show history depth, then exit')
+    parser.add_argument('--days',    type=int,  default=365)
+    parser.add_argument('--tickers', type=str,  default=None)
+    parser.add_argument('--out',     type=str,  default=DEFAULT_OUT)
+    parser.add_argument('--probe',   action='store_true')
     args = parser.parse_args()
 
     api_key = get_api_key()
@@ -230,10 +262,12 @@ def main():
         print('EODHD API PROBE')
         print('='*60)
         probe_ticker('SPY', api_key)
+        print()
         probe_ticker('AAPL', api_key)
         return
 
-    tickers = [t.strip().upper() for t in args.tickers.split(',')] if args.tickers else CORE_TICKERS
+    tickers = ([t.strip().upper() for t in args.tickers.split(',') if t.strip()]
+               if args.tickers else CORE_TICKERS)
 
     print('='*72)
     print('WAR MACHINE — EODHD 5m BACKFILL')
@@ -249,7 +283,7 @@ def main():
 
     print()
     print('='*72)
-    print(f'✅  Backfill complete!  {total:,} bars  {elapsed:.1f}s')
+    print(f'✅  Backfill complete!  {total:,} total bars  {elapsed:.1f}s')
     print()
     print(f'  {"Ticker":<8}  {"Bars":>7}  History')
     print(f'  {"-"*8}  {"-"*7}  -------')
