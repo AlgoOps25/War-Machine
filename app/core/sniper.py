@@ -29,6 +29,7 @@
 # VOLUME PROFILE (Step 6.6): Price must be near POC or high-volume nodes for valid entries
 # ENTRY TIMING (Step 6.7): Time-based WR adjustment + session quality filtering
 # MTF TREND (Step 8.5): Multi-timeframe trend alignment boost (1m/5m/15m/30m)
+# GATE DISTRIBUTION (Issue #23): EOD grade/signal-type/histogram report for gate analytics
 #
 # RESTORE (Mar 10 2026): Full file recovered from commit 6a235067 after accidental truncation
 # FIXED IMPORTS: signal_analytics, dynamic_thresholds, hourly_gate, production_helpers
@@ -138,6 +139,136 @@ def compute_confidence(grade: str, timeframe: str, ticker: str) -> float:
         return 0.75
     min_conf, max_conf = GRADE_CONFIDENCE_RANGES[grade]
     return random.uniform(min_conf, max_conf)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ISSUE #23: CONFIDENCE GATE DISTRIBUTION TRACKING
+# Tracks grade/signal-type/histogram data at the Step 11b gate for EOD analytics
+# ══════════════════════════════════════════════════════════════════════════════
+_gate_stats = {
+    'by_grade': {
+        'A+': {'tested': 0, 'passed': 0, 'filtered': 0, 'avg_confidence': 0.0},
+        'A':  {'tested': 0, 'passed': 0, 'filtered': 0, 'avg_confidence': 0.0},
+        'A-': {'tested': 0, 'passed': 0, 'filtered': 0, 'avg_confidence': 0.0},
+        'B+': {'tested': 0, 'passed': 0, 'filtered': 0, 'avg_confidence': 0.0},
+        'B':  {'tested': 0, 'passed': 0, 'filtered': 0, 'avg_confidence': 0.0},
+        'B-': {'tested': 0, 'passed': 0, 'filtered': 0, 'avg_confidence': 0.0},
+        'C+': {'tested': 0, 'passed': 0, 'filtered': 0, 'avg_confidence': 0.0},
+        'C':  {'tested': 0, 'passed': 0, 'filtered': 0, 'avg_confidence': 0.0},
+        'C-': {'tested': 0, 'passed': 0, 'filtered': 0, 'avg_confidence': 0.0},
+    },
+    'by_signal_type': {
+        'CFW6_OR':      {'tested': 0, 'passed': 0, 'filtered': 0},
+        'CFW6_INTRADAY': {'tested': 0, 'passed': 0, 'filtered': 0},
+    },
+    'confidence_ranges': {
+        '0.40-0.50': 0,
+        '0.50-0.60': 0,
+        '0.60-0.70': 0,
+        '0.70-0.80': 0,
+        '0.80-0.90': 0,
+        '0.90-0.95': 0,
+    }
+}
+
+def _get_confidence_bucket(confidence: float) -> str:
+    """Map a confidence value to its histogram bucket label."""
+    if confidence < 0.50: return '0.40-0.50'
+    if confidence < 0.60: return '0.50-0.60'
+    if confidence < 0.70: return '0.60-0.70'
+    if confidence < 0.80: return '0.70-0.80'
+    if confidence < 0.90: return '0.80-0.90'
+    return '0.90-0.95'
+
+def _track_gate_result(grade: str, signal_type: str, confidence: float, passed: bool):
+    """Record confidence gate result for EOD grade distribution analytics."""
+    if grade in _gate_stats['by_grade']:
+        stats = _gate_stats['by_grade'][grade]
+        stats['tested'] += 1
+        if passed:
+            stats['passed'] += 1
+        else:
+            stats['filtered'] += 1
+        n = stats['tested']
+        stats['avg_confidence'] = (stats['avg_confidence'] * (n - 1) + confidence) / n
+
+    if signal_type in _gate_stats['by_signal_type']:
+        st = _gate_stats['by_signal_type'][signal_type]
+        st['tested'] += 1
+        if passed:
+            st['passed'] += 1
+        else:
+            st['filtered'] += 1
+
+    bucket = _get_confidence_bucket(confidence)
+    if bucket in _gate_stats['confidence_ranges']:
+        _gate_stats['confidence_ranges'][bucket] += 1
+
+def print_gate_distribution_stats():
+    """Print EOD confidence gate grade distribution report."""
+    total_tested = sum(v['tested'] for v in _gate_stats['by_grade'].values())
+    if total_tested == 0:
+        return
+
+    print("\n" + "=" * 80)
+    print("CONFIDENCE GATE — GRADE DISTRIBUTION")
+    print("=" * 80)
+
+    print(f"\n{'Grade':<6} {'Tested':<8} {'Passed':<8} {'Filtered':<10} {'Pass Rate':<12} {'Avg Conf':<10}")
+    print("-" * 80)
+    for grade in ['A+', 'A', 'A-', 'B+', 'B', 'B-', 'C+', 'C', 'C-']:
+        s = _gate_stats['by_grade'][grade]
+        if s['tested'] == 0:
+            continue
+        pass_rate = s['passed'] / s['tested'] * 100
+        emoji = "✅" if pass_rate >= 80 else "⚠️ " if pass_rate >= 50 else "🚫"
+        print(
+            f"{grade:<6} {s['tested']:<8} {s['passed']:<8} "
+            f"{s['filtered']:<10} {pass_rate:>5.1f}% {emoji:<4} "
+            f"{s['avg_confidence']:.3f}"
+        )
+
+    print("\nBy Signal Type:")
+    print(f"{'Type':<15} {'Tested':<8} {'Passed':<8} {'Filtered':<10} {'Pass Rate':<12}")
+    print("-" * 80)
+    for sig_type, st in _gate_stats['by_signal_type'].items():
+        if st['tested'] == 0:
+            continue
+        pr = st['passed'] / st['tested'] * 100
+        print(f"{sig_type:<15} {st['tested']:<8} {st['passed']:<8} {st['filtered']:<10} {pr:>5.1f}%")
+
+    print("\nConfidence Distribution:")
+    max_count = max(_gate_stats['confidence_ranges'].values()) or 1
+    for bucket, count in _gate_stats['confidence_ranges'].items():
+        bar = '█' * int((count / max_count) * 40)
+        print(f"{bucket}: {bar} ({count})")
+
+    print("\n💡 Analysis:")
+    b_plus = _gate_stats['by_grade']['B+']
+    if b_plus['tested'] > 5 and (b_plus['passed'] / b_plus['tested']) < 0.30:
+        print("  ⚠️  B+ signals heavily filtered (<30% pass rate) — consider lowering gate threshold")
+    c_stats = _gate_stats['by_grade']['C']
+    if c_stats['tested'] > 5 and (c_stats['passed'] / c_stats['tested']) > 0.50:
+        print("  ⚠️  C signals passing frequently (>50% pass rate) — consider raising gate threshold")
+    or_st = _gate_stats['by_signal_type']['CFW6_OR']
+    id_st = _gate_stats['by_signal_type']['CFW6_INTRADAY']
+    if or_st['tested'] > 0 and id_st['tested'] > 0:
+        or_pr  = or_st['passed']  / or_st['tested']
+        id_pr  = id_st['passed']  / id_st['tested']
+        if abs(or_pr - id_pr) > 0.30:
+            print(
+                f"  ⚠️  Large pass rate gap: OR={or_pr:.1%} vs Intraday={id_pr:.1%} "
+                f"— gate thresholds may need adjustment"
+            )
+    if not any([
+        b_plus['tested'] > 5 and (b_plus['passed'] / b_plus['tested']) < 0.30,
+        c_stats['tested'] > 5 and (c_stats['passed'] / c_stats['tested']) > 0.50,
+        or_st['tested'] > 0 and id_st['tested'] > 0 and abs(
+            or_st['passed'] / or_st['tested'] - id_st['passed'] / id_st['tested']
+        ) > 0.30,
+    ]):
+        print("  ✅ Gate distribution looks healthy — no threshold adjustments needed")
+
+    print("=" * 80 + "\n")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PHASE 4 INTEGRATION - Signal Analytics & Performance Monitoring
@@ -1157,7 +1288,9 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         except Exception as hourly_err:
             print(f"[HOURLY GATE] Error (non-fatal): {hourly_err}")
 
+    # ── Step 11b: Confidence gate + distribution tracking (Issue #23) ─────────
     if final_confidence < eff_min:
+        _track_gate_result(final_grade, signal_type, final_confidence, passed=False)
         if TRACKERS_ENABLED and grade_gate_tracker:
             grade_gate_tracker.record_gate_rejection(
                 ticker=ticker,
@@ -1173,6 +1306,7 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         )
         return False
 
+    _track_gate_result(final_grade, signal_type, final_confidence, passed=True)
     if TRACKERS_ENABLED and grade_gate_tracker:
         grade_gate_tracker.record_gate_pass(
             ticker=ticker,
@@ -1423,6 +1557,7 @@ def process_ticker(ticker: str):
             print_validation_call_stats()
             print_mtf_stats()
             print_priority_stats()
+            print_gate_distribution_stats()  # Issue #23: EOD gate distribution report
 
             if TRACKERS_ENABLED:
                 if cooldown_tracker:
