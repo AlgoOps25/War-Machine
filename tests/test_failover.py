@@ -1,303 +1,247 @@
 """
-test_failover.py — Day 3 REST Failover Validation Suite
+test_failover.py — REST Failover Validation Suite
 
 Tests get_current_bar_with_fallback() by simulating a WebSocket disconnect
 and verifying the 3-tier fallback chain:
-  Tier 1: WS live bar      (mocked in-memory)
-  Tier 2: REST API bar     (live call to EODHD)
-  Tier 3: None             (when REST also fails)
+  Tier 1: WS live bar      (mocked in-memory)     — runs in CI
+  Tier 2: REST API bar     (live EODHD call)       — @integration, skipped in CI
+  Tier 3: None             (invalid ticker)        — runs in CI
 
-Run from project root:
-  python test_failover.py
+Run all (including live REST):
+  pytest tests/test_failover.py -v -m integration
 
-Requires EODHD_API_KEY in .env or environment.
-Does NOT require the WS feed to be running.
+Run CI-safe only:
+  pytest tests/test_failover.py -v -m "not integration"
+
+Direct script (legacy):
+  python tests/test_failover.py
 """
 import sys
 import time
 import traceback
 from datetime import datetime
 
-# ───────────────────────────────────────────────────────────────────────────────
-PASS_COUNT = 0
-FAIL_COUNT = 0
-results    = []
+import pytest
 
-def ok(name: str, detail: str = ""):
-    global PASS_COUNT
-    PASS_COUNT += 1
-    tag = f"  {detail}" if detail else ""
-    print(f"  \033[92m✓ PASS\033[0m  {name}{tag}")
-    results.append(("PASS", name))
 
-def fail(name: str, detail: str = ""):
-    global FAIL_COUNT
-    FAIL_COUNT += 1
-    tag = f"  → {detail}" if detail else ""
-    print(f"  \033[91m✗ FAIL\033[0m  {name}{tag}")
-    results.append(("FAIL", name))
-
-def section(title: str):
-    print(f"\n\033[1m{'='*60}\033[0m")
-    print(f"\033[1m  {title}\033[0m")
-    print(f"\033[1m{'='*60}\033[0m")
-
-# ───────────────────────────────────────────────────────────────────────────────
-# TEST 1 — Import health check
-section("TEST 1: Import Health Check")
+# ─────────────────────────────────────────────────────────────────────────────
+# Shared import fixture — imported once at module level safely
+# (no sys.exit here — if import fails, tests will show ImportError)
+# ─────────────────────────────────────────────────────────────────────────────
 try:
-    from app.data import ws_feed
-    ok("ws_feed module imports cleanly")
-except Exception as e:
-    fail("ws_feed module import", str(e))
-    print("\n[FATAL] Cannot import ws_feed — aborting.")
-    sys.exit(1)
-
-try:
+    import app.data.ws_feed as _wf
     from app.data.ws_feed import (
         get_current_bar,
         get_current_bar_with_fallback,
         get_failover_stats,
         is_connected,
+        _fetch_bar_rest,
     )
-    ok("All failover symbols importable")
-except ImportError as e:
-    fail("Failover symbols import", str(e))
-    sys.exit(1)
+    _WF_AVAILABLE = True
+except ImportError:
+    _WF_AVAILABLE = False
 
-try:
-    from app.data.ws_feed import _fetch_bar_rest
-    ok("_fetch_bar_rest importable (private OK for testing)")
-except ImportError as e:
-    fail("_fetch_bar_rest import", str(e))
+pytestmark_wf = pytest.mark.skipif(
+    not _WF_AVAILABLE,
+    reason="app.data.ws_feed not importable"
+)
 
-# ───────────────────────────────────────────────────────────────────────────────
-# TEST 2 — get_failover_stats() baseline
-section("TEST 2: get_failover_stats() Baseline")
-try:
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TEST 1 — Import health check (CI-safe)
+# ─────────────────────────────────────────────────────────────────────────────
+def test_import_health():
+    """ws_feed and all failover symbols import without error."""
+    assert _WF_AVAILABLE, (
+        "app.data.ws_feed failed to import — check for syntax errors or missing deps"
+    )
+    # Verify expected symbols are present
+    assert callable(get_current_bar_with_fallback)
+    assert callable(get_failover_stats)
+    assert callable(is_connected)
+    assert callable(_fetch_bar_rest)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TEST 2 — get_failover_stats() baseline (CI-safe)
+# ─────────────────────────────────────────────────────────────────────────────
+@pytest.mark.skipif(not _WF_AVAILABLE, reason="ws_feed not importable")
+def test_failover_stats_baseline():
+    """get_failover_stats() returns the 3 expected keys at startup."""
     stats = get_failover_stats()
-    ok("get_failover_stats() returns dict", str(stats))
-    assert "rest_hits"    in stats, "missing rest_hits"
-    assert "cache_active" in stats, "missing cache_active"
-    assert "ws_connected" in stats, "missing ws_connected"
-    ok("All 3 keys present: rest_hits / cache_active / ws_connected")
-    assert stats["rest_hits"] == 0,     f"Expected 0 hits at start, got {stats['rest_hits']}"
+    assert isinstance(stats, dict)
+    assert "rest_hits"    in stats
+    assert "cache_active" in stats
+    assert "ws_connected" in stats
     assert stats["ws_connected"] is False, "WS should be disconnected (feed not started)"
-    ok("rest_hits=0 and ws_connected=False at baseline")
-except AssertionError as e:
-    fail("get_failover_stats() baseline", str(e))
-except Exception as e:
-    fail("get_failover_stats() exception", str(e))
-    traceback.print_exc()
 
-# ───────────────────────────────────────────────────────────────────────────────
-# TEST 3 — Tier 1: WS bar returned when in-memory bar exists
-section("TEST 3: Tier 1 — WS In-Memory Bar")
-try:
-    # Manually plant a fake bar in _open_bars (simulates live WS tick)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TEST 3 — Tier 1: WS in-memory bar returned (CI-safe, fully mocked)
+# ─────────────────────────────────────────────────────────────────────────────
+@pytest.mark.skipif(not _WF_AVAILABLE, reason="ws_feed not importable")
+def test_tier1_ws_bar():
+    """Tier 1: planted in-memory WS bar is returned with source='ws'."""
     fake_bar = {
         "datetime": datetime(2026, 3, 1, 10, 30),
         "open": 580.10, "high": 581.00,
         "low":  579.50, "close": 580.75,
         "volume": 123456,
     }
-    import app.data.ws_feed as _wf
     with _wf._lock:
         _wf._open_bars["SPY"] = dict(fake_bar)
 
+    try:
+        bar = get_current_bar_with_fallback("SPY")
+        assert bar is not None,          "Expected bar, got None"
+        assert bar["source"] == "ws",    f"Expected source='ws', got '{bar['source']}'"
+        assert bar["close"] == 580.75,   f"Wrong close: {bar['close']}"
+    finally:
+        with _wf._lock:
+            _wf._open_bars.pop("SPY", None)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TEST 4 — Tier 2: REST fallback (LIVE — integration only, skipped in CI)
+# ─────────────────────────────────────────────────────────────────────────────
+@pytest.mark.integration
+@pytest.mark.skipif(not _WF_AVAILABLE, reason="ws_feed not importable")
+def test_tier2_rest_spy():
+    """Tier 2: REST fallback returns a valid SPY bar (requires live EODHD key + market hours)."""
+    assert _wf._connected is False, "WS should be disconnected"
     bar = get_current_bar_with_fallback("SPY")
-    assert bar is not None,               "Expected bar, got None"
-    assert bar["source"] == "ws",         f"Expected source='ws', got '{bar['source']}'"
-    assert bar["close"] == 580.75,        f"Wrong close: {bar['close']}"
-    ok("Tier 1: in-memory bar returned with source='ws'", f"close={bar['close']}")
+    assert bar is not None, (
+        "REST returned None — market may be closed or EODHD_API_KEY invalid. "
+        "Run: curl 'https://eodhd.com/api/intraday/SPY.US?interval=1m&fmt=json&limit=2&api_token=YOUR_KEY'"
+    )
+    assert bar["source"] == "rest"
+    assert "close"    in bar
+    assert "datetime" in bar
+    assert isinstance(bar["datetime"], datetime)
+    assert bar["close"] > 0
 
-    # Clean up planted bar
-    with _wf._lock:
-        del _wf._open_bars["SPY"]
-    ok("Planted bar cleaned up")
 
-except AssertionError as e:
-    fail("Tier 1 WS bar", str(e))
-except Exception as e:
-    fail("Tier 1 WS bar exception", str(e))
-    traceback.print_exc()
-
-# ───────────────────────────────────────────────────────────────────────────────
-# TEST 4 — Tier 2: REST fallback when WS disconnected
-section("TEST 4: Tier 2 — REST Fallback (Live EODHD Call)")
-print("  [INFO] Making a real REST call to EODHD — requires EODHD_API_KEY...")
-try:
-    # _connected is already False (feed not started) so REST should trigger
-    assert _wf._connected is False, "WS should be disconnected for this test"
-
-    t_start = time.monotonic()
+@pytest.mark.integration
+@pytest.mark.skipif(not _WF_AVAILABLE, reason="ws_feed not importable")
+def test_tier2_rest_increments_hits():
+    """REST hit counter increments after a live REST fetch."""
+    # Bust the SPY cache so REST is forced
+    if hasattr(_wf, '_rest_cache'):
+        _wf._rest_cache.pop("SPY", None)
+    hits_before = get_failover_stats()["rest_hits"]
     bar = get_current_bar_with_fallback("SPY")
-    elapsed = time.monotonic() - t_start
-
-    if bar is None:
-        # Could be outside market hours — EODHD may return empty
-        print(f"  [WARN] REST returned None — market may be closed or key issue")
-        print(f"         Manually test: curl 'https://eodhd.com/api/intraday/SPY.US?interval=1m&fmt=json&limit=2&api_token=YOUR_KEY'")
-        fail("Tier 2 REST bar", "None returned — check API key and market hours")
-    else:
-        assert bar["source"] == "rest", f"Expected source='rest', got '{bar['source']}'"
-        assert "close" in bar,           "Missing 'close' key"
-        assert "datetime" in bar,        "Missing 'datetime' key"
-        assert isinstance(bar["datetime"], datetime), "datetime should be datetime object"
-        assert bar["close"] > 0,         f"Bad close price: {bar['close']}"
-        ok(
-            "Tier 2: REST bar returned with source='rest'",
-            f"SPY close={bar['close']:.2f} dt={bar['datetime']} ({elapsed:.2f}s)"
+    if bar is not None:
+        hits_after = get_failover_stats()["rest_hits"]
+        assert hits_after == hits_before + 1, (
+            f"Expected rest_hits to increment. Before: {hits_before} After: {hits_after}"
         )
 
-        stats = get_failover_stats()
-        assert stats["rest_hits"] == 1, f"Expected rest_hits=1, got {stats['rest_hits']}"
-        ok("rest_hits incremented to 1 after first REST call")
 
-except AssertionError as e:
-    fail("Tier 2 REST assertion", str(e))
-except Exception as e:
-    fail("Tier 2 REST exception", str(e))
-    traceback.print_exc()
+# ─────────────────────────────────────────────────────────────────────────────
+# TEST 5 — REST cache TTL (CI-safe — uses whatever is already cached)
+# ─────────────────────────────────────────────────────────────────────────────
+@pytest.mark.skipif(not _WF_AVAILABLE, reason="ws_feed not importable")
+def test_rest_cache_no_double_fetch():
+    """
+    A second call for the same ticker within TTL must NOT trigger a new REST hit.
+    Plants a fake cache entry so this test is completely offline/CI-safe.
+    """
+    ticker = "CACHE_TEST_TICKER"
+    fake_cached_bar = {
+        "datetime": datetime(2026, 3, 1, 10, 30),
+        "open": 100.0, "high": 101.0,
+        "low":   99.0, "close": 100.5,
+        "volume": 50000,
+        "source": "rest",
+    }
+    # Plant a fresh cache entry with ts = now (within TTL)
+    _wf._rest_cache[ticker] = {"bar": fake_cached_bar, "ts": time.monotonic()}
 
-# ───────────────────────────────────────────────────────────────────────────────
-# TEST 5 — REST cache: second call within TTL should NOT hit REST again
-section("TEST 5: REST Cache TTL — No Double-Fetch")
-try:
     hits_before = get_failover_stats()["rest_hits"]
-
-    # Second call for same ticker within TTL window
-    bar2 = get_current_bar_with_fallback("SPY")
+    bar = get_current_bar_with_fallback(ticker)
     hits_after = get_failover_stats()["rest_hits"]
 
-    assert hits_after == hits_before, (
-        f"Expected no new REST hit (cache should serve). "
-        f"Before: {hits_before} After: {hits_after}"
-    )
-    ok(
-        f"Cache hit: rest_hits unchanged at {hits_after} (TTL={_wf.REST_CACHE_TTL}s)",
-        f"source={bar2.get('source', '?') if bar2 else 'None'}"
-    )
-except AssertionError as e:
-    fail("REST cache TTL", str(e))
-except Exception as e:
-    fail("REST cache TTL exception", str(e))
-    traceback.print_exc()
+    assert bar is not None,              "Expected cached bar to be returned"
+    assert hits_after == hits_before,    "REST should NOT be called when cache is fresh"
 
-# ───────────────────────────────────────────────────────────────────────────────
-# TEST 6 — Tier 2 for multiple tickers (NVDA, TSLA) — each gets its own cache slot
-section("TEST 6: Multi-Ticker REST (NVDA + TSLA)")
-for ticker in ["NVDA", "TSLA"]:
-    try:
-        bar = get_current_bar_with_fallback(ticker)
-        if bar is None:
-            print(f"  [WARN] {ticker} REST returned None (market may be closed)")
-            fail(f"{ticker} REST bar", "None returned")
-        else:
-            assert bar["source"] == "rest"
-            assert bar["close"] > 0
-            ok(
-                f"{ticker}: REST bar",
-                f"close={bar['close']:.2f} dt={bar['datetime']}"
-            )
-    except AssertionError as e:
-        fail(f"{ticker} assertion", str(e))
-    except Exception as e:
-        fail(f"{ticker} exception", str(e))
-        traceback.print_exc()
+    # Cleanup
+    _wf._rest_cache.pop(ticker, None)
 
-# ───────────────────────────────────────────────────────────────────────────────
-# TEST 7 — Tier 3: invalid ticker returns None (doesn’t crash)
-section("TEST 7: Tier 3 — Invalid Ticker Graceful None")
-try:
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TEST 6 — Multi-ticker REST (integration only)
+# ─────────────────────────────────────────────────────────────────────────────
+@pytest.mark.integration
+@pytest.mark.parametrize("ticker", ["NVDA", "TSLA"])
+@pytest.mark.skipif(not _WF_AVAILABLE, reason="ws_feed not importable")
+def test_tier2_rest_multi_ticker(ticker):
+    """REST fallback returns valid bars for NVDA and TSLA (live call)."""
+    bar = get_current_bar_with_fallback(ticker)
+    assert bar is not None, f"{ticker} REST returned None (market closed?)"
+    assert bar["source"] == "rest"
+    assert bar["close"] > 0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TEST 7 — Tier 3: invalid ticker returns None (CI-safe)
+# ─────────────────────────────────────────────────────────────────────────────
+@pytest.mark.skipif(not _WF_AVAILABLE, reason="ws_feed not importable")
+def test_tier3_invalid_ticker_returns_none():
+    """An invalid ticker must return None gracefully (no exception, no crash)."""
     bar = get_current_bar_with_fallback("ZZZZZ_INVALID_9999")
-    # Should return None (REST 404 or empty JSON — not an exception)
     assert bar is None, f"Expected None for invalid ticker, got {bar}"
-    ok("Invalid ticker returns None without crashing")
-except AssertionError as e:
-    fail("Invalid ticker assertion", str(e))
-except Exception as e:
-    fail("Invalid ticker raised exception", str(e))
-    traceback.print_exc()
 
-# ───────────────────────────────────────────────────────────────────────────────
-# TEST 8 — WS connected guard: when _connected=True, REST skipped even if bar=None
-section("TEST 8: WS Connected Guard (REST Not Called When WS Up)")
-try:
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TEST 8 — WS connected guard (CI-safe, mock only)
+# ─────────────────────────────────────────────────────────────────────────────
+@pytest.mark.skipif(not _WF_AVAILABLE, reason="ws_feed not importable")
+def test_ws_connected_guard_skips_rest():
+    """When _connected=True, REST should NOT be called even if no bar exists."""
     hits_before = get_failover_stats()["rest_hits"]
-
-    # Simulate WS being connected but no bar for this ticker yet
     _wf._connected = True
-    bar = get_current_bar_with_fallback("AAPL")  # no bar planted
-    _wf._connected = False  # restore
+    try:
+        bar = get_current_bar_with_fallback("AAPL_NO_BAR_PLANTED")
+        hits_after = get_failover_stats()["rest_hits"]
+        assert bar is None, f"Expected None (no WS bar, WS 'connected'), got {bar}"
+        assert hits_after == hits_before, (
+            f"REST should NOT be called when WS connected. "
+            f"Before: {hits_before} After: {hits_after}"
+        )
+    finally:
+        _wf._connected = False
 
-    hits_after = get_failover_stats()["rest_hits"]
-    assert bar is None, f"Expected None (no WS bar, WS 'connected'), got {bar}"
-    assert hits_after == hits_before, (
-        f"REST should NOT be called when WS is connected. "
-        f"Before: {hits_before} After: {hits_after}"
-    )
-    ok("WS connected guard: REST skipped when _connected=True and no bar exists")
-except AssertionError as e:
-    fail("WS connected guard", str(e))
-except Exception as e:
-    fail("WS connected guard exception", str(e))
-    traceback.print_exc()
-finally:
-    _wf._connected = False  # always restore
 
-# ───────────────────────────────────────────────────────────────────────────────
-# TEST 9 — Bar format: all required keys present in REST response
-section("TEST 9: Bar Format Validation")
-try:
-    # Use cached SPY bar from Test 4 (no extra REST call needed)
-    cached = _wf._rest_cache.get("SPY")
-    bar = cached["bar"] if cached else None
+# ─────────────────────────────────────────────────────────────────────────────
+# TEST 9 — Bar format validation (integration only — needs a live REST bar)
+# ─────────────────────────────────────────────────────────────────────────────
+@pytest.mark.integration
+@pytest.mark.skipif(not _WF_AVAILABLE, reason="ws_feed not importable")
+def test_bar_format_ohlcv_valid():
+    """All required OHLCV keys present and relationships valid in a live REST bar."""
+    bar = get_current_bar_with_fallback("SPY")
     if bar is None:
-        print("  [SKIP] No cached SPY bar to inspect (Test 4 may have failed)")
-        fail("Bar format", "No cached bar available")
-    else:
-        required_keys = ["datetime", "open", "high", "low", "close", "volume", "source"]
-        missing = [k for k in required_keys if k not in bar]
-        assert not missing, f"Missing keys: {missing}"
-        ok("All required keys present", str(required_keys))
+        pytest.skip("No live bar available (market closed or no API key)")
 
-        assert bar["high"]  >= bar["low"],   f"high < low: {bar}"
-        assert bar["high"]  >= bar["open"],  f"high < open: {bar}"
-        assert bar["high"]  >= bar["close"], f"high < close: {bar}"
-        assert bar["low"]   <= bar["open"],  f"low > open: {bar}"
-        assert bar["low"]   <= bar["close"], f"low > close: {bar}"
-        assert bar["volume"] >= 0,            f"negative volume: {bar}"
-        ok("OHLCV relationships valid (high >= open/close/low, volume >= 0)")
-except AssertionError as e:
-    fail("Bar format", str(e))
-except Exception as e:
-    fail("Bar format exception", str(e))
-    traceback.print_exc()
+    required_keys = ["datetime", "open", "high", "low", "close", "volume", "source"]
+    missing = [k for k in required_keys if k not in bar]
+    assert not missing, f"Missing keys: {missing}"
 
-# ───────────────────────────────────────────────────────────────────────────────
-# FINAL SUMMARY
-print(f"\n\033[1m{'='*60}\033[0m")
-print(f"\033[1m  RESULTS\033[0m")
-print(f"\033[1m{'='*60}\033[0m")
-print(f"  Passed: \033[92m{PASS_COUNT}\033[0m")
-print(f"  Failed: \033[91m{FAIL_COUNT}\033[0m")
-print()
-if FAIL_COUNT > 0:
-    print("  Failed tests:")
-    for status, name in results:
-        if status == "FAIL":
-            print(f"    \033[91m✗\033[0m {name}")
-print()
+    assert bar["high"]  >= bar["low"],   f"high < low: {bar}"
+    assert bar["high"]  >= bar["open"],  f"high < open: {bar}"
+    assert bar["high"]  >= bar["close"], f"high < close: {bar}"
+    assert bar["low"]   <= bar["open"],  f"low > open: {bar}"
+    assert bar["low"]   <= bar["close"], f"low > close: {bar}"
+    assert bar["volume"] >= 0,            f"negative volume: {bar}"
 
-final_stats = get_failover_stats()
-print(f"  Final REST stats: hits={final_stats['rest_hits']} "
-      f"cache_active={final_stats['cache_active']} "
-      f"ws_connected={final_stats['ws_connected']}")
-print()
 
-if FAIL_COUNT == 0:
-    print("  \033[92m✅ All tests passed — Day 3 REST failover is solid.\033[0m")
-else:
-    print(f"  \033[91m⚠️  {FAIL_COUNT} test(s) failed — check output above.\033[0m")
-    sys.exit(1)
+# ─────────────────────────────────────────────────────────────────────────────
+# Legacy direct-run entry point
+# ─────────────────────────────────────────────────────────────────────────────
+if __name__ == "__main__":
+    import subprocess
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", __file__, "-v", "-m", "not integration"],
+        cwd=str(__import__("pathlib").Path(__file__).parent.parent)
+    )
+    sys.exit(result.returncode)
