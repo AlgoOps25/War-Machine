@@ -91,6 +91,24 @@ from app.ml.metrics_cache import get_ticker_win_rates
 # e.g. at module level or in a singleton
 _TICKER_WIN_CACHE = get_ticker_win_rates(days=30)
 
+# ══════════════════════════════════════════════════════════════════════════════
+# SPY EMA CONTEXT — 5m EMA 9/21/50 regime filter
+# ══════════════════════════════════════════════════════════════════════════════
+try:
+    from app.filters.spy_ema_context import (
+        get_spy_ema_regime, is_long_allowed,
+        is_short_allowed, print_spy_regime,
+    )
+    SPY_EMA_CONTEXT_ENABLED = True
+    print("[SNIPER] ✅ SPY EMA context enabled (5m EMA 9/21/50)")
+except ImportError as e:
+    SPY_EMA_CONTEXT_ENABLED = False
+    print(f"[SNIPER] ⚠️  SPY EMA context disabled: {e}")
+    def get_spy_ema_regime(force_refresh=False): return {"label": "UNKNOWN", "score_adj": 0}
+    def is_long_allowed(r): return True
+    def is_short_allowed(r): return True
+    def print_spy_regime(r, ticker=""): pass
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # FIX #1: THREAD-SAFE STATE MANAGEMENT
@@ -955,7 +973,7 @@ def detect_fvg_after_break(bars, breakout_idx, direction):
 def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
                           or_high_ref, or_low_ref, signal_type,
                           bars_session, breakout_idx,
-                          bos_confirmation=None, bos_candle_type=None):
+                          bos_confirmation=None, bos_candle_type=None, spy_regime=None):
 
     if TRACKERS_ENABLED and cooldown_tracker:
         if cooldown_tracker.is_in_cooldown(ticker):
@@ -1057,6 +1075,15 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         return False
     else:
         print(f"[{ticker}] ✅ VWAP GATE: {vwap_reason}")
+
+        # ── SPY EMA Regime hard block ─────────────────────────────────────────────
+    if SPY_EMA_CONTEXT_ENABLED and spy_regime:
+        if direction == "bull" and not is_long_allowed(spy_regime):
+            print(f"[{ticker}] 🚫 SPY EMA REGIME: long blocked | {spy_regime.get('label')} — {spy_regime.get('reason')}")
+            return False
+        if direction == "bear" and not is_short_allowed(spy_regime):
+            print(f"[{ticker}] 🚫 SPY EMA REGIME: short blocked | {spy_regime.get('label')} — {spy_regime.get('reason')}")
+            return False
 
     # ── Step 8: Confirmation layers ──────────────────────────────────────────
     conf_result = grade_signal_with_confirmations(
@@ -1252,6 +1279,14 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
 
     final_confidence = base_confidence + ticker_adj + mode_adj + ivr_adj + uoa_adj + gex_adj + mtf_boost
     final_confidence = max(0.40, min(final_confidence, 0.95))
+
+        # ── SPY EMA confidence adjustment ─────────────────────────────────────────
+    if SPY_EMA_CONTEXT_ENABLED and spy_regime:
+        score_adj = spy_regime.get("score_adj", 0)
+        spy_regime_adj = (max(0, score_adj) / 100.0 if direction == "bull"
+                         else max(0, -score_adj) / 100.0)
+        final_confidence = max(0.40, min(final_confidence + spy_regime_adj, 0.95))
+        print(f"[{ticker}] SPY EMA ADJ: {spy_regime_adj:+.3f} | Regime={spy_regime.get('label')}")
 
     print(
         f"[CONFIDENCE-v2] Base:{base_confidence:.2f} "
@@ -1566,6 +1601,15 @@ def process_ticker(ticker: str):
             f"{_bar_time(bars_session[0])} → {_bar_time(bars_session[-1])}"
         )
 
+                # ── SPY EMA regime context (cached, one compute per cycle) ────────────
+        spy_regime = None
+        if SPY_EMA_CONTEXT_ENABLED:
+            try:
+                spy_regime = get_spy_ema_regime()
+                print_spy_regime(spy_regime, ticker)
+            except Exception as e:
+                print(f"[{ticker}] SPY EMA context error (non-fatal): {e}")
+
         if is_force_close_time(bars_session[-1]):
             position_manager.close_all_eod({ticker: bars_session[-1]["close"]})
             print_validation_stats()
@@ -1645,8 +1689,10 @@ def process_ticker(ticker: str):
                 _run_signal_pipeline(
                     ticker, w["direction"], zl, zh,
                     w["or_high"], w["or_low"], w["signal_type"],
-                    bars_session, w["breakout_idx"]
+                    bars_session, w["breakout_idx"],
+                    spy_regime=spy_regime
                 )
+
                 _state.remove_watching_signal(ticker)
                 _remove_watch_from_db(ticker)
                 return
@@ -1770,8 +1816,10 @@ def process_ticker(ticker: str):
             or_high_ref, or_low_ref, signal_type,
             bars_session, breakout_idx,
             bos_confirmation=bos_confirmation,
-            bos_candle_type=bos_candle_type
+            bos_candle_type=bos_candle_type,
+            spy_regime=spy_regime
         )
+
 
     except Exception as e:
         print(f"process_ticker error {ticker}:", e)
