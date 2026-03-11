@@ -75,6 +75,9 @@ HIST_FEATURE_COLS = [
     'resist_proximity',
     'ticker_win_rate',
     'spy_regime',
+    'conf_score',
+    'fvg_size_pct',
+    'bos_strength',
 ]
 
 # Default decision threshold — overridden by the value stored in the model bundle
