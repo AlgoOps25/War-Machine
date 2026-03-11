@@ -42,6 +42,13 @@ PHASE 1.21 (MAR 10, 2026):
     ThreadPoolExecutor with a 45-second hard timeout per ticker.
     A hung EODHD call, confirmation wait, or DB query can no longer stall
     the entire scan loop. Timed-out tickers are logged and skipped cleanly.
+
+PHASE 1.22 (MAR 10, 2026):
+  - FIX: candle_cache EOD cleanup now runs alongside DB bar cleanup.
+    DB bars: rolling 60-day window (unchanged).
+    Candle cache: rolling 30-day window (matches startup_backfill_with_cache).
+    Also prunes orphaned cache_metadata rows for tickers with no remaining bars.
+    Prevents unbounded candle_cache table growth on long-running deployments.
 """
 import os
 import time
@@ -431,7 +438,7 @@ def start_scanner_loop():
     # STARTUP HEALTH CHECK BANNER
     # ════════════════════════════════════════════════════════════════════════
     print("=" * 60, flush=True)
-    print("WAR MACHINE CFW6 SCANNER v1.21 - STARTUP", flush=True)
+    print("WAR MACHINE CFW6 SCANNER v1.22 - STARTUP", flush=True)
     print("=" * 60, flush=True)
     print("✓ DATA-INGEST    WebSocket starting (tickers TBD)", flush=True)
 
@@ -487,10 +494,11 @@ def start_scanner_loop():
     print("Health HTTP:     ✅ ENABLED (GET /health → 200/503 — Phase 1.19 C5)", flush=True)
     print("Analytics Conn:  ✅ FIXED   (reconnect guard — Phase 1.20 H1)", flush=True)
     print(f"Ticker Watchdog: ✅ ENABLED ({TICKER_TIMEOUT_SECONDS}s hard timeout per ticker — Phase 1.21 P0-3)", flush=True)
+    print("Cache Cleanup:   ✅ ENABLED (30d candle_cache pruning EOD — Phase 1.22)", flush=True)
     print("=" * 60 + "\n", flush=True)
 
     try:
-        send_simple_message("⚔️ WAR MACHINE ONLINE — CFW6 v1.21 | Ticker watchdog | P0-3 fixed")
+        send_simple_message("⚔️ WAR MACHINE ONLINE — CFW6 v1.22 | Cache EOD cleanup | Phase 1.22")
     except Exception as e:
         logger.warning(f"[SCANNER] Discord unavailable: {e}")
 
@@ -793,10 +801,17 @@ def start_scanner_loop():
                     except Exception as e:
                         logger.error(f"[WS-FAILOVER] Stats error: {e}")
 
+                    # ── Phase 1.22: EOD cleanup — DB bars (60d) + candle cache (30d) ──
                     try:
                         data_manager.cleanup_old_bars(days_to_keep=60)
                     except Exception as e:
-                        logger.error(f"[CLEANUP] Error: {e}")
+                        logger.error(f"[CLEANUP] DB bar cleanup error: {e}")
+
+                    try:
+                        from app.data.candle_cache import candle_cache
+                        candle_cache.cleanup_old_cache(days_to_keep=30)
+                    except Exception as e:
+                        logger.error(f"[CLEANUP] Candle cache cleanup error: {e}")
 
                     logger.info("[SIGNALS] Daily reset complete")
                     last_report_day           = current_day

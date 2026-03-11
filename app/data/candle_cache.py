@@ -18,6 +18,14 @@ PHASE C4 FIX (MAR 10, 2026):
     cache-hit logic to trust wrong last_bar_time / bar_count values.
   - FIXED: bar_count now computed via COUNT(*) subquery instead of additive
     accumulation. Re-caching overlapping ranges no longer inflates the count.
+
+PHASE 1.22 FIX (MAR 10, 2026):
+  - FIXED: cleanup_old_cache() now prunes to 30 days (matching the 30-day
+    startup backfill window) instead of 60 days.
+  - FIXED: orphaned cache_metadata rows (tickers with zero remaining bars
+    after a prune) are now deleted in the same transaction, preventing stale
+    metadata from tricking startup cache-hit logic into skipping a full
+    backfill for a ticker whose cache was fully evicted.
 """
 
 import time
@@ -204,8 +212,6 @@ class CandleCache:
             cursor.executemany(upsert_sql, data)
 
             # ── Step 2: recompute true bar_count from DB (not additive) ───────
-            # Using a subquery avoids overcounting when overlapping ranges are
-            # re-cached (the old code did bar_count = bar_count + len(bars)).
             p2 = ph()
             cursor.execute(f"""
                 INSERT INTO cache_metadata
@@ -437,8 +443,18 @@ class CandleCache:
     # CACHE MAINTENANCE
     # =============================================================
 
-    def cleanup_old_cache(self, days_to_keep: int = 60):
-        """Remove cached bars older than days_to_keep."""
+    def cleanup_old_cache(self, days_to_keep: int = 30):
+        """
+        Remove cached bars older than days_to_keep and prune orphaned
+        cache_metadata rows for tickers with no remaining bars.
+
+        Phase 1.22 changes:
+          - Default changed from 60 to 30 days (matches startup_backfill_with_cache).
+          - After the bar DELETE, any cache_metadata row whose ticker+timeframe
+            has zero bars remaining is also deleted in the same transaction.
+            This prevents stale metadata from tricking the cache-hit logic into
+            skipping a full backfill for a ticker whose cache was fully evicted.
+        """
         cutoff = datetime.now(ET) - timedelta(days=days_to_keep)
 
         conn = None
@@ -447,15 +463,28 @@ class CandleCache:
             conn = get_conn(self.db_path)
             cursor = conn.cursor()
 
+            # Step 1: delete old bars
             cursor.execute(f"""
                 DELETE FROM candle_cache
                 WHERE datetime < {p}
             """, (cutoff,))
-
             deleted = cursor.rowcount
+
+            # Step 2: prune orphaned metadata rows
+            # A metadata row is orphaned when no candle_cache rows remain for
+            # that (ticker, timeframe) pair after the prune above.
+            cursor.execute("""
+                DELETE FROM cache_metadata
+                WHERE (ticker, timeframe) NOT IN (
+                    SELECT DISTINCT ticker, timeframe FROM candle_cache
+                )
+            """)
+            orphans = cursor.rowcount
+
             conn.commit()
 
-            print(f"[CACHE] Cleaned up {deleted} bars older than {days_to_keep} days")
+            print(f"[CLEANUP] Removed {deleted} candle cache bars older than {days_to_keep} days"
+                  + (f" | {orphans} orphaned metadata rows pruned" if orphans > 0 else ""))
             return deleted
         finally:
             if conn:
