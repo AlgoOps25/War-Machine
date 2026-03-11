@@ -97,8 +97,10 @@ HIST_FEATURE_COLS = [
     'resist_proximity',
     'ticker_win_rate',
     'spy_regime',
+    'conf_score',
+    'fvg_size_pct',
+    'bos_strength',
 ]
-
 
 # ── Threshold tuning ─────────────────────────────────────────────────────────
 

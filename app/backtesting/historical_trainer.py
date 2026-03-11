@@ -454,12 +454,106 @@ def _mtf_convergence(bars: List[Dict]) -> Tuple[bool, int]:
     return count == 3, count
 
 
-def _detect_fvg(bars: List[Dict]) -> bool:
-    """Detect Fair Value Gap on last 3 bars (bullish or bearish)."""
-    if len(bars) < 3:
-        return False
-    b1, _, b3 = bars[-3], bars[-2], bars[-1]
-    return b1['high'] < b3['low'] or b1['low'] > b3['high']
+def _find_swing_high(bars: List[Dict], lookback: int = 10) -> Optional[float]:
+    """
+    True swing high: bar[i].high > all bars within ±lookback/2 window.
+    Mirrors bos_fvg_engine.find_swing_points() logic exactly.
+    """
+    recent = bars[-(lookback * 3):]
+    swing_high = None
+    half = lookback // 2
+    for i in range(half, len(recent) - half):
+        window = recent[i - half: i + half + 1]
+        bar = recent[i]
+        if bar['high'] == max(b['high'] for b in window):
+            if swing_high is None or bar['high'] > swing_high:
+                swing_high = bar['high']
+    return swing_high
+
+
+def _find_swing_low(bars: List[Dict], lookback: int = 10) -> Optional[float]:
+    """
+    True swing low: bar[i].low < all bars within ±lookback/2 window.
+    """
+    recent = bars[-(lookback * 3):]
+    swing_low = None
+    half = lookback // 2
+    for i in range(half, len(recent) - half):
+        window = recent[i - half: i + half + 1]
+        bar = recent[i]
+        if bar['low'] == min(b['low'] for b in window):
+            if swing_low is None or bar['low'] < swing_low:
+                swing_low = bar['low']
+    return swing_low
+
+
+def _find_fvg(bars: List[Dict], direction: str,
+              bos_idx: int) -> Optional[Dict]:
+    """
+    Scan forward from BOS index for first valid FVG.
+    Bull FVG: bars[i-2].high < bars[i].low  (gap above)
+    Bear FVG: bars[i-2].low  > bars[i].high (gap below)
+    Mirrors bos_fvg_engine.find_fvg_after_bos() exactly.
+    """
+    search_start = max(0, bos_idx - 5)
+    search_bars  = bars[search_start:]
+    for i in range(2, len(search_bars)):
+        c0, c2 = search_bars[i - 2], search_bars[i]
+        if direction == 'bull':
+            gap = c2['low'] - c0['high']
+            if gap > 0:
+                return {
+                    'fvg_high':     c2['low'],
+                    'fvg_low':      c0['high'],
+                    'fvg_mid':      (c2['low'] + c0['high']) / 2,
+                    'fvg_size':     gap,
+                    'fvg_size_pct': gap / c0['high'] if c0['high'] > 0 else 0.0,
+                }
+        elif direction == 'bear':
+            gap = c0['low'] - c2['high']
+            if gap > 0:
+                return {
+                    'fvg_high':     c0['low'],
+                    'fvg_low':      c2['high'],
+                    'fvg_mid':      (c0['low'] + c2['high']) / 2,
+                    'fvg_size':     gap,
+                    'fvg_size_pct': gap / c0['low'] if c0['low'] > 0 else 0.0,
+                }
+    return None
+
+
+def _classify_confirmation_candle(bar: Dict, direction: str) -> float:
+    """
+    Grade the FVG retest candle. Mirrors bos_fvg_engine.classify_confirmation_candle().
+    Returns normalised score: 1.0=A+, 0.85=A, 0.70=A-, 0.0=no confirmation.
+    """
+    o, h, l, c = bar['open'], bar['high'], bar['low'], bar['close']
+    body        = abs(c - o)
+    total_range = h - l
+    if total_range == 0:
+        return 0.0
+
+    if direction == 'bull':
+        lower_wick = (o - l) if c >= o else (c - l)
+        is_green   = c > o
+        is_red     = c < o
+        if is_green and (lower_wick / total_range) < 0.20:
+            return 1.00   # A+
+        if is_green and (lower_wick / total_range) >= 0.30:
+            return 0.85   # A
+        if is_red   and (lower_wick / total_range) >= 0.50:
+            return 0.70   # A-
+    elif direction == 'bear':
+        upper_wick = (h - o) if c <= o else (h - c)
+        is_red     = c < o
+        is_green   = c > o
+        if is_red   and (upper_wick / total_range) < 0.20:
+            return 1.00   # A+
+        if is_red   and (upper_wick / total_range) >= 0.30:
+            return 0.85   # A
+        if is_green and (upper_wick / total_range) >= 0.50:
+            return 0.70   # A-
+    return 0.0
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -475,63 +569,113 @@ def _detect_signal(
     session_bars:  Optional[List[Dict]] = None,
 ) -> Optional[Dict]:
     """
-    Returns a signal dict if a breakout is detected on the last bar, else None.
-    session_bars: per-session slice for _or_range() and is_or_signal (BUG-6/8).
+    BOS + FVG + retest + confirmation entry logic.
+    Mirrors bos_fvg_engine.scan_bos_fvg() exactly so training data
+    reflects actual live entry quality.
+
+    Flow:
+      1. Detect BOS (close > swing high OR close < swing low)
+      2. Find FVG after BOS
+      3. Check previous bar retested FVG zone
+      4. Grade confirmation candle (A+/A/A-)
+      5. Entry = current bar (next bar after confirmation)
     """
     min_bars = MIN_SIGNAL_BARS_DAILY if is_daily else MIN_SIGNAL_BARS
-    if len(bars) < min_bars:
+    if len(bars) < min_bars + 2:
         return None
 
-    latest = bars[-1]
-    rv     = _rvol(bars)
-    resist = _resistance(bars, lookback)
-
-    atr = _atr(bars)
-    breakout_margin = atr * 0.15   # must clear resistance by 15% of ATR
-    if latest['close'] <= resist + breakout_margin or rv < rvol_min:
-
+    # Need at least prev bar (confirmation) + current bar (entry)
+    rv = _rvol(bars)
+    if rv < rvol_min:
         return None
 
-    atr = _atr(bars)
+    # ── Step 1: BOS detection ─────────────────────────────────────────────
+    # Use bars[:-1] to find structure, then check if bars[-1] breaks it
+    structure_bars = bars[:-1]
+    latest         = bars[-1]
+    prev           = bars[-2]
+
+    swing_high = _find_swing_high(structure_bars, lookback=10)
+    swing_low  = _find_swing_low(structure_bars,  lookback=10)
+
+    direction    = None
+    bos_price    = None
+    bos_strength = 0.0
+
+    if swing_high and latest['close'] > swing_high:
+        direction    = 'bull'
+        bos_price    = swing_high
+        bos_strength = (latest['close'] - swing_high) / swing_high
+    elif swing_low and latest['close'] < swing_low:
+        direction    = 'bear'
+        bos_price    = swing_low
+        bos_strength = (swing_low - latest['close']) / swing_low
+
+    if direction is None:
+        return None
+
+    # ── Step 2: Find FVG after BOS ────────────────────────────────────────
+    bos_idx = len(bars) - 1
+    fvg     = _find_fvg(bars, direction, bos_idx)
+    if fvg is None:
+        return None
+
+    # ── Step 3: Check previous bar retested FVG zone ─────────────────────
+    price_in_fvg = False
+    if direction == 'bull':
+        if prev['low'] <= fvg['fvg_high'] and prev['close'] >= fvg['fvg_low']:
+            price_in_fvg = True
+    elif direction == 'bear':
+        if prev['high'] >= fvg['fvg_low'] and prev['close'] <= fvg['fvg_high']:
+            price_in_fvg = True
+
+    if not price_in_fvg:
+        return None
+
+    # ── Step 4: Grade confirmation candle (prev bar) ──────────────────────
+    conf_score = _classify_confirmation_candle(prev, direction)
+    if conf_score == 0.0:
+        return None   # No valid confirmation — skip
+
+    # ── Step 5: Entry = current bar (next bar after confirmation) ─────────
+    entry = latest['open']   # Enter at open of bar after confirmation
+    atr   = _atr(bars)
     if atr == 0:
         return None
 
-    entry     = latest['close']
-    stop_loss = entry - atr * STOP_MULT
-    target    = entry + atr * TARGET_MULT
+    # FVG-based stop (mirrors bos_fvg_engine.compute_0dte_stops_and_targets)
+    fvg_size = fvg['fvg_size']
+    buffer   = fvg_size * 0.20
+    if direction == 'bull':
+        stop_loss = fvg['fvg_low'] - buffer
+    else:
+        stop_loss = fvg['fvg_high'] + buffer
+
+    risk   = abs(entry - stop_loss)
+    target = (entry + risk * 1.5) if direction == 'bull' else (entry - risk * 1.5)
+
+    # ── Compute remaining features ────────────────────────────────────────
     adx       = _adx_approx(bars)
     vwap_dist = _vwap_distance(bars)
-    regime    = _regime(spy_bars) if spy_bars else 'NEUTRAL'
     hour      = _parse_hour(latest['timestamp'])
-    atr_pct   = atr / entry
-
-    sess         = session_bars if session_bars else bars
-    or_range_pct = _or_range(sess)  # BUG-6
-
-    confidence = min(0.5 + (rv - rvol_min) * 0.05 + adx * 0.003, 0.95)
-    score      = int(confidence * 100)
-
-    mtf_conv, mtf_count = _mtf_convergence(bars)  # BUG-10/11
-    is_or = len(sess) <= OR_WINDOW_BARS            # BUG-8
-    pattern = 'FVG' if _detect_fvg(bars) else 'BOS'
-
-    # ── BUG-11: new outcome-correlated features ───────────────────────────
-    # vwap_side: +1 above VWAP, -1 below. Breakout above VWAP = tape confirmation.
-    vwap_side = 1.0 if vwap_dist >= 0 else -1.0
-
-    # atr_ratio: current ATR vs its own 20-bar average.
-    # >1 = expanding volatility (trend day); <1 = contracting (chop).
+    atr_pct   = atr / entry if entry > 0 else 0.0
     avg_atr   = _atr_avg(bars, period=14, lookback=20)
     atr_ratio = (atr / avg_atr) if avg_atr > 0 else 1.0
+    vwap_side = 1.0 if vwap_dist >= 0 else -1.0
+    tb        = _time_bucket(hour)
 
-    # time_bucket: 0=open / 1=mid / 2=close session period.
-    tb = _time_bucket(hour)
+    sess         = session_bars if session_bars else bars
+    or_range_pct = _or_range(sess)
+    is_or        = len(sess) <= OR_WINDOW_BARS
 
-    # resist_proximity: how far above resistance did price break?
-    # decisive breakout (>0.5 ATR) vs marginal (0-0.2 ATR).
-    resist_prox = min((entry - resist) / atr, 3.0) / 3.0 if atr > 0 else 0.0
+    resist_prox  = min(bos_strength * 100, 3.0) / 3.0   # reuse bos_strength as breakout decisiveness
 
-        # spy_regime: -1=down / 0=flat / 1=up  (EMA20 vs EMA50 + slope)
+    mtf_conv, mtf_count = _mtf_convergence(bars)
+
+    confidence = min(0.5 + (rv - rvol_min) * 0.05 + adx * 0.003 + conf_score * 0.1, 0.95)
+    score      = int(confidence * 100)
+
+    # SPY EMA regime
     spy_regime_val = 0.0
     if spy_bars and len(spy_bars) >= 50:
         spy_closes = [b['close'] for b in spy_bars]
@@ -541,8 +685,8 @@ def _detect_signal(
             for v in vals[1:]:
                 r.append(v * k + r[-1] * (1 - k))
             return r
-        e20 = _ema_local(spy_closes, 20)
-        e50 = _ema_local(spy_closes, 50)
+        e20   = _ema_local(spy_closes, 20)
+        e50   = _ema_local(spy_closes, 50)
         slope = e20[-1] - e20[-6] if len(e20) >= 6 else 0
         if e20[-1] > e50[-1] and slope > 0:
             spy_regime_val = 1.0
@@ -555,6 +699,7 @@ def _detect_signal(
         'target':                target,
         'bar_index':             len(bars) - 1,
         'timestamp':             latest['timestamp'],
+        'direction':             direction,
         'confidence':            confidence,
         'rvol':                  rv,
         'score':                 score,
@@ -570,11 +715,11 @@ def _detect_signal(
         'hour':                  hour,
         'time_bucket':           tb,
         'resist_proximity':      resist_prox,
+        'conf_score':            conf_score,          # NEW: candle grade
+        'fvg_size_pct':          fvg['fvg_size_pct'], # NEW: FVG quality
+        'bos_strength':          bos_strength,        # NEW: breakout decisiveness
         'spy_regime':            spy_regime_val,
-        'regime':                regime,
-        'pattern':               pattern,
     }
-
 
 def _parse_hour(ts) -> int:
     """Extract UTC hour from EODHD datetime string or epoch int."""
@@ -663,6 +808,9 @@ FEATURE_NAMES = [
     'resist_proximity',
     'ticker_win_rate',
     'spy_regime',
+    'conf_score',
+    'fvg_size_pct',
+    'bos_strength',
 ]
 
 
@@ -686,8 +834,10 @@ def _signal_to_features(sig: Dict) -> List[float]:
         # new features (neutral fallbacks so current dataset still works)
         sig.get('ticker_win_rate', 0.40),
         sig.get('spy_regime', 0.0),
+        sig.get('conf_score', 0.0),
+        min(sig.get('fvg_size_pct', 0.0), 0.02) / 0.02,
+        min(sig.get('bos_strength', 0.0), 0.01) / 0.01,
     ]
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Main class
