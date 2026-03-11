@@ -22,14 +22,18 @@ Model:
 - Exports to ml_model.joblib for production use
 
 Usage:
-    from app.ml.ml_trainer import train_model, should_retrain
-    
-    # Check if enough data for training
+    from app.ml.ml_trainer import train_model, train_from_dataframe, should_retrain
+
+    # Live DB path (requires signal_outcomes table)
     if should_retrain():
         model, metrics = train_model()
-        print(f"Model accuracy: {metrics['accuracy']:.2%}")
-        print(f"Precision: {metrics['precision']:.2%}")
-        print(f"Recall: {metrics['recall']:.2%}")
+
+    # Historical pre-training path (from HistoricalMLTrainer dataset)
+    from app.backtesting.historical_trainer import HistoricalMLTrainer
+    trainer = HistoricalMLTrainer()
+    df = trainer.build_dataset(['AAPL', 'TSLA'], months_back=12)
+    train_df, val_df = trainer.walk_forward_split(df)
+    model, metrics = train_from_dataframe(train_df, val_df)
 """
 import logging
 import os
@@ -48,6 +52,164 @@ logger = logging.getLogger(__name__)
 MODEL_PATH = os.path.join(os.path.dirname(__file__), '..', '..', 'ml_model.joblib')
 MIN_TRAINING_SAMPLES = 100  # Minimum signals needed for training
 RETRAIN_THRESHOLD = 50  # Retrain when 50+ new signals since last training
+
+# Feature columns produced by HistoricalMLTrainer (FEATURE_NAMES)
+HIST_FEATURE_COLS = [
+    'confidence', 'grade_norm', 'rvol', 'score_norm',
+    'ivr', 'gex_multiplier', 'uoa_multiplier', 'ivr_multiplier',
+    'mtf_boost', 'mtf_convergence', 'mtf_convergence_count',
+    'vwap_distance', 'or_range_pct', 'adx_norm', 'atr_pct',
+    'is_or_signal', 'is_bull', 'hour_norm',
+    'rr_ratio_norm', 'explosive_mover',
+]
+
+
+def train_from_dataframe(
+    train_df:   pd.DataFrame,
+    val_df:     Optional[pd.DataFrame] = None,
+    model_path: Optional[str] = None,
+    n_estimators: int = 200,
+) -> Tuple[Optional[object], dict]:
+    """
+    Train (and optionally validate) an ML model from a pre-built labelled DataFrame.
+
+    Accepts the output of HistoricalMLTrainer.build_dataset() / walk_forward_split().
+    Uses the same Random Forest pipeline as train_model() so the saved bundle is
+    compatible with MLSignalScorerV2 / get_model_info().
+
+    Parameters
+    ----------
+    train_df : pd.DataFrame
+        Training rows.  Must contain 'outcome_binary' label column and the
+        feature columns listed in HIST_FEATURE_COLS.
+    val_df : pd.DataFrame, optional
+        Hold-out validation rows (same schema as train_df).
+        If None, a 20% random split is used from train_df.
+    model_path : str, optional
+        Where to save the .pkl bundle.  Defaults to models/ml_model_historical.pkl
+        next to the project root.
+    n_estimators : int
+        Number of Random Forest trees.
+
+    Returns
+    -------
+    (model, metrics)  where metrics contains accuracy, precision, recall,
+    cv_mean, cv_std, confusion_matrix, feature_importance, n_train, n_val.
+    """
+    logger.info("[ML-TRAIN-DF] Starting train_from_dataframe()")
+
+    # ── 1. Validate columns ──────────────────────────────────────────────────────────
+    available_feats = [c for c in HIST_FEATURE_COLS if c in train_df.columns]
+    if not available_feats:
+        msg = ("train_df has none of the expected feature columns. "
+               f"Expected: {HIST_FEATURE_COLS[:5]}...  Got: {list(train_df.columns)[:5]}...")
+        logger.error(f"[ML-TRAIN-DF] {msg}")
+        return None, {'error': msg}
+
+    label_col = 'outcome_binary'
+    if label_col not in train_df.columns:
+        msg = f"train_df missing label column '{label_col}'"
+        logger.error(f"[ML-TRAIN-DF] {msg}")
+        return None, {'error': msg}
+
+    # Fill NaN with column medians
+    train_df = train_df.copy()
+    for col in available_feats:
+        train_df[col].fillna(train_df[col].median(), inplace=True)
+
+    X_train = train_df[available_feats].values
+    y_train = train_df[label_col].values
+
+    logger.info(f"[ML-TRAIN-DF] Train: {len(X_train)} samples, "
+                f"{len(available_feats)} features  "
+                f"(WIN={y_train.sum()}, LOSS={len(y_train)-y_train.sum()})")
+
+    # ── 2. Validation set ──────────────────────────────────────────────────────────
+    if val_df is not None and not val_df.empty:
+        val_df = val_df.copy()
+        for col in available_feats:
+            if col in val_df.columns:
+                val_df[col].fillna(train_df[available_feats].median()[col], inplace=True)
+        X_val = val_df[available_feats].values
+        y_val = val_df[label_col].values
+    else:
+        # Fallback: random 20% split from training data
+        X_train, X_val, y_train, y_val = train_test_split(
+            X_train, y_train, test_size=0.2, random_state=42, stratify=y_train
+        )
+
+    logger.info(f"[ML-TRAIN-DF] Val:   {len(X_val)} samples")
+
+    # ── 3. Train Random Forest ────────────────────────────────────────────────────────
+    try:
+        model = RandomForestClassifier(
+            n_estimators   = n_estimators,
+            max_depth      = 10,
+            min_samples_split = 5,
+            min_samples_leaf  = 2,
+            class_weight   = 'balanced',   # handles WIN/LOSS imbalance
+            random_state   = 42,
+            n_jobs         = -1,
+        )
+        model.fit(X_train, y_train)
+        logger.info("[ML-TRAIN-DF] ✅ Model training complete")
+    except Exception as exc:
+        logger.error(f"[ML-TRAIN-DF] Training failed: {exc}")
+        return None, {'error': str(exc)}
+
+    # ── 4. Evaluate ──────────────────────────────────────────────────────────────
+    y_pred    = model.predict(X_val)
+    accuracy  = accuracy_score(y_val, y_pred)
+    precision = precision_score(y_val, y_pred, zero_division=0)
+    recall    = recall_score(y_val, y_pred, zero_division=0)
+    cm        = confusion_matrix(y_val, y_pred)
+
+    # Cross-val on combined train+val to avoid over-penalising small sets
+    X_all = np.vstack([X_train, X_val])
+    y_all = np.concatenate([y_train, y_val])
+    n_splits  = min(5, max(2, len(X_all) // 20))
+    cv_scores = cross_val_score(model, X_all, y_all, cv=n_splits, scoring='accuracy')
+
+    feat_imp = dict(zip(available_feats, model.feature_importances_))
+    feat_imp_sorted = dict(sorted(feat_imp.items(), key=lambda x: x[1], reverse=True))
+
+    metrics = {
+        'accuracy':          accuracy,
+        'precision':         precision,
+        'recall':            recall,
+        'cv_mean':           cv_scores.mean(),
+        'cv_std':            cv_scores.std(),
+        'confusion_matrix':  cm.tolist(),
+        'feature_importance': feat_imp_sorted,
+        'feature_names':     available_feats,
+        'n_train':           len(X_train),
+        'n_val':             len(X_val),
+        'trained_at':        datetime.now().isoformat(),
+        'source':            'historical_pretraining',
+    }
+
+    logger.info(f"[ML-TRAIN-DF] Accuracy={accuracy:.2%}  "
+                f"Precision={precision:.2%}  Recall={recall:.2%}  "
+                f"CV={cv_scores.mean():.2%}(±{cv_scores.std():.2%})")
+
+    # ── 5. Save model ─────────────────────────────────────────────────────────────
+    save_path = model_path or MODEL_PATH
+    try:
+        import pickle
+        os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
+        bundle = {
+            'model':         model,
+            'feature_names': available_feats,
+            'metrics':       metrics,
+            'trained_at':    metrics['trained_at'],
+        }
+        with open(save_path, 'wb') as f:
+            pickle.dump(bundle, f)
+        logger.info(f"[ML-TRAIN-DF] ✅ Model saved → {save_path}")
+    except Exception as exc:
+        logger.warning(f"[ML-TRAIN-DF] Save failed (model still returned): {exc}")
+
+    return model, metrics
 
 
 def train_model(
@@ -68,9 +230,9 @@ def train_model(
     """
     logger.info("[ML-TRAIN] Starting model training...")
     
-    # ════════════════════════════════════════════════════════════════════════════════
+    # ═════════════════════════════════════════════════════════════════════════════════
     # STEP 1: FETCH TRAINING DATA FROM DATABASE
-    # ════════════════════════════════════════════════════════════════════════════════
+    # ═════════════════════════════════════════════════════════════════════════════════
     try:
         df = _fetch_training_data()
         
@@ -87,9 +249,9 @@ def train_model(
         logger.error(f"[ML-TRAIN] Failed to fetch training data: {e}")
         return None, {'error': str(e)}
     
-    # ════════════════════════════════════════════════════════════════════════════════
+    # ═════════════════════════════════════════════════════════════════════════════════
     # STEP 2: PREPARE FEATURES AND LABELS
-    # ════════════════════════════════════════════════════════════════════════════════
+    # ═════════════════════════════════════════════════════════════════════════════════
     try:
         X, y, feature_names = _prepare_features(df)
         
@@ -103,9 +265,9 @@ def train_model(
         logger.error(f"[ML-TRAIN] Feature preparation error: {e}")
         return None, {'error': str(e)}
     
-    # ════════════════════════════════════════════════════════════════════════════════
+    # ═════════════════════════════════════════════════════════════════════════════════
     # STEP 3: TRAIN/TEST SPLIT
-    # ════════════════════════════════════════════════════════════════════════════════
+    # ═════════════════════════════════════════════════════════════════════════════════
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=test_size, random_state=42, stratify=y
     )
@@ -115,9 +277,9 @@ def train_model(
         f"(Wins: {sum(y_train)}, Losses: {len(y_train) - sum(y_train)})"
     )
     
-    # ════════════════════════════════════════════════════════════════════════════════
+    # ═════════════════════════════════════════════════════════════════════════════════
     # STEP 4: TRAIN RANDOM FOREST MODEL
-    # ════════════════════════════════════════════════════════════════════════════════
+    # ═════════════════════════════════════════════════════════════════════════════════
     try:
         model = RandomForestClassifier(
             n_estimators=n_estimators,
@@ -135,9 +297,9 @@ def train_model(
         logger.error(f"[ML-TRAIN] Model training failed: {e}")
         return None, {'error': str(e)}
     
-    # ════════════════════════════════════════════════════════════════════════════════
+    # ═════════════════════════════════════════════════════════════════════════════════
     # STEP 5: EVALUATE MODEL
-    # ════════════════════════════════════════════════════════════════════════════════
+    # ═════════════════════════════════════════════════════════════════════════════════
     try:
         # Predictions on test set
         y_pred = model.predict(X_test)
@@ -187,9 +349,9 @@ def train_model(
         logger.error(f"[ML-TRAIN] Model evaluation failed: {e}")
         return None, {'error': str(e)}
     
-    # ════════════════════════════════════════════════════════════════════════════════
+    # ═════════════════════════════════════════════════════════════════════════════════
     # STEP 6: SAVE MODEL
-    # ════════════════════════════════════════════════════════════════════════════════
+    # ═════════════════════════════════════════════════════════════════════════════════
     try:
         # Save model and metadata
         model_data = {
