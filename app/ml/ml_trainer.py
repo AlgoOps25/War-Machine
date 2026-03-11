@@ -10,10 +10,10 @@ Two entry points:
 
 Key improvements (Mar 2026)
 ---------------------------
-* Optimal threshold tuning: precision_recall_curve finds the probability
-  cut-off that maximises F1 on the held-out val set.  Stored in the
-  model bundle so MLSignalScorerV2 uses it instead of the default 0.50.
-  Raises precision from ~36% → 50%+ without dropping recall significantly.
+* Precision-first threshold tuning: sweeps the full probability curve and
+  picks the highest threshold (most selective) where recall >= 30%.  This
+  raises precision from ~36% → 50%+ while keeping enough signals to trade.
+  Stored in the model bundle so MLSignalScorerV2 uses it at score time.
 * Pandas CoW fix: all inplace fillna() calls replaced with
   df[col] = df[col].fillna(val) to suppress DeprecationWarning.
 * class_weight='balanced' retained — handles WIN/LOSS imbalance.
@@ -43,6 +43,7 @@ from sklearn.model_selection import train_test_split, cross_val_score
 from sklearn.metrics import (
     accuracy_score, precision_score, recall_score,
     confusion_matrix, precision_recall_curve, f1_score,
+    fbeta_score,
 )
 
 logger = logging.getLogger(__name__)
@@ -51,7 +52,11 @@ logger = logging.getLogger(__name__)
 MODEL_PATH           = os.path.join(os.path.dirname(__file__), '..', '..', 'ml_model.joblib')
 MIN_TRAINING_SAMPLES = 100
 RETRAIN_THRESHOLD    = 50
-MODEL_VERSION        = 'historical_v1'
+MODEL_VERSION        = 'historical_v2'
+
+# Minimum recall we are willing to accept when pushing threshold up.
+# Below this floor the model would pass too few signals to be useful.
+MIN_RECALL_FLOOR = 0.30
 
 # Feature columns produced by HistoricalMLTrainer
 HIST_FEATURE_COLS = [
@@ -66,36 +71,82 @@ HIST_FEATURE_COLS = [
 
 # ── Threshold tuning ─────────────────────────────────────────────────────────
 
-def _find_optimal_threshold(model, X_val: np.ndarray, y_val: np.ndarray) -> float:
+def _find_optimal_threshold(
+    model,
+    X_val: np.ndarray,
+    y_val: np.ndarray,
+    min_recall: float = MIN_RECALL_FLOOR,
+) -> float:
     """
-    Find the probability threshold that maximises F1 on the validation set.
+    Find the probability threshold that maximises precision on the val set
+    subject to a minimum recall floor.
 
-    The default threshold of 0.50 is tuned for balanced accuracy but
-    produces low precision when the WIN rate is ~42% (our case).
-    Sweeping thresholds via precision_recall_curve and picking the point
-    of maximum F1 raises precision from ~36% to 50%+ with minimal recall cost.
+    WHY precision-first:
+      A false positive (calling WIN on a future LOSS) costs real money.
+      Pure F1 maximisation pushes the threshold *down* (more aggressive),
+      which hurts precision.  We instead find the highest threshold where
+      recall is still >= min_recall, keeping enough live signals while
+      filtering the weakest WIN predictions.
 
-    Returns:
-        float: optimal probability threshold in [0.30, 0.80]
+    Three-pass strategy
+    -------------------
+    Pass 1 — Constrained:  max precision where recall >= min_recall
+    Pass 2 — Fallback:     max F-beta (beta=0.5, precision-weighted)
+                           if pass 1 yields no valid candidates
+    Pass 3 — Hard fallback: 0.50 default
+
+    Result is clamped to [0.40, 0.80] to avoid degenerate extremes.
+
+    Returns
+    -------
+    float: optimal probability threshold
     """
     try:
         probs = model.predict_proba(X_val)[:, 1]
+        # precision_recall_curve returns arrays sorted by descending threshold
+        # precisions[i] / recalls[i] correspond to thresholds[i]
+        # NOTE: len(thresholds) == len(precisions) - 1  (sklearn convention)
         precisions, recalls, thresholds = precision_recall_curve(y_val, probs)
-        # Avoid div-by-zero
-        denom = precisions + recalls
-        denom = np.where(denom == 0, 1e-9, denom)
-        f1_scores = 2 * precisions * recalls / denom
-        # thresholds has one fewer element than precisions/recalls
-        best_idx   = np.argmax(f1_scores[:-1])
-        best_thresh = float(thresholds[best_idx])
-        best_f1     = float(f1_scores[best_idx])
-        # Clamp to a sensible range to avoid degenerate extremes
-        best_thresh = max(0.30, min(0.80, best_thresh))
-        logger.info(
-            f"[ML-TRAIN-DF] Optimal threshold: {best_thresh:.3f}  "
-            f"(F1={best_f1:.3f} at that cut-off)"
-        )
+
+        # Work only on the threshold-indexed portion (drop the last point)
+        prec_t = precisions[:-1]
+        rec_t  = recalls[:-1]
+
+        # ── Pass 1: max precision with recall >= floor ───────────────────────
+        valid_mask = rec_t >= min_recall
+        if valid_mask.any():
+            best_idx    = np.argmax(prec_t[valid_mask])
+            # Map back to the full index
+            best_idx_full = np.where(valid_mask)[0][best_idx]
+            best_thresh   = float(thresholds[best_idx_full])
+            best_prec     = float(prec_t[best_idx_full])
+            best_rec      = float(rec_t[best_idx_full])
+            logger.info(
+                f"[ML-TRAIN-DF] Threshold (pass 1 — max precision, recall≥{min_recall:.0%}): "
+                f"{best_thresh:.3f}  Prec={best_prec:.2%}  Rec={best_rec:.2%}"
+            )
+        else:
+            # ── Pass 2: precision-weighted F-beta (beta=0.5) ─────────────────
+            logger.warning(
+                f"[ML-TRAIN-DF] No threshold with recall≥{min_recall:.0%} — "
+                f"falling back to F-beta (beta=0.5)"
+            )
+            denom      = (0.5**2 * prec_t) + rec_t
+            denom      = np.where(denom == 0, 1e-9, denom)
+            fbeta      = (1 + 0.5**2) * prec_t * rec_t / denom
+            best_idx   = np.argmax(fbeta)
+            best_thresh = float(thresholds[best_idx])
+            best_prec   = float(prec_t[best_idx])
+            best_rec    = float(rec_t[best_idx])
+            logger.info(
+                f"[ML-TRAIN-DF] Threshold (pass 2 — F0.5): "
+                f"{best_thresh:.3f}  Prec={best_prec:.2%}  Rec={best_rec:.2%}"
+            )
+
+        # Clamp to [0.40, 0.80]
+        best_thresh = max(0.40, min(0.80, best_thresh))
         return best_thresh
+
     except Exception as exc:
         logger.warning(f"[ML-TRAIN-DF] Threshold tuning failed ({exc}), using 0.50")
         return 0.50
@@ -155,7 +206,7 @@ def train_from_dataframe(
         logger.error(f"[ML-TRAIN-DF] {msg}")
         return None, {'error': msg}
 
-    # ── 2. Fill NaN (CoW-safe: no inplace on slice) ──────────────────────────
+    # ── 2. Fill NaN (CoW-safe) ───────────────────────────────────────────────
     train_df = train_df.copy()
     train_medians = {col: train_df[col].median() for col in available_feats}
     for col in available_feats:
@@ -175,7 +226,6 @@ def train_from_dataframe(
         val_df = val_df.copy()
         for col in available_feats:
             if col in val_df.columns:
-                # CoW-safe fillna using train median for unseen val data
                 val_df[col] = val_df[col].fillna(train_medians.get(col, 0.0))
         X_val = val_df[available_feats].values
         y_val = val_df[label_col].values
@@ -205,18 +255,18 @@ def train_from_dataframe(
 
     # ── 5. Evaluate at default threshold (0.50) ──────────────────────────────
     y_pred_default = model.predict(X_val)
-    acc_default   = accuracy_score(y_val, y_pred_default)
-    prec_default  = precision_score(y_val, y_pred_default, zero_division=0)
-    rec_default   = recall_score(y_val, y_pred_default, zero_division=0)
+    acc_default    = accuracy_score(y_val, y_pred_default)
+    prec_default   = precision_score(y_val, y_pred_default, zero_division=0)
+    rec_default    = recall_score(y_val, y_pred_default, zero_division=0)
 
-    # ── 6. Find optimal threshold & re-evaluate ──────────────────────────────
-    opt_threshold  = _find_optimal_threshold(model, X_val, y_val)
-    y_pred_opt     = predict_with_threshold(model, X_val, opt_threshold)
-    accuracy       = accuracy_score(y_val, y_pred_opt)
-    precision      = precision_score(y_val, y_pred_opt, zero_division=0)
-    recall         = recall_score(y_val, y_pred_opt, zero_division=0)
-    f1             = f1_score(y_val, y_pred_opt, zero_division=0)
-    cm             = confusion_matrix(y_val, y_pred_opt)
+    # ── 6. Find optimal (precision-first) threshold & re-evaluate ───────────
+    opt_threshold = _find_optimal_threshold(model, X_val, y_val)
+    y_pred_opt    = predict_with_threshold(model, X_val, opt_threshold)
+    accuracy      = accuracy_score(y_val, y_pred_opt)
+    precision     = precision_score(y_val, y_pred_opt, zero_division=0)
+    recall        = recall_score(y_val, y_pred_opt, zero_division=0)
+    f1            = f1_score(y_val, y_pred_opt, zero_division=0)
+    cm            = confusion_matrix(y_val, y_pred_opt)
 
     # ── 7. Cross-validation ──────────────────────────────────────────────────
     X_all     = np.vstack([X_train, X_val])
@@ -228,37 +278,38 @@ def train_from_dataframe(
     feat_imp_sorted = dict(sorted(feat_imp.items(), key=lambda x: x[1], reverse=True))
 
     metrics = {
-        # Optimal-threshold metrics (used for reporting)
-        'accuracy':          accuracy,
-        'precision':         precision,
-        'recall':            recall,
-        'f1':                f1,
-        'threshold':         opt_threshold,
-        # Default-threshold metrics (for comparison)
-        'accuracy_default':  acc_default,
-        'precision_default': prec_default,
-        'recall_default':    rec_default,
+        # Optimal-threshold metrics (primary reporting)
+        'accuracy':           accuracy,
+        'precision':          precision,
+        'recall':             recall,
+        'f1':                 f1,
+        'threshold':          opt_threshold,
+        # Default-threshold metrics (comparison)
+        'accuracy_default':   acc_default,
+        'precision_default':  prec_default,
+        'recall_default':     rec_default,
         # Cross-val
-        'cv_mean':           float(cv_scores.mean()),
-        'cv_std':            float(cv_scores.std()),
+        'cv_mean':            float(cv_scores.mean()),
+        'cv_std':             float(cv_scores.std()),
         # Meta
-        'confusion_matrix':  cm.tolist(),
+        'confusion_matrix':   cm.tolist(),
         'feature_importance': feat_imp_sorted,
-        'feature_names':     available_feats,
-        'n_train':           len(X_train),
-        'n_val':             len(X_val),
-        'trained_at':        datetime.now().isoformat(),
-        'source':            'historical_pretraining',
-        'model_version':     MODEL_VERSION,
+        'feature_names':      available_feats,
+        'n_train':            len(X_train),
+        'n_val':              len(X_val),
+        'trained_at':         datetime.now().isoformat(),
+        'source':             'historical_pretraining',
+        'model_version':      MODEL_VERSION,
     }
 
     logger.info(
-        f"[ML-TRAIN-DF] Accuracy={accuracy:.2%}  "
-        f"Precision={precision:.2%}  Recall={recall:.2%}  F1={f1:.2%}  "
+        f"[ML-TRAIN-DF] @thresh={opt_threshold:.3f}  "
+        f"Accuracy={accuracy:.2%}  Precision={precision:.2%}  "
+        f"Recall={recall:.2%}  F1={f1:.2%}  "
         f"CV={cv_scores.mean():.2%}(\u00b1{cv_scores.std():.2%})"
     )
     logger.info(
-        f"[ML-TRAIN-DF] Default threshold (0.50): "
+        f"[ML-TRAIN-DF] Default @0.50: "
         f"Acc={acc_default:.2%}  Prec={prec_default:.2%}  Rec={rec_default:.2%}"
     )
 
@@ -274,12 +325,12 @@ def train_from_dataframe(
             'feature_names':  available_feats,
             'metrics':        metrics,
             'trained_at':     metrics['trained_at'],
-            'threshold':      opt_threshold,       # MLSignalScorerV2 reads this
+            'threshold':      opt_threshold,
             'model_version':  MODEL_VERSION,
         }
         with open(save_path, 'wb') as f:
             pickle.dump(bundle, f)
-        logger.info(f"[ML-TRAIN-DF] ✅ Model saved \u2192 {save_path}")
+        logger.info(f"[ML-TRAIN-DF] ✅ Model saved → {save_path}")
     except Exception as exc:
         logger.warning(f"[ML-TRAIN-DF] Save failed (model still returned): {exc}")
 
@@ -370,7 +421,7 @@ def train_model(
 
     logger.info(
         f"[ML-TRAIN] Acc={accuracy:.2%}  Prec={precision:.2%}  "
-        f"Rec={recall:.2%}  CV={cv_scores.mean():.2%}  Thresh={opt_threshold:.2f}"
+        f"Rec={recall:.2%}  CV={cv_scores.mean():.2%}  Thresh={opt_threshold:.3f}"
     )
 
     try:
@@ -383,7 +434,7 @@ def train_model(
             'model_version': MODEL_VERSION,
         }
         joblib.dump(model_data, MODEL_PATH)
-        logger.info(f"[ML-TRAIN] ✅ Model saved \u2192 {MODEL_PATH}")
+        logger.info(f"[ML-TRAIN] ✅ Model saved → {MODEL_PATH}")
     except Exception as exc:
         logger.error(f"[ML-TRAIN] Save failed: {exc}")
 
@@ -454,7 +505,6 @@ def _prepare_features(df: pd.DataFrame) -> Tuple[Optional[np.ndarray], Optional[
         for col in features:
             if col in df.columns:
                 if df[col].dtype in ['float64', 'int64']:
-                    # CoW-safe
                     df[col] = df[col].fillna(df[col].median())
                 else:
                     df[col] = df[col].fillna(0)
@@ -484,8 +534,8 @@ def should_retrain() -> bool:
         df = _fetch_training_data()
         if df is None:
             return False
-        n_at_train   = model_data['metrics']['n_train'] + model_data['metrics'].get('n_val', 0)
-        new_samples  = len(df) - n_at_train
+        n_at_train  = model_data['metrics']['n_train'] + model_data['metrics'].get('n_val', 0)
+        new_samples = len(df) - n_at_train
         if new_samples >= RETRAIN_THRESHOLD:
             logger.info(f"[ML-TRAIN] {new_samples} new samples — retraining recommended")
             return True
