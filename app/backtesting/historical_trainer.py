@@ -11,7 +11,7 @@ Design principles
 -----------------
 * No look-ahead bias  — labelling only uses bars strictly AFTER the entry bar.
 * Walk-forward splits — train on early period, validate on recent period.
-* Feature parity     — 11-feature vector matches MLSignalScorerV2._build_features().
+* Feature parity     — 15-feature vector matches MLSignalScorerV2._build_features().
 * Self-contained     — no live DB required; all data comes from EODHD REST API.
 
 Label quality fixes (Mar 2026)
@@ -32,11 +32,11 @@ Feature audit fixes (Mar 2026)
     These were hardcoded placeholders that taught the model nothing.
 * Added real _mtf_convergence() helper: computes 15m and 60m trend alignment
   from existing 5m bar data — no extra API calls required.
-* is_or_signal: now True when breakout bar falls within first 12 bars of
-  session (first 60 min on 5m data) instead of always False.
+* is_or_signal: now True when breakout bar falls within first OR_WINDOW_BARS
+  bars of session (first 60 min on 5m data).
 * pattern: now 'FVG' when a Fair Value Gap exists on prior 3 bars, else 'BOS'.
   Adds real pattern variety to dataset instead of 100% BOS.
-* Feature count: 20 → 11 real, discriminative features.
+* Feature count: 20 → 15 real, discriminative features.
 
 Bug fixes applied
 -----------------
@@ -48,6 +48,14 @@ Bug fixes applied
          generate false breakout signals that all label as LOSS and destroy
          model accuracy. Now dropped in _eodhd_intraday() via market-hours gate.
 * BUG 5: _rvol() and _vwap_distance() guard against zero-volume bars in averages.
+* BUG 6: _or_range() was called with the full growing window (bars[:or_bars]
+         from bar 0 of the 4-month array). Now receives session_bars (only
+         bars since today's open) so OR high/low reflects the actual session.
+* BUG 7: _mtf_convergence() was resampling 3000+ bars → SMA across the entire
+         history → all trend flags False → mtf_boost=0.0 every signal.
+         Now slices only last MTF_LOOKBACK_BARS (180) 5m bars before resampling.
+* BUG 8: is_or_signal used absolute bar-array index offset which was always
+         large. Now uses len(session_bars) <= OR_WINDOW_BARS (bars into session).
 """
 from __future__ import annotations
 
@@ -88,6 +96,11 @@ RVOL_MIN_DAILY        = 1.3   # lower RVOL threshold for daily bars
 
 # OR window: first 12 bars of session = first 60 min on 5m data (09:30-10:30 ET)
 OR_WINDOW_BARS = 12
+
+# BUG-7 FIX: MTF resampling lookback — only use last N 5m bars before resampling.
+# 180 bars = ~15 hours of market data (~3 full sessions), enough for meaningful
+# 15m (60-bar) and 60m (15-bar) synthetic candles without month-old history.
+MTF_LOOKBACK_BARS = 180
 
 # Market hours in UTC: 09:30–16:00 ET = 14:30–21:00 UTC
 MARKET_OPEN_UTC_H  = 14
@@ -356,12 +369,18 @@ def _vwap_distance(bars: List[Dict]) -> float:
     return (bars[-1]['close'] - vwap) / vwap if vwap > 0 else 0.0
 
 
-def _or_range(bars: List[Dict], or_bars: int = 6) -> float:
+def _or_range(session_bars: List[Dict], or_bars: int = 6) -> float:
     """
     Opening Range as % of price: high-low of first `or_bars` bars of session.
     Uses first 6 bars = first 30 minutes on 5m data (09:30–10:00 ET).
+
+    BUG-6 FIX: Previously called with the full growing bar window, so
+    bars[:or_bars] always referenced the very first bars of the 4-month
+    array — giving the same static value for every signal in the dataset.
+    Now receives session_bars (only bars since today's session open),
+    so bars[:or_bars] is always the actual opening range of that day.
     """
-    window = bars[:or_bars] if len(bars) >= or_bars else bars
+    window = session_bars[:or_bars] if len(session_bars) >= or_bars else session_bars
     if not window:
         return 0.01
     hi = max(b['high'] for b in window)
@@ -403,15 +422,24 @@ def _mtf_convergence(bars: List[Dict]) -> Tuple[float, bool, int]:
     - 5m  trend : close > SMA(10) on 5m bars  (~50 min lookback)
     - 15m trend : close > SMA(5)  on synthetic 15m bars (~75 min)
     - 60m trend : close > SMA(3)  on synthetic 60m bars (~3 hr)
-    Synthetic candles are built by slicing the 5m list; no extra
-    API calls required.
+
+    BUG-7 FIX: Previously resampled the full growing window (up to 3000+
+    bars). SMA on hundreds of synthetic candles is essentially the long-term
+    mean — almost always above the latest close in a downtrend, so all three
+    trend flags = False, count = 0, boost = 0.0 on every signal.
+    Now slices only the last MTF_LOOKBACK_BARS (180) 5m bars before
+    resampling, giving 60 synthetic 15m bars and 15 synthetic 60m bars —
+    a meaningful recent-context window.
     """
     if len(bars) < 13:  # need at least 60 min of 5m data
         return 0.0, False, 0
 
+    # ── BUG-7 FIX: use only recent bars for resampling ────────────────────────
+    recent_bars = bars[-MTF_LOOKBACK_BARS:]
+
     # ── 5m trend ─────────────────────────────────────────────────────────────
-    sma5_10  = _sma(bars, 10)
-    trend_5m = bars[-1]['close'] > sma5_10 if sma5_10 > 0 else False
+    sma5_10  = _sma(recent_bars, 10)
+    trend_5m = recent_bars[-1]['close'] > sma5_10 if sma5_10 > 0 else False
 
     # ── Synthetic 15m bars (group every 3 × 5m bars) ─────────────────────────
     def _resample(bars_5m: List[Dict], n: int) -> List[Dict]:
@@ -428,8 +456,8 @@ def _mtf_convergence(bars: List[Dict]) -> Tuple[float, bool, int]:
             })
         return out
 
-    bars_15m = _resample(bars, 3)   # 3 × 5m = 15m
-    bars_60m = _resample(bars, 12)  # 12 × 5m = 60m
+    bars_15m = _resample(recent_bars, 3)   # 3 × 5m = 15m
+    bars_60m = _resample(recent_bars, 12)  # 12 × 5m = 60m
 
     sma15_5   = _sma(bars_15m, 5)
     trend_15m = (bars_15m[-1]['close'] > sma15_5) if (bars_15m and sma15_5 > 0) else False
@@ -474,9 +502,15 @@ def _detect_signal(
     rvol_min:      float = 2.0,
     lookback:      int   = 12,
     is_daily:      bool  = False,
-    session_start: int   = 0,   # bar index of first bar of this session
+    session_bars:  Optional[List[Dict]] = None,  # BUG-6/8 FIX: bars since session open
 ) -> Optional[Dict]:
-    """Returns a signal dict if a breakout is detected on the last bar, else None."""
+    """
+    Returns a signal dict if a breakout is detected on the last bar, else None.
+
+    session_bars: slice of the bar array from today's first bar through the
+    current bar.  Used for _or_range() (BUG-6) and is_or_signal (BUG-8).
+    Falls back to the full window when None (e.g. daily mode).
+    """
     min_bars = MIN_SIGNAL_BARS_DAILY if is_daily else MIN_SIGNAL_BARS
     if len(bars) < min_bars:
         return None
@@ -500,16 +534,21 @@ def _detect_signal(
     regime    = _regime(spy_bars) if spy_bars else 'NEUTRAL'
     hour      = _parse_hour(latest['timestamp'])
     atr_pct   = atr / entry
-    or_range  = _or_range(bars)
+
+    # ── BUG-6 FIX: use session_bars for OR range (per-session, not per-ticker) ─
+    sess = session_bars if session_bars else bars
+    or_range_pct = _or_range(sess)
+
     confidence = min(0.5 + (rv - rvol_min) * 0.05 + adx * 0.003, 0.95)
     score      = int(confidence * 100)
 
-    # ── Real MTF convergence (was always 0/False/0) ───────────────────────────
+    # ── Real MTF convergence (BUG-7 fix applied inside _mtf_convergence) ─────
     mtf_boost, mtf_conv, mtf_count = _mtf_convergence(bars)
 
-    # ── OR signal: True if breakout bar is in first OR_WINDOW_BARS of session ─
-    bar_offset_in_session = len(bars) - 1 - session_start
-    is_or = bar_offset_in_session <= OR_WINDOW_BARS
+    # ── BUG-8 FIX: is_or = how many bars into today's session are we? ─────────
+    # len(sess) is the count of 5m bars since today's open (including current).
+    # If we are within the first OR_WINDOW_BARS bars, this is an OR signal.
+    is_or = len(sess) <= OR_WINDOW_BARS
 
     # ── Pattern: FVG when gap exists on prior 3 bars, else BOS ───────────────
     pattern = 'FVG' if _detect_fvg(bars) else 'BOS'
@@ -528,7 +567,7 @@ def _detect_signal(
         'mtf_convergence':       mtf_conv,
         'mtf_convergence_count': mtf_count,
         'vwap_distance':         vwap_dist,
-        'or_range_pct':          or_range,
+        'or_range_pct':          or_range_pct,
         'adx':                   adx,
         'atr_pct':               atr_pct,
         'signal_type':           'CFW6_OR' if is_or else 'BREAKOUT',
@@ -595,7 +634,7 @@ def _label_outcome(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Feature vector builder — 11 real features (was 20; 9 dead ones removed)
+# Feature vector builder — 15 real features (was 20; 9 dead ones removed)
 # ─────────────────────────────────────────────────────────────────────────────
 
 GRADE_MAP = {'A+': 9, 'A': 8, 'A-': 7, 'B+': 6, 'B': 5,
@@ -707,8 +746,10 @@ class HistoricalMLTrainer:
         Replay signal detection bar-by-bar and label outcomes.
 
         session_start tracking: resets to current bar index each time a new
-        trading day begins, so is_or_signal and or_range_pct are computed
-        relative to the session open, not the start of the entire bar array.
+        trading day begins.  session_bars (bars[session_start_i:i+1]) is
+        sliced and passed to _detect_signal() so that _or_range() and
+        is_or_signal both reference the correct intraday session window
+        (BUG-6 and BUG-8 fixes).
         """
         if not bars:
             return []
@@ -733,12 +774,15 @@ class HistoricalMLTrainer:
                 current_date    = bar_date
                 session_start_i = i
 
+            # BUG-6/8 FIX: build a session-scoped bar slice for OR features
+            session_bars_window = bars[session_start_i:i + 1]
+
             sig = _detect_signal(
                 window, spy_win,
-                rvol_min      = effective_rvol,
-                lookback      = self.lookback,
-                is_daily      = is_daily,
-                session_start = session_start_i,
+                rvol_min     = effective_rvol,
+                lookback     = self.lookback,
+                is_daily     = is_daily,
+                session_bars = session_bars_window,
             )
             if sig is None:
                 continue
