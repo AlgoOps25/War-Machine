@@ -19,51 +19,42 @@ Label quality fixes (Mar 2026)
 * TARGET_MULT 2.0 → 1.5: tighter target requires a real directional
   move, not noise-driven drift. Reduces false WIN labels on choppy days.
 * DEFAULT_TIMEOUT_BARS 20 → 12: 60-min window on 5m data. A breakout
-  that hasn’t resolved in 60 minutes is a failed trade.
+  that hasn't resolved in 60 minutes is a failed trade.
 * include_timeout default True: TIMEOUT signals are now included as LOSS
   rather than silently dropped. Stalling patterns are the most valuable
   negative examples for the model to learn from.
 
 Feature audit fixes (Mar 2026)
 ------------------------------
-* Dropped 9 permanently-dead features that had zero variance in training data:
-    ivr, gex_multiplier, uoa_multiplier, ivr_multiplier, rr_ratio_norm —
-    all require live options data (GEX, IVR, UOA) unavailable from EODHD.
-    These were hardcoded placeholders that taught the model nothing.
-* Added real _mtf_convergence() helper: computes SMA-slope momentum
-  convergence across 5m, 15m, and 60m timeframes from 5m bar data.
-* is_or_signal: now True when breakout bar falls within first OR_WINDOW_BARS
-  bars of session (first 60 min on 5m data).
-* pattern: now 'FVG' when a Fair Value Gap exists on prior 3 bars, else 'BOS'.
-  Adds real pattern variety to dataset instead of 100% BOS.
-* Feature count: 20 → 15 real, discriminative features.
+* Dropped 9 permanently-dead features (zero variance, options-data deps).
+* Dropped 4 redundant/near-zero-correlation features (BUG-11):
+    is_bull         — constant 1.0 (direction always 'bull'), NaN corr
+    explosive_mover — redundant binary of continuous rvol, corr=0.024
+    grade_norm      — redundant transform of confidence/score, corr=0.051
+    mtf_boost       — redundant float of mtf_convergence_count, corr=0.068
+* Added 4 outcome-correlated features (BUG-11):
+    vwap_side        — +1/-1 sign of vwap_distance (above/below VWAP)
+    atr_ratio        — current ATR / 20-bar avg ATR (volatility expansion)
+    time_bucket      — session period: 0=open, 1=mid, 2=close (norm /2)
+    resist_proximity — (close - resistance) / atr (breakout decisiveness)
+* MTF: slope-based convergence across 5m/15m/60m (BUG-10).
+* is_or_signal: True when breakout bar falls within first OR_WINDOW_BARS.
+* pattern: 'FVG' when Fair Value Gap on prior 3 bars, else 'BOS'.
+* Feature count: 15 real, discriminative, non-redundant features.
 
 Bug fixes applied
 -----------------
-* BUG 1: Skip intraday endpoint when interval='d' (EODHD 422).
-* BUG 2: _safe_float() handles EODHD null volume/price fields.
-* BUG 3: Daily-calibrated thresholds (RVOL_MIN_DAILY=1.3, MIN_SIGNAL_BARS_DAILY=5).
-* BUG 4: Filter after-hours zero-volume bars (136 per 120d window on AAPL).
-         EODHD sends post-market bars with null volume and flat OHLC — these
-         generate false breakout signals that all label as LOSS and destroy
-         model accuracy. Now dropped in _eodhd_intraday() via market-hours gate.
-* BUG 5: _rvol() and _vwap_distance() guard against zero-volume bars in averages.
-* BUG 6: _or_range() was called with the full growing window (bars[:or_bars]
-         from bar 0 of the 4-month array). Now receives session_bars (only
-         bars since today’s open) so OR high/low reflects the actual session.
-* BUG 7: _mtf_convergence() was resampling 3000+ bars → SMA across the entire
-         history → all trend flags False → mtf_boost=0.0 every signal.
-         Now slices only last MTF_LOOKBACK_BARS (180) 5m bars before resampling.
-* BUG 8: is_or_signal used absolute bar-array index offset which was always
-         large. Now uses len(session_bars) <= OR_WINDOW_BARS (bars into session).
-* BUG 9: _mtf_convergence() asked “are all timeframes trending the same way?”
-         In a trending market all three almost always agree — near-constant.
-         Replaced with direction-aware bull confirmation (close > SMA per TF).
-* BUG 10: _is_bull_trend() checked close > SMA (position test). In a sustained
-          trend price sits permanently above/below SMA — still near-constant.
-          Replaced with _is_bull_trend_slope(): is the SMA itself rising?
-          sma_now > sma_prev detects accelerating momentum regardless of regime.
-          Produces natural ~40-60% variance across bull and bear markets.
+* BUG 1:  Skip intraday endpoint when interval='d' (EODHD 422).
+* BUG 2:  _safe_float() handles EODHD null volume/price fields.
+* BUG 3:  Daily-calibrated thresholds.
+* BUG 4:  Filter after-hours zero-volume bars.
+* BUG 5:  _rvol() and _vwap_distance() guard against zero-volume bars.
+* BUG 6:  _or_range() uses session_bars not full history window.
+* BUG 7:  _mtf_convergence() slices MTF_LOOKBACK_BARS before resampling.
+* BUG 8:  is_or_signal uses session bar count not absolute index.
+* BUG 9:  MTF asks direction-aware bull confirmation not all-same test.
+* BUG 10: MTF uses SMA slope (sma_now > sma_prev) not price position.
+* BUG 11: Dropped 4 dead/redundant features; added 4 outcome-correlated.
 """
 from __future__ import annotations
 
@@ -95,30 +86,29 @@ except ImportError:
 # Constants
 # ─────────────────────────────────────────────────────────────────────────────
 EODHD_BASE            = "https://eodhd.com/api"
-DEFAULT_TIMEOUT_BARS  = 12    # 60 min on 5m data — tighter than old 20-bar window
+DEFAULT_TIMEOUT_BARS  = 12    # 60 min on 5m data
 MIN_SIGNAL_BARS       = 30    # min bars before scanning (intraday)
 MIN_SIGNAL_BARS_DAILY = 5     # min bars for daily
-STOP_MULT             = 1.0   # stop_loss = entry - ATR * STOP_MULT  (1×ATR)
-TARGET_MULT           = 1.5   # target    = entry + ATR * TARGET_MULT (1:1.5 R:R)
-RVOL_MIN_DAILY        = 1.3   # lower RVOL threshold for daily bars
+STOP_MULT             = 1.0   # stop_loss = entry - ATR * STOP_MULT
+TARGET_MULT           = 1.5   # target    = entry + ATR * TARGET_MULT
+RVOL_MIN_DAILY        = 1.3
 
-# OR window: first 12 bars of session = first 60 min on 5m data (09:30-10:30 ET)
-OR_WINDOW_BARS = 12
+OR_WINDOW_BARS    = 12   # first 60 min of session on 5m data
+MTF_LOOKBACK_BARS = 180  # ~3 sessions of 5m bars for MTF resampling
 
-# MTF resampling lookback: only use last N 5m bars before resampling.
-# 180 bars = ~15 hours (~3 full sessions). Gives 60 synthetic 15m bars
-# and 15 synthetic 60m bars — enough for meaningful SMA without dragging
-# month-old context into the trend calculation. (BUG-7)
-MTF_LOOKBACK_BARS = 180
-
-# Market hours in UTC: 09:30–16:00 ET = 14:30–21:00 UTC
+# Market hours UTC: 14:30–21:00 (= 09:30–16:00 ET)
 MARKET_OPEN_UTC_H  = 14
 MARKET_OPEN_UTC_M  = 30
 MARKET_CLOSE_UTC_H = 21
 MARKET_CLOSE_UTC_M = 0
 
-# EODHD intraday endpoint only accepts these intervals.
 _INTRADAY_INTERVALS = {'1m', '5m', '15m', '1h'}
+
+# Session time buckets (UTC hours)
+# 0 = open  : 14:30–16:00 UTC (09:30–11:00 ET)
+# 1 = mid   : 16:00–19:00 UTC (11:00–14:00 ET)
+# 2 = close : 19:00–21:00 UTC (14:00–16:00 ET)
+_TIME_BUCKET_BOUNDARIES = [(14, 16), (16, 19), (19, 21)]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -126,11 +116,7 @@ _INTRADAY_INTERVALS = {'1m', '5m', '15m', '1h'}
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _safe_float(value, default: float = 0.0) -> float:
-    """
-    Safely convert a value to float.
-    BUG-2: EODHD returns {"volume": null}; b.get('volume', 0) returns None
-    (not 0) when the key exists with a null value.
-    """
+    """BUG-2: EODHD returns null; .get('volume', 0) returns None not 0."""
     if value is None:
         return default
     try:
@@ -140,11 +126,7 @@ def _safe_float(value, default: float = 0.0) -> float:
 
 
 def _is_market_hours(dt_str: str) -> bool:
-    """
-    BUG-4 FIX: Returns True only for bars within regular market hours.
-    EODHD datetime format: '2026-03-10 14:35:00' (UTC)
-    Market hours UTC: 14:30–21:00 (= 09:30–16:00 ET)
-    """
+    """BUG-4: Returns True only for bars within regular market hours (UTC)."""
     if not dt_str or not isinstance(dt_str, str):
         return True
     try:
@@ -169,20 +151,13 @@ def _eodhd_intraday(
     from_dt:  Optional[datetime] = None,
     to_dt:    Optional[datetime] = None,
 ) -> List[Dict]:
-    """
-    Fetch intraday OHLCV bars from EODHD, market hours only.
-    Applies _is_market_hours() and volume > 0 filters (BUG-4).
-    """
+    """Fetch intraday OHLCV bars from EODHD, market hours only (BUG-4)."""
     if interval not in _INTRADAY_INTERVALS:  # BUG-1
         return []
     if not _REQUESTS_OK:
         return []
 
-    params: Dict = {
-        'api_token': api_key,
-        'fmt':       'json',
-        'interval':  interval,
-    }
+    params: Dict = {'api_token': api_key, 'fmt': 'json', 'interval': interval}
     if from_dt:
         params['from'] = int(from_dt.timestamp())
     if to_dt:
@@ -197,41 +172,27 @@ def _eodhd_intraday(
             logger.warning(f"[HIST-TRAINER] Unexpected intraday response for {ticker}: {type(raw)}")
             return []
 
-        bars = []
-        skipped_hours = 0
-        skipped_vol   = 0
+        bars, skipped_hours, skipped_vol = [], 0, 0
         for b in raw:
             dt_str = b.get('datetime') or b.get('date', '')
-
             if not _is_market_hours(dt_str):
                 skipped_hours += 1
                 continue
-
             o = _safe_float(b.get('open'))
             h = _safe_float(b.get('high'))
             l = _safe_float(b.get('low'))
             c = _safe_float(b.get('close'))
             v = _safe_float(b.get('volume'))
-
             if c == 0.0 or v == 0.0:
                 skipped_vol += 1
                 continue
-
-            bars.append({
-                'timestamp': dt_str,
-                'open':   o,
-                'high':   h,
-                'low':    l,
-                'close':  c,
-                'volume': v,
-            })
+            bars.append({'timestamp': dt_str, 'open': o, 'high': h, 'low': l, 'close': c, 'volume': v})
 
         logger.debug(
             f"[HIST-TRAINER] {ticker}: {len(bars)} market-hours bars kept, "
             f"{skipped_hours} off-hours dropped, {skipped_vol} zero-vol dropped"
         )
         return bars
-
     except Exception as exc:
         logger.warning(f"[HIST-TRAINER] EODHD intraday fetch failed for {ticker}: {exc}")
         return []
@@ -246,11 +207,7 @@ def _eodhd_eod(
     """Fetch daily OHLCV bars from EODHD EOD endpoint."""
     if not _REQUESTS_OK:
         return []
-    params: Dict = {
-        'api_token': api_key,
-        'fmt':       'json',
-        'period':    'd',
-    }
+    params: Dict = {'api_token': api_key, 'fmt': 'json', 'period': 'd'}
     if from_dt:
         params['from'] = from_dt.strftime('%Y-%m-%d')
     if to_dt:
@@ -302,19 +259,28 @@ def _atr(bars: List[Dict], period: int = 14) -> float:
     return sum(trs) / len(trs) if trs else 0.01
 
 
+def _atr_avg(bars: List[Dict], period: int = 14, lookback: int = 20) -> float:
+    """
+    Average of ATR computed at each of the last `lookback` positions.
+    Used to compute atr_ratio = current_atr / avg_atr (BUG-11).
+    Expanding atr_ratio >1.0 signals a trend day; contracting <1.0 signals chop.
+    """
+    if len(bars) < period + lookback:
+        return _atr(bars, period)
+    atrs = [_atr(bars[:-(lookback - i - 1)] if i < lookback - 1 else bars, period)
+            for i in range(lookback)]
+    return sum(atrs) / len(atrs) if atrs else 0.01
+
+
 def _rvol(bars: List[Dict], lookback: int = 20) -> float:
-    """
-    Relative volume: current bar volume vs avg of prior `lookback` bars.
-    BUG-5: Only include bars with volume > 0 in the lookback average.
-    """
+    """Relative volume vs avg of prior `lookback` bars. BUG-5."""
     if len(bars) < 2:
         return 1.0
     recent = [b for b in bars[-(lookback + 1):-1] if b['volume'] > 0]
     if not recent:
         return 1.0
     avg = sum(b['volume'] for b in recent) / len(recent)
-    cur_vol = bars[-1]['volume']
-    return cur_vol / avg if avg > 0 else 1.0
+    return bars[-1]['volume'] / avg if avg > 0 else 1.0
 
 
 def _resistance(bars: List[Dict], lookback: int = 12) -> float:
@@ -365,10 +331,7 @@ def _adx_approx(bars: List[Dict], period: int = 14) -> float:
 
 
 def _vwap_distance(bars: List[Dict]) -> float:
-    """
-    Distance of last close from session VWAP as a fraction of close.
-    BUG-5: Guard against all-zero volume window.
-    """
+    """Distance of last close from session VWAP as fraction of close. BUG-5."""
     vol_bars = [b for b in bars if b['volume'] > 0]
     if not vol_bars:
         return 0.0
@@ -381,19 +344,13 @@ def _vwap_distance(bars: List[Dict]) -> float:
 def _or_range(session_bars: List[Dict], or_bars: int = 6) -> float:
     """
     Opening Range as % of price: high-low of first `or_bars` bars of session.
-    Uses first 6 bars = first 30 minutes on 5m data (09:30–10:00 ET).
-
-    BUG-6 FIX: Previously called with the full growing bar window, so
-    bars[:or_bars] always referenced the very first bars of the 4-month
-    array — giving the same static value for every signal in the dataset.
-    Now receives session_bars (only bars since today’s session open),
-    so bars[:or_bars] is always the actual opening range of that day.
+    BUG-6 FIX: uses session_bars not full history.
     """
     window = session_bars[:or_bars] if len(session_bars) >= or_bars else session_bars
     if not window:
         return 0.01
-    hi = max(b['high'] for b in window)
-    lo = min(b['low']  for b in window)
+    hi  = max(b['high'] for b in window)
+    lo  = min(b['low']  for b in window)
     mid = (hi + lo) / 2
     return (hi - lo) / mid if mid > 0 else 0.01
 
@@ -412,83 +369,51 @@ def _sma(bars: List[Dict], period: int) -> float:
     return sum(window) / len(window) if window else 0.0
 
 
-def _is_bull_trend_slope(
-    bars:        List[Dict],
-    sma_period:  int,
-    slope_bars:  int,
-) -> bool:
+def _is_bull_trend_slope(bars: List[Dict], sma_period: int, slope_bars: int) -> bool:
     """
-    Returns True if the SMA is currently RISING — i.e. momentum is bullish.
-
-    BUG-10 FIX: The previous _is_bull_trend() tested close > SMA (a price
-    position test). In a sustained trend price sits permanently above/below
-    the SMA regardless of short-term momentum, collapsing the flag to
-    near-constant True or False across the entire dataset window.
-
-    This function compares:
-        sma_now  = SMA(sma_period) of the last bars
-        sma_prev = SMA(sma_period) of bars shifted back by slope_bars
-
-    A rising SMA (sma_now > sma_prev) means recent bars are pulling the
-    average up — genuine bullish momentum. The SMA rolls over the moment
-    price decelerates, giving a False signal even mid-uptrend when the move
-    is fading. This produces natural ~40–60% True/False variance regardless
-    of the macro regime (bull market, bear market, or choppy).
-
-    Parameters
-    ----------
-    bars        : bar list (raw 5m or synthetic 15m/60m)
-    sma_period  : lookback for the SMA itself (e.g. 10 for 5m, 5 for 15m)
-    slope_bars  : how many bars back to compare the SMA against
-                  (e.g. 3 for 5m → ~15 min slope, 1 for 60m → ~60 min slope)
+    BUG-10: Returns True if the SMA is currently RISING (momentum test).
+    sma_now > sma_prev — detects accelerating momentum regardless of regime.
     """
-    required = sma_period + slope_bars
-    if len(bars) < required:
+    if len(bars) < sma_period + slope_bars:
         return False
     sma_now  = _sma(bars,               sma_period)
     sma_prev = _sma(bars[:-slope_bars], sma_period)
     return sma_now > sma_prev if (sma_now > 0 and sma_prev > 0) else False
 
 
-def _mtf_convergence(bars: List[Dict]) -> Tuple[float, bool, int]:
+def _time_bucket(hour_utc: int) -> int:
     """
-    Multi-timeframe momentum convergence for a bull breakout signal.
+    BUG-11: Classify UTC hour into intraday session bucket.
+    0 = open  (14:30–16:00 UTC / 09:30–11:00 ET)
+    1 = mid   (16:00–19:00 UTC / 11:00–14:00 ET)
+    2 = close (19:00–21:00 UTC / 14:00–16:00 ET)
+    Returns 1 (mid) for any out-of-range hour.
+    """
+    for bucket, (start, end) in enumerate(_TIME_BUCKET_BOUNDARIES):
+        if start <= hour_utc < end:
+            return bucket
+    return 1
 
-    Asks: “is each timeframe’s SMA currently rising?”
-    A rising SMA = accelerating momentum on that timeframe.
-    Count how many of 5m, 15m, 60m are in rising-SMA state.
 
-    BUG-10 FIX: Replaced close > SMA (position test, near-constant in
-    trending markets) with SMA slope test (sma_now > sma_prev).
-    SMA slope flips within bars of a momentum shift, giving real variance
-    across all market regimes in the training window.
-
-    Slope windows per synthetic timeframe
-    -------------------------------------
-    5m  bars  : SMA(10), slope over 3 raw bars      (~15 min)
-    15m bars  : SMA(5),  slope over 2 synthetic bars (~30 min)
-    60m bars  : SMA(3),  slope over 1 synthetic bar  (~60 min)
-
-    All resampling uses last MTF_LOOKBACK_BARS (180) 5m bars. (BUG-7)
+def _mtf_convergence(bars: List[Dict]) -> Tuple[bool, int]:
+    """
+    Multi-timeframe SMA-slope momentum convergence.
+    BUG-10: slope-based (sma_now > sma_prev) not position-based (close > SMA).
+    BUG-11: removed mtf_boost return value (redundant float of count).
 
     Returns
     -------
-    mtf_boost             : float  0.0 / 0.1 / 0.2 / 0.3
-    mtf_convergence       : bool   True when all 3 TF SMAs are rising
-    mtf_convergence_count : int    0–3 timeframes with rising SMA
+    mtf_convergence       : bool  True when all 3 TF SMAs are rising
+    mtf_convergence_count : int   0–3 timeframes with rising SMA
     """
     if len(bars) < 13:
-        return 0.0, False, 0
+        return False, 0
 
-    # Use only recent bars to avoid month-old SMA contamination (BUG-7)
-    recent = bars[-MTF_LOOKBACK_BARS:]
+    recent = bars[-MTF_LOOKBACK_BARS:]  # BUG-7: avoid month-old SMA drag
 
-    # ── 5m slope: SMA(10) rising over 3 bars? (∼15 min slope) ──────────────
     bull_5m = _is_bull_trend_slope(recent, sma_period=10, slope_bars=3)
 
-    # ── Resample helper ────────────────────────────────────────────────────
     def _resample(bars_5m: List[Dict], n: int) -> List[Dict]:
-        """Combine every n consecutive 5m bars into one synthetic candle."""
         out = []
         for i in range(0, len(bars_5m) - n + 1, n):
             chunk = bars_5m[i:i + n]
@@ -501,38 +426,22 @@ def _mtf_convergence(bars: List[Dict]) -> Tuple[float, bool, int]:
             })
         return out
 
-    # ── 15m slope: SMA(5) on synthetic 15m bars, rising over 2 bars? ───────
     bars_15m = _resample(recent, 3)
     bull_15m = _is_bull_trend_slope(bars_15m, sma_period=5, slope_bars=2) if bars_15m else False
 
-    # ── 60m slope: SMA(3) on synthetic 60m bars, rising over 1 bar? ────────
     bars_60m = _resample(recent, 12)
     bull_60m = _is_bull_trend_slope(bars_60m, sma_period=3, slope_bars=1) if bars_60m else False
 
-    count     = sum([bull_5m, bull_15m, bull_60m])
-    converged = count == 3
-
-    boost_map = {0: 0.0, 1: 0.1, 2: 0.2, 3: 0.3}
-    return boost_map[count], converged, count
+    count = sum([bull_5m, bull_15m, bull_60m])
+    return count == 3, count
 
 
 def _detect_fvg(bars: List[Dict]) -> bool:
-    """
-    Detect a Fair Value Gap (FVG) on the last 3 bars.
-
-    A bullish FVG exists when:
-        bars[-3].high < bars[-1].low  (gap between candle -3 high and candle -1 low)
-    A bearish FVG exists when:
-        bars[-3].low  > bars[-1].high
-
-    Returns True if either condition is met.
-    """
+    """Detect Fair Value Gap on last 3 bars (bullish or bearish)."""
     if len(bars) < 3:
         return False
     b1, _, b3 = bars[-3], bars[-2], bars[-1]
-    bullish_fvg = b1['high'] < b3['low']
-    bearish_fvg = b1['low']  > b3['high']
-    return bullish_fvg or bearish_fvg
+    return b1['high'] < b3['low'] or b1['low'] > b3['high']
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -549,10 +458,7 @@ def _detect_signal(
 ) -> Optional[Dict]:
     """
     Returns a signal dict if a breakout is detected on the last bar, else None.
-
-    session_bars: slice of the bar array from today’s first bar through the
-    current bar.  Used for _or_range() (BUG-6) and is_or_signal (BUG-8).
-    Falls back to the full window when None (e.g. daily mode).
+    session_bars: per-session slice for _or_range() and is_or_signal (BUG-6/8).
     """
     min_bars = MIN_SIGNAL_BARS_DAILY if is_daily else MIN_SIGNAL_BARS
     if len(bars) < min_bars:
@@ -578,21 +484,31 @@ def _detect_signal(
     hour      = _parse_hour(latest['timestamp'])
     atr_pct   = atr / entry
 
-    # BUG-6 FIX: use session_bars for OR range (per-session, not per-ticker)
-    sess = session_bars if session_bars else bars
-    or_range_pct = _or_range(sess)
+    sess         = session_bars if session_bars else bars
+    or_range_pct = _or_range(sess)  # BUG-6
 
     confidence = min(0.5 + (rv - rvol_min) * 0.05 + adx * 0.003, 0.95)
     score      = int(confidence * 100)
 
-    # BUG-10 FIX: slope-based MTF momentum convergence
-    mtf_boost, mtf_conv, mtf_count = _mtf_convergence(bars)
-
-    # BUG-8 FIX: is_or = how many bars into today’s session are we?
-    is_or = len(sess) <= OR_WINDOW_BARS
-
-    # Pattern: FVG when gap exists on prior 3 bars, else BOS
+    mtf_conv, mtf_count = _mtf_convergence(bars)  # BUG-10/11
+    is_or = len(sess) <= OR_WINDOW_BARS            # BUG-8
     pattern = 'FVG' if _detect_fvg(bars) else 'BOS'
+
+    # ── BUG-11: new outcome-correlated features ───────────────────────────
+    # vwap_side: +1 above VWAP, -1 below. Breakout above VWAP = tape confirmation.
+    vwap_side = 1.0 if vwap_dist >= 0 else -1.0
+
+    # atr_ratio: current ATR vs its own 20-bar average.
+    # >1 = expanding volatility (trend day); <1 = contracting (chop).
+    avg_atr   = _atr_avg(bars, period=14, lookback=20)
+    atr_ratio = (atr / avg_atr) if avg_atr > 0 else 1.0
+
+    # time_bucket: 0=open / 1=mid / 2=close session period.
+    tb = _time_bucket(hour)
+
+    # resist_proximity: how far above resistance did price break?
+    # decisive breakout (>0.5 ATR) vs marginal (0-0.2 ATR).
+    resist_prox = min((entry - resist) / atr, 3.0) / 3.0 if atr > 0 else 0.0
 
     return {
         'entry':                 entry,
@@ -601,20 +517,20 @@ def _detect_signal(
         'bar_index':             len(bars) - 1,
         'timestamp':             latest['timestamp'],
         'confidence':            confidence,
-        'grade':                 _score_to_grade(score),
         'rvol':                  rv,
         'score':                 score,
-        'mtf_boost':             mtf_boost,
         'mtf_convergence':       mtf_conv,
         'mtf_convergence_count': mtf_count,
         'vwap_distance':         vwap_dist,
+        'vwap_side':             vwap_side,
         'or_range_pct':          or_range_pct,
         'adx':                   adx,
         'atr_pct':               atr_pct,
+        'atr_ratio':             atr_ratio,
         'signal_type':           'CFW6_OR' if is_or else 'BREAKOUT',
-        'direction':             'bull',
         'hour':                  hour,
-        'explosive_mover':       rv > 4.0,
+        'time_bucket':           tb,
+        'resist_proximity':      resist_prox,
         'regime':                regime,
         'pattern':               pattern,
     }
@@ -658,9 +574,9 @@ def _label_outcome(
 ) -> str:
     """
     Walk forward from entry bar and label WIN / LOSS / TIMEOUT.
-    * WIN     — high >= target  before low <= stop_loss
-    * LOSS    — low  <= stop_loss before high >= target
-    * TIMEOUT — neither hit within timeout_bars bars (12 = 60 min on 5m)
+    WIN     — high >= target  before low <= stop_loss
+    LOSS    — low  <= stop_loss before high >= target
+    TIMEOUT — neither hit within timeout_bars bars
     """
     entry_idx = signal['bar_index']
     target    = signal['target']
@@ -675,51 +591,56 @@ def _label_outcome(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Feature vector builder — 15 real features (was 20; 9 dead ones removed)
+# Feature vector builder — 15 real, non-redundant features
 # ─────────────────────────────────────────────────────────────────────────────
 
-GRADE_MAP = {'A+': 9, 'A': 8, 'A-': 7, 'B+': 6, 'B': 5,
-             'B-': 4, 'C+': 3, 'C': 2, 'C-': 1}
-
-# Removed dead features:
-#   ivr, gex_multiplier, uoa_multiplier, ivr_multiplier  — options data
-#   rr_ratio_norm  — near-constant at 0.4 (TARGET_MULT/STOP_MULT fixed ratio)
+# Dropped (BUG-11):
+#   grade_norm      — redundant transform of confidence/score_norm
+#   mtf_boost       — redundant float encoding of mtf_convergence_count
+#   is_bull         — constant 1.0 (always 'bull'), NaN correlation
+#   explosive_mover — redundant binary bucket of continuous rvol
+#
+# Added (BUG-11):
+#   vwap_side        — sign of vwap_distance (+1 above / -1 below VWAP)
+#   atr_ratio        — current ATR / 20-bar avg ATR (volatility expansion)
+#   time_bucket_norm — session period 0/1/2 normalised to [0,1]
+#   resist_proximity — (close - resistance) / atr, clipped [0,3]/3
 FEATURE_NAMES = [
     'confidence',
-    'grade_norm',
     'rvol',
     'score_norm',
-    'mtf_boost',
     'mtf_convergence',
     'mtf_convergence_count',
     'vwap_distance',
+    'vwap_side',
     'or_range_pct',
     'adx_norm',
     'atr_pct',
+    'atr_ratio',
     'is_or_signal',
-    'is_bull',
     'hour_norm',
-    'explosive_mover',
+    'time_bucket_norm',
+    'resist_proximity',
 ]
 
 
 def _signal_to_features(sig: Dict) -> List[float]:
     return [
         sig.get('confidence', 0.70),
-        GRADE_MAP.get(sig.get('grade', 'B'), 5) / 9.0,
         sig.get('rvol', 1.0),
         sig.get('score', 50) / 100.0,
-        sig.get('mtf_boost', 0.0),
         float(sig.get('mtf_convergence', False)),
         sig.get('mtf_convergence_count', 0) / 3.0,
         sig.get('vwap_distance', 0.0),
+        sig.get('vwap_side', 1.0),
         sig.get('or_range_pct', 0.01),
         sig.get('adx', 20.0) / 50.0,
         sig.get('atr_pct', 0.01),
+        min(sig.get('atr_ratio', 1.0), 3.0) / 3.0,    # clip outliers, norm to [0,1]
         1.0 if sig.get('signal_type') == 'CFW6_OR' else 0.0,
-        1.0 if sig.get('direction') == 'bull' else 0.0,
         sig.get('hour', 14) / 21.0,
-        float(sig.get('explosive_mover', False)),
+        sig.get('time_bucket', 1) / 2.0,
+        sig.get('resist_proximity', 0.0),
     ]
 
 
@@ -745,7 +666,6 @@ class HistoricalMLTrainer:
         self.rvol_min     = rvol_min
         self.lookback     = lookback
         self.timeout_bars = timeout_bars
-
         if not self.api_key:
             logger.warning("[HIST-TRAINER] No EODHD_API_KEY — data fetches will fail")
 
@@ -759,11 +679,7 @@ class HistoricalMLTrainer:
         iv      = interval or self.interval
         to_dt   = datetime.now(timezone.utc).replace(tzinfo=None)
         from_dt = to_dt - timedelta(days=months_back * 30)
-
-        logger.info(
-            f"[HIST-TRAINER] Fetching {ticker} "
-            f"({from_dt.date()} → {to_dt.date()}, interval={iv})"
-        )
+        logger.info(f"[HIST-TRAINER] Fetching {ticker} ({from_dt.date()} → {to_dt.date()}, interval={iv})")
 
         if iv in _INTRADAY_INTERVALS:
             bars = _eodhd_intraday(ticker, self.api_key, iv, from_dt, to_dt)
@@ -785,20 +701,16 @@ class HistoricalMLTrainer:
     ) -> List[Dict]:
         """
         Replay signal detection bar-by-bar and label outcomes.
-
-        session_bars (bars[session_start_i:i+1]) is sliced and passed to
-        _detect_signal() so that _or_range() and is_or_signal both reference
-        the correct intraday session window (BUG-6 and BUG-8 fixes).
+        session_bars slice passed to _detect_signal() for BUG-6/8 fixes.
         """
         if not bars:
             return []
 
-        effective_rvol = RVOL_MIN_DAILY if is_daily else self.rvol_min
-        spy_ref        = spy_bars or []
-        signals        = []
-        seen_idx       = set()
-        min_bars       = MIN_SIGNAL_BARS_DAILY if is_daily else MIN_SIGNAL_BARS
-
+        effective_rvol  = RVOL_MIN_DAILY if is_daily else self.rvol_min
+        spy_ref         = spy_bars or []
+        signals         = []
+        seen_idx        = set()
+        min_bars        = MIN_SIGNAL_BARS_DAILY if is_daily else MIN_SIGNAL_BARS
         current_date    = None
         session_start_i = 0
 
@@ -853,7 +765,7 @@ class HistoricalMLTrainer:
     ):
         """
         Full pipeline: fetch → replay → label → DataFrame.
-        include_timeout=True (default): TIMEOUT signals included as LOSS.
+        include_timeout=True (default): TIMEOUT signals counted as LOSS.
         """
         if not _PANDAS_OK:
             raise ImportError("pandas required for build_dataset()")
@@ -862,30 +774,21 @@ class HistoricalMLTrainer:
         is_daily = iv not in _INTRADAY_INTERVALS
 
         if is_daily:
-            logger.info(
-                f"[HIST-TRAINER] Daily mode — "
-                f"RVOL_MIN={RVOL_MIN_DAILY}, MIN_SIGNAL_BARS={MIN_SIGNAL_BARS_DAILY}"
-            )
+            logger.info(f"[HIST-TRAINER] Daily mode — RVOL_MIN={RVOL_MIN_DAILY}, MIN_SIGNAL_BARS={MIN_SIGNAL_BARS_DAILY}")
 
         spy_bars = self.fetch_bars(spy_ticker, months_back, interval=iv)
         time.sleep(rate_limit_s)
 
         all_signals: List[Dict] = []
-
         for ticker in tickers:
-            if ticker == spy_ticker:
-                bars = spy_bars
-            else:
-                bars = self.fetch_bars(ticker, months_back, interval=iv)
+            bars = spy_bars if ticker == spy_ticker else self.fetch_bars(ticker, months_back, interval=iv)
+            if ticker != spy_ticker:
                 time.sleep(rate_limit_s)
-
             sigs = self.replay_ticker(ticker, bars, spy_bars, is_daily=is_daily)
             all_signals.extend(sigs)
 
         if not all_signals:
-            logger.warning(
-                "[HIST-TRAINER] No signals generated — check EODHD key / tickers / thresholds"
-            )
+            logger.warning("[HIST-TRAINER] No signals generated — check EODHD key / tickers / thresholds")
             return pd.DataFrame()
 
         rows = []
@@ -921,24 +824,15 @@ class HistoricalMLTrainer:
         )
         return df
 
-    def walk_forward_split(
-        self,
-        df,
-        val_fraction: float = 0.25,
-    ) -> Tuple:
+    def walk_forward_split(self, df, val_fraction: float = 0.25) -> Tuple:
         """Temporal train/val split — no random shuffle to avoid look-ahead."""
         if not _PANDAS_OK or df.empty:
             return df, df
-
         df_sorted = df.sort_values('timestamp').reset_index(drop=True)
         split_idx = int(len(df_sorted) * (1 - val_fraction))
         train_df  = df_sorted.iloc[:split_idx]
         val_df    = df_sorted.iloc[split_idx:]
-
-        logger.info(
-            f"[HIST-TRAINER] Walk-forward split: "
-            f"{len(train_df)} train / {len(val_df)} val"
-        )
+        logger.info(f"[HIST-TRAINER] Walk-forward split: {len(train_df)} train / {len(val_df)} val")
         return train_df, val_df
 
     def summary(self, df) -> str:
@@ -947,21 +841,17 @@ class HistoricalMLTrainer:
             return "Empty dataset"
         lines = [
             f"Total signals : {len(df)}",
-            f"Tickers       : {df['ticker'].nunique()} "
-            f"({', '.join(sorted(df['ticker'].unique()))})",
+            f"Tickers       : {df['ticker'].nunique()} ({', '.join(sorted(df['ticker'].unique()))})",
             f"Date range    : {df['timestamp'].min()} → {df['timestamp'].max()}",
-            f"WIN           : {(df['outcome']=='WIN').sum()} "
-            f"({(df['outcome']=='WIN').mean()*100:.1f}%)",
-            f"LOSS          : {(df['outcome']=='LOSS').sum()} "
-            f"({(df['outcome']=='LOSS').mean()*100:.1f}%)",
+            f"WIN           : {(df['outcome']=='WIN').sum()} ({(df['outcome']=='WIN').mean()*100:.1f}%)",
+            f"LOSS          : {(df['outcome']=='LOSS').sum()} ({(df['outcome']=='LOSS').mean()*100:.1f}%)",
             f"TIMEOUT→LOSS  : {(df['outcome']=='TIMEOUT').sum()}",
             f"Avg RVOL      : {df['rvol'].mean():.2f}",
             f"Avg confidence: {df['confidence'].mean():.2%}",
-            f"MTF converged : {df['mtf_convergence'].sum()} "
-            f"({df['mtf_convergence'].mean()*100:.1f}%)",
-            f"OR signals    : {df['is_or_signal'].sum()} "
-            f"({df['is_or_signal'].mean()*100:.1f}%)",
-            f"FVG patterns  : {(df['pattern']=='FVG').sum()} "
-            f"({(df['pattern']=='FVG').mean()*100:.1f}%)",
+            f"MTF converged : {df['mtf_convergence'].sum()} ({df['mtf_convergence'].mean()*100:.1f}%)",
+            f"OR signals    : {df['is_or_signal'].sum()} ({df['is_or_signal'].mean()*100:.1f}%)",
+            f"FVG patterns  : {(df['pattern']=='FVG').sum()} ({(df['pattern']=='FVG').mean()*100:.1f}%)",
+            f"Avg ATR ratio : {df['atr_ratio'].mean():.2f}",
+            f"VWAP above    : {(df['vwap_side']>0).sum()} ({(df['vwap_side']>0).mean()*100:.1f}%)",
         ]
         return "\n".join(lines)
