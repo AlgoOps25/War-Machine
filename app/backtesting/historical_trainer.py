@@ -14,39 +14,23 @@ Design principles
 * Feature parity     — 20-feature vector matches MLSignalScorerV2._build_features().
 * Self-contained     — no live DB required; all data comes from EODHD REST API.
 
-Bug fixes (Mar 11 2026)
------------------------
-* BUG 1: Skip intraday endpoint when interval='d'.  EODHD intraday only
-  accepts minute/hour intervals; passing 'd' returned 422 on every ticker.
-  fetch_bars() now goes straight to _eodhd_eod() for daily bars.
-* BUG 2: float(b.get('volume', 0)) crashes when EODHD returns
-  {"volume": null} — the key exists so .get() returns None, not 0.
-  All field conversions now use  float(b.get(field) or 0) / fallback.
-* BUG 3: MIN_SIGNAL_BARS=30 + rvol_min=2.0 on daily bars generates
-  almost no signals (~6 per ticker over 2 years).  Added daily-specific
-  defaults: MIN_SIGNAL_BARS_DAILY=5, RVOL_MIN_DAILY=1.3.
-
-Quick usage
------------
-    from app.backtesting.historical_trainer import HistoricalMLTrainer
-
-    trainer = HistoricalMLTrainer(eodhd_api_key=os.getenv('EODHD_API_KEY'))
-
-    # Intraday (5m) — dense signals, ~120-day limit on EODHD free tier
-    df = trainer.build_dataset(['AAPL', 'TSLA', 'NVDA'], months_back=4)
-
-    # Daily — years of history, calibrated thresholds
-    df = trainer.build_dataset(['AAPL', 'TSLA', 'NVDA'], months_back=24,
-                               interval_override='d')
-
-    train_df, val_df = trainer.walk_forward_split(df, val_fraction=0.25)
+Bug fixes applied
+-----------------
+* BUG 1: Skip intraday endpoint when interval='d' (EODHD 422).
+* BUG 2: _safe_float() handles EODHD null volume/price fields.
+* BUG 3: Daily-calibrated thresholds (RVOL_MIN_DAILY=1.3, MIN_SIGNAL_BARS_DAILY=5).
+* BUG 4: Filter after-hours zero-volume bars (136 per 120d window on AAPL).
+         EODHD sends post-market bars with null volume and flat OHLC — these
+         generate false breakout signals that all label as LOSS and destroy
+         model accuracy. Now dropped in _eodhd_intraday() via market-hours gate.
+* BUG 5: _rvol() and _vwap_distance() guard against zero-volume bars in averages.
 """
 from __future__ import annotations
 
 import logging
 import os
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -70,29 +54,35 @@ except ImportError:
 # ─────────────────────────────────────────────────────────────────────────────
 # Constants
 # ─────────────────────────────────────────────────────────────────────────────
-EODHD_BASE           = "https://eodhd.com/api"
-DEFAULT_TIMEOUT_BARS = 20    # bars before a signal is labelled TIMEOUT
-MIN_SIGNAL_BARS      = 30    # min bars needed before scanning (intraday)
-MIN_SIGNAL_BARS_DAILY = 5    # min bars for daily (much fewer bars total)
-STOP_MULT            = 1.0   # stop_loss = entry - ATR * STOP_MULT
-TARGET_MULT          = 2.0   # target    = entry + ATR * TARGET_MULT (1:2 R:R)
-RVOL_MIN_DAILY       = 1.3   # lower RVOL threshold for daily bars
+EODHD_BASE            = "https://eodhd.com/api"
+DEFAULT_TIMEOUT_BARS  = 20    # bars before a signal is labelled TIMEOUT
+MIN_SIGNAL_BARS       = 30    # min bars before scanning (intraday)
+MIN_SIGNAL_BARS_DAILY = 5     # min bars for daily
+STOP_MULT             = 1.0   # stop_loss = entry - ATR * STOP_MULT
+TARGET_MULT           = 2.0   # target    = entry + ATR * TARGET_MULT (1:2 R:R)
+RVOL_MIN_DAILY        = 1.3   # lower RVOL threshold for daily bars
 
-# EODHD intraday endpoint only accepts these intervals — anything else
-# (e.g. 'd') must go through the EOD endpoint instead.
-_INTRADAY_INTERVALS  = {'1m', '5m', '15m', '1h'}
+# Market hours in UTC: 09:30–16:00 ET = 14:30–21:00 UTC
+# Pre-market (before 14:30 UTC) and post-market (after 21:00 UTC)
+# bars have null/zero volume and produce false signals.
+MARKET_OPEN_UTC_H  = 14
+MARKET_OPEN_UTC_M  = 30
+MARKET_CLOSE_UTC_H = 21
+MARKET_CLOSE_UTC_M = 0
+
+# EODHD intraday endpoint only accepts these intervals.
+_INTRADAY_INTERVALS = {'1m', '5m', '15m', '1h'}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Helpers — EODHD data fetching
+# Helpers — data cleaning
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _safe_float(value, default: float = 0.0) -> float:
     """
     Safely convert a value to float.
-    BUG-2 FIX: EODHD sometimes returns null for volume/price fields.
-    b.get('volume', 0) returns None (not 0) when the key exists with null value.
-    Using `value or default` handles None, '', and 0 correctly.
+    BUG-2: EODHD returns {"volume": null}; b.get('volume', 0) returns None
+    (not 0) when the key exists with a null value.
     """
     if value is None:
         return default
@@ -102,6 +92,33 @@ def _safe_float(value, default: float = 0.0) -> float:
         return default
 
 
+def _is_market_hours(dt_str: str) -> bool:
+    """
+    BUG-4 FIX: Returns True only for bars within regular market hours.
+    EODHD intraday includes pre/post-market bars with null volume and
+    flat OHLC — these are after-hours prints, not tradeable bars.
+
+    EODHD datetime format: '2026-03-10 14:35:00' (UTC)
+    Market hours UTC: 14:30–21:00 (= 09:30–16:00 ET)
+    """
+    if not dt_str or not isinstance(dt_str, str):
+        return True  # epoch timestamps — assume valid, checked by volume gate
+    try:
+        # Handle both space-separated and T-separated ISO formats
+        dt_str_clean = dt_str.replace('T', ' ').split('.')[0]
+        dt = datetime.strptime(dt_str_clean, '%Y-%m-%d %H:%M:%S')
+        open_mins  = MARKET_OPEN_UTC_H  * 60 + MARKET_OPEN_UTC_M   # 870
+        close_mins = MARKET_CLOSE_UTC_H * 60 + MARKET_CLOSE_UTC_M  # 1260
+        bar_mins   = dt.hour * 60 + dt.minute
+        return open_mins <= bar_mins < close_mins
+    except (ValueError, AttributeError):
+        return True  # unparseable — let volume gate catch it
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Helpers — EODHD data fetching
+# ─────────────────────────────────────────────────────────────────────────────
+
 def _eodhd_intraday(
     ticker:   str,
     api_key:  str,
@@ -110,16 +127,14 @@ def _eodhd_intraday(
     to_dt:    Optional[datetime] = None,
 ) -> List[Dict]:
     """
-    Fetch intraday OHLCV bars from EODHD.
+    Fetch intraday OHLCV bars from EODHD, market hours only.
 
-    BUG-1 FIX: EODHD intraday endpoint rejects interval='d' with a 422.
-    Callers should not pass daily intervals here — fetch_bars() guards
-    this, but we also return [] immediately as a safety net.
+    Applies two filters:
+    1. _is_market_hours() — drops pre/post-market bars by UTC time
+    2. volume > 0        — drops any remaining null-volume bars (BUG-4)
     """
-    # BUG-1: skip entirely for non-intraday intervals
-    if interval not in _INTRADAY_INTERVALS:
+    if interval not in _INTRADAY_INTERVALS:  # BUG-1
         return []
-
     if not _REQUESTS_OK:
         return []
 
@@ -139,28 +154,46 @@ def _eodhd_intraday(
         resp.raise_for_status()
         raw = resp.json()
         if not isinstance(raw, list):
-            logger.warning(f"[HIST-TRAINER] Unexpected intraday response type for {ticker}: {type(raw)}")
+            logger.warning(f"[HIST-TRAINER] Unexpected intraday response for {ticker}: {type(raw)}")
             return []
+
         bars = []
+        skipped_hours = 0
+        skipped_vol   = 0
         for b in raw:
-            # BUG-2 FIX: use _safe_float to handle null fields from EODHD
+            dt_str = b.get('datetime') or b.get('date', '')
+
+            # BUG-4a: drop pre/post-market bars
+            if not _is_market_hours(dt_str):
+                skipped_hours += 1
+                continue
+
             o = _safe_float(b.get('open'))
             h = _safe_float(b.get('high'))
             l = _safe_float(b.get('low'))
             c = _safe_float(b.get('close'))
             v = _safe_float(b.get('volume'))
-            # Skip bars with no price data
-            if c == 0.0:
+
+            # BUG-4b: drop zero-price or zero-volume bars
+            if c == 0.0 or v == 0.0:
+                skipped_vol += 1
                 continue
+
             bars.append({
-                'timestamp': b.get('datetime') or b.get('date', ''),
+                'timestamp': dt_str,
                 'open':   o,
                 'high':   h,
                 'low':    l,
                 'close':  c,
                 'volume': v,
             })
+
+        logger.debug(
+            f"[HIST-TRAINER] {ticker}: {len(bars)} market-hours bars kept, "
+            f"{skipped_hours} off-hours dropped, {skipped_vol} zero-vol dropped"
+        )
         return bars
+
     except Exception as exc:
         logger.warning(f"[HIST-TRAINER] EODHD intraday fetch failed for {ticker}: {exc}")
         return []
@@ -191,11 +224,10 @@ def _eodhd_eod(
         resp.raise_for_status()
         raw = resp.json()
         if not isinstance(raw, list):
-            logger.warning(f"[HIST-TRAINER] Unexpected EOD response type for {ticker}: {type(raw)}")
+            logger.warning(f"[HIST-TRAINER] Unexpected EOD response for {ticker}: {type(raw)}")
             return []
         bars = []
         for b in raw:
-            # BUG-2 FIX: use _safe_float for all fields
             c = _safe_float(b.get('adjusted_close') or b.get('close'))
             if c == 0.0:
                 continue
@@ -214,7 +246,7 @@ def _eodhd_eod(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Technical indicator helpers (no external lib required)
+# Technical indicator helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _atr(bars: List[Dict], period: int = 14) -> float:
@@ -233,14 +265,19 @@ def _atr(bars: List[Dict], period: int = 14) -> float:
 
 
 def _rvol(bars: List[Dict], lookback: int = 20) -> float:
-    """Relative volume: current bar volume vs. avg of prior `lookback` bars."""
+    """
+    Relative volume: current bar volume vs avg of prior `lookback` bars.
+    BUG-5: Only include bars with volume > 0 in the lookback average so
+    any remaining zero-volume bars don't deflate the avg and inflate RVOL.
+    """
     if len(bars) < 2:
         return 1.0
-    recent = bars[-(lookback + 1):-1]
+    recent = [b for b in bars[-(lookback + 1):-1] if b['volume'] > 0]
     if not recent:
         return 1.0
     avg = sum(b['volume'] for b in recent) / len(recent)
-    return bars[-1]['volume'] / avg if avg > 0 else 1.0
+    cur_vol = bars[-1]['volume']
+    return cur_vol / avg if avg > 0 else 1.0
 
 
 def _resistance(bars: List[Dict], lookback: int = 12) -> float:
@@ -265,6 +302,7 @@ def _adx_approx(bars: List[Dict], period: int = 14) -> float:
             abs(b['high'] - p['close']),
             abs(b['low']  - p['close']),
         ))
+
     def wilder(lst, n):
         s = sum(lst[:n])
         res = [s]
@@ -272,6 +310,7 @@ def _adx_approx(bars: List[Dict], period: int = 14) -> float:
             s = s - s / n + v
             res.append(s)
         return res
+
     if len(tr_list) < period:
         return 20.0
     atr14  = wilder(tr_list,  period)
@@ -289,11 +328,33 @@ def _adx_approx(bars: List[Dict], period: int = 14) -> float:
 
 
 def _vwap_distance(bars: List[Dict]) -> float:
-    """Distance of last close from session VWAP as a fraction of close."""
-    tp_vol = sum((b['high'] + b['low'] + b['close']) / 3 * b['volume'] for b in bars)
-    vol    = sum(b['volume'] for b in bars)
+    """
+    Distance of last close from session VWAP as a fraction of close.
+    BUG-5: Guard against all-zero volume window (division by zero).
+    Only use bars with volume > 0 for VWAP calculation.
+    """
+    vol_bars = [b for b in bars if b['volume'] > 0]
+    if not vol_bars:
+        return 0.0
+    tp_vol = sum((b['high'] + b['low'] + b['close']) / 3 * b['volume'] for b in vol_bars)
+    vol    = sum(b['volume'] for b in vol_bars)
     vwap   = tp_vol / vol if vol > 0 else bars[-1]['close']
     return (bars[-1]['close'] - vwap) / vwap if vwap > 0 else 0.0
+
+
+def _or_range(bars: List[Dict], or_bars: int = 6) -> float:
+    """
+    Opening Range as % of price: high-low of first `or_bars` bars of session.
+    Uses first 6 bars = first 30 minutes on 5m data (09:30–10:00 ET).
+    Falls back to bars[0:or_bars] which is correct for session-only data.
+    """
+    window = bars[:or_bars] if len(bars) >= or_bars else bars
+    if not window:
+        return 0.01
+    hi = max(b['high'] for b in window)
+    lo = min(b['low']  for b in window)
+    mid = (hi + lo) / 2
+    return (hi - lo) / mid if mid > 0 else 0.01
 
 
 def _regime(spy_bars: List[Dict]) -> str:
@@ -317,8 +378,6 @@ def _detect_signal(
 ) -> Optional[Dict]:
     """
     Returns a signal dict if a breakout is detected on the last bar, else None.
-    BUG-3 FIX: is_daily uses lower rvol_min and shorter min-bar requirement
-    so daily datasets generate enough labelled samples for training.
     """
     min_bars = MIN_SIGNAL_BARS_DAILY if is_daily else MIN_SIGNAL_BARS
     if len(bars) < min_bars:
@@ -331,28 +390,29 @@ def _detect_signal(
     if latest['close'] <= resist or rv < rvol_min:
         return None
 
-    atr        = _atr(bars)
+    atr = _atr(bars)
     if atr == 0:
         return None
-    entry      = latest['close']
-    stop_loss  = entry - atr * STOP_MULT
-    target     = entry + atr * TARGET_MULT
-    adx        = _adx_approx(bars)
-    vwap_dist  = _vwap_distance(bars)
-    regime     = _regime(spy_bars) if spy_bars else 'NEUTRAL'
-    hour       = _parse_hour(latest['timestamp'])
-    atr_pct    = atr / entry
-    or_range   = (bars[3]['high'] - bars[3]['low']) / entry if len(bars) > 3 else 0.01
+
+    entry     = latest['close']
+    stop_loss = entry - atr * STOP_MULT
+    target    = entry + atr * TARGET_MULT
+    adx       = _adx_approx(bars)
+    vwap_dist = _vwap_distance(bars)
+    regime    = _regime(spy_bars) if spy_bars else 'NEUTRAL'
+    hour      = _parse_hour(latest['timestamp'])
+    atr_pct   = atr / entry
+    or_range  = _or_range(bars)  # BUG-4 fix: proper OR using first 6 bars
     confidence = min(0.5 + (rv - rvol_min) * 0.05 + adx * 0.003, 0.95)
     score      = int(confidence * 100)
     rr_ratio   = (target - entry) / (entry - stop_loss) if (entry - stop_loss) > 0 else TARGET_MULT
 
     return {
-        'entry':      entry,
-        'stop_loss':  stop_loss,
-        'target':     target,
-        'bar_index':  len(bars) - 1,
-        'timestamp':  latest['timestamp'],
+        'entry':                 entry,
+        'stop_loss':             stop_loss,
+        'target':                target,
+        'bar_index':             len(bars) - 1,
+        'timestamp':             latest['timestamp'],
         'confidence':            confidence,
         'grade':                 _score_to_grade(score),
         'rvol':                  rv,
@@ -380,7 +440,7 @@ def _detect_signal(
 
 
 def _parse_hour(ts) -> int:
-    """Extract hour from timestamp string or int epoch."""
+    """Extract UTC hour from EODHD datetime string or epoch int."""
     try:
         if isinstance(ts, (int, float)):
             return datetime.utcfromtimestamp(ts).hour
@@ -391,7 +451,7 @@ def _parse_hour(ts) -> int:
                 continue
     except Exception:
         pass
-    return 10
+    return 14  # default to market open hour
 
 
 def _score_to_grade(score: int) -> str:
@@ -469,7 +529,7 @@ def _signal_to_features(sig: Dict) -> List[float]:
         sig.get('atr_pct', 0.01),
         1.0 if sig.get('signal_type') == 'CFW6_OR' else 0.0,
         1.0 if sig.get('direction') == 'bull' else 0.0,
-        sig.get('hour', 10) / 16.0,
+        sig.get('hour', 14) / 21.0,   # normalized to market-hours UTC range
         sig.get('rr_ratio', 2.0) / 5.0,
         float(sig.get('explosive_mover', False)),
     ]
@@ -482,21 +542,6 @@ def _signal_to_features(sig: Dict) -> List[float]:
 class HistoricalMLTrainer:
     """
     Builds a labelled ML training dataset from EODHD historical OHLCV data.
-
-    Parameters
-    ----------
-    eodhd_api_key : str
-        EODHD API key (or set EODHD_API_KEY env var).
-    interval : str
-        Bar interval for intraday fetches ('5m' recommended).
-        For daily bars use interval_override='d' in build_dataset().
-    rvol_min : float
-        Minimum RVOL to trigger a signal during intraday replay.
-        Daily replay automatically uses RVOL_MIN_DAILY=1.3.
-    lookback : int
-        Bars of lookback for resistance detection.
-    timeout_bars : int
-        Bars before an open signal is labelled TIMEOUT.
     """
 
     def __init__(
@@ -514,68 +559,51 @@ class HistoricalMLTrainer:
         self.timeout_bars = timeout_bars
 
         if not self.api_key:
-            logger.warning("[HIST-TRAINER] No EODHD_API_KEY set — data fetches will fail")
-
-    # ------------------------------------------------------------------ #
-    #  Public API                                                          #
-    # ------------------------------------------------------------------ #
+            logger.warning("[HIST-TRAINER] No EODHD_API_KEY — data fetches will fail")
 
     def fetch_bars(
         self,
-        ticker:       str,
-        months_back:  int  = 12,
-        interval:     Optional[str] = None,
+        ticker:      str,
+        months_back: int = 12,
+        interval:    Optional[str] = None,
     ) -> List[Dict]:
-        """
-        Fetch historical bars for `ticker` going back `months_back` months.
-
-        BUG-1 FIX: if interval is 'd' (or any non-intraday value), go straight
-        to the EOD endpoint — never attempt the intraday endpoint.
-        For intraday intervals, try intraday first then fall back to EOD.
-        """
+        """Fetch historical bars, routing to the correct EODHD endpoint."""
         iv      = interval or self.interval
-        to_dt   = datetime.utcnow()
+        to_dt   = datetime.now(timezone.utc).replace(tzinfo=None)
         from_dt = to_dt - timedelta(days=months_back * 30)
 
         logger.info(
-            f"[HIST-TRAINER] Fetching {ticker} bars "
+            f"[HIST-TRAINER] Fetching {ticker} "
             f"({from_dt.date()} → {to_dt.date()}, interval={iv})"
         )
 
-        # BUG-1: skip intraday endpoint entirely for daily interval
         if iv in _INTRADAY_INTERVALS:
             bars = _eodhd_intraday(ticker, self.api_key, iv, from_dt, to_dt)
             if not bars:
-                logger.info(f"[HIST-TRAINER] Intraday empty for {ticker} — falling back to EOD bars")
+                logger.info(f"[HIST-TRAINER] Intraday empty for {ticker} — falling back to EOD")
                 bars = _eodhd_eod(ticker, self.api_key, from_dt, to_dt)
         else:
-            # Daily or weekly — use EOD endpoint directly, no 422 attempt
             bars = _eodhd_eod(ticker, self.api_key, from_dt, to_dt)
 
-        logger.info(f"[HIST-TRAINER] {ticker}: {len(bars)} bars fetched")
+        logger.info(f"[HIST-TRAINER] {ticker}: {len(bars)} bars fetched (market hours only)")
         return bars
 
     def replay_ticker(
         self,
-        ticker:    str,
-        bars:      List[Dict],
-        spy_bars:  Optional[List[Dict]] = None,
-        is_daily:  bool = False,
+        ticker:   str,
+        bars:     List[Dict],
+        spy_bars: Optional[List[Dict]] = None,
+        is_daily: bool = False,
     ) -> List[Dict]:
-        """
-        Replay signal detection across all bars for a single ticker.
-        Returns list of labelled signal dicts (outcome='WIN'/'LOSS'/'TIMEOUT').
-        BUG-3: passes is_daily so thresholds are calibrated for daily data.
-        """
+        """Replay signal detection bar-by-bar and label outcomes."""
         if not bars:
             return []
 
-        # BUG-3: use lower RVOL threshold for daily bars
         effective_rvol = RVOL_MIN_DAILY if is_daily else self.rvol_min
-        spy_ref    = spy_bars or []
-        signals    = []
-        seen_idx   = set()
-        min_bars   = MIN_SIGNAL_BARS_DAILY if is_daily else MIN_SIGNAL_BARS
+        spy_ref        = spy_bars or []
+        signals        = []
+        seen_idx       = set()
+        min_bars       = MIN_SIGNAL_BARS_DAILY if is_daily else MIN_SIGNAL_BARS
 
         for i in range(min_bars, len(bars)):
             window  = bars[:i + 1]
@@ -595,48 +623,30 @@ class HistoricalMLTrainer:
                 continue
             seen_idx.add(bar_idx)
 
-            outcome       = _label_outcome(sig, bars, self.timeout_bars)
-            sig['ticker'] = ticker
+            outcome        = _label_outcome(sig, bars, self.timeout_bars)
+            sig['ticker']  = ticker
             sig['outcome'] = outcome
             signals.append(sig)
 
+        wins     = sum(1 for s in signals if s['outcome'] == 'WIN')
+        losses   = sum(1 for s in signals if s['outcome'] == 'LOSS')
+        timeouts = sum(1 for s in signals if s['outcome'] == 'TIMEOUT')
         logger.info(
             f"[HIST-TRAINER] {ticker}: {len(signals)} signals — "
-            f"WIN={sum(1 for s in signals if s['outcome']=='WIN')} "
-            f"LOSS={sum(1 for s in signals if s['outcome']=='LOSS')} "
-            f"TIMEOUT={sum(1 for s in signals if s['outcome']=='TIMEOUT')}"
+            f"WIN={wins} LOSS={losses} TIMEOUT={timeouts}"
         )
         return signals
 
     def build_dataset(
         self,
-        tickers:          List[str],
-        months_back:      int   = 12,
-        include_timeout:  bool  = False,
-        spy_ticker:       str   = 'SPY',
-        rate_limit_s:     float = 0.5,
+        tickers:           List[str],
+        months_back:       int   = 4,
+        include_timeout:   bool  = False,
+        spy_ticker:        str   = 'SPY',
+        rate_limit_s:      float = 0.5,
         interval_override: Optional[str] = None,
     ):
-        """
-        Full pipeline: fetch → replay → label → DataFrame.
-
-        Parameters
-        ----------
-        tickers : list of str
-        months_back : int
-        include_timeout : bool
-            If False (default), TIMEOUT signals are excluded.
-            Set True to include them as LOSS (conservative).
-        spy_ticker : str
-        rate_limit_s : float
-        interval_override : str, optional
-            Override the instance interval for this call only.
-            Pass 'd' to use daily bars regardless of self.interval.
-
-        Returns
-        -------
-        pd.DataFrame
-        """
+        """Full pipeline: fetch → replay → label → DataFrame."""
         if not _PANDAS_OK:
             raise ImportError("pandas required for build_dataset()")
 
@@ -645,11 +655,10 @@ class HistoricalMLTrainer:
 
         if is_daily:
             logger.info(
-                f"[HIST-TRAINER] Daily mode — using RVOL_MIN={RVOL_MIN_DAILY}, "
-                f"MIN_SIGNAL_BARS={MIN_SIGNAL_BARS_DAILY}"
+                f"[HIST-TRAINER] Daily mode — "
+                f"RVOL_MIN={RVOL_MIN_DAILY}, MIN_SIGNAL_BARS={MIN_SIGNAL_BARS_DAILY}"
             )
 
-        # Fetch SPY for regime feature
         spy_bars = self.fetch_bars(spy_ticker, months_back, interval=iv)
         time.sleep(rate_limit_s)
 
@@ -666,7 +675,9 @@ class HistoricalMLTrainer:
             all_signals.extend(sigs)
 
         if not all_signals:
-            logger.warning("[HIST-TRAINER] No signals generated — check EODHD key / tickers / thresholds")
+            logger.warning(
+                "[HIST-TRAINER] No signals generated — check EODHD key / tickers / thresholds"
+            )
             return pd.DataFrame()
 
         rows = []
@@ -694,11 +705,6 @@ class HistoricalMLTrainer:
         logger.info(
             f"[HIST-TRAINER] Dataset: {len(df)} labelled signals from {len(tickers)} tickers"
         )
-        logger.info(
-            f"[HIST-TRAINER] Class balance: "
-            f"WIN={df['outcome_binary'].sum()} "
-            f"LOSS={(df['outcome_binary']==0).sum()}"
-        )
         return df
 
     def walk_forward_split(
@@ -706,10 +712,7 @@ class HistoricalMLTrainer:
         df,
         val_fraction: float = 0.25,
     ) -> Tuple:
-        """
-        Temporal train/validation split (no random shuffle — avoids look-ahead).
-        Returns (train_df, val_df)
-        """
+        """Temporal train/val split — no random shuffle to avoid look-ahead."""
         if not _PANDAS_OK or df.empty:
             return df, df
 
@@ -725,15 +728,18 @@ class HistoricalMLTrainer:
         return train_df, val_df
 
     def summary(self, df) -> str:
-        """Return a human-readable summary of the dataset."""
+        """Human-readable dataset summary."""
         if not _PANDAS_OK or df.empty:
             return "Empty dataset"
         lines = [
             f"Total signals : {len(df)}",
-            f"Tickers       : {df['ticker'].nunique()} ({', '.join(sorted(df['ticker'].unique()))})",
+            f"Tickers       : {df['ticker'].nunique()} "
+            f"({', '.join(sorted(df['ticker'].unique()))})",
             f"Date range    : {df['timestamp'].min()} → {df['timestamp'].max()}",
-            f"WIN           : {(df['outcome']=='WIN').sum()} ({(df['outcome']=='WIN').mean()*100:.1f}%)",
-            f"LOSS          : {(df['outcome']=='LOSS').sum()} ({(df['outcome']=='LOSS').mean()*100:.1f}%)",
+            f"WIN           : {(df['outcome']=='WIN').sum()} "
+            f"({(df['outcome']=='WIN').mean()*100:.1f}%)",
+            f"LOSS          : {(df['outcome']=='LOSS').sum()} "
+            f"({(df['outcome']=='LOSS').mean()*100:.1f}%)",
             f"TIMEOUT (excl): {(df['outcome']=='TIMEOUT').sum()}",
             f"Avg RVOL      : {df['rvol'].mean():.2f}",
             f"Avg confidence: {df['confidence'].mean():.2%}",
