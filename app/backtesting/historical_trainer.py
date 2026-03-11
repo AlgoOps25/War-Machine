@@ -283,9 +283,27 @@ def _rvol(bars: List[Dict], lookback: int = 20) -> float:
     return bars[-1]['volume'] / avg if avg > 0 else 1.0
 
 
-def _resistance(bars: List[Dict], lookback: int = 12) -> float:
+def _resistance(bars: List[Dict], lookback: int = 20) -> float:
+    """
+    Resistance = highest high over lookback bars, but only if price
+    has stayed below it for at least 3 of the last 5 bars (confluence test).
+    Falls back to raw high if no confluence found.
+    """
     window = bars[-lookback - 1:-1]
-    return max(b['high'] for b in window) if window else bars[-1]['high']
+    if not window:
+        return bars[-1]['high']
+    
+    level = max(b['high'] for b in window)
+    
+    # Require price to have respected this level (not just grazed it once)
+    recent = bars[-6:-1]
+    rejections = sum(1 for b in recent if b['high'] < level * 0.999)
+    if rejections >= 3:
+        return level
+    
+    # Fallback: use a longer lookback for a more established level
+    wider = bars[-40:-1] if len(bars) >= 40 else window
+    return max(b['high'] for b in wider)
 
 
 def _adx_approx(bars: List[Dict], period: int = 14) -> float:
@@ -468,7 +486,10 @@ def _detect_signal(
     rv     = _rvol(bars)
     resist = _resistance(bars, lookback)
 
-    if latest['close'] <= resist or rv < rvol_min:
+    atr = _atr(bars)
+    breakout_margin = atr * 0.15   # must clear resistance by 15% of ATR
+    if latest['close'] <= resist + breakout_margin or rv < rvol_min:
+
         return None
 
     atr = _atr(bars)
@@ -510,6 +531,24 @@ def _detect_signal(
     # decisive breakout (>0.5 ATR) vs marginal (0-0.2 ATR).
     resist_prox = min((entry - resist) / atr, 3.0) / 3.0 if atr > 0 else 0.0
 
+        # spy_regime: -1=down / 0=flat / 1=up  (EMA20 vs EMA50 + slope)
+    spy_regime_val = 0.0
+    if spy_bars and len(spy_bars) >= 50:
+        spy_closes = [b['close'] for b in spy_bars]
+        def _ema_local(vals, p):
+            k = 2.0 / (p + 1)
+            r = [vals[0]]
+            for v in vals[1:]:
+                r.append(v * k + r[-1] * (1 - k))
+            return r
+        e20 = _ema_local(spy_closes, 20)
+        e50 = _ema_local(spy_closes, 50)
+        slope = e20[-1] - e20[-6] if len(e20) >= 6 else 0
+        if e20[-1] > e50[-1] and slope > 0:
+            spy_regime_val = 1.0
+        elif e20[-1] < e50[-1] and slope < 0:
+            spy_regime_val = -1.0
+
     return {
         'entry':                 entry,
         'stop_loss':             stop_loss,
@@ -531,6 +570,7 @@ def _detect_signal(
         'hour':                  hour,
         'time_bucket':           tb,
         'resist_proximity':      resist_prox,
+        'spy_regime':            spy_regime_val,
         'regime':                regime,
         'pattern':               pattern,
     }
@@ -796,6 +836,20 @@ class HistoricalMLTrainer:
             logger.warning("[HIST-TRAINER] No signals generated — check EODHD key / tickers / thresholds")
             return pd.DataFrame()
 
+                # ── Compute per-ticker win rates from this dataset ────────────────────
+        from collections import defaultdict
+        ticker_wins   = defaultdict(int)
+        ticker_totals = defaultdict(int)
+        for _s in all_signals:
+            if _s['outcome'] in ('WIN', 'LOSS'):
+                ticker_totals[_s['ticker']] += 1
+                if _s['outcome'] == 'WIN':
+                    ticker_wins[_s['ticker']] += 1
+        ticker_win_rates = {
+            t: ticker_wins[t] / ticker_totals[t]
+            for t in ticker_totals if ticker_totals[t] > 0
+        }
+
         rows = []
         timeout_count = 0
         for sig in all_signals:
@@ -806,7 +860,9 @@ class HistoricalMLTrainer:
                 timeout_count += 1
                 outcome = 'LOSS'
 
+                sig['ticker_win_rate'] = ticker_win_rates.get(sig.get('ticker', ''), 0.40)
             features = _signal_to_features(sig)
+
             row = {
                 'ticker':         sig.get('ticker', ''),
                 'timestamp':      sig.get('timestamp', ''),
