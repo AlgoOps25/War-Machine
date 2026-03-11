@@ -1,271 +1,279 @@
-# ML Confidence Booster Integration Guide
+# ML Signal Scorer V2 — Full Integration Guide
 
-## ✅ Status: Ready to Integrate
-
-The ML model is trained and working! Now wire it into `signal_generator.py` to get live confidence adjustments.
-
----
-
-## 🎯 What This Does
-
-- **Analyzes every signal** using 22 market features
-- **Adjusts confidence by ±15%** based on ML predictions
-- **No false signal reduction** - only confidence tuning
-- **Transparent logging** - shows adjustment reasoning
+> **Status**: Historical pre-training pipeline complete.  
+> Follow these steps in order to activate ML scoring in the live system.
 
 ---
 
-## 📝 Integration Steps
+## Overview
 
-### Step 1: Add Import (Line ~23)
+```
+Historical OHLCV (EODHD)
+        ↓
+ HistoricalMLTrainer          ← app/backtesting/historical_trainer.py
+  replay + label bars
+        ↓
+ train_from_dataframe()       ← app/ml/ml_trainer.py
+  RandomForest (200 trees)
+        ↓
+ models/ml_model_historical.pkl
+        ↓
+ MLSignalScorerV2.score()     ← app/ml/ml_signal_scorer_v2.py
+  called from validation gate
+        ↓
+ app/validation/__init__.py   ← Gate 5 — adjusts confidence ±15 pts
+        ↓
+ sniper.py / Discord embed    ← shows ML-adjusted score + delta
+        ↓
+ analytics DB                 ← outcome recorded → EOD auto-retrain
+```
+
+---
+
+## Step 0 — Run the Pre-Training (one time)
+
+```powershell
+# From project root, venv activated
+# Daily bars — fast, 2+ years of history
+python -m app.ml.train_historical `
+    --interval d --months 36 `
+    --tickers AAPL TSLA NVDA MSFT AMD META GOOGL AMZN SPY QQQ `
+    --min-samples 30
+
+# Expected output when successful:
+#   Total signals : 120+
+#   Model saved → models/ml_model_historical.pkl
+```
+
+The model file lands at `models/ml_model_historical.pkl`.  
+The full labelled dataset is at `models/training_dataset.csv` — review it to spot any data quality issues before going live.
+
+---
+
+## Step 1 — Point MLSignalScorerV2 at the Historical Model
+
+Edit **`app/ml/ml_signal_scorer_v2.py`**, find the `MODEL_PATH` constant near the top of the file and change it:
 
 ```python
-# Add after target_discovery imports
+# Before:
+MODEL_PATH = os.path.join(os.getcwd(), 'models', 'ml_signal_scorer_v2.pkl')
+
+# After:
+MODEL_PATH = os.path.join(
+    os.path.dirname(__file__), '..', '..', 'models',
+    os.getenv('ML_MODEL_FILE', 'ml_model_historical.pkl')
+)
+```
+
+Using an env var (`ML_MODEL_FILE`) means you can swap models on Railway without a code push:  
+`ML_MODEL_FILE=ml_model_historical.pkl`  → historical pre-trained  
+`ML_MODEL_FILE=ml_model.pkl`             → live auto-retrained model  
+
+---
+
+## Step 2 — Wire the Scorer into the Validation Gate
+
+Open **`app/validation/__init__.py`**.  The file already has Gate 5 stubbed with a comment.  Replace it:
+
+```python
+# ── Gate 5: ML confidence adjustment ─────────────────────────────────────────
+ml_adjustment = 0.0
+ml_source     = 'none'
 try:
-    from app.ml.ml_confidence_boost import MLConfidenceBooster
-    ML_BOOSTER_ENABLED = True
-    print("[SIGNALS] ✅ ML Confidence Booster enabled (Day 6 ML predictions)")
-except ImportError as e:
-    ML_BOOSTER_ENABLED = False
-    print(f"[SIGNALS] ⚠️  ML Confidence Booster not available ({e})")
+    from app.ml.ml_signal_scorer_v2 import MLSignalScorerV2
+    scorer = MLSignalScorerV2()          # singleton — loads model once at startup
+    if scorer.is_ready:
+        result      = scorer.score_signal(signal)
+        ml_adjustment = result.get('confidence_adjustment', 0.0)   # float, e.g. +0.08
+        ml_source     = result.get('model_version', 'v2')
+        logger.info(
+            f"[VALIDATION] Gate 5 ML: {ticker} adjustment={ml_adjustment:+.2f} "
+            f"source={ml_source}"
+        )
+except Exception as exc:
+    logger.warning(f"[VALIDATION] Gate 5 ML skipped: {exc}")
+
+# Apply — clamp final confidence to [0, 1]
+confidence_adj = max(0.0, min(1.0, signal.get('confidence', 0.7) + ml_adjustment))
 ```
 
-### Step 2: Initialize in `__init__` (Line ~91)
+Then return the adjusted confidence in the gate's return value:
+```python
+return True, 'passed', confidence_adj
+```
+
+> **Safe to deploy immediately** — if the model file doesn't exist yet,
+> `scorer.is_ready` is `False` and the gate passes with zero adjustment.
+
+---
+
+## Step 3 — Show ML Delta in Discord Alerts
+
+In **`app/core/sniper.py`**, find `_format_discord_message()` (or wherever the
+confidence line is built).  Add the ML delta line:
 
 ```python
-# Add after validator initialization
-# ML Confidence Booster (Day 6)
-self.ml_booster = None
-if ML_BOOSTER_ENABLED:
-    try:
-        self.ml_booster = MLConfidenceBooster()
-        status = "trained" if self.ml_booster.is_trained else "untrained"
-        print(f"[SIGNALS] ML Booster loaded: {status}")
-    except Exception as e:
-        print(f"[SIGNALS] ML Booster initialization error: {e}")
-        self.ml_booster = None
+# Existing confidence line
+lines.append(f"Confidence : {signal['confidence']*100:.0f}%")
+
+# Add after it:
+if signal.get('ml_adjustment') and abs(signal['ml_adjustment']) >= 0.01:
+    delta = signal['ml_adjustment']
+    arrow = '📈' if delta > 0 else '📉'
+    lines.append(
+        f"ML Score   : {arrow} {delta*100:+.1f}pts  "
+        f"({signal.get('ml_base_confidence',0)*100:.0f}% → {signal['confidence']*100:.0f}%)"
+    )
 ```
 
-### Step 3: Add Feature Extraction Method (Before `_format_discord_alert`)
+Store `ml_adjustment` and `ml_base_confidence` on the signal dict in the
+validation gate before returning (add two lines there):
 
 ```python
-def _extract_ml_features(self, ticker: str, signal: Dict, latest_bar: Dict) -> Dict[str, float]:
-    """
-    Extract ML features from signal data for confidence prediction.
-    
-    Args:
-        ticker: Stock ticker
-        signal: Signal dict with entry/stop/targets
-        latest_bar: Latest price bar
-    
-    Returns:
-        Dict of feature_name -> value
-    """
-    import numpy as np
-    
-    features = {}
-    now_et = datetime.now(ET)
-    
-    # Time features
-    features['hour_of_day'] = now_et.hour
-    features['day_of_week'] = now_et.weekday()
-    features['time_since_open_min'] = signal.get('time_since_open_min', 0)
-    
-    # Gap features
-    gap_pct = signal.get('gap_pct', 0.0)
-    features['gap_pct'] = gap_pct
-    features['gap_abs'] = abs(gap_pct)
-    features['gap_direction'] = 1 if gap_pct > 0 else 0
-    
-    # Volume features
-    volume = latest_bar.get('volume', signal.get('volume', 0))
-    features['entry_volume'] = volume
-    features['volume_surge_ratio'] = signal.get('volume_surge', 1.0)
-    features['or_volume'] = signal.get('or_volume', 0)
-    features['volume_log'] = np.log1p(volume)
-    
-    # Price vs key levels
-    features['price_vs_pdh'] = signal.get('price_vs_pdh', 0.0)
-    features['price_vs_or_high'] = signal.get('price_vs_or_high', 0.0)
-    
-    # PDH/PDL distance
-    entry_price = signal['entry']
-    pdh = signal.get('pdh', 0)
-    pdl = signal.get('pdl', 0)
-    
-    if pdh and pdl and entry_price:
-        features['pdh_distance_pct'] = (entry_price - pdh) / pdh * 100
-        features['pdl_distance_pct'] = (entry_price - pdl) / pdl * 100
-        features['pd_range_pct'] = (pdh - pdl) / pdl * 100
-    else:
-        features['pdh_distance_pct'] = 0.0
-        features['pdl_distance_pct'] = 0.0
-        features['pd_range_pct'] = 0.0
-    
-    # OR breakout
-    or_high = signal.get('or_high', 0)
-    or_low = signal.get('or_low', 0)
-    
-    if or_high and or_low and entry_price:
-        features['or_breakout_size_pct'] = (entry_price - or_high) / or_high * 100
-        features['or_range_pct'] = (or_high - or_low) / or_low * 100
-    else:
-        features['or_breakout_size_pct'] = 0.0
-        features['or_range_pct'] = 0.0
-    
-    # VIX
-    features['vix_level'] = signal.get('vix', 15.0)
-    
-    # Signal type one-hot
-    signal_type = signal.get('type', 'unknown')
-    for sig_type in ['gap_breakout', 'volume_surge', 'momentum', 'reversal']:
-        features[f'signal_{sig_type}'] = 1 if sig_type in signal_type.lower() else 0
-    
-    return features
+signal['ml_base_confidence'] = signal.get('confidence', 0.7)
+signal['ml_adjustment']      = ml_adjustment
 ```
 
-### Step 4: Add ML Adjustment in `check_ticker()` (After Cooldown Update)
+---
 
-Find this code around line 265:
+## Step 4 — EOD Auto-Retrain Hook
+
+The EOD block in **`app/core/scanner.py`** already calls `ailearning`.  Add
+the ML retrain immediately after:
 
 ```python
-# Update cooldown (only for validated signals)
-self.recent_signals[ticker] = datetime.now(ET)
-print(f"[SIGNALS] {ticker} cooldown started ({self.cooldown_minutes}m)")
-```
-
-**Add this block right after:**
-
-```python
-# === DAY 6: ML CONFIDENCE ADJUSTMENT ===
-if ML_BOOSTER_ENABLED and self.ml_booster and self.ml_booster.is_trained:
-    try:
-        # Extract features
-        latest_bar = bars[-1] if bars else {}
-        ml_features = self._extract_ml_features(ticker, signal, latest_bar)
-        
-        # Get ML confidence adjustment (±15%)
-        adjustment = self.ml_booster.predict_confidence_adjustment(ml_features)
-        
-        # Apply adjustment (clamp to 0-100)
-        original_conf = signal['confidence']
-        adjusted_conf = max(0, min(100, original_conf + (adjustment * 100)))
-        signal['confidence'] = round(adjusted_conf, 1)
-        
-        # Store ML metadata
-        signal['ml_adjustment'] = {
-            'original': original_conf,
-            'adjusted': adjusted_conf,
-            'delta': adjusted_conf - original_conf,
-            'model_confidence': adjustment
-        }
-        
-        # Log significant adjustments
-        if abs(adjustment * 100) > 1.0:
-            emoji = "📈" if adjustment > 0 else "📉"
-            print(f"[ML-BOOST] {ticker} {emoji} | "
-                  f"Conf: {original_conf:.0f}% → {adjusted_conf:.0f}% "
-                  f"({adjustment*100:+.1f}%)")
-    
-    except Exception as e:
-        print(f"[ML-BOOST] {ticker} error: {e}")
-        # Keep original confidence on error
+# ── EOD ML retrain (runs if 50+ new completed signals since last train) ──────
+try:
+    from app.ml.ml_trainer import should_retrain, train_model
+    if should_retrain():
+        logger.info("[EOD] Retraining ML model on live signal outcomes...")
+        model, metrics = train_model()
+        if model:
+            logger.info(
+                f"[EOD] ML retrain complete — "
+                f"accuracy={metrics['accuracy']:.2%}  "
+                f"n_train={metrics['n_train']}"
+            )
+            # Hot-reload: force MLSignalScorerV2 to pick up new weights
+            try:
+                from app.ml.ml_signal_scorer_v2 import MLSignalScorerV2
+                MLSignalScorerV2._instance = None   # bust singleton cache
+                logger.info("[EOD] MLSignalScorerV2 singleton reset — new model active")
+            except Exception:
+                pass
+except Exception as exc:
+    logger.warning(f"[EOD] ML retrain skipped: {exc}")
 ```
 
 ---
 
-## 🎨 Optional: Add to Discord Alerts
+## Step 5 — Railway Deployment
 
-In `_format_discord_alert()`, after the confidence line:
+Set the env var so Railway uses the pre-trained model:
 
-```python
-# Show ML adjustment if available
-if 'ml_adjustment' in signal:
-    ml = signal['ml_adjustment']
-    if abs(ml['delta']) > 1.0:
-        emoji = "📈" if ml['delta'] > 0 else "📉"
-        msg += f"   ML Adjustment: {emoji} {ml['delta']:+.1f}% "
-        msg += f"({ml['original']:.0f}% → {ml['adjusted']:.0f}%)\n"
+```
+ML_MODEL_FILE = ml_model_historical.pkl
+```
+
+Commit `models/ml_model_historical.pkl` to the repo so it deploys with the
+container (it's ~2 MB).  Add this line to `.gitignore` to keep the live
+retrained model out of Git (it lives on the Railway volume):
+
+```
+# Keep pre-trained seed model, ignore live-retrained models
+models/ml_model.pkl
+models/ml_model_*.pkl
+!models/ml_model_historical.pkl
 ```
 
 ---
 
-## 📊 Testing
+## Testing Checklist
 
-After integration:
+Run each in sequence before deploying:
 
-```bash
-# Test in Python console
-python
->>> from app.signals.signal_generator import signal_generator
->>> print(f"ML enabled: {signal_generator.ml_booster is not None}")
->>> print(f"ML trained: {signal_generator.ml_booster.is_trained if signal_generator.ml_booster else False}")
+```powershell
+# 1. Confirm model file exists and loads cleanly
+python -c "
+import pickle, pathlib
+bundle = pickle.load(open('models/ml_model_historical.pkl','rb'))
+print('Features :', len(bundle['feature_names']))
+print('Trained  :', bundle['trained_at'])
+print('Accuracy :', f\"{bundle['metrics']['accuracy']:.2%}\")
+"
+
+# 2. Confirm scorer returns a score without error
+python -c "
+from app.ml.ml_signal_scorer_v2 import MLSignalScorerV2
+s = MLSignalScorerV2()
+print('Ready:', s.is_ready)
+test_signal = {
+    'confidence': 0.72, 'rvol': 3.1, 'score': 72,
+    'grade': 'B+', 'adx': 32, 'atr_pct': 0.015,
+    'vwap_distance': 0.003, 'or_range_pct': 0.012,
+    'direction': 'bull', 'signal_type': 'BREAKOUT',
+    'hour': 10, 'rr_ratio': 2.1, 'explosive_mover': False,
+    'mtf_convergence': True, 'mtf_convergence_count': 2,
+    'mtf_boost': 0.05, 'ivr': 0.45,
+    'gex_multiplier': 1.0, 'uoa_multiplier': 1.0, 'ivr_multiplier': 1.0,
+}
+result = s.score_signal(test_signal)
+print('Adjustment:', result.get('confidence_adjustment'))
+print('Version   :', result.get('model_version'))
+"
+
+# 3. Quick end-to-end validation gate test
+python -c "
+from app.validation import validate_signal
+signal = {'ticker':'AAPL','confidence':0.70,'rvol':2.5,'score':70,'grade':'B'}
+passed, reason, conf_adj = validate_signal(signal)
+print(f'passed={passed}  reason={reason}  confidence={conf_adj:.2%}')
+"
 ```
 
-Expected output:
+Expected output for test 2:
 ```
-ML enabled: True
-ML trained: True
-```
-
----
-
-## 📈 What to Expect
-
-### Positive Adjustments (+)
-- High volume with tight spreads
-- Clean breakout above PDH
-- Early morning momentum (9:30-10:00)
-- Low VIX environment
-- Strong volume surge (>2.5x)
-
-### Negative Adjustments (-)
-- Low volume breakouts
-- Late session signals (>14:00)
-- High VIX (>22)
-- Weak OR range
-- Gap fading patterns
-
----
-
-## 🔄 Retraining
-
-The model automatically retrains weekly via Railway cron (Sundays 2 AM ET). To manually retrain:
-
-```bash
-python tests/test_ml_training.py
+Ready: True
+Adjustment: 0.06   ← or similar positive value for a quality signal
+Version   : historical_v1
 ```
 
-Requires 50+ trade logs in the database.
+---
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `scorer.is_ready = False` | Model file not found | Run Step 0; check `ML_MODEL_FILE` env var |
+| `Only N signals — need 50` | Not enough breakouts in history | `--interval d --months 36 --include-timeout` |
+| `float() NoneType` | EODHD null volume field | Fixed in this commit; `git pull` |
+| `422 Client Error` on interval=d | Intraday endpoint doesn't accept 'd' | Fixed in this commit; `git pull` |
+| All signals WIN (78%+) | Daily RVOL too low, catching easy trends | Increase `--rvol-min 1.6` |
+| `train_from_dataframe` feature mismatch | Custom signal has unexpected keys | Add missing key with neutral default |
+| Model not hot-reloading after EOD retrain | Singleton not busted | Step 4 EOD hook resets `_instance = None` |
 
 ---
 
-## 🐛 Troubleshooting
+## What to Expect Live
 
-### Model not loading
-- Check `app/models/confidence_booster.pkl` exists
-- Run training: `python tests/test_ml_training.py`
+Once wired in, every signal that passes Gates 1–4 goes through the ML scorer:
 
-### Features mismatch
-- Model expects exactly 22 features
-- Missing features default to 0.0
-- Check logs for feature extraction errors
+```
+[VALIDATION] Gate 5 ML: TSLA adjustment=+0.09 source=historical_v1
+[ML-BOOST]   TSLA 📈 | Conf: 68% → 77%  (+9pts)
+```
 
-### No adjustments showing
-- Only adjustments >1% are logged
-- Check `ML_BOOSTER_ENABLED = True`
-- Verify model is trained: `ml_booster.is_trained`
+Discord alert will show:
+```
+Confidence : 77%
+ML Score   : 📈 +9pts  (68% → 77%)
+```
 
----
+Signals where the model has low conviction:
+```
+[ML-BOOST] META 📉 | Conf: 71% → 62%  (−9pts)
+```
 
-## 📚 Files Modified
-
-- `app/signals/signal_generator.py` - Add 4 code blocks
-- No other files need changes
-- Backward compatible (works without model)
-
----
-
-## ✅ Done!
-
-Once integrated, every signal will get ML confidence tuning automatically. Monitor the logs for `[ML-BOOST]` messages to see adjustments in real-time.
+After 50+ live trades complete, EOD retraining automatically fine-tunes
+the model on your own outcomes — at that point the historical seed is
+replaced by a model calibrated to War Machine's exact signal style.
