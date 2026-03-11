@@ -1019,7 +1019,7 @@ class HistoricalMLTrainer:
                 'outcome':        sig['outcome'],
                 'outcome_binary': 1 if outcome == 'WIN' else 0,
                 'regime':         sig.get('regime', 'NEUTRAL'),
-                'pattern':        sig.get('pattern', 'BOS'),
+                'pattern':        'FVG' if sig.get('fvg_size_pct', 0) > 0 else 'BOS',
             }
             for name, val in zip(FEATURE_NAMES, features):
                 row[name] = val
@@ -1061,7 +1061,7 @@ class HistoricalMLTrainer:
             f"Avg confidence: {df['confidence'].mean():.2%}",
             f"MTF converged : {df['mtf_convergence'].sum()} ({df['mtf_convergence'].mean()*100:.1f}%)",
             f"OR signals    : {df['is_or_signal'].sum()} ({df['is_or_signal'].mean()*100:.1f}%)",
-            f"FVG patterns  : {(df['pattern']=='FVG').sum()} ({(df['pattern']=='FVG').mean()*100:.1f}%)",
+            f"Avg FVG size  : {df['fvg_size_pct'].mean()*100:.3f}%  (min={df['fvg_size_pct'].min()*100:.3f}%)",
             f"Avg ATR ratio : {df['atr_ratio'].mean():.2f}",
             f"VWAP above    : {(df['vwap_side']>0).sum()} ({(df['vwap_side']>0).mean()*100:.1f}%)",
         ]
