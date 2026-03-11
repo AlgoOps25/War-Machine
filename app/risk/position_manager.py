@@ -21,6 +21,12 @@ FIXED M5 (MAR 10, 2026):
     performance_multiplier to neutral (1.0) after all positions are closed.
   - Previously EOD-closed positions incremented streak counters, carrying
     yesterday's losing/winning streak into next morning's sizing math.
+
+FIX #4 (MAR 11, 2026):
+  - close_position() now calls _write_completed_at() after every real close
+    (skipped for STALE_EOD).  This writes completed_at + outcome + exit_price
+    back to the ml_signals table, unblocking the live EOD retrain loop which
+    previously stalled because ml_signals rows stayed NULL in completed_at.
 """
 from utils import config
 from datetime import datetime, timedelta
@@ -64,6 +70,78 @@ SECTOR_GROUPS = {
     "INDICES": ["SPY", "QQQ", "IWM", "DIA"],
     "VOLATILITY": ["VIX", "UVXY", "SVXY", "VXX"]
 }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FIX #4: completed_at write-back helper
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _write_completed_at(
+    ticker:     str,
+    direction:  str,
+    outcome:    str,   # 'WIN' | 'LOSS'
+    exit_price: float,
+    exit_time:  datetime,
+) -> None:
+    """
+    Write completed_at, outcome, and exit_price back to the ml_signals table
+    for the most-recent PENDING signal matching (ticker, direction).
+
+    Safe no-op if:
+      - ml_signals table does not exist
+      - no matching PENDING row is found
+      - any DB error occurs
+
+    Called from close_position() for every real close (STOP LOSS, TARGET 1/2,
+    EOD CLOSE) so the live EOD retrain loop can detect resolved signals.
+    """
+    conn = None
+    try:
+        conn   = get_conn()
+        cursor = dict_cursor(conn)
+        p      = ph()
+
+        # Resolve the most-recent PENDING signal id for this ticker+direction
+        cursor.execute(
+            f"""
+            SELECT id FROM ml_signals
+            WHERE  ticker    = {p}
+              AND  direction = {p}
+              AND  status    = 'PENDING'
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (ticker, direction),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return  # no matching pending signal — nothing to update
+
+        signal_id = row["id"]
+
+        cursor.execute(
+            f"""
+            UPDATE ml_signals
+            SET  outcome      = {p},
+                 exit_price   = {p},
+                 completed_at = {p},
+                 status       = 'COMPLETED'
+            WHERE id = {p}
+            """,
+            (outcome, exit_price, exit_time, signal_id),
+        )
+        conn.commit()
+        print(
+            f"[ML-SIGNALS] ✅ completed_at written: {ticker} {direction.upper()} "
+            f"{outcome} @ ${exit_price:.2f} (signal_id={signal_id})"
+        )
+
+    except Exception as exc:
+        # Table may not exist yet on a fresh deploy — always safe to skip
+        print(f"[ML-SIGNALS] ⚠️  completed_at write skipped ({ticker}): {exc}")
+    finally:
+        if conn:
+            return_conn(conn)
 
 
 class PositionManager:
@@ -725,6 +803,8 @@ class PositionManager:
             )
             final_pnl = prior_pnl + (pnl_per_share * 100 * remaining)
 
+            exit_time = datetime.now()
+
             cursor.execute(f"""
                 UPDATE positions
                 SET exit_price  = {p},
@@ -737,6 +817,15 @@ class PositionManager:
             conn.commit()
 
             self.positions = [p for p in self.positions if p["id"] != position_id]
+
+            # ── FIX #4: write completed_at back to ml_signals ─────────────────
+            # Skipped for STALE_EOD (prior-day carryover — no live signal row).
+            # EOD CLOSE counts as LOSS so the retrain loop sees it as a negative
+            # example; STOP LOSS = LOSS; TARGET 1 / TARGET 2 = WIN.
+            if exit_reason != "STALE_EOD":
+                _ml_outcome = "WIN" if final_pnl > 0 else "LOSS"
+                _write_completed_at(ticker, direction, _ml_outcome, exit_price, exit_time)
+            # ─────────────────────────────────────────────────────────────────
 
             if exit_reason != "STALE_EOD":
                 if final_pnl > 0:
