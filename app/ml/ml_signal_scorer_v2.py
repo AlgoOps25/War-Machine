@@ -281,9 +281,6 @@ class MLSignalScorerV2:
             bos_strength = min(bos_strength, 0.01) / 0.01   # normalise to [0,1]
 
             return {
-
-
-            return {
                 'confidence':            confidence,
                 'rvol':                  rvol,
                 'score_norm':            score_norm,
@@ -306,7 +303,6 @@ class MLSignalScorerV2:
                 'bos_strength':          bos_strength,
             }
 
-            }
         except Exception as exc:
             logger.warning(f"[ML-SCORER-v2] _build_features error: {exc}")
             return None
