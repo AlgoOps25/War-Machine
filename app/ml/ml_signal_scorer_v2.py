@@ -53,8 +53,8 @@ except ImportError:
 MODEL_PATH = os.path.join(
     os.path.dirname(__file__), '..', '..', 'models', 'ml_model_historical.pkl'
 )
-FEATURE_VERSION = 'v4.0'   # bumped — 17-feature schema (added ticker_win_rate, spy_regime)
-FEATURE_COUNT   = 17
+FEATURE_VERSION = 'v5.0'   # bumped — 20-feature schema (added conf_score, fvg_size_pct, bos_strength)
+FEATURE_COUNT   = 20
 
 # Must stay in sync with HIST_FEATURE_COLS in ml_trainer.py
 HIST_FEATURE_COLS = [
@@ -265,7 +265,23 @@ class MLSignalScorerV2:
             if spy_regime is None:
                 spy_bars = signal_data.get('spy_bars') or []
                 spy_regime = self._compute_spy_regime(spy_bars)
+
             spy_regime = float(spy_regime)
+
+            # ── conf_score  (candle grade: A+=1.0, A=0.85, A-=0.70, None=0.0) ──
+            conf_score = float(signal_data.get('conf_score', 0.0))
+            conf_score = max(0.0, min(conf_score, 1.0))
+
+            # ── fvg_size_pct  (FVG gap as % of price, capped at 2%) ───────────
+            fvg_size_pct = float(signal_data.get('fvg_size_pct', 0.0))
+            fvg_size_pct = min(fvg_size_pct, 0.02) / 0.02   # normalise to [0,1]
+
+            # ── bos_strength  (% price broke above swing high, capped at 1%) ──
+            bos_strength = float(signal_data.get('bos_strength', 0.0))
+            bos_strength = min(bos_strength, 0.01) / 0.01   # normalise to [0,1]
+
+            return {
+
 
             return {
                 'confidence':            confidence,
@@ -285,6 +301,11 @@ class MLSignalScorerV2:
                 'resist_proximity':      resist_proximity,
                 'ticker_win_rate':       ticker_win_rate,
                 'spy_regime':            spy_regime,
+                'conf_score':            conf_score,
+                'fvg_size_pct':          fvg_size_pct,
+                'bos_strength':          bos_strength,
+            }
+
             }
         except Exception as exc:
             logger.warning(f"[ML-SCORER-v2] _build_features error: {exc}")
