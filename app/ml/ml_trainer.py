@@ -17,9 +17,10 @@ Key improvements (Mar 2026)
 * Pandas CoW fix: all inplace fillna() calls replaced with
   df[col] = df[col].fillna(val) to suppress DeprecationWarning.
 * class_weight='balanced' retained — handles WIN/LOSS imbalance.
-* Dead feature audit (Mar 2026): removed 9 zero-variance features
-  (ivr, gex_multiplier, uoa_multiplier, ivr_multiplier, rr_ratio_norm
-  and 4 others) that had no discriminative power. Feature count: 20 → 15.
+* Feature audit (Mar 2026, BUG-11): HIST_FEATURE_COLS updated to match
+  the 15 real, non-redundant features produced by HistoricalMLTrainer.
+  Dropped: grade_norm, mtf_boost, is_bull, explosive_mover.
+  Added:   vwap_side, atr_ratio, time_bucket_norm, resist_proximity.
 
 Usage:
     # Historical pre-training (primary path)
@@ -55,30 +56,40 @@ logger = logging.getLogger(__name__)
 MODEL_PATH           = os.path.join(os.path.dirname(__file__), '..', '..', 'ml_model.joblib')
 MIN_TRAINING_SAMPLES = 100
 RETRAIN_THRESHOLD    = 50
-MODEL_VERSION        = 'historical_v3'
+MODEL_VERSION        = 'historical_v4'
 
-# Minimum recall we are willing to accept when pushing threshold up.
 MIN_RECALL_FLOOR = 0.30
 
-# Feature columns produced by HistoricalMLTrainer (15 real features).
-# Dead features removed: ivr, gex_multiplier, uoa_multiplier, ivr_multiplier,
-# rr_ratio_norm — all were hardcoded constants with zero variance.
+# Feature columns produced by HistoricalMLTrainer — 15 real, non-redundant
+# features. Must stay in sync with FEATURE_NAMES in historical_trainer.py.
+#
+# Dropped (BUG-11, correlation audit):
+#   grade_norm      — redundant transform of confidence/score_norm
+#   mtf_boost       — redundant float encoding of mtf_convergence_count
+#   is_bull         — constant 1.0 (direction always 'bull'), NaN corr
+#   explosive_mover — redundant binary bucket of continuous rvol
+#
+# Added (BUG-11, outcome-correlated replacements):
+#   vwap_side        — +1/-1 sign of vwap_distance (above/below VWAP)
+#   atr_ratio        — current ATR / 20-bar avg ATR (volatility expansion)
+#   time_bucket_norm — session period: 0=open/1=mid/2=close, norm /2
+#   resist_proximity — (close - resistance) / atr, clipped [0,3]/3
 HIST_FEATURE_COLS = [
     'confidence',
-    'grade_norm',
     'rvol',
     'score_norm',
-    'mtf_boost',
     'mtf_convergence',
     'mtf_convergence_count',
     'vwap_distance',
+    'vwap_side',
     'or_range_pct',
     'adx_norm',
     'atr_pct',
+    'atr_ratio',
     'is_or_signal',
-    'is_bull',
     'hour_norm',
-    'explosive_mover',
+    'time_bucket_norm',
+    'resist_proximity',
 ]
 
 
@@ -94,22 +105,17 @@ def _find_optimal_threshold(
     Find the probability threshold that maximises precision on the val set
     subject to a minimum recall floor.
 
-    Three-pass strategy
-    -------------------
-    Pass 1 — Constrained:  max precision where recall >= min_recall
-    Pass 2 — Fallback:     max F-beta (beta=0.5, precision-weighted)
-    Pass 3 — Hard fallback: 0.50 default
-
+    Pass 1 — max precision where recall >= min_recall
+    Pass 2 — max F-beta (beta=0.5) fallback
+    Pass 3 — hard fallback: 0.50
     Result clamped to [0.40, 0.80].
     """
     try:
         probs = model.predict_proba(X_val)[:, 1]
         precisions, recalls, thresholds = precision_recall_curve(y_val, probs)
-
         prec_t = precisions[:-1]
         rec_t  = recalls[:-1]
 
-        # ── Pass 1 ───────────────────────────────────────────────────────────
         valid_mask = rec_t >= min_recall
         if valid_mask.any():
             best_idx      = np.argmax(prec_t[valid_mask])
@@ -122,7 +128,6 @@ def _find_optimal_threshold(
                 f"{best_thresh:.3f}  Prec={best_prec:.2%}  Rec={best_rec:.2%}"
             )
         else:
-            # ── Pass 2 ───────────────────────────────────────────────────────
             logger.warning(
                 f"[ML-TRAIN-DF] No threshold with recall≥{min_recall:.0%} — "
                 f"falling back to F-beta (beta=0.5)"
@@ -139,22 +144,16 @@ def _find_optimal_threshold(
                 f"{best_thresh:.3f}  Prec={best_prec:.2%}  Rec={best_rec:.2%}"
             )
 
-        best_thresh = max(0.40, min(0.80, best_thresh))
-        return best_thresh
+        return max(0.40, min(0.80, best_thresh))
 
     except Exception as exc:
         logger.warning(f"[ML-TRAIN-DF] Threshold tuning failed ({exc}), using 0.50")
         return 0.50
 
 
-def predict_with_threshold(
-    model,
-    X: np.ndarray,
-    threshold: float = 0.50,
-) -> np.ndarray:
+def predict_with_threshold(model, X: np.ndarray, threshold: float = 0.50) -> np.ndarray:
     """Apply a custom probability threshold to model.predict_proba()."""
-    probs = model.predict_proba(X)[:, 1]
-    return (probs >= threshold).astype(int)
+    return (model.predict_proba(X)[:, 1] >= threshold).astype(int)
 
 
 # ── Main training function (historical pre-training path) ────────────────────
@@ -167,13 +166,11 @@ def train_from_dataframe(
 ) -> Tuple[Optional[object], dict]:
     """
     Train (and validate) an ML model from a pre-built labelled DataFrame.
-
-    Accepts the output of HistoricalMLTrainer.build_dataset() /
-    walk_forward_split().  Saves a bundle compatible with MLSignalScorerV2.
+    Accepts output of HistoricalMLTrainer.build_dataset() / walk_forward_split().
+    Saves a bundle compatible with MLSignalScorerV2.
     """
     logger.info("[ML-TRAIN-DF] Starting train_from_dataframe()")
 
-    # ── 1. Validate columns ──────────────────────────────────────────────────
     available_feats = [c for c in HIST_FEATURE_COLS if c in train_df.columns]
     if not available_feats:
         msg = (
@@ -189,12 +186,10 @@ def train_from_dataframe(
         logger.error(f"[ML-TRAIN-DF] {msg}")
         return None, {'error': msg}
 
-    # Warn if any expected features are missing (helps catch schema drift)
     missing = [c for c in HIST_FEATURE_COLS if c not in train_df.columns]
     if missing:
         logger.warning(f"[ML-TRAIN-DF] Missing features (will be skipped): {missing}")
 
-    # ── 2. Fill NaN (CoW-safe) ───────────────────────────────────────────────
     train_df = train_df.copy()
     train_medians = {col: train_df[col].median() for col in available_feats}
     for col in available_feats:
@@ -209,7 +204,6 @@ def train_from_dataframe(
         f"(WIN={int(y_train.sum())}, LOSS={len(y_train)-int(y_train.sum())})"
     )
 
-    # ── 3. Validation set ────────────────────────────────────────────────────
     if val_df is not None and not val_df.empty:
         val_df = val_df.copy()
         for col in available_feats:
@@ -224,7 +218,6 @@ def train_from_dataframe(
 
     logger.info(f"[ML-TRAIN-DF] Val:   {len(X_val)} samples")
 
-    # ── 4. Train Random Forest ───────────────────────────────────────────────
     try:
         model = RandomForestClassifier(
             n_estimators      = n_estimators,
@@ -241,13 +234,11 @@ def train_from_dataframe(
         logger.error(f"[ML-TRAIN-DF] Training failed: {exc}")
         return None, {'error': str(exc)}
 
-    # ── 5. Evaluate at default threshold (0.50) ──────────────────────────────
     y_pred_default = model.predict(X_val)
     acc_default    = accuracy_score(y_val, y_pred_default)
     prec_default   = precision_score(y_val, y_pred_default, zero_division=0)
     rec_default    = recall_score(y_val, y_pred_default, zero_division=0)
 
-    # ── 6. Find optimal (precision-first) threshold & re-evaluate ───────────
     opt_threshold = _find_optimal_threshold(model, X_val, y_val)
     y_pred_opt    = predict_with_threshold(model, X_val, opt_threshold)
     accuracy      = accuracy_score(y_val, y_pred_opt)
@@ -256,7 +247,6 @@ def train_from_dataframe(
     f1            = f1_score(y_val, y_pred_opt, zero_division=0)
     cm            = confusion_matrix(y_val, y_pred_opt)
 
-    # ── 7. Cross-validation ──────────────────────────────────────────────────
     X_all     = np.vstack([X_train, X_val])
     y_all     = np.concatenate([y_train, y_val])
     n_splits  = min(5, max(2, len(X_all) // 20))
@@ -297,7 +287,6 @@ def train_from_dataframe(
         f"Acc={acc_default:.2%}  Prec={prec_default:.2%}  Rec={rec_default:.2%}"
     )
 
-    # ── 8. Save bundle ───────────────────────────────────────────────────────
     save_path = model_path or os.path.join(
         os.path.dirname(__file__), '..', '..', 'models', 'ml_model_historical.pkl'
     )
@@ -435,24 +424,17 @@ def _fetch_training_data() -> Optional[pd.DataFrame]:
         if not DATABASE_URL:
             logger.error("[ML-TRAIN] DATABASE_URL not set")
             return None
-
         conn_url = DATABASE_URL
         if 'sslmode=' not in conn_url.lower():
             sep = '&' if '?' in conn_url else '?'
             conn_url = f"{conn_url}{sep}sslmode=require"
-
         conn  = psycopg2.connect(conn_url)
         query = """
             SELECT
-                confidence,
-                rvol,
-                adx,
+                confidence, rvol, adx,
                 EXTRACT(HOUR FROM signal_time) * 60
                     + EXTRACT(MINUTE FROM signal_time) AS time_minutes,
-                spy_correlation,
-                pattern_type,
-                or_classification,
-                iv_rank,
+                spy_correlation, pattern_type, or_classification, iv_rank,
                 mtf_convergence,
                 CASE WHEN outcome = 'WIN' THEN 1 ELSE 0 END AS outcome
             FROM signals
@@ -473,10 +455,7 @@ def _fetch_training_data() -> Optional[pd.DataFrame]:
 def _prepare_features(df: pd.DataFrame) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], list]:
     """Prepare feature matrix X and labels y from live DB DataFrame."""
     try:
-        features = [
-            'confidence', 'rvol', 'adx', 'time_minutes',
-            'spy_correlation', 'iv_rank', 'mtf_convergence',
-        ]
+        features = ['confidence', 'rvol', 'adx', 'time_minutes', 'spy_correlation', 'iv_rank', 'mtf_convergence']
         if 'pattern_type' in df.columns:
             dummies = pd.get_dummies(df['pattern_type'], prefix='pattern')
             df = pd.concat([df, dummies], axis=1)
@@ -485,17 +464,13 @@ def _prepare_features(df: pd.DataFrame) -> Tuple[Optional[np.ndarray], Optional[
             dummies = pd.get_dummies(df['or_classification'], prefix='or')
             df = pd.concat([df, dummies], axis=1)
             features.extend(dummies.columns.tolist())
-
         for col in features:
             if col in df.columns:
                 if df[col].dtype in ['float64', 'int64']:
                     df[col] = df[col].fillna(df[col].median())
                 else:
                     df[col] = df[col].fillna(0)
-
-        X = df[features].values
-        y = df['outcome'].values
-        return X, y, features
+        return df[features].values, df['outcome'].values, features
     except Exception as exc:
         logger.error(f"[ML-TRAIN] Feature prep failed: {exc}")
         return None, None, []
