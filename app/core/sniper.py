@@ -109,6 +109,17 @@ except ImportError as e:
     def is_short_allowed(r): return True
     def print_spy_regime(r, ticker=""): pass
 
+    #SPY EMA except block
+
+    # ── ML Signal Scorer V2 ───────────────────────────────────────────────────────
+    try:
+        from app.ml.ml_signal_scorer_v2 import get_scorer_v2
+        ML_SCORER_ENABLED = True
+        print("[SNIPER] ✅ ML Signal Scorer V2 enabled")
+    except ImportError as e:
+        ML_SCORER_ENABLED = False
+        print(f"[SNIPER] ⚠️  ML scorer disabled: {e}")
+        def get_scorer_v2(): return None
 
 # ══════════════════════════════════════════════════════════════════════════════
 # FIX #1: THREAD-SAFE STATE MANAGEMENT
@@ -1241,6 +1252,39 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
             print(f"[VALIDATOR] Error validating {ticker}: {e}")
             traceback.print_exc()
 
+        # ── ML Score gate (Step 11c) ──────────────────────────────────────────────
+    if ML_SCORER_ENABLED:
+        try:
+            scorer = get_scorer_v2()
+            if scorer:
+                _meta = _get_ticker_screener_metadata(ticker)
+                ml_signal_data = {
+                    'confidence':            base_confidence,
+                    'rvol':                  _meta.get('rvol', 1.0),
+                    'score':                 _meta.get('score', 50),
+                    'mtf_convergence':       mtf_result.get('convergence', False),
+                    'mtf_convergence_count': len(mtf_result.get('timeframes', [])),
+                    'direction':             direction,
+                    'signal_type':           signal_type,
+                    'entry_price':           entry_price,
+                    'bars':                  bars_session,
+                    'ticker_win_rate':       _TICKER_WIN_CACHE.get(ticker, 0.40),
+                    'spy_regime':            float(spy_regime.get('score_adj', 0)) / 100.0 if spy_regime else 0.0,
+                }
+                ml_prob = scorer.score_signal(ml_signal_data)
+                threshold = scorer.threshold
+                ml_emoji = "✅" if ml_prob >= threshold else ("⏭️" if ml_prob < 0 else "❌")
+                print(f"[{ticker}] {ml_emoji} ML SCORE: {ml_prob:.3f} (threshold={threshold:.3f})")
+                if ml_prob >= 0 and ml_prob < threshold:
+                    print(f"[{ticker}] 🚫 ML GATE: signal dropped (prob={ml_prob:.3f} < {threshold:.3f})")
+                    return False
+                if ml_prob >= threshold:
+                    ml_boost = (ml_prob - 0.50) * 0.10
+                    final_confidence = max(0.40, min(final_confidence + ml_boost, 0.95))
+                    print(f"[{ticker}] ML CONF BOOST: {ml_boost:+.3f} → {final_confidence:.3f}")
+        except Exception as ml_err:
+            print(f"[{ticker}] ML scorer error (non-fatal): {ml_err}")
+    
     stop_price, t1, t2 = compute_stop_and_targets(
         ticker, bars_session, direction, or_high_ref, or_low_ref, entry_price,
         grade=final_grade
