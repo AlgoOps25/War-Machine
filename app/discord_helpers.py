@@ -7,6 +7,7 @@ ENHANCEMENTS:
 - Consolidated CALL/PUT formatting (green/red embeds)
 - All signal fields exposed (FVG, BOS, MTF, RVOL, greeks)
 - Clean, easy-to-read layout
+- ML score delta line: 📈 +9pts (68%→77%) shown when |adjustment| >= 1pt
 
 M10 FIX (Mar 10 2026):
 - _send_to_discord() now dispatches the HTTP POST on a daemon Thread.
@@ -218,10 +219,14 @@ def send_options_signal_alert(
     composite_score: Optional[float] = None,
     mtf_convergence: Optional[int] = None,
     explosive_mover: bool = False,
+    ml_adjustment: Optional[float] = None,
 ):
     """
     Options signal alert with CALL/PUT formatting (green/red border).
     Consolidated, easy-to-read layout.
+
+    ml_adjustment: float in pts (e.g. +9.0 or -5.0).  When |adjustment| >= 1pt,
+    a ML Score line is appended showing the direction arrow and base→adjusted conf.
     """
     # CALL / PUT and colors
     option_side = "CALL" if direction.lower() == "bull" else "PUT"
@@ -242,6 +247,15 @@ def send_options_signal_alert(
     conf_pct = confidence * 100
     header_line = f"**{conf_pct:.0f}%** confidence  •  Grade **{grade}**  •  Score **{(composite_score or conf_pct):.0f}**  •  TF **{timeframe}**"
     
+    # Append ML delta to header when significant
+    if ml_adjustment is not None and abs(ml_adjustment) >= 1.0:
+        base_conf_pct = conf_pct - ml_adjustment
+        arrow = '📈' if ml_adjustment > 0 else '📉'
+        header_line += (
+            f"\nML Score   : {arrow} **{ml_adjustment:+.1f}pts**  "
+            f"({base_conf_pct:.0f}% → {conf_pct:.0f}%)"
+        )
+
     fields = []
     
     # 1) Signal Quality

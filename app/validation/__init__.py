@@ -9,7 +9,7 @@ Validation Pillars:
 2. Time-of-Day - Avoid lunch chop and close-of-day reversals
 3. Volume Confirmation - Is this move backed by real volume?
 4. Greeks Prechecks - Are options positioned favorably? (IV rank, delta)
-5. Trend Alignment - Is price aligned with higher timeframe EMAs?
+5. ML Confidence Adjustment - MLSignalScorerV2 win-probability gate (+/-15 pts)
 6. Opening Range Context - Does this align with OR classification?
 
 Usage:
@@ -43,7 +43,8 @@ def validate_signal(
     rvol: float = 1.0,
     adx: float = None,
     price: float = None,
-    ema_stack_aligned: bool = None
+    ema_stack_aligned: bool = None,
+    signal: dict = None,
 ) -> dict:
     """
     Comprehensive signal validation using CFW6 framework.
@@ -57,7 +58,8 @@ def validate_signal(
         rvol: Relative volume (1.0 = average, 2.0 = 2x average)
         adx: ADX indicator value (trend strength)
         price: Current price (for price-based filters)
-        ema_stack_aligned: Whether EMAs are properly stacked
+        ema_stack_aligned: Whether EMAs are properly stacked (legacy, kept for back-compat)
+        signal: Full signal dict for ML gate (optional)
     
     Returns:
         dict: {
@@ -65,12 +67,14 @@ def validate_signal(
             'reason': str,
             'filters_passed': list,
             'filters_failed': list,
-            'adjusted_confidence': float
+            'adjusted_confidence': float,
+            'ml_adjustment': float,
         }
     """
     filters_passed = []
     filters_failed = []
     adjusted_confidence = confidence
+    ml_adjustment = 0.0
     
     # ═══════════════════════════════════════════════════════════════════════════════════
     # GATE 1: TIME-OF-DAY QUALITY FILTER
@@ -82,7 +86,8 @@ def validate_signal(
             'reason': time_check['reason'],
             'filters_passed': filters_passed,
             'filters_failed': ['time_of_day'],
-            'adjusted_confidence': confidence
+            'adjusted_confidence': confidence,
+            'ml_adjustment': 0.0,
         }
     filters_passed.append('time_of_day')
     adjusted_confidence += time_check.get('confidence_boost', 0)
@@ -98,7 +103,8 @@ def validate_signal(
                 'reason': regime_check['reason'],
                 'filters_passed': filters_passed,
                 'filters_failed': ['regime_filter'],
-                'adjusted_confidence': adjusted_confidence
+                'adjusted_confidence': adjusted_confidence,
+                'ml_adjustment': 0.0,
             }
         filters_passed.append('regime_filter')
         adjusted_confidence += regime_check.get('confidence_boost', 0)
@@ -132,16 +138,41 @@ def validate_signal(
             adjusted_confidence += greeks_check.get('confidence_boost', 0)
     
     # ═══════════════════════════════════════════════════════════════════════════════════
-    # GATE 5: TREND ALIGNMENT (EMA STACK)
+    # GATE 5: ML CONFIDENCE ADJUSTMENT
+    # Calls MLSignalScorerV2 to get win probability and adjusts confidence.
+    # Safe: if model file absent scorer.is_ready=False → zero adjustment, gate always passes.
+    # Adjustment capped: +15 pts (high conviction) / -15 pts (low conviction).
+    # ml_adjustment stored in result dict so sniper/discord can show the delta.
     # ═══════════════════════════════════════════════════════════════════════════════════
-    if ema_stack_aligned is not None:
-        if ema_stack_aligned:
-            filters_passed.append('ema_alignment')
-            adjusted_confidence += 3
-        else:
-            filters_failed.append('ema_alignment')
-            adjusted_confidence -= 5
-    
+    ml_source = 'none'
+    try:
+        from app.ml.ml_signal_scorer_v2 import MLSignalScorerV2
+        scorer = MLSignalScorerV2()
+        if scorer.is_ready if hasattr(scorer, 'is_ready') else scorer.trained:
+            _signal_for_ml = signal or {
+                'confidence': adjusted_confidence / 100.0,
+                'rvol': rvol,
+                'adx': adx or 20.0,
+            }
+            ml_prob = scorer.score_signal(_signal_for_ml)
+            if ml_prob >= 0:  # -1.0 sentinel means model unavailable
+                # Map probability to a confidence adjustment: +/-15 pts max
+                # prob=0.70 → +6, prob=0.30 → -6, prob=0.50 → 0
+                ml_adjustment = round((ml_prob - 0.50) * 30.0, 1)   # pts
+                ml_adjustment = max(-15.0, min(15.0, ml_adjustment))
+                ml_source = getattr(scorer, 'model_version', 'v2') or 'v2'
+                logger.info(
+                    f"[VALIDATION] Gate 5 ML: {ticker} prob={ml_prob:.3f} "
+                    f"adjustment={ml_adjustment:+.1f}pts source={ml_source}"
+                )
+    except Exception as exc:
+        logger.warning(f"[VALIDATION] Gate 5 ML skipped ({exc})")
+
+    adjusted_confidence = max(0.0, min(100.0, adjusted_confidence + ml_adjustment))
+    if ml_adjustment != 0.0:
+        emoji = '📈' if ml_adjustment > 0 else '📉'
+        filters_passed.append(f'ml_adjustment({ml_adjustment:+.1f}pts {emoji})')
+
     # ═══════════════════════════════════════════════════════════════════════════════════
     # GATE 6: MINIMUM CONFIDENCE THRESHOLD
     # ═══════════════════════════════════════════════════════════════════════════════════
@@ -152,7 +183,8 @@ def validate_signal(
             'reason': f"Confidence too low ({adjusted_confidence:.1f}% < {MIN_CONFIDENCE}%)",
             'filters_passed': filters_passed,
             'filters_failed': filters_failed,
-            'adjusted_confidence': adjusted_confidence
+            'adjusted_confidence': adjusted_confidence,
+            'ml_adjustment': ml_adjustment,
         }
     
     # ═══════════════════════════════════════════════════════════════════════════════════
@@ -163,7 +195,8 @@ def validate_signal(
         'reason': 'All validation gates passed',
         'filters_passed': filters_passed,
         'filters_failed': filters_failed,
-        'adjusted_confidence': min(adjusted_confidence, 100.0)  # Cap at 100%
+        'adjusted_confidence': min(adjusted_confidence, 100.0),  # Cap at 100%
+        'ml_adjustment': ml_adjustment,
     }
 
 
