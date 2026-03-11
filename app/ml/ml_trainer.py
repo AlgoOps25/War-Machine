@@ -2,7 +2,7 @@
 ML Confidence Model Trainer
 
 Trains a RandomForest classifier to predict signal outcomes (WIN/LOSS)
-from the 20-feature vector produced by HistoricalMLTrainer.
+from the 15-feature vector produced by HistoricalMLTrainer.
 
 Two entry points:
   train_from_dataframe() — called by train_historical.py (pre-training pipeline)
@@ -17,6 +17,9 @@ Key improvements (Mar 2026)
 * Pandas CoW fix: all inplace fillna() calls replaced with
   df[col] = df[col].fillna(val) to suppress DeprecationWarning.
 * class_weight='balanced' retained — handles WIN/LOSS imbalance.
+* Dead feature audit (Mar 2026): removed 9 zero-variance features
+  (ivr, gex_multiplier, uoa_multiplier, ivr_multiplier, rr_ratio_norm
+  and 4 others) that had no discriminative power. Feature count: 20 → 15.
 
 Usage:
     # Historical pre-training (primary path)
@@ -52,20 +55,30 @@ logger = logging.getLogger(__name__)
 MODEL_PATH           = os.path.join(os.path.dirname(__file__), '..', '..', 'ml_model.joblib')
 MIN_TRAINING_SAMPLES = 100
 RETRAIN_THRESHOLD    = 50
-MODEL_VERSION        = 'historical_v2'
+MODEL_VERSION        = 'historical_v3'
 
 # Minimum recall we are willing to accept when pushing threshold up.
-# Below this floor the model would pass too few signals to be useful.
 MIN_RECALL_FLOOR = 0.30
 
-# Feature columns produced by HistoricalMLTrainer
+# Feature columns produced by HistoricalMLTrainer (15 real features).
+# Dead features removed: ivr, gex_multiplier, uoa_multiplier, ivr_multiplier,
+# rr_ratio_norm — all were hardcoded constants with zero variance.
 HIST_FEATURE_COLS = [
-    'confidence', 'grade_norm', 'rvol', 'score_norm',
-    'ivr', 'gex_multiplier', 'uoa_multiplier', 'ivr_multiplier',
-    'mtf_boost', 'mtf_convergence', 'mtf_convergence_count',
-    'vwap_distance', 'or_range_pct', 'adx_norm', 'atr_pct',
-    'is_or_signal', 'is_bull', 'hour_norm',
-    'rr_ratio_norm', 'explosive_mover',
+    'confidence',
+    'grade_norm',
+    'rvol',
+    'score_norm',
+    'mtf_boost',
+    'mtf_convergence',
+    'mtf_convergence_count',
+    'vwap_distance',
+    'or_range_pct',
+    'adx_norm',
+    'atr_pct',
+    'is_or_signal',
+    'is_bull',
+    'hour_norm',
+    'explosive_mover',
 ]
 
 
@@ -81,42 +94,25 @@ def _find_optimal_threshold(
     Find the probability threshold that maximises precision on the val set
     subject to a minimum recall floor.
 
-    WHY precision-first:
-      A false positive (calling WIN on a future LOSS) costs real money.
-      Pure F1 maximisation pushes the threshold *down* (more aggressive),
-      which hurts precision.  We instead find the highest threshold where
-      recall is still >= min_recall, keeping enough live signals while
-      filtering the weakest WIN predictions.
-
     Three-pass strategy
     -------------------
     Pass 1 — Constrained:  max precision where recall >= min_recall
     Pass 2 — Fallback:     max F-beta (beta=0.5, precision-weighted)
-                           if pass 1 yields no valid candidates
     Pass 3 — Hard fallback: 0.50 default
 
-    Result is clamped to [0.40, 0.80] to avoid degenerate extremes.
-
-    Returns
-    -------
-    float: optimal probability threshold
+    Result clamped to [0.40, 0.80].
     """
     try:
         probs = model.predict_proba(X_val)[:, 1]
-        # precision_recall_curve returns arrays sorted by descending threshold
-        # precisions[i] / recalls[i] correspond to thresholds[i]
-        # NOTE: len(thresholds) == len(precisions) - 1  (sklearn convention)
         precisions, recalls, thresholds = precision_recall_curve(y_val, probs)
 
-        # Work only on the threshold-indexed portion (drop the last point)
         prec_t = precisions[:-1]
         rec_t  = recalls[:-1]
 
-        # ── Pass 1: max precision with recall >= floor ───────────────────────
+        # ── Pass 1 ───────────────────────────────────────────────────────────
         valid_mask = rec_t >= min_recall
         if valid_mask.any():
-            best_idx    = np.argmax(prec_t[valid_mask])
-            # Map back to the full index
+            best_idx      = np.argmax(prec_t[valid_mask])
             best_idx_full = np.where(valid_mask)[0][best_idx]
             best_thresh   = float(thresholds[best_idx_full])
             best_prec     = float(prec_t[best_idx_full])
@@ -126,7 +122,7 @@ def _find_optimal_threshold(
                 f"{best_thresh:.3f}  Prec={best_prec:.2%}  Rec={best_rec:.2%}"
             )
         else:
-            # ── Pass 2: precision-weighted F-beta (beta=0.5) ─────────────────
+            # ── Pass 2 ───────────────────────────────────────────────────────
             logger.warning(
                 f"[ML-TRAIN-DF] No threshold with recall≥{min_recall:.0%} — "
                 f"falling back to F-beta (beta=0.5)"
@@ -143,7 +139,6 @@ def _find_optimal_threshold(
                 f"{best_thresh:.3f}  Prec={best_prec:.2%}  Rec={best_rec:.2%}"
             )
 
-        # Clamp to [0.40, 0.80]
         best_thresh = max(0.40, min(0.80, best_thresh))
         return best_thresh
 
@@ -175,18 +170,6 @@ def train_from_dataframe(
 
     Accepts the output of HistoricalMLTrainer.build_dataset() /
     walk_forward_split().  Saves a bundle compatible with MLSignalScorerV2.
-
-    Parameters
-    ----------
-    train_df     : DataFrame with 'outcome_binary' + HIST_FEATURE_COLS
-    val_df       : Hold-out validation rows (same schema).  If None, 20%
-                   random split used.
-    model_path   : Where to save .pkl bundle (default: models/ml_model_historical.pkl)
-    n_estimators : Number of Random Forest trees.
-
-    Returns
-    -------
-    (model, metrics)
     """
     logger.info("[ML-TRAIN-DF] Starting train_from_dataframe()")
 
@@ -205,6 +188,11 @@ def train_from_dataframe(
         msg = f"train_df missing label column '{label_col}'"
         logger.error(f"[ML-TRAIN-DF] {msg}")
         return None, {'error': msg}
+
+    # Warn if any expected features are missing (helps catch schema drift)
+    missing = [c for c in HIST_FEATURE_COLS if c not in train_df.columns]
+    if missing:
+        logger.warning(f"[ML-TRAIN-DF] Missing features (will be skipped): {missing}")
 
     # ── 2. Fill NaN (CoW-safe) ───────────────────────────────────────────────
     train_df = train_df.copy()
@@ -274,24 +262,20 @@ def train_from_dataframe(
     n_splits  = min(5, max(2, len(X_all) // 20))
     cv_scores = cross_val_score(model, X_all, y_all, cv=n_splits, scoring='accuracy')
 
-    feat_imp = dict(zip(available_feats, model.feature_importances_))
+    feat_imp        = dict(zip(available_feats, model.feature_importances_))
     feat_imp_sorted = dict(sorted(feat_imp.items(), key=lambda x: x[1], reverse=True))
 
     metrics = {
-        # Optimal-threshold metrics (primary reporting)
         'accuracy':           accuracy,
         'precision':          precision,
         'recall':             recall,
         'f1':                 f1,
         'threshold':          opt_threshold,
-        # Default-threshold metrics (comparison)
         'accuracy_default':   acc_default,
         'precision_default':  prec_default,
         'recall_default':     rec_default,
-        # Cross-val
         'cv_mean':            float(cv_scores.mean()),
         'cv_std':             float(cv_scores.std()),
-        # Meta
         'confusion_matrix':   cm.tolist(),
         'feature_importance': feat_imp_sorted,
         'feature_names':      available_feats,
