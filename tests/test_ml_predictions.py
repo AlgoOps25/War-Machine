@@ -1,95 +1,85 @@
-#!/usr/bin/env python3
 """
-Test ML Prediction System
-Run: python tests/test_ml_predictions.py
-"""
+test_ml_predictions.py — ML Prediction System Tests
 
-import sys
+CI-safe:
+  - test_ml_src_importable  — checks if src.learning.ml_feedback_loop is importable
+
+Integration (requires DATABASE_URL):
+  - test_ml_train_and_predict  — trains model + runs predictions on mock signals
+
+Run CI-safe only:
+  pytest tests/test_ml_predictions.py -v -m "not integration"
+"""
 import os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from src.learning.ml_feedback_loop import MLFeedbackLoop
+import pytest
 from datetime import datetime
-import psycopg2
 
-def main():
-    print("=" * 60)
-    print("ML PREDICTION SYSTEM TEST")
-    print("=" * 60)
-    print()
-    
-    # Connect to database
-    db_url = os.getenv('DATABASE_URL')
+try:
+    from src.learning.ml_feedback_loop import MLFeedbackLoop
+    _ML_AVAILABLE = True
+except ImportError:
+    _ML_AVAILABLE = False
+    MLFeedbackLoop = None
+
+
+def test_ml_src_importable():
+    """src.learning.ml_feedback_loop must import cleanly."""
+    assert _ML_AVAILABLE, (
+        "src.learning.ml_feedback_loop failed to import. "
+        "Check that the src/ directory exists and that all ML dependencies "
+        "(scikit-learn, etc.) are installed."
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not _ML_AVAILABLE, reason="src.learning not importable")
+def test_ml_train_and_predict():
+    """Train ML model (min 1 sample) and run predictions on mock signals."""
+    import psycopg2
+
+    db_url = os.getenv("DATABASE_URL")
     if not db_url:
-        print("❌ ERROR: DATABASE_URL not set")
-        print("Set it: $env:DATABASE_URL=\"postgresql://...\"")
-        return
-    
+        pytest.skip("DATABASE_URL not set")
+
     db = psycopg2.connect(db_url)
     ml = MLFeedbackLoop(db)
-    
-    # Try to train (needs 20+ samples, we only have 1 NVDA)
-    print("🧠 Training ML model...")
-    success = ml.train_model(min_samples=1)  # Lower threshold for testing
-    print(f"ML Training: {'✅ Success' if success else '⚠️ Insufficient data (need 20 samples)'}")
-    print()
-    
-    # Test prediction on a new signal
-    print("📊 Testing prediction on mock TSLA signal...")
-    test_signal = {
-        'ticker': 'TSLA',
-        'signal_time': datetime.now(),
-        'pattern': 'GAP_MOVER',
-        'confidence': 75,
-        'entry_price': 250.00,
-        'stop_loss': 248.00,
-        'target_1': 253.00,
-        'target_2': 255.00,
-        'regime': 'BULL',
-        'vix_level': 18.5,
-        'spy_trend': 'UP',
-        'rvol': 3.2,
-        'score': 82,
-        'explosive_override': False
-    }
-    
-    confidence_adj, win_prob = ml.predict_signal_quality(test_signal)
-    print()
-    print(f'📊 ML Prediction for TSLA:')
-    print(f'   Win Probability: {win_prob:.1%}')
-    print(f'   Confidence Adjustment: {confidence_adj:+d}%')
-    print(f'   Original Confidence: {test_signal["confidence"]}%')
-    print(f'   New Confidence: {test_signal["confidence"] + confidence_adj}%')
-    print()
-    
-    # Test with different scenarios
-    print("📊 Testing edge cases...")
-    
-    # Low RVOL signal
-    low_rvol = test_signal.copy()
-    low_rvol['rvol'] = 1.2
-    adj, prob = ml.predict_signal_quality(low_rvol)
-    print(f"   Low RVOL (1.2): {prob:.1%} win prob, {adj:+d}% adj")
-    
-    # High VIX signal
-    high_vix = test_signal.copy()
-    high_vix['vix_level'] = 35.0
-    adj, prob = ml.predict_signal_quality(high_vix)
-    print(f"   High VIX (35): {prob:.1%} win prob, {adj:+d}% adj")
-    
-    # Bear regime signal
-    bear = test_signal.copy()
-    bear['regime'] = 'BEAR'
-    adj, prob = ml.predict_signal_quality(bear)
-    print(f"   Bear Regime: {prob:.1%} win prob, {adj:+d}% adj")
-    
-    print()
-    print("✅ ML prediction test complete!")
-    print()
-    print("Next: Add more signals to database for better ML training")
-    print("ML needs 20+ completed trades to train effectively")
-    
-    db.close()
 
-if __name__ == "__main__":
-    main()
+    # Train — may return False if not enough data; that's acceptable
+    ml.train_model(min_samples=1)
+
+    base_signal = {
+        'ticker':            'TSLA',
+        'signal_time':       datetime.now(),
+        'pattern':           'GAP_MOVER',
+        'confidence':        75,
+        'entry_price':       250.00,
+        'stop_loss':         248.00,
+        'target_1':          253.00,
+        'target_2':          255.00,
+        'regime':            'BULL',
+        'vix_level':         18.5,
+        'spy_trend':         'UP',
+        'rvol':              3.2,
+        'score':             82,
+        'explosive_override': False,
+    }
+
+    conf_adj, win_prob = ml.predict_signal_quality(base_signal)
+    assert isinstance(conf_adj, (int, float)), "confidence_adj must be numeric"
+    assert isinstance(win_prob, float),        "win_prob must be float"
+    assert 0.0 <= win_prob <= 1.0,             f"win_prob out of range: {win_prob}"
+
+    # Edge-case variants
+    low_rvol = {**base_signal, 'rvol': 1.2}
+    high_vix = {**base_signal, 'vix_level': 35.0}
+    bear_sig = {**base_signal, 'regime': 'BEAR'}
+
+    for variant_name, variant in [
+        ('low_rvol', low_rvol),
+        ('high_vix', high_vix),
+        ('bear',     bear_sig),
+    ]:
+        adj, prob = ml.predict_signal_quality(variant)
+        assert 0.0 <= prob <= 1.0, f"{variant_name}: win_prob {prob} out of range"
+
+    db.close()

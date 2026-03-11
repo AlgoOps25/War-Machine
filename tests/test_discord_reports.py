@@ -1,95 +1,65 @@
-#!/usr/bin/env python3
 """
-Test Discord EOD Report System
-Run: python tests/test_discord_reports.py
-"""
+test_discord_reports.py — Discord EOD Report System Tests
 
-import sys
+CI-safe:
+  - test_discord_reports_src_importable  — checks if src.reporting is importable
+
+Integration (requires DATABASE_URL + Discord webhook):
+  - test_discord_eod_report_generates    — live report generation + optional send
+
+Run CI-safe only:
+  pytest tests/test_discord_reports.py -v -m "not integration"
+"""
 import os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import pytest
 
-from src.reporting.performance_reporter import PerformanceReporter
-from datetime import date
-import psycopg2
+try:
+    from src.reporting.performance_reporter import PerformanceReporter
+    _SRC_REPORTING_AVAILABLE = True
+except ImportError:
+    _SRC_REPORTING_AVAILABLE = False
+    PerformanceReporter = None
 
-def main():
-    print("=" * 60)
-    print("DISCORD EOD REPORT TEST")
-    print("=" * 60)
-    print()
-    
-    # Connect to database
-    db_url = os.getenv('DATABASE_URL')
+
+def test_discord_reports_src_importable():
+    """src.reporting.performance_reporter must import cleanly."""
+    assert _SRC_REPORTING_AVAILABLE, (
+        "src.reporting.performance_reporter failed to import. "
+        "Check that the src/ directory exists and is on sys.path, "
+        "and that all dependencies (psycopg2, etc.) are installed."
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not _SRC_REPORTING_AVAILABLE, reason="src.reporting not importable")
+def test_discord_eod_report_generates():
+    """Generate EOD report from live DB; optionally send to Discord."""
+    import psycopg2
+    from datetime import date
+
+    db_url = os.getenv("DATABASE_URL")
     if not db_url:
-        print("❌ ERROR: DATABASE_URL not set")
-        print("Set it: $env:DATABASE_URL=\"postgresql://...\"")
-        return
-    
-    webhook = os.getenv('DISCORD_WEBHOOK_URL')
-    if not webhook:
-        print("⚠️ WARNING: DISCORD_WEBHOOK_URL not set")
-        print("Report will generate but not send to Discord")
-        print("To test Discord: $env:DISCORD_WEBHOOK_URL=\"https://discord.com/api/webhooks/...\"")
-        print()
-    
+        pytest.skip("DATABASE_URL not set")
+
+    webhook = os.getenv("DISCORD_WEBHOOK_URL")  # optional
+
     db = psycopg2.connect(db_url)
     reporter = PerformanceReporter(db, webhook)
-    
-    # Generate today's report
-    print("📊 Generating EOD report for today...")
-    report = reporter.generate_eod_report(date.today())
-    
-    if report:
-        print()
-        print("✅ EOD Report Generated:")
-        print("=" * 40)
-        print(f"   Date: {report['date']}")
-        print(f"   Total Signals: {report['total_signals']}")
-        print(f"   Wins: {report['wins']}")
-        print(f"   Losses: {report['losses']}")
-        print(f"   Win Rate: {report['win_rate']:.1f}%")
-        print(f"   Total P&L: {report['total_profit']:.2f}%")
-        print(f"   Avg P&L: {report['avg_profit']:.2f}%")
-        print()
-        
-        if report.get('best_trade'):
-            best = report['best_trade']
-            print(f"   🎯 Best Trade: {best['ticker']} ({best['profit']:.2f}%)")
-        
-        if report.get('worst_trade'):
-            worst = report['worst_trade']
-            print(f"   🔴 Worst Trade: {worst['ticker']} ({worst['profit']:.2f}%)")
-        
-        print()
-        
-        # Pattern breakdown
-        if report.get('patterns'):
-            print("   Pattern Performance:")
-            for pattern in report['patterns']:
-                print(f"      - {pattern['pattern']}: {pattern['count']} signals, {pattern['win_rate']:.0f}% WR")
-        
-        print()
-        print("=" * 40)
-        print()
-        
-        # Send to Discord
-        if webhook:
-            print("👌 Sending to Discord...")
-            success = reporter.send_to_discord(report)
-            if success:
-                print("✅ Report sent to Discord successfully!")
-            else:
-                print("❌ Failed to send to Discord")
-        else:
-            print("⚠️ Skipping Discord (no webhook URL)")
-    else:
-        print("⚠️ No data for today")
-        print("This is normal if no signals have been logged yet")
-    
-    print()
-    print("✅ Discord report test complete!")
-    
-    db.close()
 
-if __name__ == "__main__":
-    main()
+    report = reporter.generate_eod_report(date.today())
+
+    if report is None:
+        pytest.skip("No signal data for today — normal if no trades logged")
+
+    assert 'date'         in report
+    assert 'total_signals' in report
+    assert 'wins'         in report
+    assert 'losses'       in report
+    assert 'win_rate'     in report
+    assert report['total_signals'] >= 0
+
+    if webhook:
+        success = reporter.send_to_discord(report)
+        assert success, "Discord send returned False"
+
+    db.close()
