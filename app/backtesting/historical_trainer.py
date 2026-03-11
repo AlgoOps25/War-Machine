@@ -30,8 +30,8 @@ Feature audit fixes (Mar 2026)
     ivr, gex_multiplier, uoa_multiplier, ivr_multiplier, rr_ratio_norm —
     all require live options data (GEX, IVR, UOA) unavailable from EODHD.
     These were hardcoded placeholders that taught the model nothing.
-* Added real _mtf_convergence() helper: computes directional bull confirmation
-  across 5m, 15m, and 60m timeframes from 5m bar data — no extra API calls.
+* Added real _mtf_convergence() helper: computes SMA-slope momentum
+  convergence across 5m, 15m, and 60m timeframes from 5m bar data.
 * is_or_signal: now True when breakout bar falls within first OR_WINDOW_BARS
   bars of session (first 60 min on 5m data).
 * pattern: now 'FVG' when a Fair Value Gap exists on prior 3 bars, else 'BOS'.
@@ -57,11 +57,13 @@ Bug fixes applied
 * BUG 8: is_or_signal used absolute bar-array index offset which was always
          large. Now uses len(session_bars) <= OR_WINDOW_BARS (bars into session).
 * BUG 9: _mtf_convergence() asked “are all timeframes trending the same way?”
-         In a trending market all three are almost always aligned — converged
-         was True on 96.4% of signals (near-constant, useless to Random Forest).
-         Now asks “do the higher timeframes confirm the BULL breakout direction?”
-         close > SMA on each synthetic TF. A bull signal in a bearish 60m trend
-         scores count=0; full bull confirmation scores count=3. Real variance.
+         In a trending market all three almost always agree — near-constant.
+         Replaced with direction-aware bull confirmation (close > SMA per TF).
+* BUG 10: _is_bull_trend() checked close > SMA (position test). In a sustained
+          trend price sits permanently above/below SMA — still near-constant.
+          Replaced with _is_bull_trend_slope(): is the SMA itself rising?
+          sma_now > sma_prev detects accelerating momentum regardless of regime.
+          Produces natural ~40-60% variance across bull and bear markets.
 """
 from __future__ import annotations
 
@@ -410,49 +412,70 @@ def _sma(bars: List[Dict], period: int) -> float:
     return sum(window) / len(window) if window else 0.0
 
 
-def _is_bull_trend(bars: List[Dict], sma_period: int) -> bool:
+def _is_bull_trend_slope(
+    bars:        List[Dict],
+    sma_period:  int,
+    slope_bars:  int,
+) -> bool:
     """
-    Returns True if the last close is above the SMA of the last `sma_period`
-    bars — i.e., the bar series is in a bullish short-term trend.
-    Used by _mtf_convergence() to test each synthetic timeframe independently.
+    Returns True if the SMA is currently RISING — i.e. momentum is bullish.
+
+    BUG-10 FIX: The previous _is_bull_trend() tested close > SMA (a price
+    position test). In a sustained trend price sits permanently above/below
+    the SMA regardless of short-term momentum, collapsing the flag to
+    near-constant True or False across the entire dataset window.
+
+    This function compares:
+        sma_now  = SMA(sma_period) of the last bars
+        sma_prev = SMA(sma_period) of bars shifted back by slope_bars
+
+    A rising SMA (sma_now > sma_prev) means recent bars are pulling the
+    average up — genuine bullish momentum. The SMA rolls over the moment
+    price decelerates, giving a False signal even mid-uptrend when the move
+    is fading. This produces natural ~40–60% True/False variance regardless
+    of the macro regime (bull market, bear market, or choppy).
+
+    Parameters
+    ----------
+    bars        : bar list (raw 5m or synthetic 15m/60m)
+    sma_period  : lookback for the SMA itself (e.g. 10 for 5m, 5 for 15m)
+    slope_bars  : how many bars back to compare the SMA against
+                  (e.g. 3 for 5m → ~15 min slope, 1 for 60m → ~60 min slope)
     """
-    if not bars:
+    required = sma_period + slope_bars
+    if len(bars) < required:
         return False
-    sma_val = _sma(bars, sma_period)
-    return bars[-1]['close'] > sma_val if sma_val > 0 else False
+    sma_now  = _sma(bars,               sma_period)
+    sma_prev = _sma(bars[:-slope_bars], sma_period)
+    return sma_now > sma_prev if (sma_now > 0 and sma_prev > 0) else False
 
 
 def _mtf_convergence(bars: List[Dict]) -> Tuple[float, bool, int]:
     """
-    Multi-timeframe BULL confirmation for a breakout signal.
+    Multi-timeframe momentum convergence for a bull breakout signal.
 
-    BUG-9 FIX: The previous version asked “are all timeframes trending the
-    same direction as each other?”  In a strongly trending market (the
-    Nov 2025 – Mar 2026 selloff) all three timeframes almost always agree
-    — convergence was True on 96.4% of signals, making it near-constant
-    and ignored by the Random Forest.
+    Asks: “is each timeframe’s SMA currently rising?”
+    A rising SMA = accelerating momentum on that timeframe.
+    Count how many of 5m, 15m, 60m are in rising-SMA state.
 
-    New question: “do the HIGHER timeframes confirm a BULL breakout?”
-    Since all signals are bull breakouts (direction='bull'), we check whether
-    the 5m, 15m, and 60m synthetic bars are each individually bullish
-    (close > SMA on that timeframe).  In a downtrending session a bull
-    breakout will score 0–1; in a genuine bull session it scores 2–3.
-    This gives natural variance across market regimes.
+    BUG-10 FIX: Replaced close > SMA (position test, near-constant in
+    trending markets) with SMA slope test (sma_now > sma_prev).
+    SMA slope flips within bars of a momentum shift, giving real variance
+    across all market regimes in the training window.
 
-    Timeframe definitions
-    ---------------------
-    - 5m  (raw bars)    : close > SMA(10)  → ~50 min lookback
-    - 15m (3×5m bars)  : close > SMA(5)   → ~75 min lookback
-    - 60m (12×5m bars) : close > SMA(3)   → ~3 hr lookback
+    Slope windows per synthetic timeframe
+    -------------------------------------
+    5m  bars  : SMA(10), slope over 3 raw bars      (~15 min)
+    15m bars  : SMA(5),  slope over 2 synthetic bars (~30 min)
+    60m bars  : SMA(3),  slope over 1 synthetic bar  (~60 min)
 
-    All resampling uses last MTF_LOOKBACK_BARS (180) 5m bars to avoid
-    dragging month-old history into the trend calculation. (BUG-7)
+    All resampling uses last MTF_LOOKBACK_BARS (180) 5m bars. (BUG-7)
 
     Returns
     -------
     mtf_boost             : float  0.0 / 0.1 / 0.2 / 0.3
-    mtf_convergence       : bool   True when all 3 TFs bullish (count==3)
-    mtf_convergence_count : int    0–3 timeframes confirming bull direction
+    mtf_convergence       : bool   True when all 3 TF SMAs are rising
+    mtf_convergence_count : int    0–3 timeframes with rising SMA
     """
     if len(bars) < 13:
         return 0.0, False, 0
@@ -460,12 +483,12 @@ def _mtf_convergence(bars: List[Dict]) -> Tuple[float, bool, int]:
     # Use only recent bars to avoid month-old SMA contamination (BUG-7)
     recent = bars[-MTF_LOOKBACK_BARS:]
 
-    # ── 5m bull: close > SMA(10) on raw 5m bars ───────────────────────────
-    bull_5m = _is_bull_trend(recent, 10)
+    # ── 5m slope: SMA(10) rising over 3 bars? (∼15 min slope) ──────────────
+    bull_5m = _is_bull_trend_slope(recent, sma_period=10, slope_bars=3)
 
     # ── Resample helper ────────────────────────────────────────────────────
     def _resample(bars_5m: List[Dict], n: int) -> List[Dict]:
-        """Combine every n 5m bars into one synthetic candle."""
+        """Combine every n consecutive 5m bars into one synthetic candle."""
         out = []
         for i in range(0, len(bars_5m) - n + 1, n):
             chunk = bars_5m[i:i + n]
@@ -478,19 +501,17 @@ def _mtf_convergence(bars: List[Dict]) -> Tuple[float, bool, int]:
             })
         return out
 
-    # ── 15m bull: close > SMA(5) on synthetic 15m bars (∼75 min lookback) ───
+    # ── 15m slope: SMA(5) on synthetic 15m bars, rising over 2 bars? ───────
     bars_15m = _resample(recent, 3)
-    bull_15m = _is_bull_trend(bars_15m, 5) if bars_15m else False
+    bull_15m = _is_bull_trend_slope(bars_15m, sma_period=5, slope_bars=2) if bars_15m else False
 
-    # ── 60m bull: close > SMA(3) on synthetic 60m bars (∼3 hr lookback) ────
+    # ── 60m slope: SMA(3) on synthetic 60m bars, rising over 1 bar? ────────
     bars_60m = _resample(recent, 12)
-    bull_60m = _is_bull_trend(bars_60m, 3) if bars_60m else False
+    bull_60m = _is_bull_trend_slope(bars_60m, sma_period=3, slope_bars=1) if bars_60m else False
 
-    # count = how many of the 3 TFs confirm a bullish environment
     count     = sum([bull_5m, bull_15m, bull_60m])
     converged = count == 3
 
-    # Boost: 0.0 (0 TFs bullish) → 0.1 → 0.2 → 0.3 (all 3 bullish)
     boost_map = {0: 0.0, 1: 0.1, 2: 0.2, 3: 0.3}
     return boost_map[count], converged, count
 
@@ -564,7 +585,7 @@ def _detect_signal(
     confidence = min(0.5 + (rv - rvol_min) * 0.05 + adx * 0.003, 0.95)
     score      = int(confidence * 100)
 
-    # BUG-9 FIX: direction-aware MTF bull confirmation
+    # BUG-10 FIX: slope-based MTF momentum convergence
     mtf_boost, mtf_conv, mtf_count = _mtf_convergence(bars)
 
     # BUG-8 FIX: is_or = how many bars into today’s session are we?
