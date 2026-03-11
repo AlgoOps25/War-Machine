@@ -14,6 +14,16 @@ Design principles
 * Feature parity     — 20-feature vector matches MLSignalScorerV2._build_features().
 * Self-contained     — no live DB required; all data comes from EODHD REST API.
 
+Label quality fixes (Mar 2026)
+------------------------------
+* TARGET_MULT 2.0 → 1.5: tighter target requires a real directional
+  move, not noise-driven drift. Reduces false WIN labels on choppy days.
+* DEFAULT_TIMEOUT_BARS 20 → 12: 60-min window on 5m data. A breakout
+  that hasn't resolved in 60 minutes is a failed trade.
+* include_timeout default True: TIMEOUT signals are now included as LOSS
+  rather than silently dropped. Stalling patterns are the most valuable
+  negative examples for the model to learn from.
+
 Bug fixes applied
 -----------------
 * BUG 1: Skip intraday endpoint when interval='d' (EODHD 422).
@@ -55,16 +65,16 @@ except ImportError:
 # Constants
 # ─────────────────────────────────────────────────────────────────────────────
 EODHD_BASE            = "https://eodhd.com/api"
-DEFAULT_TIMEOUT_BARS  = 20    # bars before a signal is labelled TIMEOUT
+DEFAULT_TIMEOUT_BARS  = 12    # 60 min on 5m data — tighter than old 20-bar window
 MIN_SIGNAL_BARS       = 30    # min bars before scanning (intraday)
 MIN_SIGNAL_BARS_DAILY = 5     # min bars for daily
-STOP_MULT             = 1.0   # stop_loss = entry - ATR * STOP_MULT
-TARGET_MULT           = 2.0   # target    = entry + ATR * TARGET_MULT (1:2 R:R)
+STOP_MULT             = 1.0   # stop_loss = entry - ATR * STOP_MULT  (1×ATR)
+TARGET_MULT           = 1.5   # target    = entry + ATR * TARGET_MULT (1:1.5 R:R)
+                               # Tighter than old 2.0 — must be a real directional
+                               # move, not noise-driven drift, to label WIN.
 RVOL_MIN_DAILY        = 1.3   # lower RVOL threshold for daily bars
 
 # Market hours in UTC: 09:30–16:00 ET = 14:30–21:00 UTC
-# Pre-market (before 14:30 UTC) and post-market (after 21:00 UTC)
-# bars have null/zero volume and produce false signals.
 MARKET_OPEN_UTC_H  = 14
 MARKET_OPEN_UTC_M  = 30
 MARKET_CLOSE_UTC_H = 21
@@ -102,17 +112,16 @@ def _is_market_hours(dt_str: str) -> bool:
     Market hours UTC: 14:30–21:00 (= 09:30–16:00 ET)
     """
     if not dt_str or not isinstance(dt_str, str):
-        return True  # epoch timestamps — assume valid, checked by volume gate
+        return True
     try:
-        # Handle both space-separated and T-separated ISO formats
         dt_str_clean = dt_str.replace('T', ' ').split('.')[0]
         dt = datetime.strptime(dt_str_clean, '%Y-%m-%d %H:%M:%S')
-        open_mins  = MARKET_OPEN_UTC_H  * 60 + MARKET_OPEN_UTC_M   # 870
-        close_mins = MARKET_CLOSE_UTC_H * 60 + MARKET_CLOSE_UTC_M  # 1260
+        open_mins  = MARKET_OPEN_UTC_H  * 60 + MARKET_OPEN_UTC_M
+        close_mins = MARKET_CLOSE_UTC_H * 60 + MARKET_CLOSE_UTC_M
         bar_mins   = dt.hour * 60 + dt.minute
         return open_mins <= bar_mins < close_mins
     except (ValueError, AttributeError):
-        return True  # unparseable — let volume gate catch it
+        return True
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -163,7 +172,6 @@ def _eodhd_intraday(
         for b in raw:
             dt_str = b.get('datetime') or b.get('date', '')
 
-            # BUG-4a: drop pre/post-market bars
             if not _is_market_hours(dt_str):
                 skipped_hours += 1
                 continue
@@ -174,7 +182,6 @@ def _eodhd_intraday(
             c = _safe_float(b.get('close'))
             v = _safe_float(b.get('volume'))
 
-            # BUG-4b: drop zero-price or zero-volume bars
             if c == 0.0 or v == 0.0:
                 skipped_vol += 1
                 continue
@@ -267,8 +274,7 @@ def _atr(bars: List[Dict], period: int = 14) -> float:
 def _rvol(bars: List[Dict], lookback: int = 20) -> float:
     """
     Relative volume: current bar volume vs avg of prior `lookback` bars.
-    BUG-5: Only include bars with volume > 0 in the lookback average so
-    any remaining zero-volume bars don't deflate the avg and inflate RVOL.
+    BUG-5: Only include bars with volume > 0 in the lookback average.
     """
     if len(bars) < 2:
         return 1.0
@@ -330,8 +336,7 @@ def _adx_approx(bars: List[Dict], period: int = 14) -> float:
 def _vwap_distance(bars: List[Dict]) -> float:
     """
     Distance of last close from session VWAP as a fraction of close.
-    BUG-5: Guard against all-zero volume window (division by zero).
-    Only use bars with volume > 0 for VWAP calculation.
+    BUG-5: Guard against all-zero volume window.
     """
     vol_bars = [b for b in bars if b['volume'] > 0]
     if not vol_bars:
@@ -346,7 +351,6 @@ def _or_range(bars: List[Dict], or_bars: int = 6) -> float:
     """
     Opening Range as % of price: high-low of first `or_bars` bars of session.
     Uses first 6 bars = first 30 minutes on 5m data (09:30–10:00 ET).
-    Falls back to bars[0:or_bars] which is correct for session-only data.
     """
     window = bars[:or_bars] if len(bars) >= or_bars else bars
     if not window:
@@ -376,9 +380,7 @@ def _detect_signal(
     lookback:  int   = 12,
     is_daily:  bool  = False,
 ) -> Optional[Dict]:
-    """
-    Returns a signal dict if a breakout is detected on the last bar, else None.
-    """
+    """Returns a signal dict if a breakout is detected on the last bar, else None."""
     min_bars = MIN_SIGNAL_BARS_DAILY if is_daily else MIN_SIGNAL_BARS
     if len(bars) < min_bars:
         return None
@@ -402,7 +404,7 @@ def _detect_signal(
     regime    = _regime(spy_bars) if spy_bars else 'NEUTRAL'
     hour      = _parse_hour(latest['timestamp'])
     atr_pct   = atr / entry
-    or_range  = _or_range(bars)  # BUG-4 fix: proper OR using first 6 bars
+    or_range  = _or_range(bars)
     confidence = min(0.5 + (rv - rvol_min) * 0.05 + adx * 0.003, 0.95)
     score      = int(confidence * 100)
     rr_ratio   = (target - entry) / (entry - stop_loss) if (entry - stop_loss) > 0 else TARGET_MULT
@@ -451,7 +453,7 @@ def _parse_hour(ts) -> int:
                 continue
     except Exception:
         pass
-    return 14  # default to market open hour
+    return 14
 
 
 def _score_to_grade(score: int) -> str:
@@ -479,7 +481,7 @@ def _label_outcome(
     Walk forward from entry bar and label WIN / LOSS / TIMEOUT.
     * WIN     — high >= target  before low <= stop_loss
     * LOSS    — low  <= stop_loss before high >= target
-    * TIMEOUT — neither hit within timeout_bars bars
+    * TIMEOUT — neither hit within timeout_bars bars (12 = 60 min on 5m)
     """
     entry_idx = signal['bar_index']
     target    = signal['target']
@@ -529,7 +531,7 @@ def _signal_to_features(sig: Dict) -> List[float]:
         sig.get('atr_pct', 0.01),
         1.0 if sig.get('signal_type') == 'CFW6_OR' else 0.0,
         1.0 if sig.get('direction') == 'bull' else 0.0,
-        sig.get('hour', 14) / 21.0,   # normalized to market-hours UTC range
+        sig.get('hour', 14) / 21.0,
         sig.get('rr_ratio', 2.0) / 5.0,
         float(sig.get('explosive_mover', False)),
     ]
@@ -641,12 +643,19 @@ class HistoricalMLTrainer:
         self,
         tickers:           List[str],
         months_back:       int   = 4,
-        include_timeout:   bool  = False,
+        include_timeout:   bool  = True,
         spy_ticker:        str   = 'SPY',
         rate_limit_s:      float = 0.5,
         interval_override: Optional[str] = None,
     ):
-        """Full pipeline: fetch → replay → label → DataFrame."""
+        """
+        Full pipeline: fetch → replay → label → DataFrame.
+
+        include_timeout=True (default): TIMEOUT signals are included as LOSS.
+        A signal that stalls for 60 min without hitting target or stop is a
+        failed trade and the most valuable negative example for the model.
+        Set include_timeout=False only if you want pure WIN/LOSS datasets.
+        """
         if not _PANDAS_OK:
             raise ImportError("pandas required for build_dataset()")
 
@@ -681,18 +690,20 @@ class HistoricalMLTrainer:
             return pd.DataFrame()
 
         rows = []
+        timeout_count = 0
         for sig in all_signals:
             outcome = sig['outcome']
             if outcome == 'TIMEOUT':
                 if not include_timeout:
                     continue
-                outcome = 'LOSS'
+                timeout_count += 1
+                outcome = 'LOSS'  # stalled = failed trade
 
             features = _signal_to_features(sig)
             row = {
                 'ticker':         sig.get('ticker', ''),
                 'timestamp':      sig.get('timestamp', ''),
-                'outcome':        sig['outcome'],
+                'outcome':        sig['outcome'],   # raw label (TIMEOUT preserved)
                 'outcome_binary': 1 if outcome == 'WIN' else 0,
                 'regime':         sig.get('regime', 'NEUTRAL'),
                 'pattern':        sig.get('pattern', 'BOS'),
@@ -702,8 +713,12 @@ class HistoricalMLTrainer:
             rows.append(row)
 
         df = pd.DataFrame(rows)
+        win_n  = (df['outcome_binary'] == 1).sum()
+        loss_n = (df['outcome_binary'] == 0).sum()
         logger.info(
-            f"[HIST-TRAINER] Dataset: {len(df)} labelled signals from {len(tickers)} tickers"
+            f"[HIST-TRAINER] Dataset: {len(df)} labelled signals from {len(tickers)} tickers "
+            f"(WIN={win_n} {win_n/len(df)*100:.1f}%, LOSS={loss_n} {loss_n/len(df)*100:.1f}%, "
+            f"TIMEOUT→LOSS={timeout_count})"
         )
         return df
 
@@ -740,7 +755,7 @@ class HistoricalMLTrainer:
             f"({(df['outcome']=='WIN').mean()*100:.1f}%)",
             f"LOSS          : {(df['outcome']=='LOSS').sum()} "
             f"({(df['outcome']=='LOSS').mean()*100:.1f}%)",
-            f"TIMEOUT (excl): {(df['outcome']=='TIMEOUT').sum()}",
+            f"TIMEOUT→LOSS  : {(df['outcome']=='TIMEOUT').sum()}",
             f"Avg RVOL      : {df['rvol'].mean():.2f}",
             f"Avg confidence: {df['confidence'].mean():.2%}",
         ]
