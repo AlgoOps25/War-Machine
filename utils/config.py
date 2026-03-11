@@ -205,7 +205,7 @@ BACKTEST_CHAMPION = {
     'bos_strength' : 0.001,        # 0.10% — dominant, score drops 44% at 0.15%
     'tf_confirm'   : '1m',         # 1m — best at >=30 trade floor
     'vwap_zone'    : 'above_vwap', # tied with 'none'; kept for directional logic
-    'rvol_min'     : 2.0,          # hard cliff at 3.0x
+    'rvol_min'     : 3.0,          # hard cliff at 3.0x
     'mfi_min'      : 60,           # marginal but consistent
     'obv_bars'     : 0,            # noise — disabled
     'session'      : 'all_day',    # no session segmentation in data
