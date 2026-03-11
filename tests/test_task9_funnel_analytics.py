@@ -15,6 +15,7 @@ All of the above are CI-safe: they require only app.analytics (no live DB/API).
 """
 import pytest
 
+_ANALYTICS_ERR_MSG = ""
 try:
     from app.analytics import (
         funnel_tracker,
@@ -28,16 +29,16 @@ try:
         log_filled,
     )
     _ANALYTICS_AVAILABLE = True
-except ImportError as _analytics_err:
+except ImportError as _e:
     _ANALYTICS_AVAILABLE = False
-    _ANALYTICS_ERR_MSG   = str(_analytics_err)
+    _ANALYTICS_ERR_MSG   = str(_e)
     funnel_tracker = ab_test = None
     log_screened = log_bos = log_fvg = log_validator = None
     log_armed = log_fired = log_filled = None
 
 needs_analytics = pytest.mark.skipif(
     not _ANALYTICS_AVAILABLE,
-    reason=f"app.analytics import failed: {_analytics_err if not _ANALYTICS_AVAILABLE else ''}"
+    reason=f"app.analytics import failed: {_ANALYTICS_ERR_MSG}"
 )
 
 
@@ -46,7 +47,7 @@ def test_funnel_analytics_importable():
     assert _ANALYTICS_AVAILABLE, (
         f"app.analytics failed to import required names. "
         f"Check app/analytics/__init__.py exports funnel_tracker and ab_test. "
-        f"Error: {_analytics_err if not _ANALYTICS_AVAILABLE else 'none'}"
+        f"Error: {_ANALYTICS_ERR_MSG or 'none'}"
     )
 
 
