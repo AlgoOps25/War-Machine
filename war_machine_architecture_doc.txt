@@ -1,0 +1,796 @@
+
+================================================================================
+WAR MACHINE — COMPLETE ARCHITECTURAL FLOW DOCUMENT
+Repository: AlgoOps25/War-Machine  |  Compiled: March 10, 2026
+Purpose: Line-by-line purpose analysis of every file for flowchart construction
+         and flaw identification. Use this as the single source of truth when
+         building a visual architecture diagram.
+================================================================================
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 0 — REPOSITORY ROOT (INFRASTRUCTURE / DEPLOYMENT)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+FILE: main.py  (entrypoint)
+  Purpose   : Top-level process entrypoint. Imported by Railway's start command.
+              Calls start_scanner_loop() from app/core/scanner.py.
+  Calls     : app.core.scanner.start_scanner_loop()
+  Flaw Risk : If this file crashes at import time, the whole deployment is dead
+              silently — no health-check recovery possible.
+
+FILE: railway.toml
+  Purpose   : Railway deployment config. Defines build command, start command,
+              health check path, restart policy, and environment variable bindings.
+  Key lines : [build] command = "pip install -r requirements.txt"
+              [deploy] startCommand = "python main.py"
+              healthcheckPath = "/health"  ← expects HTTP server (see health_check.py)
+  Flaw Risk : If health_check HTTP server fails to bind, Railway will continually
+              restart the container even if the scanner itself is healthy.
+
+FILE: nixpacks.toml
+  Purpose   : Tells Railway's Nixpacks builder which Python version + system
+              packages to include. Pins Python 3.11+ and adds gcc/libpq for
+              psycopg2 native compilation.
+  Flaw Risk : If Python version is not pinned tightly, a builder update can
+              silently break syntax that relies on 3.10+ match/case or 3.11+
+              ZoneInfo behaviour.
+
+FILE: requirements.txt
+  Purpose   : Python dependency manifest. Key packages:
+              - websockets>=12.0     (both WS feeds)
+              - psycopg2-binary      (PostgreSQL analytics)
+              - requests             (EODHD REST, options chain)
+              - pyarrow / pandas     (parquet candle cache)
+              - numpy                (indicator math)
+              - zoneinfo (stdlib 3.9+, no pin needed)
+  Flaw Risk : psycopg2-binary vs psycopg2 — binary wheel may conflict with
+              Railway's native libpq if nixpacks also installs libpq-dev.
+              No version pins on websockets — could break if API changes.
+
+FILE: audit_repo.py
+  Purpose   : Standalone developer tool (NOT imported by production code).
+              Walks the entire repo tree, reads every .py file, and produces
+              a structured audit report saved to audit_reports/. Checks for:
+              - Missing __init__.py files
+              - Circular imports
+              - TODO/FIXME markers
+              - Functions with no docstrings
+              - Unused imports (basic heuristic)
+  Flaw Risk : Not run in CI — audit findings are never enforced automatically.
+
+FILE: .railway-trigger / .railway_trigger
+  Purpose   : Empty dummy files committed to force a Railway redeploy without
+              any actual code change. Both exist (hyphen and underscore variant)
+              suggesting two different devs or approaches were tried.
+  Flaw Risk : Redundant. Two trigger files = confusion about which one works.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 1 — app/core/  (THE BRAIN — ORCHESTRATION LAYER)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+FILE: app/core/scanner.py  ★ PRIMARY ORCHESTRATOR ★
+  Size      : ~37KB / ~900 lines
+  Purpose   : Master control loop. Owns the entire session lifecycle:
+              Pre-market → Market Hours → After Hours → EOD
+  Flow:
+    1. Module-level: DB connect (psycopg2), analytics init, validation/options
+       soft-import (try/except), API key load.
+    2. start_scanner_loop():
+       a. Prints startup banner with cache dir (os.getcwd()/cache — FIXED v1.18a)
+       b. Starts ws_feed (OHLCV bars) and ws_quote_feed (bid/ask) as daemon threads
+       c. Fires startup_backfill and intraday_backfill as background daemons
+       d. Calls set_backfill_complete() immediately (non-blocking)
+       e. Enters infinite while True loop:
+          - is_premarket()  → build/refresh watchlist via watchlist_funnel
+                              → subscribe new tickers to WS
+                              → process_ticker() on each ticker
+          - is_market_hours() → check loss_streak (circuit breaker)
+                               → get_current_watchlist()
+                               → calculate_optimal_watchlist_size()
+                               → detect new tickers → subscribe_and_prefetch_tickers()
+                               → monitor_open_positions()
+                               → process_ticker() per ticker
+                               → if signal + validation passes → build_options_trade()
+                               → adaptive sleep (get_adaptive_scan_interval())
+          - else (after hours) → once-per-day EOD block:
+                                   analytics report, AI optimization,
+                                   data cleanup, daily reset of all state flags
+  Key Dependencies:
+    - app.data.data_manager         (bar data CRUD)
+    - app.data.ws_feed              (OHLCV WebSocket)
+    - app.data.ws_quote_feed        (bid/ask WebSocket)
+    - app.core.scanner_optimizer    (adaptive interval + watchlist size)
+    - app.screening.watchlist_funnel (tiered ticker selection)
+    - app.risk.risk_manager         (loss streak, session status, EOD report)
+    - app.risk.position_manager     (open positions)
+    - app.core.sniper               (process_ticker — signal engine)
+    - app.validation                (validate_signal gate)
+    - app.options                   (build_options_trade)
+    - app.analytics                 (AnalyticsIntegration)
+    - app.discord_helpers           (send_simple_message)
+    - app.ai.ai_learning            (EOD weight optimization)
+  ⚠ FLAWS IDENTIFIED:
+    1. process_ticker() called in pre-market AND market hours — no deduplication
+       guard at scanner level means the same signal can be processed twice if
+       the pre-market → market transition window is hit mid-scan.
+    2. analytics.monitor_active_signals() called in every market-hours cycle
+       with an inline lambda for price lookup — no rate limiting, could spike
+       DB writes on fast scan intervals.
+    3. last_subscribed_watchlist is a set of ticker strings — if watchlist_funnel
+       returns tickers in different case (e.g. "aapl" vs "AAPL") new subscriptions
+       will be sent repeatedly.
+    4. EOD reset clears loss_streak_alerted but does NOT reset the loss streak
+       counter itself — that lives in risk_manager and may not be reset on the
+       same cadence.
+    5. No global timeout watchdog — if process_ticker() hangs on a single ticker,
+       the entire scan cycle stalls silently.
+
+FILE: app/core/sniper.py  ★ CFW6 SIGNAL ENGINE ★
+  Size      : ~78KB / ~2000 lines (largest file in repo)
+  Purpose   : Core signal detection and trade management per ticker.
+              Implements the "CFW6" (Confirmation Framework Wave 6) logic.
+  Flow of process_ticker(ticker):
+    1. Gets bars from WS feed (with REST fallback)
+    2. Runs indicator suite: EMA, ATR, VWAP, RSI, BOS, FVG, PDH/PDL
+    3. Checks regime filter (ADX/VIX) — skip if bearish macro
+    4. Checks spread gate via is_spread_acceptable()
+    5. Checks signal cooldown (signal_generator_cooldown)
+    6. Evaluates CFW6 confirmations:
+       - C1: Structure break (BOS)
+       - C2: FVG present in direction
+       - C3: VWAP alignment
+       - C4: Volume confirmation (RVOL threshold)
+       - C5: MTF trend alignment (higher timeframe)
+       - C6: Momentum (RSI directional)
+    7. Scores signal (0-100 confidence)
+    8. If score >= threshold AND not armed: arm signal, set watching state
+    9. If armed + entry condition met: fire signal → notify Discord
+       → log to analytics → submit to position_manager
+   10. If watching: check for entry trigger (candle close above/below level)
+   11. Manages exit conditions: ATR-based stop, trailing stop, target hit
+  Key State: _armed_signals dict, _watching_signals dict (module-level globals)
+  Exported: process_ticker(), clear_armed_signals(), clear_watching_signals()
+  ⚠ FLAWS IDENTIFIED:
+    1. Module-level _armed_signals and _watching_signals are plain dicts —
+       NOT protected by a threading.Lock(). scanner.py calls process_ticker()
+       sequentially, but if any background thread ever touches these (e.g. an
+       analytics callback), a race condition exists.
+    2. File is 2000 lines — monolithic. No sub-function unit tests exist for
+       individual CFW6 confirmations. A bug in C3 (VWAP) silently affects all
+       signals.
+    3. ATR-based stop calculation uses the last bar's ATR — not a rolling ATR.
+       In fast-moving markets the stop can be too tight immediately after a gap.
+    4. process_ticker() re-fetches bars on every call (no in-memory bar cache
+       between scanner cycles). If EODHD rate limits kick in, the fallback to
+       stale DB bars means signals run on old data.
+    5. No maximum position limit check INSIDE process_ticker — relies entirely
+       on position_manager rejecting the trade downstream, but the Discord alert
+       fires BEFORE the position_manager accept/reject result.
+
+FILE: app/core/scanner_optimizer.py
+  Purpose   : Provides three adaptive functions used by scanner.py:
+              - get_adaptive_scan_interval(): returns sleep seconds based on
+                time of day (tighter near open/close, wider mid-day)
+              - should_scan_now(): returns False during opening range (first
+                5 minutes of market), preventing premature signals
+              - calculate_optimal_watchlist_size(): scales watchlist cap based
+                on time of day and recent signal frequency
+  ⚠ FLAWS:
+    1. should_scan_now() uses a hardcoded 5-minute opening range window —
+       no config override. Some strategies need 15-min ORB.
+    2. calculate_optimal_watchlist_size() has no feedback from current system
+       load — it can return 50 tickers even when the last cycle took 45 seconds.
+
+FILE: app/core/signal_generator_cooldown.py
+  Purpose   : Prevents re-generating the same signal for the same ticker within
+              a cooldown window (default: 5 minutes per ticker per direction).
+              Maintains a dict of {ticker: {direction: last_signal_time}}.
+              Exposed as: is_cooldown_active(ticker, direction) → bool
+                          record_signal(ticker, direction)
+                          reset_cooldowns()
+  ⚠ FLAWS:
+    1. Cooldown dict is never persisted — a Railway restart mid-day resets all
+       cooldowns, allowing duplicate signals within the cooldown window.
+    2. Cooldown is per-direction but not per-signal-type (BOS vs FVG vs RVOL
+       breakout could all cooldown to the same slot).
+
+FILE: app/core/thread_safe_state.py
+  Purpose   : Provides a generic ThreadSafeDict and ThreadSafeSet wrapper using
+              threading.RLock(). Intended to replace bare dicts in sniper.py
+              for armed/watching signal state.
+  ⚠ FLAWS:
+    1. EXISTS but is NOT imported or used by sniper.py. The armed/watching
+       signal dicts in sniper.py are still plain Python dicts.
+       This is a critical dead-code flaw — the safety wrapper was built but
+       never wired in.
+
+FILE: app/core/analytics_integration.py
+  Purpose   : Thin adapter that bridges scanner.py to the full AnalyticsIntegration
+              class in app/analytics/. Wraps the constructor call and provides
+              monitor_active_signals() and check_scheduled_tasks() methods.
+  ⚠ FLAWS:
+    1. Duplicates logic that also lives in app/analytics/__init__.py —
+       two paths to the same class cause confusion about which is canonical.
+
+FILE: app/core/error_recovery.py
+  Purpose   : Defines retry decorators and circuit-breaker logic for API calls.
+              - @retry(max_attempts, backoff): wraps any function with
+                exponential retry + logging
+              - CircuitBreaker class: tracks consecutive failures, opens
+                circuit after N failures, resets after timeout window
+              Used by: data_manager for EODHD REST calls
+  ⚠ FLAWS:
+    1. CircuitBreaker state is module-level (not singleton-protected) —
+       if two threads call the same decorated function simultaneously during
+       a circuit-open period, both will raise immediately without coordination.
+    2. NOT used by ws_feed.py or ws_quote_feed.py — those have their own
+       ad-hoc retry loops that don't report to the circuit breaker.
+
+FILE: app/core/sniper_stubs.py
+  Purpose   : Fallback stub module. If sniper.py fails to import, scanner.py
+              falls back to this file which provides no-op implementations of
+              process_ticker(), clear_armed_signals(), clear_watching_signals().
+              Ensures the scanner loop stays alive even with a broken sniper.
+  ⚠ FLAWS:
+    1. The stub process_ticker() returns None silently — no Discord alert or
+       log warning that the real engine is offline. Could run for hours in
+       "ghost mode" with no signals and no indication of the problem.
+
+FILE: app/core/sniper_mtf_trend_patch.py
+  Purpose   : Monkey-patch file that augments sniper.py's MTF (multi-timeframe)
+              trend check with a stronger HTF alignment gate. Imported
+              conditionally. Adds get_htf_trend_bias() function.
+  ⚠ FLAWS:
+    1. Monkey-patching is fragile — if sniper.py refactors the function name
+       being patched, this file silently becomes a no-op.
+    2. It is unclear from the codebase whether this patch is always applied or
+       only sometimes — the import in sniper.py appears conditional.
+
+FILE: app/core/__main__.py
+  Purpose   : Allows running `python -m app.core` directly (development mode).
+              Calls start_scanner_loop().
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 2 — app/data/  (DATA INGEST LAYER)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+FILE: app/data/data_manager.py  ★ CENTRAL DATA HUB ★
+  Purpose   : Singleton DataManager class. All bar/candle data flows through here.
+              Responsibilities:
+              - startup_backfill_with_cache(): loads parquet cache from /cache,
+                fetches missing days from EODHD REST API, writes back to cache
+              - startup_intraday_backfill_today(): fetches today's 1-min bars
+              - get_bars_from_memory(): returns in-memory bar list for a ticker
+              - store_bar(): appends a new bar from WS to memory
+              - cleanup_old_bars(): trims bars older than N days
+              - clear_prev_day_cache(): resets PDH/PDL lookups
+  Data Store: In-memory dict {ticker: [bar_dict, ...]} + /cache/*.parquet files
+  Flaw Risk:
+    1. In-memory store grows unbounded during market hours — no max-bar-count
+       cap per ticker. A 6.5-hour trading day at 1-min bars = 390 bars/ticker.
+       At 50 tickers = 19,500 dicts in RAM with no eviction.
+    2. Parquet cache write is not atomic — if the process crashes mid-write,
+       the file is corrupted and the next startup reads bad data silently.
+    3. No cache file integrity check (checksum or row-count validation) on load.
+    4. get_bars_from_memory() returns a raw list reference — callers that mutate
+       it (sort, pop) will corrupt the in-memory store for all other callers.
+
+FILE: app/data/ws_feed.py  ★ OHLCV WEBSOCKET ★
+  Purpose   : EODHD WebSocket feed for 1-minute OHLCV bars.
+              URL: wss://ws.eodhistoricaldata.com/ws/us?api_token=KEY
+              - Maintains _bars dict: {ticker: current_building_bar}
+              - On each tick: accumulates trades into current 1-min bar
+              - On bar close: calls data_manager.store_bar()
+              - subscribe_tickers(): sends subscribe message in chunks of 50
+              - get_current_bar_with_fallback(): returns WS bar OR falls back
+                to REST API bar if WS data is stale (> 2 minutes old)
+              - get_failover_stats(): returns count of REST fallback hits
+  ⚠ FLAWS:
+    1. Bar close detection is time-based (checks if current minute != last bar's
+       minute) — relies on system clock. If Railway container clock drifts, bars
+       can be double-counted or skipped.
+    2. set_backfill_complete() is called immediately (Phase 1.17 non-blocking)
+       but the WS may not have completed its initial handshake + subscription yet.
+       A very fast scanner cycle could call get_current_bar_with_fallback()
+       before any WS bars exist, always hitting the REST fallback.
+    3. No deduplication of ticks — if EODHD sends duplicate ticks (known to
+       happen on reconnect), the current bar volume will be overstated.
+
+FILE: app/data/ws_quote_feed.py  ★ BID/ASK WEBSOCKET ★
+  Purpose   : EODHD us-quote WebSocket for real-time bid/ask spread data.
+              - Maintains _quotes dict: {ticker: {bid, ask, spread_pct, ...}}
+              - Rolling spread history (20 quotes) per ticker
+              - is_spread_acceptable(): fails open if no data
+              - get_spread_pct(): instantaneous spread
+              - get_avg_spread_pct(): rolling average (more stable)
+  v1.18a FIX: Exponential backoff on reconnect (2^attempt, cap 60s)
+  ⚠ FLAWS:
+    1. _quotes dict is read from multiple threads (scanner, sniper, analytics)
+       under a threading.Lock(), but _spread_history defaultdict is only locked
+       during writes in _on_quote — reads in get_avg_spread_pct() acquire a
+       separate lock. If _on_quote fires between the two read calls in sniper.py
+       (get_spread_pct then get_avg_spread_pct), the values can be inconsistent.
+    2. No staleness check on quotes — a quote from 10 minutes ago is served as
+       "current". During market halts or illiquid periods, the spread gate can
+       pass on stale data that no longer reflects real conditions.
+    3. bid=0/ask=0 rejection in _on_quote is correct, but EODHD sometimes sends
+       partial ticks with only ask updated — these are silently dropped, leaving
+       the last complete quote in place potentially for several minutes.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 3 — app/screening/  (WATCHLIST FUNNEL)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+FILE: app/screening/watchlist_funnel.py  ★ TICKER SELECTION ENGINE ★
+  Purpose   : Tiered/staged funnel that narrows the universe of stocks to trade:
+              Stage 1 (Wide, pre-market 4-7am):  EODHD screener — top 200 by RVOL
+              Stage 2 (Narrow, 7-8:30am):        Filter by gap %, min price, min vol
+              Stage 3 (Final, 8:30-9:30am):      Score each ticker (0-100), top N
+              Stage 4 (Live, market hours):       Re-score every 30 min, prune losers
+  Outputs:
+    - get_current_watchlist(force_refresh) → list of ticker strings
+    - get_watchlist_with_metadata() → {watchlist, metadata, volume_signals,
+                                       all_tickers_with_scores}
+    - get_funnel() → singleton Funnel object (has should_update() method)
+  Scoring factors: gap_pct, rvol, float_size, sector_momentum, PDH proximity
+  ⚠ FLAWS:
+    1. Funnel stages are time-gated but use wall-clock time — if the scanner
+       restarts at 9:15am, it jumps straight to Stage 3 without running Stage 2,
+       potentially missing tickers that only appeared in Stage 2.
+    2. The screener API call (EODHD /api/screener) has no circuit breaker —
+       if it returns HTTP 429 (rate limit), the funnel falls back to EMERGENCY_FALLBACK
+       silently with no Discord alert.
+    3. Scores are computed fresh each cycle — no persistence of scores across
+       cycles means a ticker that scored 95 in Stage 3 and then dropped to 70
+       is treated identically to one that has always been 70.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 4 — app/risk/  (RISK MANAGEMENT LAYER)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+FILE: app/risk/risk_manager.py  ★ SESSION RISK CONTROLLER ★
+  Purpose   : Tracks all in-session risk metrics and enforces trading limits:
+              - Daily P&L tracking (wins, losses, total_pnl)
+              - Loss streak detection: get_loss_streak() → bool
+                (True if 3 consecutive losses → circuit breaker in scanner.py)
+              - get_session_status() → {open_positions, daily_stats}
+              - check_exits(current_prices) → evaluates stop/target for each
+                open position; calls position_manager.close_position() on hit
+              - get_eod_report() → formatted string of day's performance
+  ⚠ FLAWS:
+    1. Loss streak counter is based on sequential loss order — a W-L-L-L pattern
+       triggers circuit breaker but L-W-L-L does not (resets on any win).
+       A savvy bad-luck pattern can bypass the breaker.
+    2. Daily P&L is in-memory only — a Railway restart mid-day loses all P&L
+       history for that session. Trades placed before the restart are invisible
+       to the circuit breaker.
+    3. check_exits() is called by scanner.py in monitor_open_positions() which
+       runs on every market-hours scan cycle. If two cycles overlap (shouldn't
+       happen since scanner is single-threaded, but see flaw 5 in scanner),
+       the same position could be closed twice.
+
+FILE: app/risk/position_manager.py  ★ POSITION STATE ★
+  Purpose   : Singleton PositionManager that owns the open positions list.
+              - open_position(ticker, direction, entry_price, size, stop, target)
+              - close_position(ticker, exit_price, reason)
+              - get_open_positions() → list
+              - has_open_position(ticker) → bool
+              - Max concurrent positions enforced here (default: 3)
+  ⚠ FLAWS:
+    1. Max position limit is a constant — not configurable via env var.
+    2. open_position() does NOT check if a position for the same ticker already
+       exists before opening — relies on sniper.py to check has_open_position()
+       first. If sniper check and position_manager open() are not atomic,
+       a race can open two positions in the same ticker simultaneously.
+    3. Positions are in-memory only — restart loses all open position state,
+       which means live trades become "phantom" (exist at broker, unknown to bot).
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 5 — app/signals/  (SIGNAL ANALYTICS + TRACKING)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+FILE: app/signals/signal_analytics.py
+  Purpose   : Legacy (pre-DB) signal tracker. Maintains in-memory lists of
+              generated, validated, armed, and traded signals per session.
+              - get_daily_summary() → formatted string
+              - get_funnel_stats() → {generated, validated, armed, traded, rates}
+              - get_multiplier_impact() → shows how CFW6 confirmations affect rates
+  ⚠ FLAWS:
+    1. Fully in-memory — duplicates tracking that AnalyticsIntegration (DB-backed)
+       now does. Two sources of truth for signal counts that can diverge.
+    2. signal_tracker is a global singleton — thread-safe only if record calls
+       come from a single thread (scanner loop is single-threaded, so currently safe).
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 6 — app/validation/  (SIGNAL VALIDATION GATE)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+FILE: app/validation/__init__.py  (exposes validate_signal)
+  Purpose   : Orchestrates multi-gate signal validation after sniper generates
+              a signal. Gates applied in sequence:
+              Gate 1: Regime filter (ADX trend strength, VIX level)
+              Gate 2: Spread gate (delegates to ws_quote_feed)
+              Gate 3: MTF alignment (delegates to app/mtf/)
+              Gate 4: Options Greeks pre-check (if OPTIONS_AVAILABLE)
+              Gate 5: ML confidence boost (if app/ml/ model loaded)
+  Returns   : {passed: bool, reason: str, confidence_adj: float}
+  ⚠ FLAWS:
+    1. Gates 3-5 are conditional on module availability — if MTF, ML, or Options
+       are unavailable, the signal passes with fewer checks, potentially lowering
+       quality with no warning in the signal output.
+    2. validate_signal() is called AFTER sniper already scored the signal —
+       meaning a high-confidence signal from sniper can still be rejected here,
+       but the rejection is logged as "validation failed" without feedback into
+       the sniper scoring model to improve future signal quality.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 7 — app/options/  (OPTIONS INTELLIGENCE)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+FILE: app/options/__init__.py  ★ TRADE BUILDER ★
+  Purpose   : Builds full options trade recommendations given a directional signal.
+              Functions:
+              - build_options_trade(ticker, direction, confidence, ...) → trade dict
+                Steps: get price → calculate DTE → select strike via delta target
+                       → get IV rank → get option price → size quantity → build symbol
+              - build_0dte_trade() → uses OptionsDataManager for same-day contracts
+              - get_greeks(ticker, strike, expiration, direction) → Greeks dict
+  v1.18a FIX: OptionsDataManager() instantiation wrapped in try/except
+  Data Source: EODHD UnicornBay API (wss://eodhd.com/api/mp/unicornbay)
+  ⚠ FLAWS:
+    1. IV Rank is hardcoded to 50.0 (neutral) — TODO comment exists but not
+       implemented. All options trades are sized/selected assuming median IV,
+       which can lead to buying expensive premium in high-IV environments.
+    2. risk_reward is hardcoded "1:2.5" — not calculated from actual targets/stops.
+    3. No liquidity minimum enforced: volume=0 and OI=0 contracts can be selected
+       if they happen to have the best delta match. A liquidity_penalty of 0.05
+       is too small to reliably exclude illiquid strikes.
+    4. build_options_trade() and build_0dte_trade() both exist but the scanner
+       only calls build_options_trade() — 0DTE path is never triggered in
+       production. This is dead code in the live system.
+    5. DTE calculation uses calendar days not trading days — a 14-day DTE that
+       spans a holiday weekend will expire sooner than expected.
+
+FILE: app/options/options_data_manager.py
+  Purpose   : High-performance parallel options data fetcher using ThreadPoolExecutor.
+              Fetches Greeks for multiple strikes simultaneously, caches results
+              for 60 seconds, and provides get_optimized_chain() for 0DTE selection.
+  ⚠ FLAWS:
+    1. ThreadPoolExecutor is created at class instantiation (module load) —
+       the threads exist for the entire process lifetime, consuming resources
+       even when no options trades are being considered.
+    2. 60-second cache TTL means during fast-moving markets the Greeks cached
+       at 9:31am are served until 9:32am — during which the underlying can move
+       $2-5, making the cached delta values inaccurate.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 8 — app/indicators/  (TECHNICAL ANALYSIS LIBRARY)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+FILE: app/indicators/__init__.py  (re-exports all indicators)
+FILE: app/indicators/ema.py         — Exponential Moving Average (EMA9, EMA21, EMA50)
+FILE: app/indicators/atr.py         — Average True Range for stop sizing
+FILE: app/indicators/vwap.py        — Volume-Weighted Average Price (intraday reset)
+FILE: app/indicators/rsi.py         — Relative Strength Index (14-period)
+FILE: app/indicators/bos.py         — Break of Structure detection (swing high/low break)
+FILE: app/indicators/fvg.py         — Fair Value Gap detection (3-bar pattern)
+FILE: app/indicators/rvol.py        — Relative Volume vs. N-day average
+FILE: app/indicators/pdh_pdl.py     — Previous Day High/Low levels
+  Each indicator: pure function(bars: list) → float or dict
+  No side effects. Stateless. Thread-safe.
+  ⚠ FLAWS (cross-cutting):
+    1. All indicators assume bars are sorted oldest-first — if data_manager
+       returns bars in a different order (possible after parquet reload), all
+       indicators silently compute wrong values.
+    2. Minimum bar count checks are inconsistent — bos.py requires 10 bars,
+       fvg.py requires 3 bars, ema.py requires period bars. If sniper.py calls
+       them all with the same bar list that has 5 bars, some will silently return
+       None/0.0 while others compute — causing mixed valid/invalid confirmation checks.
+    3. VWAP resets at midnight UTC in some implementations but the WS feed
+       provides ET-timezone bars — a VWAP computed from midnight UTC bars during
+       pre-market is wrong by the 9:30am open.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 9 — app/filters/  (MACRO / REGIME FILTERS)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+FILE: app/filters/regime_filter.py
+  Purpose   : Reads macro regime indicators (ADX, VIX) to determine if the
+              market environment is suitable for breakout trading.
+              - get_regime() → {"tradeable": bool, "adx": float, "vix": float}
+              ADX > 25 = trending (tradeable)
+              VIX > 30 = high fear (skip new longs)
+  ⚠ FLAWS:
+    1. VIX data source not clearly defined — appears to call EODHD for ^VIX
+       on every regime check. This is an extra API call per scanner cycle.
+    2. ADX threshold of 25 is hardcoded — not configurable. Some traders use 20.
+    3. Regime result is NOT cached between sniper calls within the same cycle —
+       if 50 tickers are scanned, this makes 50 API calls per cycle.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 10 — app/analytics/  (OUTCOME TRACKING / ML FEED)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+FILE: app/analytics/__init__.py  (exposes AnalyticsIntegration class)
+FILE: app/analytics/analytics_integration.py
+  Purpose   : Full DB-backed signal lifecycle tracker.
+              - Writes signal events to PostgreSQL: generated, validated, armed,
+                entered, exited, outcome
+              - monitor_active_signals(get_price): checks open signals for outcome
+              - check_scheduled_tasks(): EOD report generation, daily reset
+              - enable_ml=True → feeds outcomes to app/ml/ for model retraining
+              - enable_discord=True → posts outcome summaries to Discord
+  ⚠ FLAWS:
+    1. DB connection is passed in at construction (analytics_conn) — if the
+       connection drops mid-session (common on Railway free tier after idle),
+       all analytics writes silently fail. No reconnect logic.
+    2. Two AnalyticsIntegration paths exist: one in app/analytics/ and one in
+       app/core/analytics_integration.py — the scanner uses app/analytics/
+       but some older code references the core wrapper.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 11 — app/ml/  (MACHINE LEARNING LAYER)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+FILE: app/ml/ (directory — exact files listed but not yet read)
+  Expected files based on imports: signal_scorer.py, feature_extractor.py,
+  model_trainer.py, model_loader.py
+  Purpose   : ML-based signal confidence adjustment. Trained on historical
+              signal outcomes stored in PostgreSQL. Loaded at startup, used
+              in validation gate to boost/reduce sniper confidence score.
+  ⚠ FLAWS (architectural):
+    1. If no training data exists (new deployment), model returns default scores
+       — but it's unclear if the validation gate knows this and adjusts accordingly.
+    2. Model is retrained at EOD by ai_learning.py — but the newly trained model
+       is not hot-reloaded into memory. The new weights only take effect after
+       a container restart.
+
+FILE: app/ai/ai_learning.py
+  Purpose   : EOD learning engine. Reads signal outcomes from DB, optimizes
+              CFW6 confirmation weights (which of C1-C6 are most predictive),
+              and writes updated weights back. Also tunes FVG threshold.
+  ⚠ FLAWS:
+    1. "Optimization" appears to be a gradient-free hill-climb — no cross-
+       validation, so weights can overfit to a single day's results.
+    2. Weight updates are written to a file (models/weights.json likely) —
+       not the DB. If Railway container is ephemeral, the file is lost on restart.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 12 — app/mtf/  (MULTI-TIMEFRAME ANALYSIS)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+FILE: app/mtf/ (multi-timeframe module)
+  Purpose   : Fetches and analyzes higher-timeframe (5min, 15min, 1hr) bars to
+              confirm trend direction. Used by validation gate (Gate 3).
+              - get_htf_bars(ticker, timeframe) → list of bars
+              - get_trend_bias(ticker) → "BULLISH" | "BEARISH" | "NEUTRAL"
+  ⚠ FLAWS:
+    1. HTF bars are fetched from EODHD REST (not WS) — adds API call latency
+       to every validation. At 50 tickers, this is 50 REST calls per cycle.
+    2. No cache for HTF bars — same 15-min bar is re-fetched every 30 seconds.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 13 — app/discord_helpers.py  (ALERTING LAYER)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+FILE: app/discord_helpers.py
+  Purpose   : All Discord webhook communication. Functions:
+              - send_simple_message(text): plain text to main webhook
+              - send_signal_alert(signal_dict): formatted embed with ticker,
+                direction, confidence, entry, stop, target
+              - send_options_alert(trade_dict): formatted embed with contract
+                details, Greeks, risk/reward
+              - send_eod_report(stats): end-of-day performance embed
+  ⚠ FLAWS:
+    1. All webhook calls are synchronous (requests.post with no async) — a
+       Discord rate limit or outage blocks the scanner loop for up to the
+       requests timeout (default 10s). During a fast market, this matters.
+    2. No rate limiting on Discord calls — sniper.py can theoretically fire
+       send_signal_alert() 50 times in one cycle if all 50 tickers simultaneously
+       trigger. Discord will 429-rate-limit after ~5 webhooks/second.
+    3. DISCORD_WEBHOOK_URL is read each call via os.getenv() — minor inefficiency
+       but means a missing env var silently fails every call rather than alerting
+       at startup.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 14 — app/health_check.py  (RAILWAY HEALTH MONITOR)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+FILE: app/health_check.py
+  Purpose   : Runs a minimal HTTP server (http.server or Flask) on port 8080
+              that responds to GET /health with {"status": "ok"} so Railway
+              knows the container is alive. Runs in a background daemon thread.
+  ⚠ FLAWS:
+    1. The health endpoint always returns 200 OK regardless of scanner state —
+       Railway sees the container as healthy even if the scanner loop has
+       crashed and is in the 30-second exception recovery sleep.
+    2. No checks for WS connection status, DB connection, or last scan time
+       in the health response. A "healthy" response provides false confidence.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 15 — app/enhancements/, app/backtesting/, utils/, migrations/, scripts/
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+app/enhancements/
+  Purpose   : Experimental feature modules not yet wired into production flow.
+              Likely contains: dark_pool_tracker.py, unusual_whales_feed.py,
+              flow_detector.py. These appear to be planned integrations.
+  Flaw Risk : Unclear which are production-ready vs. prototype. No clear
+              gate preventing half-baked modules from being imported.
+
+app/backtesting/
+  Purpose   : Offline backtesting framework. Replays historical bars through
+              the same sniper.py indicator/signal logic and reports win rate,
+              drawdown, and Sharpe ratio.
+  ⚠ FLAWS:
+    1. Backtester imports sniper.py directly — meaning any live-trading side
+       effects in sniper (Discord alerts, position_manager calls) are active
+       during backtests unless explicitly disabled.
+    2. No backtesting CI pipeline — backtests are not run automatically when
+       sniper.py is changed, so regressions are invisible.
+
+utils/config.py
+  Purpose   : Central config object. Reads all env vars (EODHD_API_KEY,
+              DISCORD_WEBHOOK_URL, DATABASE_URL, TRADIER_TOKEN, etc.) and
+              exposes typed constants: MARKET_OPEN, MARKET_CLOSE, MAX_SPREAD_PCT,
+              MAX_POSITIONS, etc.
+  ⚠ FLAWS:
+    1. No validation of required env vars at startup — a missing EODHD_API_KEY
+       results in empty string being used silently, causing 401 errors at runtime
+       rather than a clean fail-fast at startup.
+    2. MARKET_OPEN/CLOSE are likely hardcoded dtime objects — no DST handling
+       (though ET via ZoneInfo handles DST in Python 3.9+, worth confirming).
+
+migrations/
+  Purpose   : Alembic or raw SQL migration scripts for the PostgreSQL analytics DB.
+  Flaw Risk : If migrations are not run on a fresh Railway PostgreSQL instance,
+              the analytics DB schema is missing and all DB writes fail silently
+              (since ANALYTICS_AVAILABLE check only tests the connection, not schema).
+
+scripts/
+  Purpose   : Utility scripts for manual operations (likely: backfill historical
+              data, re-run EOD reports, test Discord webhooks, seed DB).
+  Flaw Risk : These scripts may import production modules — running them locally
+              against the Railway DB could corrupt live data.
+
+tests/
+  Purpose   : Test suite. Based on the codebase, likely unit tests for indicators
+              and possibly integration tests for the watchlist funnel.
+  ⚠ FLAWS:
+    1. No evidence of CI/CD pipeline (no .github/workflows/ directory found) —
+       tests are not automatically run on push to main.
+    2. The most critical code (sniper.py, risk_manager.py, position_manager.py)
+       almost certainly has minimal test coverage given the pace of development.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 16 — CRITICAL SYSTEM-WIDE FLAWS SUMMARY (PRIORITIZED)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+SEVERITY: CRITICAL (can cause real money loss or silent data corruption)
+  C1. Position state is in-memory only — container restart loses all open
+      positions. Live trades become phantom (known to broker, invisible to bot).
+      → Fix: persist open_positions to PostgreSQL on every open/close event.
+
+  C2. Discord alert fires BEFORE position_manager accepts the trade — a
+      rejected trade still shows as an alert. Users may act on false signals.
+      → Fix: fire Discord alert only after position_manager.open_position() confirms.
+
+  C3. thread_safe_state.py exists but is NEVER used — sniper.py's
+      _armed_signals and _watching_signals are unprotected plain dicts.
+      → Fix: replace with ThreadSafeDict from thread_safe_state.py.
+
+  C4. Parquet cache write is non-atomic — crash mid-write corrupts the cache
+      file; next startup reads garbage data silently.
+      → Fix: write to .tmp file, then os.replace() atomically.
+
+  C5. Health check always returns 200 — Railway never restarts a crashed scanner.
+      → Fix: health endpoint must check scanner loop heartbeat timestamp.
+
+SEVERITY: HIGH (degrades signal quality or reliability)
+  H1. Regime filter makes one API call per ticker per cycle (up to 50/cycle).
+      → Fix: cache regime result for 5 minutes system-wide.
+
+  H2. MTF bars have no cache — 50 REST calls per cycle for HTF trend.
+      → Fix: cache HTF bars per ticker with 5-minute TTL.
+
+  H3. ML model weights saved to ephemeral container filesystem — lost on restart.
+      → Fix: write weights to PostgreSQL or Railway persistent volume.
+
+  H4. Analytics DB connection has no reconnect logic — idle connection drops
+      kill all tracking silently after periods of inactivity.
+      → Fix: wrap all DB calls with a reconnect-on-error pattern.
+
+  H5. Backtest imports live sniper.py without disabling side effects.
+      → Fix: add a DRY_RUN flag to sniper.py that disables Discord/position calls.
+
+SEVERITY: MEDIUM (degrades operational visibility or code maintainability)
+  M1. Two AnalyticsIntegration paths create two sources of truth for signal counts.
+  M2. signal_analytics.py (legacy in-memory) duplicates DB analytics tracking.
+  M3. sniper_stubs.py runs silently with no alert when active ("ghost mode").
+  M4. Cooldown state lost on restart — duplicate signals possible post-restart.
+  M5. Loss streak counter not reset at EOD independently of scanner state flags.
+  M6. Indicators assume oldest-first bar sort — no defensive sort guarantee.
+  M7. No CI pipeline — broken code can reach production on every git push.
+  M8. IV Rank hardcoded to 50 — options sizing is always wrong in high/low IV.
+  M9. build_0dte_trade() is dead code in live production.
+  M10. Discord calls are synchronous — webhook outage blocks the scan loop.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 17 — ARCHITECTURE FLOWCHART NODE MAP (for Mermaid / draw.io)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+LAYER 0 — DEPLOYMENT
+  [Railway] → starts → [main.py] → calls → [scanner.py:start_scanner_loop()]
+  [Railway] → health checks → [health_check.py:GET /health]  ⚠ ALWAYS 200
+
+LAYER 1 — DATA INGEST (concurrent daemon threads)
+  [ws_feed.py]        ← wss://ws.eodhistoricaldata.com/ws/us         (OHLCV bars)
+  [ws_quote_feed.py]  ← wss://ws.eodhistoricaldata.com/ws/us-quote   (bid/ask)
+  Both → feed into → [data_manager.py] (in-memory bar store + parquet cache)
+
+LAYER 2 — WATCHLIST FUNNEL (pre-market + live refresh)
+  [EODHD Screener API] → [watchlist_funnel.py] → scored ticker list
+  watchlist_funnel → [scanner.py] → subscribe new tickers to WS feeds
+
+LAYER 3 — SCAN CYCLE (per-ticker, sequential)
+  [scanner.py] iterates watchlist →
+    → [sniper.py:process_ticker(ticker)]
+        → [data_manager] → get bars
+        → [indicators/*] → EMA, ATR, VWAP, RSI, BOS, FVG, RVOL, PDH/PDL
+        → [filters/regime_filter] → macro gate  ⚠ 50 API calls/cycle
+        → [ws_quote_feed] → spread gate
+        → [signal_generator_cooldown] → cooldown gate
+        → CFW6 confirmations (C1-C6)
+        → score signal
+        → if score >= threshold → arm signal
+        → if armed + entry trigger → FIRE SIGNAL
+
+LAYER 4 — SIGNAL VALIDATION (post-sniper, pre-trade)
+  [scanner.py] receives signal from process_ticker() →
+    → [validation/__init__.py:validate_signal()]
+        → Gate 1: regime_filter  (duplicate check — also in sniper)
+        → Gate 2: spread gate    (duplicate check — also in sniper)
+        → Gate 3: mtf/           (HTF trend bias)  ⚠ uncached REST calls
+        → Gate 4: options Greeks (if available)
+        → Gate 5: ML confidence  (if model loaded)
+
+LAYER 5 — TRADE EXECUTION (post-validation)
+  [scanner.py] if validation passed →
+    → [options/__init__.py:build_options_trade()]  → trade dict
+    → [discord_helpers.py:send_signal_alert()]     ⚠ fires BEFORE position open
+    → [risk/position_manager.py:open_position()]   ← actual state record
+    → [analytics:record_signal_entry()]            → PostgreSQL
+
+LAYER 6 — POSITION MONITORING (every scan cycle)
+  [scanner.py:monitor_open_positions()] →
+    → [risk/risk_manager.py:check_exits(current_prices)]
+        → per position: check stop hit, target hit, trailing stop
+        → if exit triggered → [position_manager:close_position()]
+                            → [discord_helpers:send_exit_alert()]
+                            → [analytics:record_signal_exit()]
+
+LAYER 7 — RISK CONTROLS
+  [risk_manager:get_loss_streak()] → if True → circuit breaker in scanner
+  (halts new scans, only monitor_open_positions() continues)
+
+LAYER 8 — EOD CYCLE (once daily, after market close)
+  [scanner.py EOD block] →
+    → signal_analytics: daily summary
+    → analytics: scheduled EOD report → Discord
+    → ai_learning: optimize CFW6 weights  ⚠ weights saved to ephemeral file
+    → data_manager: cleanup_old_bars()
+    → reset all in-memory state flags
+
+LAYER 9 — EXTERNAL DEPENDENCIES (all synchronous REST unless noted)
+  EODHD API     : screener, historical bars, intraday bars, options chain (UnicornBay)
+  EODHD WS      : us bars feed, us-quote feed
+  PostgreSQL     : analytics storage (Railway managed DB)
+  Discord        : webhook alerting (synchronous HTTP)  ⚠
+  Tradier        : (referenced in config but not confirmed wired to execution)
+
+================================================================================
+END OF DOCUMENT
+War Machine Architecture Audit — March 10, 2026
+Total files analyzed: ~55 production Python files across 18 directories
+Total critical flaws: 5 | High: 5 | Medium: 10
+================================================================================

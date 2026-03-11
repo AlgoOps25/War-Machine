@@ -49,7 +49,7 @@ except ImportError:
     logger.warning("[ML-SCORER-v2] scikit-learn not available — using rule-based fallback")
 
 
-MODEL_PATH = os.path.join(os.getcwd(), 'models', 'ml_signal_scorer_v2.pkl')
+MODEL_PATH = os.path.join(os.getcwd(), 'models', 'ml_model_historical.pkl')
 FEATURE_VERSION = 'v2.0'
 FEATURE_COUNT   = 20
 
