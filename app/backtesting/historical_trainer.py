@@ -19,7 +19,7 @@ Label quality fixes (Mar 2026)
 * TARGET_MULT 2.0 → 1.5: tighter target requires a real directional
   move, not noise-driven drift. Reduces false WIN labels on choppy days.
 * DEFAULT_TIMEOUT_BARS 20 → 12: 60-min window on 5m data. A breakout
-  that hasn't resolved in 60 minutes is a failed trade.
+  that hasn’t resolved in 60 minutes is a failed trade.
 * include_timeout default True: TIMEOUT signals are now included as LOSS
   rather than silently dropped. Stalling patterns are the most valuable
   negative examples for the model to learn from.
@@ -30,8 +30,8 @@ Feature audit fixes (Mar 2026)
     ivr, gex_multiplier, uoa_multiplier, ivr_multiplier, rr_ratio_norm —
     all require live options data (GEX, IVR, UOA) unavailable from EODHD.
     These were hardcoded placeholders that taught the model nothing.
-* Added real _mtf_convergence() helper: computes 15m and 60m trend alignment
-  from existing 5m bar data — no extra API calls required.
+* Added real _mtf_convergence() helper: computes directional bull confirmation
+  across 5m, 15m, and 60m timeframes from 5m bar data — no extra API calls.
 * is_or_signal: now True when breakout bar falls within first OR_WINDOW_BARS
   bars of session (first 60 min on 5m data).
 * pattern: now 'FVG' when a Fair Value Gap exists on prior 3 bars, else 'BOS'.
@@ -50,12 +50,18 @@ Bug fixes applied
 * BUG 5: _rvol() and _vwap_distance() guard against zero-volume bars in averages.
 * BUG 6: _or_range() was called with the full growing window (bars[:or_bars]
          from bar 0 of the 4-month array). Now receives session_bars (only
-         bars since today's open) so OR high/low reflects the actual session.
+         bars since today’s open) so OR high/low reflects the actual session.
 * BUG 7: _mtf_convergence() was resampling 3000+ bars → SMA across the entire
          history → all trend flags False → mtf_boost=0.0 every signal.
          Now slices only last MTF_LOOKBACK_BARS (180) 5m bars before resampling.
 * BUG 8: is_or_signal used absolute bar-array index offset which was always
          large. Now uses len(session_bars) <= OR_WINDOW_BARS (bars into session).
+* BUG 9: _mtf_convergence() asked “are all timeframes trending the same way?”
+         In a trending market all three are almost always aligned — converged
+         was True on 96.4% of signals (near-constant, useless to Random Forest).
+         Now asks “do the higher timeframes confirm the BULL breakout direction?”
+         close > SMA on each synthetic TF. A bull signal in a bearish 60m trend
+         scores count=0; full bull confirmation scores count=3. Real variance.
 """
 from __future__ import annotations
 
@@ -97,9 +103,10 @@ RVOL_MIN_DAILY        = 1.3   # lower RVOL threshold for daily bars
 # OR window: first 12 bars of session = first 60 min on 5m data (09:30-10:30 ET)
 OR_WINDOW_BARS = 12
 
-# BUG-7 FIX: MTF resampling lookback — only use last N 5m bars before resampling.
-# 180 bars = ~15 hours of market data (~3 full sessions), enough for meaningful
-# 15m (60-bar) and 60m (15-bar) synthetic candles without month-old history.
+# MTF resampling lookback: only use last N 5m bars before resampling.
+# 180 bars = ~15 hours (~3 full sessions). Gives 60 synthetic 15m bars
+# and 15 synthetic 60m bars — enough for meaningful SMA without dragging
+# month-old context into the trend calculation. (BUG-7)
 MTF_LOOKBACK_BARS = 180
 
 # Market hours in UTC: 09:30–16:00 ET = 14:30–21:00 UTC
@@ -377,7 +384,7 @@ def _or_range(session_bars: List[Dict], or_bars: int = 6) -> float:
     BUG-6 FIX: Previously called with the full growing bar window, so
     bars[:or_bars] always referenced the very first bars of the 4-month
     array — giving the same static value for every signal in the dataset.
-    Now receives session_bars (only bars since today's session open),
+    Now receives session_bars (only bars since today’s session open),
     so bars[:or_bars] is always the actual opening range of that day.
     """
     window = session_bars[:or_bars] if len(session_bars) >= or_bars else session_bars
@@ -403,45 +410,60 @@ def _sma(bars: List[Dict], period: int) -> float:
     return sum(window) / len(window) if window else 0.0
 
 
+def _is_bull_trend(bars: List[Dict], sma_period: int) -> bool:
+    """
+    Returns True if the last close is above the SMA of the last `sma_period`
+    bars — i.e., the bar series is in a bullish short-term trend.
+    Used by _mtf_convergence() to test each synthetic timeframe independently.
+    """
+    if not bars:
+        return False
+    sma_val = _sma(bars, sma_period)
+    return bars[-1]['close'] > sma_val if sma_val > 0 else False
+
+
 def _mtf_convergence(bars: List[Dict]) -> Tuple[float, bool, int]:
     """
-    Compute multi-timeframe trend alignment from 5m bar data.
+    Multi-timeframe BULL confirmation for a breakout signal.
 
-    Synthesises 15m and 60m candles by grouping the 5m bars,
-    then checks whether the current 5m trend aligns with both
-    higher timeframes using a simple SMA crossover proxy.
+    BUG-9 FIX: The previous version asked “are all timeframes trending the
+    same direction as each other?”  In a strongly trending market (the
+    Nov 2025 – Mar 2026 selloff) all three timeframes almost always agree
+    — convergence was True on 96.4% of signals, making it near-constant
+    and ignored by the Random Forest.
+
+    New question: “do the HIGHER timeframes confirm a BULL breakout?”
+    Since all signals are bull breakouts (direction='bull'), we check whether
+    the 5m, 15m, and 60m synthetic bars are each individually bullish
+    (close > SMA on that timeframe).  In a downtrending session a bull
+    breakout will score 0–1; in a genuine bull session it scores 2–3.
+    This gives natural variance across market regimes.
+
+    Timeframe definitions
+    ---------------------
+    - 5m  (raw bars)    : close > SMA(10)  → ~50 min lookback
+    - 15m (3×5m bars)  : close > SMA(5)   → ~75 min lookback
+    - 60m (12×5m bars) : close > SMA(3)   → ~3 hr lookback
+
+    All resampling uses last MTF_LOOKBACK_BARS (180) 5m bars to avoid
+    dragging month-old history into the trend calculation. (BUG-7)
 
     Returns
     -------
-    mtf_boost          : float  0.0–0.3 additive confidence boost
-    mtf_convergence    : bool   True if all 3 timeframes aligned
-    mtf_convergence_count : int  0, 1, 2, or 3 aligned timeframes
-
-    Design notes
-    ------------
-    - 5m  trend : close > SMA(10) on 5m bars  (~50 min lookback)
-    - 15m trend : close > SMA(5)  on synthetic 15m bars (~75 min)
-    - 60m trend : close > SMA(3)  on synthetic 60m bars (~3 hr)
-
-    BUG-7 FIX: Previously resampled the full growing window (up to 3000+
-    bars). SMA on hundreds of synthetic candles is essentially the long-term
-    mean — almost always above the latest close in a downtrend, so all three
-    trend flags = False, count = 0, boost = 0.0 on every signal.
-    Now slices only the last MTF_LOOKBACK_BARS (180) 5m bars before
-    resampling, giving 60 synthetic 15m bars and 15 synthetic 60m bars —
-    a meaningful recent-context window.
+    mtf_boost             : float  0.0 / 0.1 / 0.2 / 0.3
+    mtf_convergence       : bool   True when all 3 TFs bullish (count==3)
+    mtf_convergence_count : int    0–3 timeframes confirming bull direction
     """
-    if len(bars) < 13:  # need at least 60 min of 5m data
+    if len(bars) < 13:
         return 0.0, False, 0
 
-    # ── BUG-7 FIX: use only recent bars for resampling ────────────────────────
-    recent_bars = bars[-MTF_LOOKBACK_BARS:]
+    # Use only recent bars to avoid month-old SMA contamination (BUG-7)
+    recent = bars[-MTF_LOOKBACK_BARS:]
 
-    # ── 5m trend ─────────────────────────────────────────────────────────────
-    sma5_10  = _sma(recent_bars, 10)
-    trend_5m = recent_bars[-1]['close'] > sma5_10 if sma5_10 > 0 else False
+    # ── 5m bull: close > SMA(10) on raw 5m bars ───────────────────────────
+    bull_5m = _is_bull_trend(recent, 10)
 
-    # ── Synthetic 15m bars (group every 3 × 5m bars) ─────────────────────────
+    # ── Resample helper ────────────────────────────────────────────────────
     def _resample(bars_5m: List[Dict], n: int) -> List[Dict]:
         """Combine every n 5m bars into one synthetic candle."""
         out = []
@@ -456,19 +478,19 @@ def _mtf_convergence(bars: List[Dict]) -> Tuple[float, bool, int]:
             })
         return out
 
-    bars_15m = _resample(recent_bars, 3)   # 3 × 5m = 15m
-    bars_60m = _resample(recent_bars, 12)  # 12 × 5m = 60m
+    # ── 15m bull: close > SMA(5) on synthetic 15m bars (∼75 min lookback) ───
+    bars_15m = _resample(recent, 3)
+    bull_15m = _is_bull_trend(bars_15m, 5) if bars_15m else False
 
-    sma15_5   = _sma(bars_15m, 5)
-    trend_15m = (bars_15m[-1]['close'] > sma15_5) if (bars_15m and sma15_5 > 0) else False
+    # ── 60m bull: close > SMA(3) on synthetic 60m bars (∼3 hr lookback) ────
+    bars_60m = _resample(recent, 12)
+    bull_60m = _is_bull_trend(bars_60m, 3) if bars_60m else False
 
-    sma60_3   = _sma(bars_60m, 3)
-    trend_60m = (bars_60m[-1]['close'] > sma60_3) if (bars_60m and sma60_3 > 0) else False
-
-    count = sum([trend_5m, trend_15m, trend_60m])
+    # count = how many of the 3 TFs confirm a bullish environment
+    count     = sum([bull_5m, bull_15m, bull_60m])
     converged = count == 3
 
-    # Boost: 0.0 (0 aligned) → 0.1 (1) → 0.2 (2) → 0.3 (all 3)
+    # Boost: 0.0 (0 TFs bullish) → 0.1 → 0.2 → 0.3 (all 3 bullish)
     boost_map = {0: 0.0, 1: 0.1, 2: 0.2, 3: 0.3}
     return boost_map[count], converged, count
 
@@ -502,12 +524,12 @@ def _detect_signal(
     rvol_min:      float = 2.0,
     lookback:      int   = 12,
     is_daily:      bool  = False,
-    session_bars:  Optional[List[Dict]] = None,  # BUG-6/8 FIX: bars since session open
+    session_bars:  Optional[List[Dict]] = None,
 ) -> Optional[Dict]:
     """
     Returns a signal dict if a breakout is detected on the last bar, else None.
 
-    session_bars: slice of the bar array from today's first bar through the
+    session_bars: slice of the bar array from today’s first bar through the
     current bar.  Used for _or_range() (BUG-6) and is_or_signal (BUG-8).
     Falls back to the full window when None (e.g. daily mode).
     """
@@ -535,22 +557,20 @@ def _detect_signal(
     hour      = _parse_hour(latest['timestamp'])
     atr_pct   = atr / entry
 
-    # ── BUG-6 FIX: use session_bars for OR range (per-session, not per-ticker) ─
+    # BUG-6 FIX: use session_bars for OR range (per-session, not per-ticker)
     sess = session_bars if session_bars else bars
     or_range_pct = _or_range(sess)
 
     confidence = min(0.5 + (rv - rvol_min) * 0.05 + adx * 0.003, 0.95)
     score      = int(confidence * 100)
 
-    # ── Real MTF convergence (BUG-7 fix applied inside _mtf_convergence) ─────
+    # BUG-9 FIX: direction-aware MTF bull confirmation
     mtf_boost, mtf_conv, mtf_count = _mtf_convergence(bars)
 
-    # ── BUG-8 FIX: is_or = how many bars into today's session are we? ─────────
-    # len(sess) is the count of 5m bars since today's open (including current).
-    # If we are within the first OR_WINDOW_BARS bars, this is an OR signal.
+    # BUG-8 FIX: is_or = how many bars into today’s session are we?
     is_or = len(sess) <= OR_WINDOW_BARS
 
-    # ── Pattern: FVG when gap exists on prior 3 bars, else BOS ───────────────
+    # Pattern: FVG when gap exists on prior 3 bars, else BOS
     pattern = 'FVG' if _detect_fvg(bars) else 'BOS'
 
     return {
@@ -670,7 +690,7 @@ def _signal_to_features(sig: Dict) -> List[float]:
         sig.get('score', 50) / 100.0,
         sig.get('mtf_boost', 0.0),
         float(sig.get('mtf_convergence', False)),
-        sig.get('mtf_convergence_count', 0) / 3.0,   # normalise 0-3 → 0-1
+        sig.get('mtf_convergence_count', 0) / 3.0,
         sig.get('vwap_distance', 0.0),
         sig.get('or_range_pct', 0.01),
         sig.get('adx', 20.0) / 50.0,
@@ -745,11 +765,9 @@ class HistoricalMLTrainer:
         """
         Replay signal detection bar-by-bar and label outcomes.
 
-        session_start tracking: resets to current bar index each time a new
-        trading day begins.  session_bars (bars[session_start_i:i+1]) is
-        sliced and passed to _detect_signal() so that _or_range() and
-        is_or_signal both reference the correct intraday session window
-        (BUG-6 and BUG-8 fixes).
+        session_bars (bars[session_start_i:i+1]) is sliced and passed to
+        _detect_signal() so that _or_range() and is_or_signal both reference
+        the correct intraday session window (BUG-6 and BUG-8 fixes).
         """
         if not bars:
             return []
@@ -760,7 +778,6 @@ class HistoricalMLTrainer:
         seen_idx       = set()
         min_bars       = MIN_SIGNAL_BARS_DAILY if is_daily else MIN_SIGNAL_BARS
 
-        # Track session start bar index for OR signal detection
         current_date    = None
         session_start_i = 0
 
@@ -768,13 +785,11 @@ class HistoricalMLTrainer:
             window  = bars[:i + 1]
             spy_win = spy_ref[:i + 1] if spy_ref else []
 
-            # Detect new session (new date) and update session_start
             bar_date = str(bars[i]['timestamp'])[:10]
             if bar_date != current_date:
                 current_date    = bar_date
                 session_start_i = i
 
-            # BUG-6/8 FIX: build a session-scoped bar slice for OR features
             session_bars_window = bars[session_start_i:i + 1]
 
             sig = _detect_signal(
@@ -817,7 +832,6 @@ class HistoricalMLTrainer:
     ):
         """
         Full pipeline: fetch → replay → label → DataFrame.
-
         include_timeout=True (default): TIMEOUT signals included as LOSS.
         """
         if not _PANDAS_OK:
