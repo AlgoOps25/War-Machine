@@ -3,7 +3,7 @@ ML Signal Scorer V2 — War Machine
 
 STATUS: ACTIVE — wired into sniper._run_signal_pipeline() after validator block.
 ──────────────────────────────────────────────────────────────────────────────
-Feature schema: 17 features matching HIST_FEATURE_COLS in ml_trainer.py.
+Feature schema: 20 features matching HIST_FEATURE_COLS in ml_trainer.py.
 Model path:     models/ml_model_historical.pkl
 Interface:      score_signal(signal_data) -> float  (win probability 0.0–1.0)
                 Returns -1.0 if model not loaded (graceful fallback).
@@ -12,11 +12,17 @@ Threshold:      Loaded from model bundle (precision-tuned at train time).
                 Hard gate in sniper: drop signal if prob < threshold.
                 Confidence boost:   final_conf += (prob - 0.50) * 0.10
 
-Feature audit (BUG-11, Mar 2026):
-    Matches ml_trainer.HIST_FEATURE_COLS exactly — 15 core features built by
-    name not position, plus 2 new high-leverage features (Mar 11 2026):
-      ticker_win_rate  — rolling 30-day per-ticker win rate normalised 0-1
-      spy_regime       — 3-state SPY macro context (-1=down/0=flat/1=up)
+Feature history:
+    v1.0–v3.0  15 core features (confidence, rvol, score_norm, mtf_*, vwap_*,
+                or_range_pct, adx_norm, atr_*, is_or_signal, hour_norm,
+                time_bucket_norm, resist_proximity)
+    v4.0       +2 high-leverage features (Mar 11 2026):
+                  ticker_win_rate  — rolling 30-day per-ticker win rate (0-1)
+                  spy_regime       — 3-state SPY macro context (-1/0/1)
+    v5.0       +3 BOS/FVG quality features (Mar 11 2026):
+                  conf_score       — candle confluence grade normalised 0-1
+                  fvg_size_pct     — FVG gap % of price, normalised /0.02
+                  bos_strength     — BOS breakout % above swing high, norm /0.01
 
 To retrain with new features:
     python -m app.ml.train_historical --interval d --months 6 \\
@@ -86,7 +92,7 @@ DEFAULT_THRESHOLD = 0.50
 
 class MLSignalScorerV2:
     """
-    V2 ML scorer — 17-feature HistGradientBoosting built from HIST_FEATURE_COLS.
+    V2 ML scorer — 20-feature HistGradientBoosting built from HIST_FEATURE_COLS.
     score_signal() returns a plain float (win probability 0.0–1.0) so
     sniper.py can use it directly without tuple unpacking.
     Returns -1.0 when the model is unavailable (caller must handle).
@@ -128,7 +134,7 @@ class MLSignalScorerV2:
         except Exception as exc:
             logger.warning(f"[ML-SCORER-v2] Model load failed: {exc}")
 
-    # ── Feature builder — 17 features, built BY NAME ──────────────────────────
+    # ── Feature builder — 20 features, built BY NAME ──────────────────────────
     # Matches HIST_FEATURE_COLS in ml_trainer.py exactly.
     # All values are normalised to [0,1] or meaningful floats.
 
