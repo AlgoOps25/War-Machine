@@ -109,17 +109,15 @@ except ImportError as e:
     def is_short_allowed(r): return True
     def print_spy_regime(r, ticker=""): pass
 
-    #SPY EMA except block
-
-    # ── ML Signal Scorer V2 ───────────────────────────────────────────────────────
-    try:
-        from app.ml.ml_signal_scorer_v2 import get_scorer_v2
-        ML_SCORER_ENABLED = True
-        print("[SNIPER] ✅ ML Signal Scorer V2 enabled")
-    except ImportError as e:
-        ML_SCORER_ENABLED = False
-        print(f"[SNIPER] ⚠️  ML scorer disabled: {e}")
-        def get_scorer_v2(): return None
+# ── ML Signal Scorer V2 ───────────────────────────────────────────────────────
+try:
+    from app.ml.ml_signal_scorer_v2 import get_scorer_v2
+    ML_SCORER_ENABLED = True
+    print("[SNIPER] ✅ ML Signal Scorer V2 enabled")
+except ImportError as e:
+    ML_SCORER_ENABLED = False
+    print(f"[SNIPER] ⚠️  ML scorer disabled: {e}")
+    def get_scorer_v2(): return None
 
 # ══════════════════════════════════════════════════════════════════════════════
 # FIX #1: THREAD-SAFE STATE MANAGEMENT
