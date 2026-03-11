@@ -86,6 +86,11 @@ except ImportError:
     print("[SNIPER] ⚠️  MTF trend validator disabled")
     def run_mtf_trend_step(ticker, direction, entry_price, confidence, signal_data):
         return confidence, signal_data
+    
+from app.ml.metrics_cache import get_ticker_win_rates
+# e.g. at module level or in a singleton
+_TICKER_WIN_CACHE = get_ticker_win_rates(days=30)
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # FIX #1: THREAD-SAFE STATE MANAGEMENT

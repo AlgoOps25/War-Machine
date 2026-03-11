@@ -621,6 +621,8 @@ FEATURE_NAMES = [
     'hour_norm',
     'time_bucket_norm',
     'resist_proximity',
+    'ticker_win_rate',
+    'spy_regime',
 ]
 
 
@@ -636,11 +638,14 @@ def _signal_to_features(sig: Dict) -> List[float]:
         sig.get('or_range_pct', 0.01),
         sig.get('adx', 20.0) / 50.0,
         sig.get('atr_pct', 0.01),
-        min(sig.get('atr_ratio', 1.0), 3.0) / 3.0,    # clip outliers, norm to [0,1]
+        min(sig.get('atr_ratio', 1.0), 3.0) / 3.0,
         1.0 if sig.get('signal_type') == 'CFW6_OR' else 0.0,
         sig.get('hour', 14) / 21.0,
         sig.get('time_bucket', 1) / 2.0,
         sig.get('resist_proximity', 0.0),
+        # new features (neutral fallbacks so current dataset still works)
+        sig.get('ticker_win_rate', 0.40),
+        sig.get('spy_regime', 0.0),
     ]
 
 

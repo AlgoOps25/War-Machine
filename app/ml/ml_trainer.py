@@ -49,6 +49,7 @@ import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
 from typing import Optional, Tuple
+from sklearn.inspection import permutation_importance
 from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.model_selection import train_test_split, cross_val_score
 from sklearn.metrics import (
@@ -259,11 +260,20 @@ def train_from_dataframe(
 
     # HistGBM doesn't expose feature_importances_ the same way as RF
     # Use permutation importance proxy via gain-based importances if available
+    # HistGBM: use permutation importance for interpretability
     try:
-        feat_imp = dict(zip(available_feats, model.feature_importances_))
-    except AttributeError:
+        pi = permutation_importance(
+            model, X_val, y_val,
+            n_repeats=10,
+            random_state=42,
+            n_jobs=-1,
+        )
+        feat_imp = dict(zip(available_feats, pi.importances_mean))
+    except Exception as exc:
+        logger.warning(f"[ML-TRAIN-DF] Permutation importance failed: {exc}")
         feat_imp = {col: 0.0 for col in available_feats}
     feat_imp_sorted = dict(sorted(feat_imp.items(), key=lambda x: x[1], reverse=True))
+
 
     metrics = {
         'accuracy':           accuracy,
