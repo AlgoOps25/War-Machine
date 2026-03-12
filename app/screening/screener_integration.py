@@ -11,6 +11,7 @@ from typing import Dict, Optional, List
 import traceback
 
 
+
 def get_ticker_screener_metadata(ticker: str) -> Dict:
     """Return screener metadata for a single ticker.
 
@@ -44,7 +45,7 @@ def get_ticker_screener_metadata(ticker: str) -> Dict:
         tier  = ticker_data.get('rvol_tier', None)   # 'A', 'B', or 'C'
 
         return {
-            'qualified': (score >= 80 and rvol >= 4.0),
+            'qualified': (score >= 80 and rvol >= 3.0),
             'score':     score,
             'rvol':      rvol,
             'tier':      tier,

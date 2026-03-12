@@ -109,7 +109,7 @@ def notify_news_catalyst(catalyst: 'NewsCatalyst') -> None:
         resp = requests.post(
             webhook_url,
             json={'embeds': [embed]},
-            timeout=5
+            timeout=10
         )
         if resp.status_code not in (200, 204):
             print(f'[NEWS-DISCORD] Webhook error {resp.status_code} for {catalyst.ticker}')
