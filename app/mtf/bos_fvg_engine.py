@@ -405,12 +405,18 @@ def compute_0dte_stops_and_targets(
 # ─────────────────────────────────────────────────────────────
 
 def is_valid_entry_time(bar: Dict) -> bool:
-    """No new entries after 3:45 PM ET on 0DTE."""
+    """
+    Allow BOS+FVG scanning from 9:30 AM ET.
+    Candles are watched from 9:30; first signal fires at 9:40 bar open
+    once confirmation-wait-then-enter-next-bar logic in check_fvg_entry()
+    resolves on the 9:39 closed candle.
+    No new entries after 3:45 PM ET.
+    """
     bt = bar.get("datetime")
     if bt is None:
         return False
     bar_time = bt.time() if hasattr(bt, "time") else bt
-    return time(9, 40) <= bar_time <= HARD_CLOSE_TIME
+    return time(9, 30) <= bar_time <= HARD_CLOSE_TIME
 
 
 def is_force_close_time(bar: Dict) -> bool:
@@ -453,7 +459,7 @@ def scan_bos_fvg(ticker: str, bars: List[Dict],
 
     latest_bar = bars[-1]
 
-    # Time filter — no new signals after 3:45 PM ET
+    # Time filter — watch candles from 9:30 AM; no new signals after 3:45 PM ET
     if not is_valid_entry_time(latest_bar):
         return None
 
