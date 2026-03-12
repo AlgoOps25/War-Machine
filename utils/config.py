@@ -49,7 +49,9 @@ DB_PATH = os.getenv('DB_PATH', '/app/data/war_machine.db')
 DBPATH = DB_PATH  # Alias used by WatchlistFunnel / VolumeAnalyzer
 
 # Opening range filter - TASK 2 INTEGRATION
-MIN_OR_RANGE_PCT = 0.03  # Minimum 3% OR range for early-session CFW6_OR gate (Task 2)
+MIN_OR_RANGE_PCT = 0.030          # default / BULL
+MIN_OR_RANGE_PCT_BEAR = 0.027     # BEAR regime
+MIN_OR_RANGE_PCT_STRONG_BEAR = 0.025  # STRONG_BEAR regime
 
 # Options filtering thresholds - TASK 3 INTEGRATION
 MIN_DTE = 0  # Minimum days to expiration (0DTE allowed)

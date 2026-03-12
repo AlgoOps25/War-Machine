@@ -1594,6 +1594,16 @@ def clear_watching_signals():
             return_conn(conn)
     print("[WATCHING] Cleared")
 
+def _get_or_threshold(spy_regime) -> float:
+    """Return regime-aware OR width threshold."""
+    if spy_regime:
+        label = spy_regime.get("label", "")
+        if label == "STRONG_BEAR":
+            return config.MIN_OR_RANGE_PCT_STRONG_BEAR
+        elif label == "BEAR":
+            return config.MIN_OR_RANGE_PCT_BEAR
+    return config.MIN_OR_RANGE_PCT
+
 def process_ticker(ticker: str):
     try:
         _maybe_load_watches()
@@ -1763,10 +1773,11 @@ def process_ticker(ticker: str):
         or_high, or_low = compute_opening_range_from_bars(bars_session)
         if or_high is not None:
             or_range_pct = (or_high - or_low) / or_low
-            if or_range_pct < config.MIN_OR_RANGE_PCT:
+            or_threshold = _get_or_threshold(spy_regime)
+            if or_range_pct < or_threshold:
                 print(
                     f"[{ticker}] OR too narrow "
-                    f"({or_range_pct:.2%} < {config.MIN_OR_RANGE_PCT:.2%}) "
+                    f"({or_range_pct:.2%} < {or_threshold:.2%}) "
                     f"— skipping OR path, trying intraday BOS"
                 )
             else:
@@ -1776,8 +1787,9 @@ def process_ticker(ticker: str):
                 if should_skip_cfw6_or_early(or_range_pct, now_et):
                     print(
                         f"[{ticker}] EARLY SESSION GATE: CFW6_OR blocked before 9:45 AM "
-                        f"(OR={or_range_pct:.2%} < {config.MIN_OR_RANGE_PCT:.1%})"
+                        f"(OR={or_range_pct:.2%} < {or_threshold:.2%})"
                     )
+
                     return
 
                 direction, breakout_idx = detect_breakout_after_or(bars_session, or_high, or_low)
