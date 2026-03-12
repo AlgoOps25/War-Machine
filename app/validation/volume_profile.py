@@ -168,6 +168,53 @@ class VolumeProfileAnalyzer:
         
         return True, "Neutral volume profile context"
 
+    def validate_entry(
+        self,
+        ticker: str,
+        direction: str,
+        entry_price: float,
+        bars: List[Dict]
+    ) -> Tuple[bool, str, Optional[Dict]]:
+        """
+        Convenience wrapper called by sniper.py Step 6.6.
+        Builds the volume profile then validates the entry price.
+
+        Returns:
+            (is_valid, reason, vp_data)
+            vp_data keys: poc, distance_from_poc_pct, volume_rank
+        """
+        profile = self.analyze_session_profile(bars)
+
+        if not profile or profile.get('total_volume', 0) == 0:
+            return True, "Volume profile unavailable (insufficient bars)", None
+
+        is_valid, reason = self.validate_breakout(profile, entry_price, direction)
+
+        poc = profile.get('poc', 0)
+        distance_pct = abs(entry_price - poc) / poc if poc > 0 else 0.0
+
+        # Volume rank: what percentile of bins is the entry price near?
+        # Use the bin closest to entry_price and express as a fraction of max bin vol.
+        volume_rank = "N/A"
+        try:
+            profile_bins = profile.get('profile', [])
+            if profile_bins:
+                closest = min(profile_bins, key=lambda x: abs(x[0] - entry_price))
+                max_vol = max(v for _, v in profile_bins) or 1
+                volume_rank = f"{closest[1] / max_vol:.0%}"
+        except Exception:
+            pass
+
+        vp_data = {
+            'poc': round(poc, 2),
+            'vah': round(profile.get('vah', 0), 2),
+            'val': round(profile.get('val', 0), 2),
+            'distance_from_poc_pct': round(distance_pct, 4),
+            'volume_rank': volume_rank,
+        }
+
+        return is_valid, reason, vp_data
+
 
 # Global instance
 _volume_analyzer = None
