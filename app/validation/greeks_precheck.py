@@ -8,6 +8,16 @@ Reduces API calls by 80% and speeds up validation 10x by:
 - Pre-validating delta/IV/spread before full chain analysis
 - Blocking bad options before Discord alerts fire
 
+Bug fixes (Phase 1.17, Mar 12 2026):
+  Fix 1 — validate_signal_greeks() no longer calls update_cache()
+           unconditionally; TTL-aware refresh is handled inside
+           get_atm_strikes() → _is_cache_valid().
+  Fix 2 — Added _no_options_set: tickers that return empty chains are
+           blacklisted for NO_OPTIONS_TTL (30 min) to prevent repeated
+           API spam on non-optionable symbols.
+  Fix 3 — _fetch_atm_options() now uses date.today() (not datetime.now())
+           for exp_date_from so 0DTE contracts are visible pre-market.
+
 Usage:
     from app.validation.greeks_precheck import greeks_cache
     
@@ -19,12 +29,15 @@ Usage:
 """
 
 from typing import Dict, List, Optional, Tuple
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from dataclasses import dataclass
 import time
 import requests
 
 from utils import config
+
+# How long to suppress retries for tickers with no options (30 minutes)
+NO_OPTIONS_TTL = 1800
 
 
 @dataclass
@@ -99,6 +112,11 @@ class GreeksCache:
         # Cache structure: {ticker: {strike: GreeksSnapshot}}
         self._cache: Dict[str, Dict[float, GreeksSnapshot]] = {}
         self._cache_timestamps: Dict[str, float] = {}
+
+        # FIX 2: Negative-result blacklist — tickers confirmed to have no
+        # options. Keyed by ticker, value is the timestamp of the failed fetch.
+        # Suppresses re-fetches for NO_OPTIONS_TTL (30 min).
+        self._no_options_set: Dict[str, float] = {}
         
         # Stats
         self.stats = {
@@ -107,18 +125,32 @@ class GreeksCache:
             'api_calls': 0,
             'quick_validates': 0,
             'quick_passes': 0,
-            'quick_fails': 0
+            'quick_fails': 0,
+            'no_options_skips': 0,
         }
         
-        print(f"[GREEKS-CACHE] Initialized with {cache_ttl}s TTL")
+        print(f"[GREEKS-CACHE] Initialized with {cache_ttl}s TTL | no-options blacklist TTL={NO_OPTIONS_TTL}s")
     
     def _is_cache_valid(self, ticker: str) -> bool:
-        """Check if cached data is still valid."""
-        if ticker not in self._cache_timestamps:
-            return False
-        
-        age = time.time() - self._cache_timestamps[ticker]
-        return age < self.cache_ttl
+        """
+        Check if cached data is still valid.
+
+        FIX 2: Also returns True (skip fetch) when ticker is in the
+        no-options blacklist and the blacklist entry hasn't expired yet.
+        """
+        # Positive cache
+        if ticker in self._cache_timestamps:
+            age = time.time() - self._cache_timestamps[ticker]
+            if age < self.cache_ttl:
+                return True
+
+        # FIX 2: Negative-result blacklist check
+        if ticker in self._no_options_set:
+            blacklist_age = time.time() - self._no_options_set[ticker]
+            if blacklist_age < NO_OPTIONS_TTL:
+                return True  # treat as "valid" (i.e. don't re-fetch)
+
+        return False
     
     def _fetch_atm_options(self, ticker: str, current_price: float, 
                           dte_min: int = None, dte_max: int = None) -> List[GreeksSnapshot]:
@@ -143,11 +175,20 @@ class GreeksCache:
         strike_min = current_price * 0.90
         strike_max = current_price * 1.10
         
-        today = datetime.now()
+        # FIX 3: Use date.today() (date-only, no time component) so that
+        # pre-market calls on expiration day don't push the floor to tomorrow
+        # and hide same-day 0DTE contracts.
+        today_date = date.today()
+        exp_from = today_date + timedelta(days=dte_min)
+        exp_to   = today_date + timedelta(days=dte_max)
+
+        # Still need datetime for DTE calculation below
+        today_dt = datetime.now()
+
         params = {
             "filter[underlying_symbol]": ticker,
-            "filter[exp_date_from]": (today + timedelta(days=dte_min)).strftime("%Y-%m-%d"),
-            "filter[exp_date_to]": (today + timedelta(days=dte_max)).strftime("%Y-%m-%d"),
+            "filter[exp_date_from]": exp_from.strftime("%Y-%m-%d"),
+            "filter[exp_date_to]":   exp_to.strftime("%Y-%m-%d"),
             "filter[strike_from]": int(strike_min),
             "filter[strike_to]": int(strike_max),
             "sort": "strike",
@@ -181,10 +222,11 @@ class GreeksCache:
                 if not exp_date or option_type not in ("call", "put") or strike == 0:
                     continue
                 
-                # Calculate DTE
+                # Calculate DTE using date arithmetic to avoid time-of-day drift
                 try:
-                    dte = (datetime.strptime(exp_date, "%Y-%m-%d") - today).days
-                except:
+                    exp_date_obj = datetime.strptime(exp_date, "%Y-%m-%d").date()
+                    dte = (exp_date_obj - today_date).days
+                except Exception:
                     dte = 0
                 
                 # Create snapshot with all floats properly converted
@@ -229,8 +271,15 @@ class GreeksCache:
         snapshots = self._fetch_atm_options(ticker, current_price)
         
         if not snapshots:
+            # FIX 2: Stamp the no-options blacklist so we don't hammer the
+            # API again for this ticker for NO_OPTIONS_TTL seconds.
+            self._no_options_set[ticker] = time.time()
+            print(f"[GREEKS-CACHE] {ticker}: No options returned — blacklisted for {NO_OPTIONS_TTL//60} min")
             return False
         
+        # If ticker was previously blacklisted, remove it now that we have data
+        self._no_options_set.pop(ticker, None)
+
         # Build cache structure: {strike: {'call': snapshot, 'put': snapshot}}
         strike_cache: Dict[float, Dict[str, GreeksSnapshot]] = {}
         for snapshot in snapshots:
@@ -271,7 +320,7 @@ class GreeksCache:
         Returns:
             List of GreeksSnapshot objects sorted by proximity to ATM
         """
-        # Check cache validity
+        # Check cache validity (also covers the no-options blacklist)
         if not self._is_cache_valid(ticker):
             self.stats['cache_misses'] += 1
             self.update_cache(ticker, current_price)
@@ -313,6 +362,15 @@ class GreeksCache:
             Tuple of (is_valid, reason)
         """
         self.stats['quick_validates'] += 1
+
+        # FIX 2: Short-circuit immediately for known non-optionable tickers
+        if ticker in self._no_options_set:
+            blacklist_age = time.time() - self._no_options_set[ticker]
+            if blacklist_age < NO_OPTIONS_TTL:
+                self.stats['no_options_skips'] += 1
+                self.stats['quick_fails'] += 1
+                mins_left = int((NO_OPTIONS_TTL - blacklist_age) / 60)
+                return False, f"No options available for {ticker} (blacklisted {mins_left}min remaining)"
         
         # Get ATM strikes
         atm_strikes = self.get_atm_strikes(ticker, entry_price, num_strikes=7)
@@ -409,10 +467,12 @@ class GreeksCache:
         if ticker:
             self._cache.pop(ticker, None)
             self._cache_timestamps.pop(ticker, None)
+            self._no_options_set.pop(ticker, None)
             print(f"[GREEKS-CACHE] Cleared cache for {ticker}")
         else:
             self._cache.clear()
             self._cache_timestamps.clear()
+            self._no_options_set.clear()
             print("[GREEKS-CACHE] Cleared all cache")
 
 
@@ -534,14 +594,17 @@ def validate_signal_greeks(ticker: str, direction: str, entry_price: float) -> t
     Examples:
         (True, "Valid calls: $265 strike, Δ=0.50, IV=31%, 2DTE")
         (False, "No valid calls: poor delta")
+
+    FIX 1 (Mar 12 2026): Removed unconditional update_cache() call that was
+    bypassing the TTL on every signal. Cache refresh is now handled entirely
+    inside quick_validate() → get_atm_strikes() → _is_cache_valid().
     """
     try:
-        # Update cache if needed (300s TTL prevents spam)
-        greeks_cache.update_cache(ticker, entry_price)
-        
-        # Quick validate without re-fetching
+        # FIX 1: Do NOT call update_cache() here — the TTL-aware refresh path
+        # inside get_atm_strikes() handles it. Calling it unconditionally was
+        # firing a fresh EODHD API request on every single signal regardless
+        # of cache age, negating the entire 5-minute TTL design.
         is_valid, reason = quick_validate_options(ticker, direction, entry_price)
-        
         return is_valid, reason
         
     except Exception as e:
