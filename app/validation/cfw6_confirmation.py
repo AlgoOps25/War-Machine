@@ -8,6 +8,34 @@ from datetime import datetime
 import time
 from utils import config
 
+
+def _parse_bar_datetime(bar: Dict):
+    """
+    Safely extract a comparable datetime from a bar dict.
+    Handles three shapes:
+      1. bar["datetime"] is already a datetime object  -> return as-is
+      2. bar["datetime"] is a dict with a 'value' or 'date' key -> parse it
+      3. bar["datetime"] is an ISO string -> parse it
+    Returns None if unparseable.
+    """
+    raw = bar.get("datetime")
+    if raw is None:
+        return None
+    if isinstance(raw, datetime):
+        return raw
+    if isinstance(raw, dict):
+        # Common shapes: {"value": "2026-03-12T09:30:00"} or {"date": "..."}
+        raw = raw.get("value") or raw.get("date") or raw.get("datetime")
+        if raw is None:
+            return None
+    if isinstance(raw, datetime):
+        return raw
+    try:
+        return datetime.fromisoformat(str(raw))
+    except Exception:
+        return None
+
+
 # =============================================================================
 # CFW6 CANDLE CONFIRMATION (From Video)
 # =============================================================================
@@ -136,7 +164,13 @@ def wait_for_confirmation(
         latest_idx = -1
 
         for i, bar in enumerate(bars):
-            if bar["datetime"] > start_time:
+            bar_dt = _parse_bar_datetime(bar)
+            if bar_dt is None:
+                continue
+            # Make both timezone-naive for comparison if needed
+            cmp_start = start_time.replace(tzinfo=None) if start_time.tzinfo else start_time
+            cmp_bar   = bar_dt.replace(tzinfo=None) if bar_dt.tzinfo else bar_dt
+            if cmp_bar > cmp_start:
                 latest_bar = bar
                 latest_idx = i
 
