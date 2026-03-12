@@ -23,9 +23,7 @@ def get_adaptive_scan_interval() -> int:
     """
     CFW6 OPTIMIZATION: Scan more frequently during high-activity periods.
 
-    NOTE: The 9:30-9:40 window is skipped by should_scan_now().
-    Intervals here begin at 9:40 when actual scanning starts.
-
+    OR Formation    (9:30-9:40):   5 seconds — capture every bar, no sleep during BOS build
     Post-OR Active  (9:40-11:00):  45 seconds
     Midday Chop     (11:00-14:00): 180 seconds
     Afternoon Setup (14:00-15:30): 60 seconds
@@ -35,8 +33,13 @@ def get_adaptive_scan_interval() -> int:
     global _last_logged_interval
     now = _now_et()
 
+    # OR Formation window — scan every 5s to catch every 1m bar as it closes
+    if time(9, 30) <= now < time(9, 40):
+        interval = 5
+        label = "OR Formation (BOS build)"
+
     # Post-OR morning activity (9:40-11:00)
-    if time(9, 40) <= now < time(11, 0):
+    elif time(9, 40) <= now < time(11, 0):
         interval = 45
         label = "Post-OR Morning"
 
@@ -70,18 +73,18 @@ def get_adaptive_scan_interval() -> int:
 
 def should_scan_now() -> bool:
     """
-    CFW6 RULE: Do not scan during 9:30-9:40 ET.
-    The Opening Range must finish forming before we look for breakouts.
-    Returns True only during 9:40-16:00 ET on weekdays.
+    CFW6 RULE: Scan during 9:30-9:40 ET at high frequency so BOS+FVG can be
+    built from OR bars in real time.  At 9:40 the first confirmation candle
+    is evaluated and the signal fires immediately.
+
+    Returns True during 9:30-16:00 ET on weekdays.
+    The OR window (9:30-9:40) returns True — get_adaptive_scan_interval()
+    returns 5s so the loop spins fast but does NOT sleep for 15s.
     """
     now = _now_et()
 
-    # Block the OR formation window
-    if time(9, 30) <= now < time(9, 40):
-        return False
-
-    # Active scanning window
-    if time(9, 40) <= now <= time(16, 0):
+    # Full active scanning window — includes OR formation
+    if time(9, 30) <= now <= time(16, 0):
         return True
 
     return False
@@ -91,6 +94,7 @@ def calculate_optimal_watchlist_size() -> int:
     """
     Adjust watchlist size by time of day.
 
+    OR window     (9:30-9:40):  30 tickers - same as early morning (focused)
     Early morning (9:40-10:30): 30 tickers - focused, highest conviction setups
     Mid-session   (10:30-15:00): 50 tickers - full watchlist
     Late day      (15:00-16:00): 35 tickers - reduce exposure into close
@@ -99,7 +103,9 @@ def calculate_optimal_watchlist_size() -> int:
     global _last_logged_watchlist_size
     now = _now_et()
 
-    if time(9, 40) <= now < time(10, 30):
+    if time(9, 30) <= now < time(9, 40):
+        size = 30
+    elif time(9, 40) <= now < time(10, 30):
         size = 30
     elif time(10, 30) <= now < time(15, 0):
         size = 50
