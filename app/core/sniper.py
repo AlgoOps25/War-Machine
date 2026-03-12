@@ -103,6 +103,15 @@ except ImportError:
     def clear_ob_cache(ticker=None): pass
 
 try:
+    from app.signals.vwap_reclaim import detect_vwap_reclaim
+    VWAP_RECLAIM_ENABLED = True
+    print("[SNIPER] ✅ VWAP reclaim signal enabled")
+except ImportError:
+    VWAP_RECLAIM_ENABLED = False
+    print("[SNIPER] ⚠️  VWAP reclaim signal disabled")
+    def detect_vwap_reclaim(bars): return None
+
+try:
     from app.core.sniper_mtf_trend_patch import run_mtf_trend_step
     MTF_TREND_ENABLED = True
     print("[SNIPER] ✅ MTF trend validator enabled (Step 8.5)")
@@ -1125,6 +1134,16 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         return False
     else:
         print(f"[{ticker}] ✅ VWAP GATE: {vwap_reason}")
+    
+    try:
+        from app.signals.vwap_reclaim import detect_vwap_reclaim
+        VWAP_RECLAIM_ENABLED = True
+        print("[SNIPER] ✅ VWAP reclaim signal enabled")
+    except ImportError:
+        VWAP_RECLAIM_ENABLED = False
+        print("[SNIPER] ⚠️  VWAP reclaim signal disabled")
+        def detect_vwap_reclaim(bars): return None
+
 
         # ── SPY EMA Regime hard block ─────────────────────────────────────────────
     if SPY_EMA_CONTEXT_ENABLED and spy_regime:
@@ -2008,6 +2027,33 @@ def process_ticker(ticker: str):
             skip_cfw6_confirmation=(scan_mode == "INTRADAY_BOS")
         )
 
+                # ── D1: VWAP Reclaim fallback scan ───────────────────────────────────
+        if scan_mode is None and VWAP_RECLAIM_ENABLED:
+            vr = detect_vwap_reclaim(bars_session)
+            if vr:
+                print(
+                    f"[{ticker}] 🔵 VWAP RECLAIM: {vr['direction'].upper()} "
+                    f"@ ${vr['entry_price']:.2f} | VWAP=${vr['vwap_at_reclaim']:.2f}"
+                )
+                vr_zone_low  = vr["vwap_at_reclaim"] * 0.9985
+                vr_zone_high = vr["vwap_at_reclaim"] * 1.0015
+                vr_or_high   = vr["entry_price"] * 1.005
+                vr_or_low    = vr["entry_price"] * 0.995
+                _run_signal_pipeline(
+                    ticker,
+                    vr["direction"],
+                    vr_zone_low,
+                    vr_zone_high,
+                    vr_or_high,
+                    vr_or_low,
+                    "CFW6_INTRADAY",
+                    bars_session,
+                    vr["reclaim_bar_idx"],
+                    spy_regime=spy_regime,
+                    skip_cfw6_confirmation=True,
+                )
+            else:
+                print(f"[{ticker}] — No VWAP reclaim signal")
 
     except Exception as e:
         print(f"process_ticker error {ticker}:", e)
