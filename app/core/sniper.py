@@ -22,7 +22,7 @@
 # PHASE 4 MONITORING: Live performance dashboard, risk alerts
 # HOURLY GATE: Time-based confidence adjustment from historical win rates
 # WIN RATE ENHANCEMENTS (Phase 2):
-#   - 9:45 OR WINDOW: Widened from 9:30-9:40 to 9:30-9:45 (3 bars) for better range capture
+#   - 9:45 OR WINDOW: Widened from 9:30 to 9:40(3 bars) for better range capture
 #   - VWAP DIRECTIONAL GATE: Price must be above/below VWAP for bull/bear signals
 #   - HYBRID CONFIDENCE: Grade-based spread (A+: 92-95%, A-: 85-88%) instead of fixed values
 #   - INTRADAY GRADE GATE REMOVED: A-, B+, B grades now flow through confidence gate
@@ -171,7 +171,7 @@ def compute_confidence(grade: str, timeframe: str, ticker: str) -> float:
     if grade not in GRADE_CONFIDENCE_RANGES:
         return 0.75
     min_conf, max_conf = GRADE_CONFIDENCE_RANGES[grade]
-    return random.uniform(min_conf, max_conf)
+    return (min_conf + max_conf) / 2.0
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ISSUE #23: CONFIDENCE GATE DISTRIBUTION TRACKING
@@ -1279,7 +1279,7 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
                     return False
                 if ml_prob >= threshold:
                     ml_boost = (ml_prob - 0.50) * 0.10
-                    print(f"[{ticker}] ML CONF BOOST: {ml_boost:+.3f} → {final_confidence:.3f}")
+                    print(f"[{ticker}] ML CONF BOOST: {ml_boost:+.3f} → {base_confidence + ml_boost:.3f}")
         except Exception as ml_err:
             print(f"[{ticker}] ML scorer error (non-fatal): {ml_err}")
     
@@ -1796,7 +1796,7 @@ def process_ticker(ticker: str):
             print(f"[{ticker}] No OR bars")
 
         if scan_mode is None:
-            if len(bars_session) < 30:
+            if len(bars_session) < 15:
                 return
 
             fvg_threshold, _ = get_adaptive_fvg_threshold(bars_session, ticker)
