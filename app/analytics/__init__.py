@@ -3,6 +3,9 @@ Analytics Module for War Machine
 Central import point for signal tracking and performance analytics
 """
 
+from app.analytics.funnel_tracker import funnel_tracker
+from app.analytics.ab_test import ab_test
+
 try:
     from app.core.analytics_integration import AnalyticsIntegration
     ANALYTICS_AVAILABLE = True
