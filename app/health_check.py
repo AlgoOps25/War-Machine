@@ -144,11 +144,14 @@ class HealthCheck:
         }
     
     def check_regime_filter(self) -> Dict:
+        # Regime filter was consolidated into app/validation/validation.py (Phase 3A).
+        # The old standalone app.regime_filter no longer exists.
         try:
-            from app.regime_filter import RegimeFilter
+            from app.validation.validation import get_regime_filter
+            get_regime_filter()  # confirm singleton initialises without error
             return {
                 'status': 'online',
-                'message': 'ADX/VIX monitoring active',
+                'message': 'ADX/VIX monitoring active (via validation.py)',
                 'critical': False,
                 'symbol': '✓'
             }
