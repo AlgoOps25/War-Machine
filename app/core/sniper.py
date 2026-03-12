@@ -1595,14 +1595,12 @@ def clear_watching_signals():
     print("[WATCHING] Cleared")
 
 def _get_or_threshold(spy_regime) -> float:
-    """Return regime-aware OR width threshold."""
-    if spy_regime:
-        label = spy_regime.get("label", "")
-        if label == "STRONG_BEAR":
-            return config.MIN_OR_RANGE_PCT_STRONG_BEAR
-        elif label == "BEAR":
-            return config.MIN_OR_RANGE_PCT_BEAR
-    return config.MIN_OR_RANGE_PCT
+    from app.validation.validation import get_regime_filter
+    try:
+        vix = get_regime_filter().get_regime_state().vix
+    except Exception:
+        vix = 20.0  # safe fallback
+    return config.get_vix_or_threshold(vix, spy_regime)
 
 def process_ticker(ticker: str):
     try:
@@ -1820,6 +1818,18 @@ def process_ticker(ticker: str):
                         return
                 else:
                     print(f"[{ticker}] No ORB")
+
+                if scan_mode is None and _now_et().time() >= time(10, 30):
+                    from app.signals.opening_range import get_secondary_range_levels
+                    sr = get_secondary_range_levels(ticker)
+                    if sr:
+                        sr_direction, sr_idx = detect_breakout_after_or(
+                            bars_session, sr["sr_high"], sr["sr_low"]
+                        )
+                        if sr_direction:
+                            # Treat exactly like OR path from here
+                            ...
+
         else:
             print(f"[{ticker}] No OR bars")
 
