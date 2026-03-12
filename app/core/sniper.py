@@ -321,7 +321,7 @@ except ImportError as import_err:
     print(f"[SIGNALS] ⚠️  Phase 4 monitoring disabled: {import_err}")
 
 try:
-    from app.utils.production_helpers import _send_alert_safe, _fetch_data_safe, _db_operation_safe
+    from utils.production_helpers import _send_alert_safe, _fetch_data_safe, _db_operation_safe
     PRODUCTION_HELPERS_ENABLED = True
     print("[SNIPER] ✅ Production hardening enabled")
 except ImportError:
