@@ -42,6 +42,7 @@ from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 from app.discord_helpers import send_options_signal_alert, send_simple_message
 from app.filters.order_block_cache import clear_ob_cache
+from app.filters.sd_zone_confluence import clear_sd_cache
 from app.validation.validation import get_options_recommendation, get_validator, get_regime_filter
 from app.validation.cfw6_confirmation import wait_for_confirmation, grade_signal_with_confirmations
 from app.risk.trade_calculator import compute_stop_and_targets, get_adaptive_fvg_threshold
@@ -67,27 +68,6 @@ except ImportError:
     print("[SNIPER] ⚠️  Volume profile disabled")
     def get_volume_analyzer():
         return None
-
-try:
-    from app.validation.entry_timing import get_entry_timing_validator
-    ENTRY_TIMING_ENABLED = True
-    print("[SNIPER] ✅ Entry timing validation enabled")
-except ImportError:
-    ENTRY_TIMING_ENABLED = False
-    print("[SNIPER] ⚠️  Entry timing disabled")
-    def get_entry_timing_validator():
-        return None
-
-try:
-    from app.filters.liquidity_sweep import apply_sweep_boost
-    LIQUIDITY_SWEEP_ENABLED = True
-    print("[SNIPER] ✅ Liquidity sweep detector enabled")
-except ImportError:
-    LIQUIDITY_SWEEP_ENABLED = False
-    print("[SNIPER] ⚠️  Liquidity sweep detector disabled")
-    def apply_sweep_boost(ticker, bars, direction, or_high, or_low, confidence, vwap=0.0):
-        return confidence, None
-
 try:
     from app.filters.order_block_cache import (
         identify_order_block, cache_order_block, apply_ob_retest_boost, clear_ob_cache
@@ -112,6 +92,25 @@ except ImportError:
     def detect_vwap_reclaim(bars): return None
 
 try:
+    from app.validation.entry_timing import get_entry_timing_validator
+    ENTRY_TIMING_ENABLED = True
+    print("[SNIPER] ✅ Entry timing validation enabled")
+except ImportError:
+    ENTRY_TIMING_ENABLED = False
+    print("[SNIPER] ⚠️  Entry timing disabled")
+    def get_entry_timing_validator():
+        return None
+
+try:
+    from app.filters.liquidity_sweep import apply_sweep_boost
+    LIQUIDITY_SWEEP_ENABLED = True
+    print("[SNIPER] ✅ Liquidity sweep detector enabled")
+except ImportError:
+    LIQUIDITY_SWEEP_ENABLED = False
+    print("[SNIPER] ⚠️  Liquidity sweep detector disabled")
+    def apply_sweep_boost(ticker, bars, direction, or_high, or_low, confidence, vwap=0.0):
+        return confidence, None
+try:
     from app.core.sniper_mtf_trend_patch import run_mtf_trend_step
     MTF_TREND_ENABLED = True
     print("[SNIPER] ✅ MTF trend validator enabled (Step 8.5)")
@@ -120,6 +119,18 @@ except ImportError:
     print("[SNIPER] ⚠️  MTF trend validator disabled")
     def run_mtf_trend_step(ticker, direction, entry_price, confidence, signal_data):
         return confidence, signal_data
+try:
+    from app.filters.sd_zone_confluence import (
+        cache_sd_zones, apply_sd_confluence_boost, clear_sd_cache
+    )
+    SD_ZONE_ENABLED = True
+    print("[SNIPER] ✅ S/D zone confluence enabled")
+except ImportError:
+    SD_ZONE_ENABLED = False
+    print("[SNIPER] ⚠️  S/D zone confluence disabled")
+    def cache_sd_zones(ticker, bars): pass
+    def apply_sd_confluence_boost(ticker, entry_price, direction, confidence): return confidence, None
+    def clear_sd_cache(ticker=None): pass
 
 from app.ml.metrics_cache import get_ticker_win_rates
 _TICKER_WIN_CACHE = get_ticker_win_rates(days=30)
@@ -1134,16 +1145,6 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         return False
     else:
         print(f"[{ticker}] ✅ VWAP GATE: {vwap_reason}")
-    
-    try:
-        from app.signals.vwap_reclaim import detect_vwap_reclaim
-        VWAP_RECLAIM_ENABLED = True
-        print("[SNIPER] ✅ VWAP reclaim signal enabled")
-    except ImportError:
-        VWAP_RECLAIM_ENABLED = False
-        print("[SNIPER] ⚠️  VWAP reclaim signal disabled")
-        def detect_vwap_reclaim(bars): return None
-
 
         # ── SPY EMA Regime hard block ─────────────────────────────────────────────
     if SPY_EMA_CONTEXT_ENABLED and spy_regime:
@@ -1402,20 +1403,6 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         if _sweep_result is None:
             print(f"[{ticker}] — No liquidity sweep detected")
     
-    try:
-        from app.filters.order_block_cache import (
-            identify_order_block, cache_order_block, apply_ob_retest_boost, clear_ob_cache
-        )
-        ORDER_BLOCK_ENABLED = True
-        print("[SNIPER] ✅ Order block retest cache enabled")
-    except ImportError:
-        ORDER_BLOCK_ENABLED = False
-        print("[SNIPER] ⚠️  Order block cache disabled")
-        def identify_order_block(bars, bos_idx, direction): return None
-        def cache_order_block(ticker, ob): pass
-        def apply_ob_retest_boost(ticker, entry_price, direction, confidence): return confidence, None
-        def clear_ob_cache(ticker=None): pass
-    
         # ── C2: Order block retest boost ─────────────────────────────────────
     if ORDER_BLOCK_ENABLED:
         final_confidence, _ob_result = apply_ob_retest_boost(
@@ -1423,6 +1410,14 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         )
         if _ob_result is None:
             print(f"[{ticker}] — No OB retest detected")
+
+        # ── D2: S/D zone confluence boost ────────────────────────────────────
+    if SD_ZONE_ENABLED:
+        final_confidence, _sd_result = apply_sd_confluence_boost(
+            ticker, entry_price, direction, final_confidence
+        )
+        if _sd_result is None:
+            print(f"[{ticker}] — No S/D zone confluence")
 
         # ── B3: Post-3PM confidence decay ────────────────────────────────────────
     now_time = _now_et().time()
@@ -1443,11 +1438,12 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         f"+ GEX:{gex_adj:+.3f}[{gex_label}] "
         f"+ MTF:{mtf_boost:+.3f} "
         f"+ ML:{ml_boost:+.3f} " 
-        f"+ ML:{ml_boost:+.3f} "
         f"+ Sweep:{(_sweep_result['boost'] if _sweep_result else 0.0):+.3f} "
         f"+ OB:{(0.03 if _ob_result else 0.0):+.3f} "
+        f"+ SD:{(0.03 if _sd_result else 0.0):+.3f} "
         f"= {final_confidence:.2f}"
     )
+
     try:
         from app.risk.dynamic_thresholds import get_dynamic_threshold
         eff_min = get_dynamic_threshold(signal_type, final_grade)
@@ -1733,6 +1729,11 @@ def process_ticker(ticker: str):
 
         if _state.ticker_is_armed(ticker):
             return
+        
+            # ── D2: Cache S/D zones for this ticker ──────────────────────────────
+        if SD_ZONE_ENABLED:
+            cache_sd_zones(ticker, bars_session)
+
 
         if PRODUCTION_HELPERS_ENABLED:
             bars_session = _fetch_data_safe(
@@ -1774,6 +1775,10 @@ def process_ticker(ticker: str):
             print_priority_stats()
             print_gate_distribution_stats()  # Issue #23: EOD gate distribution report
 
+            if SD_ZONE_ENABLED:
+                clear_sd_cache()
+                print("[SD-CACHE] 🧹 EOD clear — all S/D zones flushed")
+
             if TRACKERS_ENABLED:
                 if cooldown_tracker:
                     cooldown_tracker.print_eod_report()
@@ -1804,9 +1809,12 @@ def process_ticker(ticker: str):
                 except Exception as e:
                     print(f"[EOD] Regime summary error: {e}")
 
-            if ORDER_BLOCK_ENABLED:
-                clear_ob_cache()
-                print("[OB-CACHE] 🧹 EOD clear — all order blocks flushed")
+            try:
+                if ORDER_BLOCK_ENABLED:
+                    clear_ob_cache()
+                    print("[OB-CACHE] 🧹 EOD clear — all order blocks flushed")
+            except NameError:
+                pass
 
             return
 
