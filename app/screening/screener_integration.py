@@ -9,7 +9,8 @@ now uses the correct functional API.
 
 Patch (Mar 12, 2026): is_explosive_mover() default rvol_threshold lowered
   4.0 → 3.0 to match get_ticker_screener_metadata() (rvol >= 3.0 for qualified).
-  Previously, tickers with 3.0–3.9x RVOL got qualified=True from the screener
+
+    Previously, tickers with 3.0–3.9x RVOL got qualified=True from the screener
   but is_explosive_mover() returned False, causing inconsistent downstream behavior.
 """
 from typing import Dict, Optional, List
