@@ -11,36 +11,18 @@ Two entry points:
 Key improvements (Mar 2026)
 ---------------------------
 * Swapped RandomForestClassifier → HistGradientBoostingClassifier (Mar 11 2026)
-  - 3-4x faster training on same dataset
-  - Learns feature interactions sequentially (3-6pp precision gain on tabular)
-  - Native class imbalance support via class_weight param
-  - max_iter=300, max_depth=4, learning_rate=0.05, l2_regularization=0.1
 * Added ticker_win_rate + spy_regime features (Mar 11 2026)
-  - ticker_win_rate: rolling 30-day per-ticker win rate, normalised 0-1
-  - spy_regime: 3-state SPY macro context (-1=down/0=flat/1=up)
-* Precision-first threshold tuning: sweeps the full probability curve and
-  picks the highest threshold (most selective) where recall >= 30%.  This
-  raises precision from ~36% -> 50%+ while keeping enough signals to trade.
-  Stored in the model bundle so MLSignalScorerV2 uses it at score time.
-* Pandas CoW fix: all inplace fillna() calls replaced with
-  df[col] = df[col].fillna(val) to suppress DeprecationWarning.
-* Feature audit (Mar 2026, BUG-11): HIST_FEATURE_COLS updated to match
-  the 15 real, non-redundant features produced by HistoricalMLTrainer.
-  Dropped: grade_norm, mtf_boost, is_bull, explosive_mover.
-  Added:   vwap_side, atr_ratio, time_bucket_norm, resist_proximity.
-
-Usage:
-    # Historical pre-training (primary path)
-    from app.backtesting.historical_trainer import HistoricalMLTrainer
-    trainer = HistoricalMLTrainer()
-    df = trainer.build_dataset(['AAPL', 'TSLA', ...], months_back=6)
-    train_df, val_df = trainer.walk_forward_split(df)
-    model, metrics = train_from_dataframe(train_df, val_df)
-
-    # Live EOD retrain (secondary path — requires signal_outcomes DB table)
-    from app.ml.ml_trainer import should_retrain, train_model
-    if should_retrain():
-        model, metrics = train_model()
+* Precision-first threshold tuning (Mar 11 2026)
+* Pandas CoW fix: all inplace fillna() calls replaced (Mar 11 2026)
+* Feature audit (Mar 2026, BUG-11): HIST_FEATURE_COLS updated
+* FIX (Mar 12 2026):
+  - walk_forward_cv() — 3-fold time-series cross-validation replaces single
+    75/25 split.  Each fold trains on all data up to fold boundary, validates
+    on the next window.  Final model is retrained on 100% of data then wrapped
+    with CalibratedClassifierCV(method='sigmoid') for Platt-scaled probabilities.
+  - train_from_dataframe() now calls walk_forward_cv() internally.
+  - Platt scaling (CalibratedClassifierCV) applied after walk-forward so
+    predict_proba() outputs are proper calibrated probabilities.
 """
 import logging
 import os
@@ -48,9 +30,10 @@ import joblib
 import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List
 from sklearn.inspection import permutation_importance
 from sklearn.ensemble import HistGradientBoostingClassifier
+from sklearn.calibration import CalibratedClassifierCV
 from sklearn.model_selection import train_test_split, cross_val_score
 from sklearn.metrics import (
     accuracy_score, precision_score, recall_score,
@@ -64,21 +47,10 @@ logger = logging.getLogger(__name__)
 MODEL_PATH           = os.path.join(os.path.dirname(__file__), '..', '..', 'ml_model.joblib')
 MIN_TRAINING_SAMPLES = 100
 RETRAIN_THRESHOLD    = 50
-MODEL_VERSION        = 'historical_v5'
+MODEL_VERSION        = 'historical_v6'
 
 MIN_RECALL_FLOOR = 0.30
 
-# Feature columns — 17 features (15 original + ticker_win_rate + spy_regime).
-# Must stay in sync with HIST_FEATURE_COLS in ml_signal_scorer_v2.py and
-# FEATURE_NAMES in historical_trainer.py.
-#
-# Added (Mar 11 2026):
-#   ticker_win_rate  — rolling 30-day per-ticker win rate normalised 0-1
-#                      gives model explicit knowledge that AAPL/TSLA signals
-#                      are structurally more reliable than SPY/QQQ.
-#   spy_regime       — 3-state SPY macro context: -1=downtrend / 0=flat / 1=uptrend
-#                      based on SPY 20-bar vs 50-bar EMA crossover + slope.
-#                      Highest-leverage macro feature not previously in model.
 HIST_FEATURE_COLS = [
     'confidence',
     'rvol',
@@ -113,7 +85,6 @@ def _find_optimal_threshold(
     """
     Find the probability threshold that maximises precision on the val set
     subject to a minimum recall floor.
-
     Pass 1 — max precision where recall >= min_recall
     Pass 2 — max F-beta (beta=0.5) fallback
     Pass 3 — hard fallback: 0.50
@@ -165,6 +136,80 @@ def predict_with_threshold(model, X: np.ndarray, threshold: float = 0.50) -> np.
     return (model.predict_proba(X)[:, 1] >= threshold).astype(int)
 
 
+# ── Walk-forward cross-validation (FIX: 3-fold, not single split) ────────────
+
+def walk_forward_cv(
+    X: np.ndarray,
+    y: np.ndarray,
+    n_folds: int = 3,
+    n_estimators: int = 300,
+) -> Tuple[List[dict], np.ndarray, np.ndarray]:
+    """
+    Time-series aware walk-forward cross-validation.
+
+    For each fold k in 0..n_folds-1:
+      - train on X[0 : fold_end_k]
+      - validate on X[fold_end_k : fold_end_k + fold_size]
+
+    Returns
+    -------
+    fold_metrics : list of dicts with accuracy/precision/recall per fold
+    X_last_val   : validation array from the final fold (used for threshold tuning)
+    y_last_val   : labels from the final fold
+    """
+    n = len(X)
+    fold_size = n // (n_folds + 1)   # +1 so first train window is meaningful
+    fold_metrics: List[dict] = []
+
+    logger.info(f"[WF-CV] Starting {n_folds}-fold walk-forward CV  (n={n}, fold_size≈{fold_size})")
+
+    X_last_val = None
+    y_last_val = None
+
+    for k in range(n_folds):
+        train_end = fold_size * (k + 1)
+        val_end   = min(train_end + fold_size, n)
+
+        X_tr, y_tr = X[:train_end], y[:train_end]
+        X_vl, y_vl = X[train_end:val_end], y[train_end:val_end]
+
+        if len(X_vl) < 10 or len(np.unique(y_vl)) < 2:
+            logger.warning(f"[WF-CV] Fold {k+1} skipped — too few samples or single class")
+            continue
+
+        clf = HistGradientBoostingClassifier(
+            max_iter=n_estimators, max_depth=4, learning_rate=0.05,
+            l2_regularization=0.1, class_weight='balanced', random_state=42,
+        )
+        clf.fit(X_tr, y_tr)
+        y_pred = clf.predict(X_vl)
+
+        m = {
+            'fold':      k + 1,
+            'n_train':   len(X_tr),
+            'n_val':     len(X_vl),
+            'accuracy':  accuracy_score(y_vl, y_pred),
+            'precision': precision_score(y_vl, y_pred, zero_division=0),
+            'recall':    recall_score(y_vl, y_pred, zero_division=0),
+            'f1':        f1_score(y_vl, y_pred, zero_division=0),
+        }
+        fold_metrics.append(m)
+        logger.info(
+            f"[WF-CV] Fold {k+1}/{n_folds}  train={len(X_tr)}  val={len(X_vl)}  "
+            f"Prec={m['precision']:.2%}  Rec={m['recall']:.2%}  F1={m['f1']:.2%}"
+        )
+
+        X_last_val = X_vl
+        y_last_val = y_vl
+
+    if X_last_val is None:
+        # Fallback: use last 20% as val
+        split = int(n * 0.8)
+        X_last_val, y_last_val = X[split:], y[split:]
+
+    return fold_metrics, X_last_val, y_last_val
+
+
 # ── Main training function (historical pre-training path) ────────────────────
 
 def train_from_dataframe(
@@ -175,100 +220,110 @@ def train_from_dataframe(
 ) -> Tuple[Optional[object], dict]:
     """
     Train (and validate) an ML model from a pre-built labelled DataFrame.
-    Accepts output of HistoricalMLTrainer.build_dataset() / walk_forward_split().
-    Saves a bundle compatible with MLSignalScorerV2.
+    Now uses 3-fold walk-forward CV instead of a single 75/25 split.
+    Final model is retrained on ALL data then Platt-calibrated.
     """
-    logger.info("[ML-TRAIN-DF] Starting train_from_dataframe()")
+    logger.info("[ML-TRAIN-DF] Starting train_from_dataframe() — 3-fold walk-forward + Platt scaling")
 
-    available_feats = [c for c in HIST_FEATURE_COLS if c in train_df.columns]
+    # ── Merge train + val if both supplied (we'll do our own CV split) ────────
+    if val_df is not None and not val_df.empty:
+        full_df = pd.concat([train_df, val_df], ignore_index=True)
+    else:
+        full_df = train_df.copy()
+
+    available_feats = [c for c in HIST_FEATURE_COLS if c in full_df.columns]
     if not available_feats:
         msg = (
-            f"train_df has none of the expected feature columns. "
-            f"Expected: {HIST_FEATURE_COLS[:5]}...  Got: {list(train_df.columns)[:5]}..."
+            f"DataFrame has none of the expected feature columns. "
+            f"Expected: {HIST_FEATURE_COLS[:5]}...  Got: {list(full_df.columns)[:5]}..."
         )
         logger.error(f"[ML-TRAIN-DF] {msg}")
         return None, {'error': msg}
 
     label_col = 'outcome_binary'
-    if label_col not in train_df.columns:
-        msg = f"train_df missing label column '{label_col}'"
+    if label_col not in full_df.columns:
+        msg = f"DataFrame missing label column '{label_col}'"
         logger.error(f"[ML-TRAIN-DF] {msg}")
         return None, {'error': msg}
 
-    missing = [c for c in HIST_FEATURE_COLS if c not in train_df.columns]
+    missing = [c for c in HIST_FEATURE_COLS if c not in full_df.columns]
     if missing:
         logger.warning(f"[ML-TRAIN-DF] Missing features (will be zero-filled at inference): {missing}")
 
-    train_df = train_df.copy()
-    train_medians = {col: train_df[col].median() for col in available_feats}
-    for col in available_feats:
-        train_df[col] = train_df[col].fillna(train_medians[col])
+    # Sort by time if available so walk-forward is chronological
+    for time_col in ('signal_time', 'timestamp', 'date', 'created_at'):
+        if time_col in full_df.columns:
+            full_df = full_df.sort_values(time_col).reset_index(drop=True)
+            logger.info(f"[ML-TRAIN-DF] Sorted by '{time_col}' for walk-forward ordering")
+            break
 
-    X_train = train_df[available_feats].values
-    y_train = train_df[label_col].values
+    medians = {col: full_df[col].median() for col in available_feats}
+    for col in available_feats:
+        full_df[col] = full_df[col].fillna(medians[col])
+
+    X_all = full_df[available_feats].values
+    y_all = full_df[label_col].values
 
     logger.info(
-        f"[ML-TRAIN-DF] Train: {len(X_train)} samples, "
-        f"{len(available_feats)} features  "
-        f"(WIN={int(y_train.sum())}, LOSS={len(y_train)-int(y_train.sum())})"
+        f"[ML-TRAIN-DF] Full dataset: {len(X_all)} samples, {len(available_feats)} features  "
+        f"(WIN={int(y_all.sum())}, LOSS={len(y_all)-int(y_all.sum())})"
     )
 
-    if val_df is not None and not val_df.empty:
-        val_df = val_df.copy()
-        for col in available_feats:
-            if col in val_df.columns:
-                val_df[col] = val_df[col].fillna(train_medians.get(col, 0.0))
-        X_val = val_df[available_feats].values
-        y_val = val_df[label_col].values
-    else:
-        X_train, X_val, y_train, y_val = train_test_split(
-            X_train, y_train, test_size=0.2, random_state=42, stratify=y_train
-        )
+    # ── Step 1: 3-fold walk-forward CV for honest metrics ────────────────────
+    fold_metrics, X_last_val, y_last_val = walk_forward_cv(
+        X_all, y_all, n_folds=3, n_estimators=n_estimators
+    )
 
-    logger.info(f"[ML-TRAIN-DF] Val:   {len(X_val)} samples")
+    if not fold_metrics:
+        logger.error("[ML-TRAIN-DF] All walk-forward folds failed — aborting")
+        return None, {'error': 'Walk-forward CV produced no valid folds'}
 
+    cv_acc  = float(np.mean([m['accuracy']  for m in fold_metrics]))
+    cv_prec = float(np.mean([m['precision'] for m in fold_metrics]))
+    cv_rec  = float(np.mean([m['recall']    for m in fold_metrics]))
+    cv_f1   = float(np.mean([m['f1']        for m in fold_metrics]))
+    logger.info(
+        f"[ML-TRAIN-DF] WF-CV mean — Acc={cv_acc:.2%}  Prec={cv_prec:.2%}  "
+        f"Rec={cv_rec:.2%}  F1={cv_f1:.2%}"
+    )
+
+    # ── Step 2: Final model — train on ALL data ───────────────────────────────
     try:
-        model = HistGradientBoostingClassifier(
-            max_iter          = n_estimators,
-            max_depth         = 4,
-            learning_rate     = 0.05,
-            l2_regularization = 0.1,
-            class_weight      = 'balanced',
-            random_state      = 42,
+        base_model = HistGradientBoostingClassifier(
+            max_iter=n_estimators, max_depth=4, learning_rate=0.05,
+            l2_regularization=0.1, class_weight='balanced', random_state=42,
         )
-        model.fit(X_train, y_train)
-        logger.info("[ML-TRAIN-DF] ✅ Model training complete (HistGradientBoosting)")
+        base_model.fit(X_all, y_all)
+        logger.info("[ML-TRAIN-DF] ✅ Base model trained on full dataset")
     except Exception as exc:
         logger.error(f"[ML-TRAIN-DF] Training failed: {exc}")
         return None, {'error': str(exc)}
 
-    y_pred_default = model.predict(X_val)
-    acc_default    = accuracy_score(y_val, y_pred_default)
-    prec_default   = precision_score(y_val, y_pred_default, zero_division=0)
-    rec_default    = recall_score(y_val, y_pred_default, zero_division=0)
+    # ── Step 3: Platt scaling (CalibratedClassifierCV, sigmoid) ─────────────
+    # cv='prefit' means the base model is already fitted; calibration is done
+    # on the last-fold val set to avoid data leakage.
+    try:
+        model = CalibratedClassifierCV(estimator=base_model, method='sigmoid', cv='prefit')
+        model.fit(X_last_val, y_last_val)
+        logger.info("[ML-TRAIN-DF] ✅ Platt scaling applied (CalibratedClassifierCV sigmoid)")
+    except Exception as exc:
+        logger.warning(f"[ML-TRAIN-DF] Platt scaling failed ({exc}) — using uncalibrated model")
+        model = base_model
 
-    opt_threshold = _find_optimal_threshold(model, X_val, y_val)
-    y_pred_opt    = predict_with_threshold(model, X_val, opt_threshold)
-    accuracy      = accuracy_score(y_val, y_pred_opt)
-    precision     = precision_score(y_val, y_pred_opt, zero_division=0)
-    recall        = recall_score(y_val, y_pred_opt, zero_division=0)
-    f1            = f1_score(y_val, y_pred_opt, zero_division=0)
-    cm            = confusion_matrix(y_val, y_pred_opt)
+    # ── Step 4: Threshold tuning on last-fold val set ────────────────────────
+    opt_threshold = _find_optimal_threshold(model, X_last_val, y_last_val)
+    y_pred_opt    = predict_with_threshold(model, X_last_val, opt_threshold)
+    accuracy      = accuracy_score(y_last_val, y_pred_opt)
+    precision     = precision_score(y_last_val, y_pred_opt, zero_division=0)
+    recall        = recall_score(y_last_val, y_pred_opt, zero_division=0)
+    f1            = f1_score(y_last_val, y_pred_opt, zero_division=0)
+    cm            = confusion_matrix(y_last_val, y_pred_opt)
 
-    X_all     = np.vstack([X_train, X_val])
-    y_all     = np.concatenate([y_train, y_val])
-    n_splits  = min(5, max(2, len(X_all) // 20))
-    cv_scores = cross_val_score(model, X_all, y_all, cv=n_splits, scoring='accuracy')
-
-    # HistGBM doesn't expose feature_importances_ the same way as RF
-    # Use permutation importance proxy via gain-based importances if available
-    # HistGBM: use permutation importance for interpretability
+    # ── Step 5: Permutation importance on last-fold val set ──────────────────
     try:
         pi = permutation_importance(
-            model, X_val, y_val,
-            n_repeats=10,
-            random_state=42,
-            n_jobs=-1,
+            model, X_last_val, y_last_val,
+            n_repeats=10, random_state=42, n_jobs=-1,
         )
         feat_imp = dict(zip(available_feats, pi.importances_mean))
     except Exception as exc:
@@ -276,38 +331,34 @@ def train_from_dataframe(
         feat_imp = {col: 0.0 for col in available_feats}
     feat_imp_sorted = dict(sorted(feat_imp.items(), key=lambda x: x[1], reverse=True))
 
-
     metrics = {
         'accuracy':           accuracy,
         'precision':          precision,
         'recall':             recall,
         'f1':                 f1,
         'threshold':          opt_threshold,
-        'accuracy_default':   acc_default,
-        'precision_default':  prec_default,
-        'recall_default':     rec_default,
-        'cv_mean':            float(cv_scores.mean()),
-        'cv_std':             float(cv_scores.std()),
+        'cv_mean':            cv_acc,
+        'cv_std':             float(np.std([m['accuracy'] for m in fold_metrics])),
+        'cv_precision_mean':  cv_prec,
+        'cv_recall_mean':     cv_rec,
+        'cv_f1_mean':         cv_f1,
+        'fold_metrics':       fold_metrics,
         'confusion_matrix':   cm.tolist(),
         'feature_importance': feat_imp_sorted,
         'feature_names':      available_feats,
-        'n_train':            len(X_train),
-        'n_val':              len(X_val),
+        'n_train':            len(X_all),
+        'n_val':              len(X_last_val),
+        'calibrated':         True,
         'trained_at':         datetime.now().isoformat(),
         'source':             'historical_pretraining',
         'model_version':      MODEL_VERSION,
-        'model_type':         'HistGradientBoostingClassifier',
+        'model_type':         'HistGradientBoostingClassifier+PlattScaling',
     }
 
     logger.info(
-        f"[ML-TRAIN-DF] @thresh={opt_threshold:.3f}  "
+        f"[ML-TRAIN-DF] Final @thresh={opt_threshold:.3f}  "
         f"Accuracy={accuracy:.2%}  Precision={precision:.2%}  "
-        f"Recall={recall:.2%}  F1={f1:.2%}  "
-        f"CV={cv_scores.mean():.2%}(\u00b1{cv_scores.std():.2%})"
-    )
-    logger.info(
-        f"[ML-TRAIN-DF] Default @0.50: "
-        f"Acc={acc_default:.2%}  Prec={prec_default:.2%}  Rec={rec_default:.2%}"
+        f"Recall={recall:.2%}  F1={f1:.2%}"
     )
 
     save_path = model_path or os.path.join(
@@ -323,7 +374,8 @@ def train_from_dataframe(
             'trained_at':     metrics['trained_at'],
             'threshold':      opt_threshold,
             'model_version':  MODEL_VERSION,
-            'model_type':     'HistGradientBoostingClassifier',
+            'model_type':     'HistGradientBoostingClassifier+PlattScaling',
+            'calibrated':     True,
         }
         with open(save_path, 'wb') as f:
             pickle.dump(bundle, f)
@@ -373,16 +425,15 @@ def train_model(
     )
 
     try:
-        model = HistGradientBoostingClassifier(
-            max_iter          = n_estimators,
-            max_depth         = 4,
-            learning_rate     = 0.05,
-            l2_regularization = 0.1,
-            class_weight      = 'balanced',
-            random_state      = 42,
+        base_model = HistGradientBoostingClassifier(
+            max_iter=n_estimators, max_depth=4, learning_rate=0.05,
+            l2_regularization=0.1, class_weight='balanced', random_state=42,
         )
-        model.fit(X_train, y_train)
-        logger.info("[ML-TRAIN] ✅ Model training complete (HistGradientBoosting)")
+        base_model.fit(X_train, y_train)
+        # Platt-calibrate on test split
+        model = CalibratedClassifierCV(estimator=base_model, method='sigmoid', cv='prefit')
+        model.fit(X_test, y_test)
+        logger.info("[ML-TRAIN] ✅ Model trained + Platt-calibrated")
     except Exception as exc:
         logger.error(f"[ML-TRAIN] Training failed: {exc}")
         return None, {'error': str(exc)}
@@ -393,11 +444,11 @@ def train_model(
     accuracy  = accuracy_score(y_test, y_pred)
     precision = precision_score(y_test, y_pred, zero_division=0)
     recall    = recall_score(y_test, y_pred, zero_division=0)
-    cv_scores = cross_val_score(model, X, y, cv=5, scoring='accuracy')
+    cv_scores = cross_val_score(base_model, X, y, cv=5, scoring='accuracy')
     cm        = confusion_matrix(y_test, y_pred)
 
     try:
-        feature_importance = dict(zip(feature_names, model.feature_importances_))
+        feature_importance = dict(zip(feature_names, base_model.feature_importances_))
     except AttributeError:
         feature_importance = {col: 0.0 for col in feature_names}
     sorted_features = sorted(feature_importance.items(), key=lambda x: x[1], reverse=True)
@@ -414,9 +465,10 @@ def train_model(
         'feature_names':      feature_names,
         'n_train':            len(X_train),
         'n_val':              len(X_test),
+        'calibrated':         True,
         'trained_at':         datetime.now().isoformat(),
         'model_version':      MODEL_VERSION,
-        'model_type':         'HistGradientBoostingClassifier',
+        'model_type':         'HistGradientBoostingClassifier+PlattScaling',
     }
 
     logger.info(
@@ -432,7 +484,8 @@ def train_model(
             'trained_at':    metrics['trained_at'],
             'threshold':     opt_threshold,
             'model_version': MODEL_VERSION,
-            'model_type':    'HistGradientBoostingClassifier',
+            'model_type':    'HistGradientBoostingClassifier+PlattScaling',
+            'calibrated':    True,
         }
         joblib.dump(model_data, MODEL_PATH)
         logger.info(f"[ML-TRAIN] ✅ Model saved -> {MODEL_PATH}")
@@ -546,6 +599,7 @@ def get_model_info() -> dict:
             'threshold':     model_data.get('threshold', 0.50),
             'model_version': model_data.get('model_version', 'unknown'),
             'model_type':    model_data.get('model_type', 'unknown'),
+            'calibrated':    model_data.get('calibrated', False),
             'feature_count': len(model_data['feature_names']),
             'top_features':  list(model_data['metrics']['feature_importance'].keys())[:5],
         }

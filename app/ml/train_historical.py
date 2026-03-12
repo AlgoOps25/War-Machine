@@ -12,25 +12,27 @@ Usage
     python -m app.ml.train_historical --interval d --months 24 --tickers AAPL TSLA NVDA MSFT AMD META SPY QQQ
 
     # Intraday 5m bars — denser signals, limited to ~120 days on EODHD free tier
-    python -m app.ml.train_historical --months 4 --tickers AAPL TSLA NVDA MSFT AMD META SPY QQQ
+    python -m app.ml.train_historical --months 6 --tickers AAPL TSLA NVDA MSFT AMD META SPY QQQ
 
     # Include TIMEOUT signals as LOSS (more conservative):
     python -m app.ml.train_historical --interval d --months 36 --include-timeout
 
 Output
 ------
-    models/ml_model_historical.pkl   — trained model bundle
+    models/ml_model_historical.pkl   — trained model bundle (Platt-calibrated)
     models/training_dataset.csv      — full labelled dataset (inspect/audit)
 
 Environment variables required
 ------------------------------
     EODHD_API_KEY  — your EODHD API key
 
-Bug fixes (Mar 11 2026)
------------------------
-    --rvol-min now wired through to HistoricalMLTrainer constructor.
-    Daily mode uses RVOL_MIN_DAILY (1.3) automatically unless --rvol-min
-    is explicitly supplied, generating many more labelled signals.
+Changes (Mar 12 2026)
+---------------------
+    --months default raised from 4 → 6 (more history for 3-fold WF CV).
+    train_from_dataframe() now runs 3-fold walk-forward CV internally;
+    the explicit walk_forward_split() call is removed — the full df is
+    passed directly so the trainer controls the splits chronologically.
+    Results output extended with per-fold CV breakdown.
 """
 from __future__ import annotations
 
@@ -59,16 +61,14 @@ def main():
     parser = argparse.ArgumentParser(
         description='Pre-train War Machine ML model on EODHD historical data'
     )
-    parser.add_argument('--months',   type=int,   default=12,
-                        help='Months of history to fetch (default: 12)')
+    parser.add_argument('--months',   type=int,   default=6,
+                        help='Months of history to fetch (default: 6)')
     parser.add_argument('--tickers',  nargs='+',  default=DEFAULT_TICKERS,
                         help='Space-separated ticker list')
     parser.add_argument('--interval', type=str,   default='5m',
                         help="Bar interval: '5m' intraday or 'd' daily (default: 5m)")
     parser.add_argument('--rvol-min', type=float, default=None,
                         help='Min RVOL to trigger signal (default: 2.0 intraday / 1.3 daily)')
-    parser.add_argument('--val-frac', type=float, default=0.25,
-                        help='Validation fraction for walk-forward split (default: 0.25)')
     parser.add_argument('--include-timeout', action='store_true',
                         help='Include TIMEOUT signals as LOSS in training')
     parser.add_argument('--model-name', type=str, default='ml_model_historical',
@@ -106,7 +106,7 @@ def main():
     print(f" Tickers  : {', '.join(args.tickers)}")
     print(f" History  : {args.months} months  (interval={args.interval})")
     print(f" RVOL min : {rvol_min}  {'[daily calibrated]' if is_daily and args.rvol_min is None else ''}")
-    print(f" Val split: {args.val_frac*100:.0f}% held out for validation")
+    print(f" Splits   : 3-fold walk-forward CV + Platt calibration")
     print("="*62 + "\n")
 
     df = trainer.build_dataset(
@@ -137,17 +137,16 @@ def main():
         )
         sys.exit(1)
 
-    train_df, val_df = trainer.walk_forward_split(df, val_fraction=args.val_frac)
-
-    # ── Train model ───────────────────────────────────────────────────────────
+    # ── Train model (3-fold WF-CV + Platt scaling inside train_from_dataframe)
     from app.ml.ml_trainer import train_from_dataframe
 
     model_path = MODELS_DIR / f"{args.model_name}.pkl"
 
-    print("\n Training model on historical dataset...")
+    print("\n Training model — 3-fold walk-forward CV + Platt scaling...")
+    # Pass the full df directly; train_from_dataframe handles chronological splits
     model, metrics = train_from_dataframe(
-        train_df   = train_df,
-        val_df     = val_df,
+        train_df   = df,
+        val_df     = None,
         model_path = str(model_path),
     )
 
@@ -160,16 +159,28 @@ def main():
     print(" TRAINING RESULTS")
     print("="*62)
     print(f"  Train samples  : {metrics['n_train']}")
-    print(f"  Val samples    : {metrics['n_val']}")
-    print(f"  Accuracy       : {metrics['accuracy']:.2%}")
-    print(f"  Precision      : {metrics['precision']:.2%}")
-    print(f"  Recall         : {metrics['recall']:.2%}")
-    print(f"  CV Score       : {metrics['cv_mean']:.2%} (±{metrics['cv_std']:.2%})")
+    print(f"  Val samples    : {metrics['n_val']}  (last WF fold)")
+    print(f"  Calibrated     : {'✅ Yes (Platt/sigmoid)' if metrics.get('calibrated') else '❌ No'}")
+    print()
+    print("  Walk-forward fold breakdown:")
+    for fm in metrics.get('fold_metrics', []):
+        print(
+            f"    Fold {fm['fold']}  train={fm['n_train']:>4}  val={fm['n_val']:>4}  "
+            f"Prec={fm['precision']:.2%}  Rec={fm['recall']:.2%}  F1={fm['f1']:.2%}"
+        )
+    print()
+    print(f"  CV Accuracy    : {metrics['cv_mean']:.2%} (±{metrics['cv_std']:.2%})")
+    print(f"  CV Precision   : {metrics.get('cv_precision_mean', 0):.2%}")
+    print(f"  CV Recall      : {metrics.get('cv_recall_mean', 0):.2%}")
+    print(f"  Final Accuracy : {metrics['accuracy']:.2%}")
+    print(f"  Final Precision: {metrics['precision']:.2%}")
+    print(f"  Final Recall   : {metrics['recall']:.2%}")
+    print(f"  Threshold      : {metrics['threshold']:.3f}")
     print()
     print("  Top features by importance:")
     for feat, imp in sorted(metrics['feature_importance'].items(),
                              key=lambda x: x[1], reverse=True)[:8]:
-        bar_str = '█' * int(imp * 40)
+        bar_str = '█' * max(1, int(imp * 40))
         print(f"    {feat:<28} {imp:.3f}  {bar_str}")
     print()
     print(f"  Model saved → {model_path}")
