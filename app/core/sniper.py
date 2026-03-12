@@ -78,7 +78,15 @@ except ImportError:
         return None
 
 try:
-    from app.core.sniper_mtf_trend_patch import run_mtf_trend_step
+    from app.filters.liquidity_sweep import apply_sweep_boost
+    LIQUIDITY_SWEEP_ENABLED = True
+    print("[SNIPER] ✅ Liquidity sweep detector enabled")
+except ImportError:
+    LIQUIDITY_SWEEP_ENABLED = False
+    print("[SNIPER] ⚠️  Liquidity sweep detector disabled")
+    def apply_sweep_boost(ticker, bars, direction, or_high, or_low, confidence, vwap=0.0):
+        return confidence, None
+
     MTF_TREND_ENABLED = True
     print("[SNIPER] ✅ MTF trend validator enabled (Step 8.5)")
 except ImportError:
@@ -1339,6 +1347,17 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
                          else max(0, -score_adj) / 100.0)
         final_confidence = max(0.40, min(final_confidence + spy_regime_adj, 0.95))
         print(f"[{ticker}] SPY EMA ADJ: {spy_regime_adj:+.3f} | Regime={spy_regime.get('label')}")
+        # ── C1: Liquidity sweep boost ─────────────────────────────────────
+    if LIQUIDITY_SWEEP_ENABLED:
+        _sweep_vwap = compute_vwap(bars_session)
+        final_confidence, _sweep_result = apply_sweep_boost(
+            ticker, bars_session, direction,
+            or_high_ref, or_low_ref,
+            final_confidence,
+            vwap=_sweep_vwap
+        )
+        if _sweep_result is None:
+            print(f"[{ticker}] — No liquidity sweep detected")
 
         # ── B3: Post-3PM confidence decay ────────────────────────────────────────
     now_time = _now_et().time()
@@ -1359,9 +1378,10 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         f"+ GEX:{gex_adj:+.3f}[{gex_label}] "
         f"+ MTF:{mtf_boost:+.3f} "
         f"+ ML:{ml_boost:+.3f} " 
+        f"+ ML:{ml_boost:+.3f} "
+        f"+ Sweep:{(_sweep_result['boost'] if _sweep_result else 0.0):+.3f} "
         f"= {final_confidence:.2f}"
     )
-
     try:
         from app.risk.dynamic_thresholds import get_dynamic_threshold
         eff_min = get_dynamic_threshold(signal_type, final_grade)
