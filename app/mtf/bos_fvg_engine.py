@@ -207,7 +207,7 @@ def classify_confirmation_candle(bar: Dict, fvg: Dict) -> Dict:
 
     body = abs(c - o)
     total_range = h - l
-    
+
     # Avoid division by zero
     if total_range == 0:
         return {"grade": None, "score": 0, "candle_type": "Doji (no range)"}
@@ -298,6 +298,14 @@ def check_fvg_entry(bars: List[Dict], fvg: Dict,
     This checks the PREVIOUS bar (bars[-2]) for FVG retest + confirmation,
     then triggers entry on the CURRENT bar (bars[-1]) open.
 
+    FVG BOUNCE CHECK (v1.23a fix):
+    A valid retest requires the candle to have BOUNCED off the FVG —
+    meaning it entered the gap AND closed back in the direction of the trade.
+    - Bull: close must be >= fvg_mid (bounced back up)
+    - Bear: close must be <= fvg_mid (bounced back down)
+    A candle that blows straight through the FVG is a zone failure, not a
+    confirmation, and must be rejected even if candle shape looks valid.
+
     If require_confirmation=True (default), only A+, A, or A- candles
     trigger entries. Set to False to allow all FVG touches (not recommended).
 
@@ -317,21 +325,23 @@ def check_fvg_entry(bars: List[Dict], fvg: Dict,
     fvg_high  = fvg["fvg_high"]
     fvg_mid   = fvg["fvg_mid"]
 
-    # ── Step 1: Did the PREVIOUS bar (closed candle) retest FVG? ─────
+    # ── Step 1: Did the PREVIOUS bar retest AND bounce off the FVG? ───
+    # Wick must have touched the FVG zone AND close must confirm bounce.
+    # This rejects candles that blow through the FVG without bouncing.
     price_in_fvg = False
 
     if direction == "bull":
-        # Price must have touched or entered the FVG from above
-        if prev_bar["low"] <= fvg_high and prev_bar["close"] >= fvg_low:
+        # Wick touched into FVG from above AND closed back above fvg_mid
+        if prev_bar["low"] <= fvg_high and prev_bar["close"] >= fvg_mid:
             price_in_fvg = True
 
     elif direction == "bear":
-        # Price must have touched or entered the FVG from below
-        if prev_bar["high"] >= fvg_low and prev_bar["close"] <= fvg_high:
+        # Wick touched into FVG from below AND closed back below fvg_mid
+        if prev_bar["high"] >= fvg_low and prev_bar["close"] <= fvg_mid:
             price_in_fvg = True
 
     if not price_in_fvg:
-        return None  # Previous bar didn't retest FVG, keep scanning
+        return None  # No valid FVG bounce — keep scanning
 
     # ── Step 2: Grade the CLOSED confirmation candle ─────────────────
     confirmation = classify_confirmation_candle(prev_bar, fvg)
@@ -491,7 +501,7 @@ def scan_bos_fvg(ticker: str, bars: List[Dict],
     return {
         "ticker":          ticker,
         "direction":       bos["direction"],
-        "bos_idx":         bos["bos_idx"],       # FIX: sniper.py line 1570 reads this key
+        "bos_idx":         bos["bos_idx"],
         "entry":           entry_trigger["entry_price"],
         "stop":            levels["stop"],
         "t1":              levels["t1"],
