@@ -41,6 +41,7 @@ import json
 from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 from app.discord_helpers import send_options_signal_alert, send_simple_message
+from app.filters.order_block_cache import clear_ob_cache
 from app.validation.validation import get_options_recommendation, get_validator, get_regime_filter
 from app.validation.cfw6_confirmation import wait_for_confirmation, grade_signal_with_confirmations
 from app.risk.trade_calculator import compute_stop_and_targets, get_adaptive_fvg_threshold
@@ -87,6 +88,22 @@ except ImportError:
     def apply_sweep_boost(ticker, bars, direction, or_high, or_low, confidence, vwap=0.0):
         return confidence, None
 
+try:
+    from app.filters.order_block_cache import (
+        identify_order_block, cache_order_block, apply_ob_retest_boost, clear_ob_cache
+    )
+    ORDER_BLOCK_ENABLED = True
+    print("[SNIPER] ✅ Order block retest cache enabled")
+except ImportError:
+    ORDER_BLOCK_ENABLED = False
+    print("[SNIPER] ⚠️  Order block cache disabled")
+    def identify_order_block(bars, bos_idx, direction): return None
+    def cache_order_block(ticker, ob): pass
+    def apply_ob_retest_boost(ticker, entry_price, direction, confidence): return confidence, None
+    def clear_ob_cache(ticker=None): pass
+
+try:
+    from app.core.sniper_mtf_trend_patch import run_mtf_trend_step
     MTF_TREND_ENABLED = True
     print("[SNIPER] ✅ MTF trend validator enabled (Step 8.5)")
 except ImportError:
@@ -94,9 +111,8 @@ except ImportError:
     print("[SNIPER] ⚠️  MTF trend validator disabled")
     def run_mtf_trend_step(ticker, direction, entry_price, confidence, signal_data):
         return confidence, signal_data
-    
+
 from app.ml.metrics_cache import get_ticker_win_rates
-# e.g. at module level or in a singleton
 _TICKER_WIN_CACHE = get_ticker_win_rates(days=30)
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1096,6 +1112,13 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         except Exception as timing_err:
             print(f"[{ticker}] Entry timing validation error (non-fatal): {timing_err}")
 
+        # ── C2: Cache order block for this BOS ───────────────────────────────────
+    if ORDER_BLOCK_ENABLED:
+        _ob = identify_order_block(bars_session, breakout_idx, direction)
+        if _ob:
+            cache_order_block(ticker, _ob)
+            print(f"[{ticker}] 📦 OB cached: ${_ob['ob_low']:.2f}–${_ob['ob_high']:.2f}")
+
     vwap_passes, vwap_reason = passes_vwap_gate(bars_session, direction, entry_price)
     if not vwap_passes:
         print(f"[{ticker}] 🚫 VWAP GATE: {vwap_reason}")
@@ -1347,6 +1370,7 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
                          else max(0, -score_adj) / 100.0)
         final_confidence = max(0.40, min(final_confidence + spy_regime_adj, 0.95))
         print(f"[{ticker}] SPY EMA ADJ: {spy_regime_adj:+.3f} | Regime={spy_regime.get('label')}")
+        
         # ── C1: Liquidity sweep boost ─────────────────────────────────────
     if LIQUIDITY_SWEEP_ENABLED:
         _sweep_vwap = compute_vwap(bars_session)
@@ -1358,6 +1382,28 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         )
         if _sweep_result is None:
             print(f"[{ticker}] — No liquidity sweep detected")
+    
+    try:
+        from app.filters.order_block_cache import (
+            identify_order_block, cache_order_block, apply_ob_retest_boost, clear_ob_cache
+        )
+        ORDER_BLOCK_ENABLED = True
+        print("[SNIPER] ✅ Order block retest cache enabled")
+    except ImportError:
+        ORDER_BLOCK_ENABLED = False
+        print("[SNIPER] ⚠️  Order block cache disabled")
+        def identify_order_block(bars, bos_idx, direction): return None
+        def cache_order_block(ticker, ob): pass
+        def apply_ob_retest_boost(ticker, entry_price, direction, confidence): return confidence, None
+        def clear_ob_cache(ticker=None): pass
+    
+        # ── C2: Order block retest boost ─────────────────────────────────────
+    if ORDER_BLOCK_ENABLED:
+        final_confidence, _ob_result = apply_ob_retest_boost(
+            ticker, entry_price, direction, final_confidence
+        )
+        if _ob_result is None:
+            print(f"[{ticker}] — No OB retest detected")
 
         # ── B3: Post-3PM confidence decay ────────────────────────────────────────
     now_time = _now_et().time()
@@ -1380,6 +1426,7 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         f"+ ML:{ml_boost:+.3f} " 
         f"+ ML:{ml_boost:+.3f} "
         f"+ Sweep:{(_sweep_result['boost'] if _sweep_result else 0.0):+.3f} "
+        f"+ OB:{(0.03 if _ob_result else 0.0):+.3f} "
         f"= {final_confidence:.2f}"
     )
     try:
@@ -1737,6 +1784,10 @@ def process_ticker(ticker: str):
                     regime_filter.print_regime_summary()
                 except Exception as e:
                     print(f"[EOD] Regime summary error: {e}")
+
+            if ORDER_BLOCK_ENABLED:
+                clear_ob_cache()
+                print("[OB-CACHE] 🧹 EOD clear — all order blocks flushed")
 
             return
 
