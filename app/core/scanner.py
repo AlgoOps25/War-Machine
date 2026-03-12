@@ -49,6 +49,14 @@ PHASE 1.22 (MAR 10, 2026):
     Candle cache: rolling 30-day window (matches startup_backfill_with_cache).
     Also prunes orphaned cache_metadata rows for tickers with no remaining bars.
     Prevents unbounded candle_cache table growth on long-running deployments.
+
+PHASE 1.23 (MAR 12, 2026):
+  - FIX OR WINDOW: Removed dead `should_scan_now()` guard that was blocking
+    all scanning from 9:30-9:40. scanner_optimizer now returns True from 9:30
+    with 5s intervals so every 1m bar is captured for BOS+FVG detection.
+  - Added OR window log banner so Railway logs show active BOS build status.
+  - At 9:40 the first valid A+/A/A- confirmation candle fires the signal
+    immediately — no 15s sleep gap between OR close and signal generation.
 """
 import os
 import time
@@ -344,6 +352,12 @@ def is_market_hours():
     return config.MARKET_OPEN <= now.time() <= config.MARKET_CLOSE
 
 
+def _is_or_window():
+    """True during 9:30-9:39:59 ET — OR formation / BOS+FVG build window."""
+    now = _now_et().time()
+    return dtime(9, 30) <= now < dtime(9, 40)
+
+
 def build_watchlist(force_refresh: bool = False) -> list:
     try:
         watchlist = get_current_watchlist(force_refresh=force_refresh)
@@ -438,7 +452,7 @@ def start_scanner_loop():
     # STARTUP HEALTH CHECK BANNER
     # ════════════════════════════════════════════════════════════════════════
     print("=" * 60, flush=True)
-    print("WAR MACHINE CFW6 SCANNER v1.22 - STARTUP", flush=True)
+    print("WAR MACHINE CFW6 SCANNER v1.23 - STARTUP", flush=True)
     print("=" * 60, flush=True)
     print("✓ DATA-INGEST    WebSocket starting (tickers TBD)", flush=True)
 
@@ -495,10 +509,11 @@ def start_scanner_loop():
     print("Analytics Conn:  ✅ FIXED   (reconnect guard — Phase 1.20 H1)", flush=True)
     print(f"Ticker Watchdog: ✅ ENABLED ({TICKER_TIMEOUT_SECONDS}s hard timeout per ticker — Phase 1.21 P0-3)", flush=True)
     print("Cache Cleanup:   ✅ ENABLED (30d candle_cache pruning EOD — Phase 1.22)", flush=True)
+    print("OR Window:       ✅ FIXED   (9:30-9:40 scans every 5s, no sleep — Phase 1.23)", flush=True)
     print("=" * 60 + "\n", flush=True)
 
     try:
-        send_simple_message("⚔️ WAR MACHINE ONLINE — CFW6 v1.22 | Cache EOD cleanup | Phase 1.22")
+        send_simple_message("⚔️ WAR MACHINE ONLINE — CFW6 v1.23 | OR window active scanning | Phase 1.23")
     except Exception as e:
         logger.warning(f"[SCANNER] Discord unavailable: {e}")
 
@@ -508,6 +523,7 @@ def start_scanner_loop():
     last_report_day           = None
     loss_streak_alerted       = False
     last_subscribed_watchlist = set()
+    _or_window_logged         = False  # suppress repeated OR banner lines
 
     # ── STARTUP SEQUENCE ────────────────────────────────────────────────────
     # Phase 1.17: WS feeds start with a short join (they connect fast).
@@ -560,6 +576,7 @@ def start_scanner_loop():
 
             # ── PRE-MARKET ────────────────────────────────────────────────
             if is_premarket():
+                _or_window_logged = False  # reset for next session
                 if not premarket_built:
                     logger.info(f"[PRE-MARKET] {current_time_str} - Building Watchlist")
                     try:
@@ -648,10 +665,16 @@ def start_scanner_loop():
 
             # ── MARKET HOURS ──────────────────────────────────────────────
             elif is_market_hours():
-                if not should_scan_now():
-                    logger.info(f"[SCANNER] {current_time_str} - Opening Range forming, waiting...")
-                    time.sleep(15)
-                    continue
+                # ── OR WINDOW (9:30-9:39): actively scan every 5s, no sleep ──
+                # should_scan_now() returns True and get_adaptive_scan_interval()
+                # returns 5s during this window. Log once so Railway logs are clean.
+                if _is_or_window():
+                    if not _or_window_logged:
+                        logger.info(
+                            f"[SCANNER] 📊 OR WINDOW — BOS+FVG building (9:30-9:40) "
+                            f"scanning every 5s | {current_time_str}"
+                        )
+                        _or_window_logged = True
 
                 if get_loss_streak():
                     if not loss_streak_alerted:
