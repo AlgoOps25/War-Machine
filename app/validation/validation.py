@@ -18,8 +18,23 @@ PHASE 3A PATCH (Mar 6, 2026) — Regime Filter Improvements:
       VIX 20–25 → effective ADX threshold = 15.0  (elevated VIX compresses ADX)
       VIX > 25  → effective ADX threshold = 12.0  (extreme fear, ADX tanks)
   - RegimeFilter.is_favorable_for_explosive_mover(rvol): bypasses regime gate
-    ENTIRELY when RVOL ≥ 4.0x — explosive movers override choppy-tape blocking
+    ENTIRELY when RVOL ≥ 3.0x — explosive movers override choppy-tape blocking
   - min_adx default lowered 25.0 → 15.0 (aligns with regime filter change)
+
+PHASE 3A PATCH 2 (Mar 12, 2026) — Bug Fixes:
+  - Fix 1 (P0): _calculate_adx() replaced with proper Wilder's smoothed ADX.
+    Previous implementation returned a single raw DX snapshot (0–5 early session)
+    instead of the 14-period smoothed ADX (15–40 range). Regime was blocking nearly
+    all signals in the first 60–90 minutes as a result.
+  - Fix 2 (P0): RVOL bypass threshold unified to 3.0x across all call sites.
+    is_favorable_for_explosive_mover() default was 4.0x — inconsistent with
+    get_ticker_screener_metadata() which already used 3.0x. 3.0–3.9x RVOL tickers
+    were getting qualified=True from the screener but still hitting the regime gate.
+  - Fix 3 (P1): entryprice NameError + bestoption typo in optimizer branch of
+    find_best_strike(). Every call with OPTIONS_OPTIMIZER_ENABLED=True was throwing
+    NameError and silently falling back to the slow serial EODHD chain fetch.
+  - Fix 4 (P2): Removed ghost earnings guard comment. The docstring claimed an
+    earnings guard was active — no such code exists anywhere in the pipeline.
 
 VALIDATION CONFIGURATION:
   • Minimum Final Confidence: 50% (configurable via min_final_confidence)
@@ -48,6 +63,7 @@ VALIDATION LAYERS:
   1. SignalValidator - Multi-indicator CFW6 confirmation
   2. RegimeFilter - Market condition detection (VIX/SPY)
   3. OptionsFilter - Options chain analysis with IVR/UOA/GEX
+  Note: No earnings guard is implemented. Tickers are not filtered by earnings date.
 
 USAGE:
   from validation import get_validator, get_regime_filter, get_options_filter
@@ -70,7 +86,7 @@ USAGE:
   
   # Regime filtering (explosive mover override — call this INSTEAD of is_favorable_regime)
   if regime_filter.is_favorable_for_explosive_mover(rvol=ticker_rvol):
-      process_signal()  # passes if RVOL >= 4x regardless of ADX/regime
+      process_signal()  # passes if RVOL >= 3x regardless of ADX/regime
   
   # Options validation
   options_filter = get_options_filter()
@@ -126,7 +142,6 @@ except ImportError:
     VPVR_ENABLED = False
     vpvr_calculator = None
 
-# Add this to the top of validation.py
 try:
     from app.options.options_optimizer import get_optimal_strikes_sync
     OPTIONS_OPTIMIZER_ENABLED = True
@@ -166,8 +181,8 @@ class RegimeFilter:
       VIX 20–25: ADX must be ≥ 15.0 for TRENDING  (elevated VIX compresses ADX)
       VIX > 25:  ADX must be ≥ 12.0 for TRENDING  (extreme fear, ADX tanks further)
     
-    Explosive Mover Override (Phase 3A Patch):
-      RVOL ≥ 4.0x bypasses the regime gate entirely via
+    Explosive Mover Override (Phase 3A Patch 2):
+      RVOL ≥ 3.0x bypasses the regime gate entirely via
       is_favorable_for_explosive_mover(rvol). Call this INSTEAD of
       is_favorable_regime() for tickers with known high RVOL.
     """
@@ -182,20 +197,23 @@ class RegimeFilter:
         state = self.get_regime_state(force_refresh=force_refresh)
         return state.favorable
 
-    def is_favorable_for_explosive_mover(self, rvol: float, rvol_threshold: float = 4.0) -> bool:
+    def is_favorable_for_explosive_mover(self, rvol: float, rvol_threshold: float = 3.0) -> bool:
         """
         RVOL-based regime override for explosive movers.
 
         Checks RVOL BEFORE the regime gate. If RVOL >= rvol_threshold, the
-        regime check is bypassed entirely — an explosive mover with 4x+
+        regime check is bypassed entirely — an explosive mover with 3x+
         relative volume warrants a signal attempt regardless of ADX or VIX.
+
+        Threshold unified to 3.0x (was 4.0x) to match screener_integration
+        get_ticker_screener_metadata() which uses rvol >= 3.0 for qualified=True.
 
         Call this method INSTEAD of is_favorable_regime() for tickers where
         the RVOL is known (e.g., from the premarket scanner composite score).
 
         Args:
-            rvol: Relative volume ratio (e.g., 4.5 means 4.5x average volume)
-            rvol_threshold: Minimum RVOL to trigger override (default 4.0x)
+            rvol: Relative volume ratio (e.g., 3.5 means 3.5x average volume)
+            rvol_threshold: Minimum RVOL to trigger override (default 3.0x)
 
         Returns:
             True if explosive mover override fires OR standard regime is favorable
@@ -313,31 +331,69 @@ class RegimeFilter:
             return "NEUTRAL"
     
     def _calculate_adx(self, bars: list, period: int = 14) -> Optional[float]:
-        """Calculate ADX (Average Directional Index) for trend strength."""
-        if len(bars) < period + 1:
+        """
+        Calculate ADX using Wilder's smoothing (proper implementation).
+
+        Fix (Mar 12, 2026): Previous version returned a single raw DX snapshot
+        using a simple EMA on the last 14 bars — this produced values of 0–5
+        early in the session, causing CHOPPY regime blocks for the first 60–90
+        minutes every day.
+
+        Correct Wilder's ADX algorithm:
+          1. Compute TR, +DM, -DM for each bar
+          2. Seed smoothed values with simple sum over first `period` bars
+          3. Apply Wilder's RMA: smoothed = smoothed - (smoothed / period) + current
+          4. DI± = smoothed_DM / smoothed_TR * 100
+          5. DX  = |+DI - -DI| / (+DI + -DI) * 100
+          6. ADX = Wilder's RMA of DX over `period` bars
+
+        Requires len(bars) >= period * 2 + 1 for a valid seed + one ADX update.
+        Returns None if insufficient bars.
+        """
+        min_bars = period * 2 + 1
+        if len(bars) < min_bars:
             return None
         try:
-            trs = []
+            trs, plus_dms, minus_dms = [], [], []
             for i in range(1, len(bars)):
-                high = bars[i]["high"]
-                low = bars[i]["low"]
-                prev_close = bars[i-1]["close"]
+                high      = bars[i]["high"]
+                low       = bars[i]["low"]
+                prev_close = bars[i - 1]["close"]
+                prev_high  = bars[i - 1]["high"]
+                prev_low   = bars[i - 1]["low"]
+
                 tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
                 trs.append(tr)
-            
-            plus_dm = []
-            minus_dm = []
-            for i in range(1, len(bars)):
-                up_move = bars[i]["high"] - bars[i-1]["high"]
-                down_move = bars[i-1]["low"] - bars[i]["low"]
-                plus_dm.append(up_move if up_move > down_move and up_move > 0 else 0)
-                minus_dm.append(down_move if down_move > up_move and down_move > 0 else 0)
-            
-            atr = self._calculate_ema(trs[-period:], period)
-            plus_di = (self._calculate_ema(plus_dm[-period:], period) / atr) * 100
-            minus_di = (self._calculate_ema(minus_dm[-period:], period) / atr) * 100
-            dx = abs(plus_di - minus_di) / (plus_di + minus_di) * 100 if (plus_di + minus_di) > 0 else 0
-            return round(dx, 2)
+
+                up_move   = high - prev_high
+                down_move = prev_low - low
+                plus_dms.append(up_move   if up_move   > down_move and up_move   > 0 else 0.0)
+                minus_dms.append(down_move if down_move > up_move   and down_move > 0 else 0.0)
+
+            # Seed: simple sum of first `period` values (Wilder's initialisation)
+            s_tr       = sum(trs[:period])
+            s_plus_dm  = sum(plus_dms[:period])
+            s_minus_dm = sum(minus_dms[:period])
+
+            def _di(s_dm, s_tr):
+                return (s_dm / s_tr * 100) if s_tr > 0 else 0.0
+
+            def _dx(pdi, mdi):
+                return abs(pdi - mdi) / (pdi + mdi) * 100 if (pdi + mdi) > 0 else 0.0
+
+            # Seed ADX with first DX
+            adx = _dx(_di(s_plus_dm, s_tr), _di(s_minus_dm, s_tr))
+
+            # Wilder's RMA over remaining bars
+            for i in range(period, len(trs)):
+                s_tr       = s_tr       - (s_tr       / period) + trs[i]
+                s_plus_dm  = s_plus_dm  - (s_plus_dm  / period) + plus_dms[i]
+                s_minus_dm = s_minus_dm - (s_minus_dm / period) + minus_dms[i]
+                dx  = _dx(_di(s_plus_dm, s_tr), _di(s_minus_dm, s_tr))
+                adx = adx - (adx / period) + dx
+
+            return round(adx, 2)
+
         except Exception as e:
             print(f"[REGIME] ADX calculation error: {e}")
             return None
@@ -384,14 +440,12 @@ class RegimeFilter:
                 return ("CHOPPY", False, f"Whipsaw action ({reversals}/10 reversals) - avoid")
 
         # VIX-aware dynamic ADX threshold
-        # Rationale: elevated VIX compresses ADX — a directional move at VIX=25
-        # will often register ADX=10-14, which is still tradeable.
         if vix > 25:
-            effective_adx_threshold = 12.0   # High fear: ADX tanks, use very low bar
+            effective_adx_threshold = 12.0
         elif vix > 20:
-            effective_adx_threshold = 15.0   # Moderate fear: relaxed threshold
+            effective_adx_threshold = 15.0
         else:
-            effective_adx_threshold = 20.0   # Normal market (was 25, lowered to 20)
+            effective_adx_threshold = 20.0
 
         if adx is not None:
             if adx >= effective_adx_threshold:
@@ -531,34 +585,29 @@ class OptionsFilter:
     def find_best_strike(self, ticker, direction, entry_price, target_price, stop_price=0.0):
         """
         Find optimal option strike with parallel Greeks fetching.
-        Now uses OPTIONS_OPTIMIZER_ENABLED for 5-10x speed improvement.
+        Uses OPTIONS_OPTIMIZER_ENABLED for 5-10x speed improvement.
         """
         if OPTIONS_OPTIMIZER_ENABLED:
-            # NEW: Use parallel optimizer
             try:
                 strikes = get_optimal_strikes_sync(
                     ticker=ticker,
-                    current_price=entryprice,
+                    current_price=entry_price,
                     direction=direction,
                     target_delta_min=config.TARGET_DELTA_MIN,
                     target_delta_max=config.TARGET_DELTA_MAX
                 )
-                
+
                 if not strikes:
                     print(f"[OPTIONS] {ticker}: No strikes from optimizer")
                     return None
-                
-                # Take best strike from optimizer
-                bestoption = strikes[0]
-                
-                # Enrich with IVR/UOA/GEX (existing code)
-                # ... (keep your existing enrichment code here)
-                
-                return bestoption
-                
+
+                best_option = strikes[0]
+                return best_option
+
             except Exception as e:
                 print(f"[OPTIONS] {ticker}: Optimizer error - {e}, falling back to legacy")
                 # Fall through to legacy code below
+
         chain = self.get_options_chain(ticker)
         if not chain:
             return None
@@ -1150,7 +1199,6 @@ class SignalValidator:
         # Calculate final confidence
         adjusted_confidence = max(0.0, min(1.0, base_confidence + confidence_adjustment))
         
-        # NEW: Minimum confidence threshold check
         if adjusted_confidence < self.min_final_confidence:
             should_pass = False
             self.validation_stats['confidence_filtered'] += 1
@@ -1188,10 +1236,8 @@ class SignalValidator:
         summary = metadata.get('summary', {})
         checks = metadata.get('checks', {})
         
-        # Result emoji
         result = "✅ PASS" if summary.get('should_pass') else "❌ FAIL"
         
-        # Quality badge
         conf = summary.get('adjusted_confidence', 0)
         if conf >= 0.80:
             quality = "🔵 STRONG"
@@ -1202,12 +1248,10 @@ class SignalValidator:
         else:
             quality = "🔴 WEAK"
         
-        # Confidence change
         base = metadata.get('base_confidence', 0)
         adj = summary.get('confidence_adjustment', 0)
         conf_change = f"+{adj*100:.1f}%" if adj >= 0 else f"{adj*100:.1f}%"
         
-        # Build output
         print("=" * 70)
         print(f"🎯 VALIDATION SUMMARY: {ticker}")
         print("=" * 70)
@@ -1217,14 +1261,12 @@ class SignalValidator:
         print(f"Score:      {summary.get('check_score', 'N/A')} checks passed")
         print("")
         
-        # Regime info
         regime = checks.get('regime_filter', {})
         if regime and 'regime' in regime:
             status = "✓" if regime.get('favorable') else "✗"
             print(f"Regime:     {status} {regime['regime']} (VIX: {regime.get('vix', 0):.1f})")
             print("")
         
-        # Passed checks (limit to 5 most important)
         passed = summary.get('passed_checks', [])
         if passed:
             print(f"Passed:     {', '.join(passed[:5])}")
@@ -1232,13 +1274,11 @@ class SignalValidator:
                 print(f"            +{len(passed)-5} more")
             print("")
         
-        # Failed checks
         failed = summary.get('failed_checks', [])
         if failed:
             print(f"Failed:     {', '.join(failed)}")
             print("")
         
-        # VPVR rescue note
         if summary.get('vpvr_rescued'):
             print("✨ VPVR RESCUE: Counter-trend signal saved by excellent entry point!")
             print("")
