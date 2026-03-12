@@ -337,7 +337,7 @@ ALERT_CHECK_INTERVAL_MINUTES = 15
 # FIXED: was bare `from hourly_gate` — now graceful fallback
 # ══════════════════════════════════════════════════════════════════════════════
 try:
-    from app.filters.hourly_gate import get_hourly_confidence_multiplier, get_current_hour_context, print_hourly_gate_stats
+    from app.validation.hourly_gate import get_hourly_confidence_multiplier, get_current_hour_context, print_hourly_gate_stats
     HOURLY_GATE_ENABLED = True
     print("[SIGNALS] ✅ Hourly confidence gate enabled (time-based WR adjustment)")
 except ImportError:

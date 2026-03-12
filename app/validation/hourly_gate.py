@@ -43,20 +43,16 @@ def _now_et() -> datetime:
 
 
 def _refresh_cache():
-    """
-    Rebuild heatmap cache from DB.
-    Called once per trading day on first get_hourly_confidence_multiplier() call.
-    """
     global _heatmap_cache, _last_update
     try:
-        from session_heatmap import build_heatmap_data
         _heatmap_cache = build_heatmap_data(lookback_days=30)
         _last_update = _now_et()
-        print("[HOURLY GATE] Cache refreshed | 30-day lookback loaded")
+        print("[HOURLY GATE] Cache refreshed | running neutral (no history yet)")
     except Exception as e:
         print(f"[HOURLY GATE] Cache refresh error: {e}")
         _heatmap_cache = {"hour_totals": {}}
         _last_update = _now_et()
+
 
 
 def get_hourly_confidence_multiplier() -> float:
@@ -182,3 +178,11 @@ def print_hourly_gate_stats():
     print(f"  Lowered Gate (-5%): {_stats['lowered']} ({_stats['lowered']/total*100:.1f}%)")
     print(f"  Neutral (1.0x):     {_stats['neutral']} ({_stats['neutral']/total*100:.1f}%)")
     print("="*60 + "\n")
+
+def build_heatmap_data(lookback_days: int = 30) -> dict:
+    """
+    Placeholder — returns empty heatmap until sufficient trade history exists.
+    Hourly gate will run neutral (1.0x) until this is populated.
+    """
+    return {"hour_totals": {}}
+
