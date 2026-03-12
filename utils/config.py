@@ -48,10 +48,99 @@ DATABASE_URL = None  # Set to PostgreSQL URL if using Railway/Heroku
 DB_PATH = os.getenv('DB_PATH', '/app/data/war_machine.db')
 DBPATH = DB_PATH  # Alias used by WatchlistFunnel / VolumeAnalyzer
 
-# Opening range filter - TASK 2 INTEGRATION
+# ========================================
+# OPENING RANGE THRESHOLDS
+# ========================================
+
+# Static regime-aware OR thresholds (used by _get_or_threshold in sniper.py)
 MIN_OR_RANGE_PCT = 0.030          # default / BULL
 MIN_OR_RANGE_PCT_BEAR = 0.027     # BEAR regime
 MIN_OR_RANGE_PCT_STRONG_BEAR = 0.025  # STRONG_BEAR regime
+
+# ── A1: VIX-Scaled OR Threshold ──────────────────────────────────────────────
+# Maps current VIX level to a dynamic minimum OR range %.
+# Lower VIX = stricter threshold (low-vol days have tighter, cleaner ORs).
+# Higher VIX = looser threshold (high-vol days expand intraday range).
+#
+# Usage (sniper.py _get_or_threshold):
+#   from utils.config import get_vix_or_threshold
+#   threshold = get_vix_or_threshold(current_vix, spy_regime)
+#
+# VIX tiers (upper bound, exclusive):
+#   < 15  → 3.0%  calm market, standard bar
+#   < 20  → 2.5%  normal vol
+#   < 28  → 1.8%  elevated vol (today: VIX ~26 falls here)
+#   < 35  → 1.5%  high vol / fear
+#   ≥ 35  → 1.2%  crisis — accept almost any OR that prints
+#
+# The regime-aware static values (MIN_OR_RANGE_PCT_BEAR etc.) still act as
+# a floor when the VIX lookup returns a value higher than the regime floor.
+VIX_OR_THRESHOLDS = [
+    (15,  0.030),   # VIX <15  → 3.0%
+    (20,  0.025),   # VIX <20  → 2.5%
+    (28,  0.018),   # VIX <28  → 1.8%
+    (35,  0.015),   # VIX <35  → 1.5%
+    (999, 0.012),   # VIX ≥35  → 1.2%
+]
+
+
+def get_vix_or_threshold(vix: float, spy_regime: dict = None) -> float:
+    """
+    Return the VIX-scaled minimum OR range % threshold.
+
+    Walks VIX_OR_THRESHOLDS and returns the threshold for the first
+    tier where vix < upper_bound.
+
+    Also enforces the existing regime-aware static floors so a STRONG_BEAR
+    regime never gets a threshold BELOW MIN_OR_RANGE_PCT_STRONG_BEAR.
+
+    Args:
+        vix:        Current VIX level (float).
+        spy_regime: Optional SPY EMA regime dict (keys: 'label', 'score_adj').
+                    Used to enforce static regime floor.
+
+    Returns:
+        float: Minimum OR range % (e.g. 0.018 = 1.8%)
+    """
+    vix_threshold = MIN_OR_RANGE_PCT  # fallback
+    for upper_bound, pct in VIX_OR_THRESHOLDS:
+        if vix < upper_bound:
+            vix_threshold = pct
+            break
+
+    # Regime floor: never go BELOW the static regime minimum
+    if spy_regime:
+        label = spy_regime.get("label", "")
+        if label == "STRONG_BEAR":
+            regime_floor = MIN_OR_RANGE_PCT_STRONG_BEAR
+        elif label == "BEAR":
+            regime_floor = MIN_OR_RANGE_PCT_BEAR
+        else:
+            regime_floor = MIN_OR_RANGE_PCT
+        # Use whichever is LOWER: VIX wants to relax the threshold on high-VIX
+        # days, so take the minimum of (vix_threshold, regime_floor).
+        # This means on a STRONG_BEAR + VIX=40 day we accept 1.2% ORs.
+        return min(vix_threshold, regime_floor)
+
+    return vix_threshold
+
+
+# ========================================
+# SECONDARY RANGE (Power Hour — B1)
+# ========================================
+# 10:00–10:30 AM ET consolidation range used as a mid-session BOS anchor
+# when the 9:30 OR has been broken OR when no OR signal fired by 10:00.
+# Detected and cached by OpeningRangeDetector.classify_secondary_range().
+
+SECONDARY_RANGE_ENABLED = True
+SECONDARY_RANGE_START = dtime(10, 0)   # 10:00 AM ET
+SECONDARY_RANGE_END   = dtime(10, 30)  # 10:30 AM ET
+
+# Minimum bar count inside the secondary window to classify it
+SECONDARY_RANGE_MIN_BARS = 20  # 20 x 1m bars = full 10:00–10:20 window minimum
+
+# Secondary range must be at least this wide to be useful as a BOS anchor
+SECONDARY_RANGE_MIN_PCT = 0.005  # 0.5% — tighter than OR because it's a consolidation
 
 # Options filtering thresholds - TASK 3 INTEGRATION
 MIN_DTE = 0  # Minimum days to expiration (0DTE allowed)
@@ -249,6 +338,15 @@ if __name__ == "__main__":
     print(f"Opening Range Window: {OR_START_TIME} - {OR_END_TIME}")
     print(f"Trading Window: {TRADING_START} - {TRADING_END}")
     print(f"Force Close: {FORCE_CLOSE_TIME}")
+    print(f"\nVIX-Scaled OR Thresholds:")
+    for upper, pct in VIX_OR_THRESHOLDS:
+        label = f"VIX < {upper}" if upper < 999 else "VIX ≥ 35"
+        print(f"  {label:<12} → {pct*100:.1f}%")
+    print(f"\nSecondary Range (Power Hour):")
+    print(f"  Window  : {SECONDARY_RANGE_START} - {SECONDARY_RANGE_END}")
+    print(f"  Enabled : {SECONDARY_RANGE_ENABLED}")
+    print(f"  Min Bars: {SECONDARY_RANGE_MIN_BARS}")
+    print(f"  Min Pct : {SECONDARY_RANGE_MIN_PCT*100:.1f}%")
     print(f"\nAdvanced Features:")
     print(f"  Validator: {'Enabled' if VALIDATOR_ENABLED else 'Disabled'}")
     print(f"  Options Filter: {'Enabled (' + OPTIONS_FILTER_MODE + ')' if OPTIONS_FILTER_ENABLED else 'Disabled'}")
