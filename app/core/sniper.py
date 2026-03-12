@@ -403,7 +403,7 @@ REGIME_FILTER_ENABLED = True
 print("[SNIPER] ✅ Regime filter enabled (VIX/SPY market condition detection - via validation.py)")
 
 EXPLOSIVE_SCORE_THRESHOLD = 80
-EXPLOSIVE_RVOL_THRESHOLD = 4.0
+EXPLOSIVE_RVOL_THRESHOLD = 3.0
 print(f"[SNIPER] ✅ Explosive mover override enabled (score>={EXPLOSIVE_SCORE_THRESHOLD} + RVOL>={EXPLOSIVE_RVOL_THRESHOLD}x)")
 
 VWAP_GATE_ENABLED = True
