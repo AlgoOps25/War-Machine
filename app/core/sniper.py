@@ -1250,6 +1250,7 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
             print(f"[VALIDATOR] Error validating {ticker}: {e}")
             traceback.print_exc()
 
+    ml_boost = 0.0  # default; overwritten if ML scorer fires
         # ── ML Score gate (Step 11c) ──────────────────────────────────────────────
     if ML_SCORER_ENABLED:
         try:
@@ -1278,7 +1279,6 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
                     return False
                 if ml_prob >= threshold:
                     ml_boost = (ml_prob - 0.50) * 0.10
-                    final_confidence = max(0.40, min(final_confidence + ml_boost, 0.95))
                     print(f"[{ticker}] ML CONF BOOST: {ml_boost:+.3f} → {final_confidence:.3f}")
         except Exception as ml_err:
             print(f"[{ticker}] ML scorer error (non-fatal): {ml_err}")
@@ -1319,7 +1319,7 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
     uoa_adj    = mult_to_adjustment(uoa_multiplier, base_confidence)
     gex_adj    = mult_to_adjustment(gex_multiplier, base_confidence)
 
-    final_confidence = base_confidence + ticker_adj + mode_adj + ivr_adj + uoa_adj + gex_adj + mtf_boost
+    final_confidence = base_confidence + ticker_adj + mode_adj + ivr_adj + uoa_adj + gex_adj + mtf_boost + ml_boost
     final_confidence = max(0.40, min(final_confidence, 0.95))
 
         # ── SPY EMA confidence adjustment ─────────────────────────────────────────
@@ -1339,6 +1339,7 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         f"+ UOA:{uoa_adj:+.3f}[{uoa_label}] "
         f"+ GEX:{gex_adj:+.3f}[{gex_label}] "
         f"+ MTF:{mtf_boost:+.3f} "
+        f"+ ML:{ml_boost:+.3f} " 
         f"= {final_confidence:.2f}"
     )
 
