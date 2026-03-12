@@ -44,8 +44,15 @@ PHASE 1.18 (MAR 10, 2026) - Session lock:
     never expires mid-session after market open
   - lock_scanner_cache(): module-level helper called by watchlist_funnel
     at first live build to prevent mid-day re-scoring
+
+PHASE 1.23 (MAR 12, 2026) - RVOL fix:
+  - calculate_time_elapsed_pct(): real elapsed market minutes / 390,
+    replaces hardcoded time_pct=0.25 assumption.
+  - get_intraday_cumulative_volume(): sums all session bars from
+    data_manager so RVOL is against full intraday volume, not a
+    single 1-min bar snapshot.
 """
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time as dt_time
 from typing import List, Dict, Optional, Tuple
 import statistics
 import requests
@@ -146,6 +153,69 @@ class ScannerCache:
 
 # Global cache instance
 _scanner_cache = ScannerCache(ttl_seconds=180)
+
+
+# ===============================================================================
+# PHASE 1.23: TIME-ELAPSED + CUMULATIVE VOLUME HELPERS
+# ===============================================================================
+
+def calculate_time_elapsed_pct(now: Optional[datetime] = None) -> float:
+    """
+    Return the fraction of the regular trading session (9:30-16:00 ET)
+    that has elapsed as of `now`.
+
+    Pre-market  (<9:30): returns a small value (0.01) so RVOL isn't
+                         inflated when very little session volume exists.
+    Post-market (>16:00): capped at 1.0 (full day).
+    Intraday:   elapsed_minutes / 390.0
+
+    Using UTC-aware datetime is not required here — Railway runs in UTC
+    but the log timestamps show ET offset, so we compare naive times.
+    """
+    if now is None:
+        now = datetime.utcnow()  # Railway container is UTC
+        # Convert UTC -> ET (UTC-4 in EDT, UTC-5 in EST)
+        # Use a fixed -4h offset (EDT, Mar-Nov). Acceptable for intraday use.
+        now = now.replace(tzinfo=None) - timedelta(hours=4)
+
+    market_open  = now.replace(hour=9,  minute=30, second=0, microsecond=0)
+    market_close = now.replace(hour=16, minute=0,  second=0, microsecond=0)
+    total_minutes = 390.0
+
+    if now <= market_open:
+        return 0.01  # pre-market: tiny denominator keeps RVOL stable
+    if now >= market_close:
+        return 1.0
+
+    elapsed = (now - market_open).total_seconds() / 60.0
+    return max(0.01, min(1.0, elapsed / total_minutes))
+
+
+def get_intraday_cumulative_volume(ticker: str, single_bar_volume: int) -> int:
+    """
+    Return the cumulative intraday volume for `ticker` by summing all
+    session bars stored in data_manager.
+
+    Falls back to `single_bar_volume` if WS/DB is unavailable or the
+    ticker has no session bars yet (e.g. just subscribed).
+
+    This is the key fix for RVOL=0.00x: a single 1-min bar at 12:43 ET
+    might show 10K shares, but the real cumulative volume since 9:30 is
+    potentially millions — using only the last bar decimates RVOL.
+    """
+    if not WS_AVAILABLE:
+        return single_bar_volume
+
+    try:
+        bars = data_manager.get_today_session_bars(ticker)
+        if bars and len(bars) > 0:
+            cumulative = sum(b.get('volume', 0) for b in bars)
+            if cumulative > single_bar_volume:
+                return cumulative
+    except Exception:
+        pass
+
+    return single_bar_volume
 
 
 # ===============================================================================
@@ -448,6 +518,12 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
       1. WS get_current_bar()          - real-time, preferred (if available)
       2. data_manager session bars[-1] - DB fallback for subscribed tickers
       3. EODHD real-time REST quote    - fallback for unsubscribed tickers (PRIMARY for screener)
+
+    PHASE 1.23 RVOL fix:
+      - volume passed to scorer is cumulative intraday (sum of all session
+        bars), NOT just the latest single bar.
+      - time_pct is computed from real elapsed market minutes, NOT hardcoded
+        to 0.25 (25% premarket assumption).
     """
     print(f"[PREMARKET] Scanning {ticker}...")
     
@@ -507,16 +583,27 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
         print(f"[PREMARKET] {ticker}: No data available (all sources failed)")
         return None
 
-    price  = current_bar.get('close', 0)
-    volume = current_bar.get('volume', 0)
-    
-    print(f"[PREMARKET] {ticker}: Bar resolved - price={price:.2f}, volume={volume:,}")
+    price           = current_bar.get('close', 0)
+    single_bar_vol  = current_bar.get('volume', 0)
+
+    # PHASE 1.23: Use cumulative intraday volume, not a single bar snapshot.
+    # For tickers in data_manager (WS-subscribed), this sums every bar since
+    # 9:30. For REST-only tickers the REST volume field is already cumulative
+    # daily volume from EODHD, so get_intraday_cumulative_volume falls back
+    # to single_bar_vol cleanly.
+    volume = get_intraday_cumulative_volume(ticker, single_bar_vol)
+
+    # PHASE 1.23: Compute real time-elapsed fraction instead of hardcoded 0.25.
+    time_pct = calculate_time_elapsed_pct()
+
+    print(f"[PREMARKET] {ticker}: Bar resolved - price={price:.2f}, volume={volume:,} (cumulative), time_pct={time_pct:.2f}")
 
     # Tier 1: Volume score (60% weight)
     volume_score, volume_metrics = score_volume_quality(
         volume,
         fundamentals['avg_daily_volume'],
-        price
+        price,
+        time_pct=time_pct
     )
     
     print(f"[PREMARKET] {ticker}: Volume score={volume_score:.1f}, RVOL={volume_metrics['rvol']:.2f}x")
