@@ -1340,6 +1340,15 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         final_confidence = max(0.40, min(final_confidence + spy_regime_adj, 0.95))
         print(f"[{ticker}] SPY EMA ADJ: {spy_regime_adj:+.3f} | Regime={spy_regime.get('label')}")
 
+        # ── B3: Post-3PM confidence decay ────────────────────────────────────────
+    now_time = _now_et().time()
+    if now_time >= time(15, 0):
+        minutes_past_3 = (now_time.hour - 15) * 60 + now_time.minute
+        decay = max(0.85, 1.0 - (minutes_past_3 / 30) * 0.15)
+        final_confidence *= decay
+        final_confidence = max(0.40, min(final_confidence, 0.95))
+        print(f"[{ticker}] ⏳ POST-3PM DECAY: {decay:.3f}x → confidence={final_confidence:.3f}")
+
     print(
         f"[CONFIDENCE-v2] Base:{base_confidence:.2f} "
         f"+ MTF-Trend:{_mtf_trend_boost:+.3f} "
