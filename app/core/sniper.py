@@ -1899,6 +1899,6 @@ def process_ticker(ticker: str):
 
 def send_discord(message: str):
     try:
-        requests.post(config.DISCORD_WEBHOOK_URL, json={"content": message}, timeout=5)
+        requests.post(config.DISCORD_WEBHOOK_URL, json={"content": message}, timeout=10)
     except Exception as e:
         print(f"[DISCORD] Error: {e}")
