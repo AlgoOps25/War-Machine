@@ -8,6 +8,9 @@ Based on Nitro Trades video transcript (lines 1238-1255)
 from datetime import datetime, time, timedelta
 from typing import List, Dict, Optional, Tuple
 from zoneinfo import ZoneInfo
+from utils import config
+FORCE_CLOSE_TIME = config.FORCE_CLOSE_TIME
+
 
 ET = ZoneInfo("America/New_York")
 
@@ -18,7 +21,6 @@ ET = ZoneInfo("America/New_York")
 LOOKBACK_SWING   = 10     # bars to look back for swing high/low
 FVG_MIN_PCT      = 0.001  # 0.1% minimum FVG size (tighter for 0DTE) — default
 HARD_CLOSE_TIME  = time(15, 45)  # No new entries after this
-FORCE_CLOSE_TIME = time(15, 55)  # All positions closed by this time
 MIN_BARS_SESSION = 5      # Need at least 5 bars before scanning
 
 
