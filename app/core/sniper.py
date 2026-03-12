@@ -47,7 +47,7 @@ from app.risk.trade_calculator import compute_stop_and_targets, get_adaptive_fvg
 from app.data.data_manager import data_manager
 from app.risk.position_manager import position_manager
 from utils import config
-from app.mtf.bos_fvg_engine import scan_bos_fvg, is_force_close_time
+from app.mtf.bos_fvg_engine import scan_bos_fvg, is_force_close_time, find_fvg_after_bos
 from app.filters.early_session_disqualifier import should_skip_cfw6_or_early
 from app.screening.screener_integration import get_ticker_screener_metadata
 from app.analytics.explosive_mover_tracker import (
@@ -982,7 +982,8 @@ def detect_fvg_after_break(bars, breakout_idx, direction):
 def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
                           or_high_ref, or_low_ref, signal_type,
                           bars_session, breakout_idx,
-                          bos_confirmation=None, bos_candle_type=None, spy_regime=None):
+                          bos_confirmation=None, bos_candle_type=None, spy_regime=None,
+                          skip_cfw6_confirmation=False):
 
     if TRACKERS_ENABLED and cooldown_tracker:
         if cooldown_tracker.is_in_cooldown(ticker):
@@ -1045,15 +1046,24 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         except Exception as vp_err:
             print(f"[{ticker}] Volume profile validation error (non-fatal): {vp_err}")
 
-    result = wait_for_confirmation(
-        bars_session, direction, (zone_low, zone_high), breakout_idx + 1
-    )
-    found, entry_price, base_grade, confirm_idx, confirm_type = result
-    if not found or base_grade == "reject":
-        print(f"[{ticker}] — No confirmation (found={found}, grade={base_grade})")
-        return False
+    if skip_cfw6_confirmation:
+        # BOS path: confirmation already done in scan_bos_fvg() via check_fvg_entry()
+        # Use the last closed bar's open as entry, and the grade from bos_confirmation
+        entry_price = bars_session[-1]["open"]
+        base_grade  = bos_confirmation if bos_confirmation in ("A+", "A", "A-", "B+", "B") else "A-"
+        confirm_idx = len(bars_session) - 1
+        confirm_type = bos_candle_type or "BOS+FVG"
+        print(f"[{ticker}] ✅ BOS CONFIRMATION (pre-confirmed): {base_grade} grade @ ${entry_price:.2f}")
+    else:
+        result = wait_for_confirmation(
+            bars_session, direction, (zone_low, zone_high), breakout_idx + 1
+        )
+        found, entry_price, base_grade, confirm_idx, confirm_type = result
+        if not found or base_grade == "reject":
+            print(f"[{ticker}] — No confirmation (found={found}, grade={base_grade})")
+            return False
+        print(f"[{ticker}] ✅ CONFIRMATION: {base_grade} grade @ ${entry_price:.2f}")
 
-    print(f"[{ticker}] ✅ CONFIRMATION: {base_grade} grade @ ${entry_price:.2f}")
 
     if ENTRY_TIMING_ENABLED:
         try:
@@ -1726,15 +1736,21 @@ def process_ticker(ticker: str):
                 _remove_watch_from_db(ticker)
             else:
                 print(f"[{ticker}] 👁️ WATCHING [{bars_since}/{MAX_WATCH_BARS}]")
-                zl, zh = detect_fvg_after_break(bars_session, w["breakout_idx"], w["direction"])
-                if zl is None:
+                fvg_threshold, _ = get_adaptive_fvg_threshold(bars_session, ticker)
+                fvg_result = find_fvg_after_bos(
+                    bars_session, w["breakout_idx"], w["direction"],
+                    min_pct=fvg_threshold
+                )
+                if fvg_result is None:
                     return
+                zl, zh = fvg_result["fvg_low"], fvg_result["fvg_high"]
                 _run_signal_pipeline(
                     ticker, w["direction"], zl, zh,
                     w["or_high"], w["or_low"], w["signal_type"],
                     bars_session, w["breakout_idx"],
                     spy_regime=spy_regime
                 )
+
 
                 _state.remove_watching_signal(ticker)
                 _remove_watch_from_db(ticker)
@@ -1860,7 +1876,8 @@ def process_ticker(ticker: str):
             bars_session, breakout_idx,
             bos_confirmation=bos_confirmation,
             bos_candle_type=bos_candle_type,
-            spy_regime=spy_regime
+            spy_regime=spy_regime,
+            skip_cfw6_confirmation=(scan_mode == "INTRADAY_BOS")
         )
 
 
