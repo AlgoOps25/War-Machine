@@ -1827,7 +1827,33 @@ def process_ticker(ticker: str):
                             bars_session, sr["sr_high"], sr["sr_low"]
                         )
                         if sr_direction:
-                            # Treat exactly like OR path from here
+                            zone_low, zone_high = detect_fvg_after_break(
+                                bars_session, sr_idx, sr_direction
+                            )
+                            if zone_low is not None:
+                                scan_mode    = "OR_ANCHORED"
+                                or_high_ref  = sr["sr_high"]
+                                or_low_ref   = sr["sr_low"]
+                                direction    = sr_direction
+                                breakout_idx = sr_idx
+                            else:
+                                w_entry = {
+                                    "direction":       sr_direction,
+                                    "breakout_idx":    sr_idx,
+                                    "breakout_bar_dt": _strip_tz(bars_session[sr_idx]["datetime"]),
+                                    "or_high":         sr["sr_high"],
+                                    "or_low":          sr["sr_low"],
+                                    "signal_type":     "CFW6_OR",
+                                }
+                                _state.set_watching_signal(ticker, w_entry)
+                                _persist_watch(ticker, w_entry)
+                                send_bos_watch_alert(
+                                    ticker, sr_direction,
+                                    bars_session[sr_idx]["close"],
+                                    sr["sr_high"], sr["sr_low"], "CFW6_OR"
+                                )
+                                return
+
                             ...
 
         else:
