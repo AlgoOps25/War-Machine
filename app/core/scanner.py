@@ -57,6 +57,10 @@ PHASE 1.23 (MAR 12, 2026):
   - Added OR window log banner so Railway logs show active BOS build status.
   - At 9:40 the first valid A+/A/A- confirmation candle fires the signal
     immediately — no 15s sleep gap between OR close and signal generation.
+
+PHASE 1.23a (MAR 12, 2026):
+  - FIX: REGIME-FILTER banner check now imports from correct module path
+    (app.validation.validation.get_regime_filter) instead of app.filters.
 """
 import os
 import time
@@ -469,9 +473,11 @@ def start_scanner_loop():
     screener_msg  = ("EODHD API configured (" + API_KEY[:8] + "...)") if API_KEY else "EODHD_API_KEY not set"
     print(f"{screener_icon} SCREENER       {screener_msg}", flush=True)
 
+    # ── FIXED (Phase 1.23a): import from correct module path ─────────────────
     try:
-        from app.filters import regime_filter  # noqa: F401
-        print("✓ REGIME-FILTER  ADX/VIX monitoring active", flush=True)
+        from app.validation.validation import get_regime_filter
+        get_regime_filter()  # confirm instantiation succeeds
+        print("✓ REGIME-FILTER  VIX/SPY regime detection active", flush=True)
     except Exception:
         print("? REGIME-FILTER  Module not found (may be inline)", flush=True)
 
@@ -510,10 +516,11 @@ def start_scanner_loop():
     print(f"Ticker Watchdog: ✅ ENABLED ({TICKER_TIMEOUT_SECONDS}s hard timeout per ticker — Phase 1.21 P0-3)", flush=True)
     print("Cache Cleanup:   ✅ ENABLED (30d candle_cache pruning EOD — Phase 1.22)", flush=True)
     print("OR Window:       ✅ FIXED   (9:30-9:40 scans every 5s, no sleep — Phase 1.23)", flush=True)
+    print("Regime Banner:   ✅ FIXED   (correct import path — Phase 1.23a)", flush=True)
     print("=" * 60 + "\n", flush=True)
 
     try:
-        send_simple_message("⚔️ WAR MACHINE ONLINE — CFW6 v1.23 | OR window active scanning | Phase 1.23")
+        send_simple_message("⚔️ WAR MACHINE ONLINE — CFW6 v1.23 | OR window active scanning | Phase 1.23a")
     except Exception as e:
         logger.warning(f"[SCANNER] Discord unavailable: {e}")
 
