@@ -528,7 +528,7 @@ class OptionsFilter:
     def calculate_expected_move(self, price: float, iv: float, dte: int) -> float:
         return round(price * iv * ((dte / 365) ** 0.5), 2)
 
-    def findbeststrike(self, ticker: str, direction: str, entryprice: float, targetprice: float, stopprice: float = 0.0) -> Optional[Dict]:
+    def find_best_strike(self, ticker, direction, entry_price, target_price, stop_price=0.0):
         """
         Find optimal option strike with parallel Greeks fetching.
         Now uses OPTIONS_OPTIMIZER_ENABLED for 5-10x speed improvement.
