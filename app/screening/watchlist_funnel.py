@@ -48,6 +48,11 @@ PHASE 1.19 (MAR 12, 2026) - Relative strength/weakness outlier boost:
     "find the one ticker bucking its sector group"
   - Safe: purely additive score adjustment, no tickers removed, no new deps
   - Only fires when 2+ tickers share a sector; solo tickers unaffected
+
+FIX v3.4 (MAR 12, 2026) - Final stage empty watchlist fix:
+  - Lowered final stage min_score from 65 -> 50 (matches narrow stage)
+  - Lowered final stage volume filter from 50,000 -> 10,000 (pre-open volume is thin)
+  - Added fallback: if filtered_tickers still empty after volume filter, use all scored
 """
 import sys
 from pathlib import Path
@@ -189,7 +194,7 @@ class WatchlistFunnel:
                 "time_start": time(9, 25),
                 "time_end":   time(9, 30),
                 "max_tickers": 3,
-                "min_score":   65.0,
+                "min_score":   50.0,
                 "description": "Top 3 - Highest probability setups"
             },
             "live": {
@@ -343,8 +348,10 @@ class WatchlistFunnel:
                 min_composite_score=stage_config["min_score"],
                 use_cache=True
             )
+        # FIX v3.4: lowered volume threshold from 50,000 -> 10,000
+        # Pre-open volume is naturally thin; 50k was killing all candidates
         filtered_tickers = [
-            t for t in self.scored_tickers if t.get('volume', 0) > 50000
+            t for t in self.scored_tickers if t.get('volume', 0) > 10000
         ]
         if not filtered_tickers:
             print("[FUNNEL] ⚠️  No tickers passed final volume filter, using top scorers")
