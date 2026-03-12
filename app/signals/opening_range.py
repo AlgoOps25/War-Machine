@@ -31,6 +31,18 @@ PHASE 1.17 FIXES (MAR 10, 2026):
            Fix: DYNAMIC entries expire after OR_CACHE_DYNAMIC_TTL (30 min) so classify_or()
            re-evaluates on the next call and may promote to a real classification.
            TIGHT/NORMAL/WIDE entries never expire — they reflect the true 9:30-9:40 window.
+
+PHASE B1 (MAR 12, 2026):
+  - classify_secondary_range(): 10:00-10:30 Power Hour consolidation range.
+    Provides a mid-session BOS anchor when the 9:30 OR is stale (no signal fired
+    by 10:00) or after a confirmed OR breakout exhausts and price re-consolidates.
+  - get_secondary_range_levels(): convenience function returns sr_high/sr_low for
+    use in sniper.py detect_breakout_after_or() equivalent on the second range.
+  - Secondary range is only computed once the 10:30 window closes.
+    Before 10:30 the function returns None to avoid premature classification.
+  - Classifications: SECONDARY_TIGHT / SECONDARY_NORMAL / SECONDARY_WIDE
+    (same ATR ratio thresholds as primary OR).
+  - Cache is per-session, never expires (window is immutable after 10:30).
 """
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime, time, timedelta
@@ -68,6 +80,10 @@ class OpeningRangeDetector:
         This allows a 9:42 restart to eventually promote from DYNAMIC -> TIGHT/NORMAL/WIDE
         once enough bars are available.
 
+    Phase B1 additions:
+      - classify_secondary_range(): 10:00-10:30 Power Hour range (immutable after 10:30).
+      - get_secondary_range_levels(): returns sr_high/sr_low/sr_range_pct dict.
+
     Trading Rules:
       - TIGHT OR:   Scan every 30s at 9:40+, +5% confidence boost
       - NORMAL OR:  Scan every 45s (standard), normal thresholds
@@ -100,12 +116,17 @@ class OpeningRangeDetector:
         self.or_cache:     Dict[str, Dict] = {}   # ticker -> OR data
         self.alerts_sent:  Dict[str, bool] = {}   # ticker -> alert sent flag
 
+        # Secondary range cache (Phase B1)
+        # Structure: ticker -> secondary range result dict (immutable once set)
+        self.sr_cache: Dict[str, Dict] = {}
+
         print("[OR] Opening Range Detector initialized")
         print(f"[OR] Window: 9:30-9:40 AM ET (10 minutes)")
         print(f"[OR] Thresholds: TIGHT<{self.tight_threshold} ATR, WIDE>{self.wide_threshold} ATR")
         print(f"[OR] Scan frequencies: Tight={self.scan_freq_tight}s, Normal={self.scan_freq_normal}s")
         print(f"[OR] Mid-session fallback: DYNAMIC range (9:30->now) if OR missed")
         print(f"[OR] DYNAMIC cache TTL: {int(OR_CACHE_DYNAMIC_TTL.total_seconds() // 60)} min")
+        print(f"[OR] Secondary Range: 10:00-10:30 AM ET (Power Hour) — Phase B1")
 
     # ------------------------------------------------------------------
     # PUBLIC API
@@ -156,7 +177,7 @@ class OpeningRangeDetector:
             print(f"[OR] {ticker} - No session bars available")
             return None
 
-        # ── Try to extract the real 9:30-9:40 OR first ───────────────
+        # ── Try to extract the real 9:30-9:40 OR first ───────────────────
         or_bars = self._extract_or_bars(bars_1m)
 
         if or_bars:
@@ -206,6 +227,140 @@ class OpeningRangeDetector:
             "session_low":   round(min(b["low"]   for b in session_bars), 4),
             "session_open":  round(session_bars[0]["open"], 4),
             "bar_count":     len(session_bars),
+        }
+
+    # ------------------------------------------------------------------
+    # PHASE B1: SECONDARY RANGE (10:00-10:30 Power Hour)
+    # ------------------------------------------------------------------
+
+    def classify_secondary_range(
+        self,
+        ticker: str,
+        current_time: Optional[datetime] = None,
+    ) -> Optional[Dict]:
+        """
+        Classify the 10:00-10:30 AM ET 'Power Hour' consolidation range.
+
+        This provides a mid-session BOS anchor when:
+          - The 9:30 OR produced no signal before 10:00, OR
+          - Price has exhausted the initial OR move and re-consolidated
+
+        Only evaluated AFTER the 10:30 window closes.  Before 10:30 returns None.
+        Result is cached permanently (the window is immutable).
+
+        Classifications (same ATR ratio logic as primary OR):
+          SECONDARY_TIGHT  : < 0.5 ATR  — strong compression, breakout likely
+          SECONDARY_NORMAL : 0.5-1.5 ATR — standard mid-day range
+          SECONDARY_WIDE   : > 1.5 ATR   — choppy; require higher confidence
+
+        Returns dict with keys:
+            sr_high, sr_low, sr_range, sr_range_pct, sr_range_atr,
+            classification, bar_count, timestamp
+        or None if:
+            - Before 10:30 AM
+            - Fewer than SECONDARY_RANGE_MIN_BARS bars in the window
+            - Range < SECONDARY_RANGE_MIN_PCT (too tight to be useful)
+        """
+        if current_time is None:
+            current_time = datetime.now(ET)
+
+        from utils import config
+
+        # Window not yet closed
+        if current_time.time() < config.SECONDARY_RANGE_END:
+            return None
+
+        # Return cached result
+        if ticker in self.sr_cache:
+            return self.sr_cache[ticker]
+
+        bars_1m = data_manager.get_today_session_bars(ticker)
+        if not bars_1m:
+            return None
+
+        sr_bars = self._extract_secondary_bars(bars_1m)
+
+        if len(sr_bars) < config.SECONDARY_RANGE_MIN_BARS:
+            print(
+                f"[OR-SR] {ticker} — only {len(sr_bars)} bars in 10:00-10:30 "
+                f"(need {config.SECONDARY_RANGE_MIN_BARS}) — skipping secondary range"
+            )
+            return None
+
+        sr_high     = max(b["high"] for b in sr_bars)
+        sr_low      = min(b["low"]  for b in sr_bars)
+        sr_range    = sr_high - sr_low
+        sr_range_pct = (sr_range / sr_low) * 100 if sr_low > 0 else 0
+
+        if (sr_range / sr_low) < config.SECONDARY_RANGE_MIN_PCT:
+            print(
+                f"[OR-SR] {ticker} — secondary range {sr_range_pct:.2f}% "
+                f"< min {config.SECONDARY_RANGE_MIN_PCT*100:.1f}% — too tight, skipping"
+            )
+            return None
+
+        atr = self._calculate_atr(ticker)
+        sr_range_atr = (sr_range / atr) if atr and atr > 0 else 0.0
+
+        if sr_range_atr < self.tight_threshold:
+            classification = "SECONDARY_TIGHT"
+        elif sr_range_atr > self.wide_threshold:
+            classification = "SECONDARY_WIDE"
+        else:
+            classification = "SECONDARY_NORMAL"
+
+        result = {
+            "ticker":        ticker,
+            "sr_high":       round(sr_high, 4),
+            "sr_low":        round(sr_low, 4),
+            "sr_range":      round(sr_range, 4),
+            "sr_range_pct":  round(sr_range_pct, 3),
+            "sr_range_atr":  round(sr_range_atr, 3),
+            "classification": classification,
+            "bar_count":     len(sr_bars),
+            "timestamp":     current_time.isoformat(),
+        }
+
+        self.sr_cache[ticker] = result
+
+        emoji_map = {
+            "SECONDARY_TIGHT":  "\U0001f3af",
+            "SECONDARY_NORMAL": "\u2705",
+            "SECONDARY_WIDE":   "\u26a0\ufe0f",
+        }
+        emoji = emoji_map.get(classification, "\u2705")
+        print(
+            f"[OR-SR] {ticker} {emoji} {classification} | "
+            f"Range: ${sr_range:.3f} ({sr_range_pct:.2f}%) | "
+            f"ATR Ratio: {sr_range_atr:.2f}x | Bars: {len(sr_bars)} | "
+            f"Level: ${sr_low:.2f}\u2014${sr_high:.2f}"
+        )
+
+        return result
+
+    def get_secondary_range_levels(self, ticker: str) -> Dict:
+        """
+        Return secondary range high/low for use as BOS anchor in sniper.py.
+
+        Returns:
+            {
+              'sr_high':       float,
+              'sr_low':        float,
+              'sr_range_pct':  float,   # % width
+              'classification': str,
+              'bar_count':     int
+            }
+            or {} if secondary range not yet available or insufficient data.
+        """
+        sr = self.classify_secondary_range(ticker)
+        if sr is None:
+            return {}
+        return {
+            "sr_high":        sr["sr_high"],
+            "sr_low":         sr["sr_low"],
+            "sr_range_pct":   sr["sr_range_pct"],
+            "classification": sr["classification"],
+            "bar_count":      sr["bar_count"],
         }
 
     def should_alert_or_forming(self, ticker: str, current_time: Optional[datetime] = None) -> bool:
@@ -285,12 +440,17 @@ class OpeningRangeDetector:
         return or_data['scan_frequency']
 
     def clear_cache(self) -> None:
-        """Clear OR cache (called at market open for new session)."""
+        """Clear OR and secondary range caches (called at market open for new session)."""
         or_count    = len(self.or_cache)
         alert_count = len(self.alerts_sent)
+        sr_count    = len(self.sr_cache)
         self.or_cache.clear()
         self.alerts_sent.clear()
-        print(f"[OR] Session cache cleared ({or_count} OR entries, {alert_count} alerts reset)")
+        self.sr_cache.clear()
+        print(
+            f"[OR] Session cache cleared "
+            f"({or_count} OR entries, {sr_count} secondary entries, {alert_count} alerts reset)"
+        )
 
     def get_or_summary(self, tickers: List[str], current_time: Optional[datetime] = None) -> str:
         if current_time is None:
@@ -335,6 +495,21 @@ class OpeningRangeDetector:
             for t in dynamic_tickers:
                 summary += f"  \u2022 {t}\n"
             summary += "\n"
+
+        # Append secondary range summary if window has closed
+        if current_time.time() >= time(10, 30):
+            sr_lines = []
+            for ticker in tickers:
+                sr = self.sr_cache.get(ticker)
+                if sr:
+                    sr_lines.append(
+                        f"  \u2022 {ticker} {sr['classification']} "
+                        f"${sr['sr_low']:.2f}\u2014${sr['sr_high']:.2f} "
+                        f"({sr['sr_range_pct']:.2f}%)"
+                    )
+            if sr_lines:
+                summary += "\U0001f552 **SECONDARY RANGE (10:00-10:30)**:\n"
+                summary += "\n".join(sr_lines) + "\n\n"
 
         return summary.strip()
 
@@ -479,6 +654,26 @@ class OpeningRangeDetector:
                 session_bars.append(bar)
         return session_bars
 
+    def _extract_secondary_bars(self, bars_1m: List[Dict]) -> List[Dict]:
+        """
+        Extract bars within the secondary range window (10:00-10:30).
+
+        Phase B1: Same key/datetime fix as _extract_or_bars.
+        Returns all 1-minute bars where 10:00 <= bar_time < 10:30.
+        """
+        from utils import config
+        sr_bars = []
+        for bar in bars_1m:
+            dt = bar.get('datetime')
+            if dt is None:
+                continue
+            if isinstance(dt, str):
+                dt = datetime.fromisoformat(dt)
+            bar_time = dt.time()
+            if config.SECONDARY_RANGE_START <= bar_time < config.SECONDARY_RANGE_END:
+                sr_bars.append(bar)
+        return sr_bars
+
     def _calculate_atr(self, ticker: str, period: int = 14) -> Optional[float]:
         """
         Calculate ATR(14) for a ticker.
@@ -548,6 +743,18 @@ def get_scan_frequency(ticker: str) -> int:
     return or_detector.get_scan_frequency(ticker)
 
 
+def get_secondary_range_levels(ticker: str) -> Dict:
+    """
+    Phase B1: Get secondary (10:00-10:30) range high/low for use as BOS anchor.
+
+    Returns:
+        {'sr_high': float, 'sr_low': float, 'sr_range_pct': float,
+         'classification': str, 'bar_count': int}
+        or {} if window not yet closed or insufficient data.
+    """
+    return or_detector.get_secondary_range_levels(ticker)
+
+
 # ========================================
 # USAGE EXAMPLE
 # ========================================
@@ -574,5 +781,16 @@ if __name__ == "__main__":
             print(f"  Session Low:  ${levels['session_low']}")
             print(f"  Session Open: ${levels['session_open']}")
             print(f"  Bars:         {levels['bar_count']}")
+
+        sr_levels = get_secondary_range_levels(test_ticker)
+        if sr_levels:
+            print(f"\nSecondary Range (10:00-10:30):")
+            print(f"  SR High:         ${sr_levels['sr_high']}")
+            print(f"  SR Low:          ${sr_levels['sr_low']}")
+            print(f"  SR Range %:      {sr_levels['sr_range_pct']}%")
+            print(f"  Classification:  {sr_levels['classification']}")
+            print(f"  Bars:            {sr_levels['bar_count']}")
+        else:
+            print("\nSecondary Range: not yet available (before 10:30) or insufficient data")
     else:
         print("OR not yet complete or insufficient data")
