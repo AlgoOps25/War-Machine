@@ -96,14 +96,14 @@ DISCORD_NEWS_WEBHOOK_URL = os.getenv(
 # BASELINE SCANNER CONFIGURATION
 # ========================================
 
-# ── Backtest Campaign Champion (2026-03-10) ────────────────────────────────────────────
-# Run   : 32,400 combos × 15 tickers × 90 days (2025-12-10 → 2026-03-09)
+# ── Backtest Campaign Champion (2026-03-10) ─────────────────────────────────────────────────────
+# Run   : 32,400 combos x 15 tickers x 90 days (2025-12-10 -> 2026-03-09)
 # Result: 70.6% WR  |  +0.44 avg-R  |  34 trades  |  score=0.3130
 # Filter: min_trades=30, min_wr=55%  (183 qualifying combos)
-# Locked: BOS=0.10%, RVOL=2.0x, direction=call_only, MFI≥60
+# Locked: BOS=0.10%, RVOL=2.0x, direction=call_only, MFI>=60
 # Note  : put_only eliminated (no qualifying combos); extend to 180-day
 #         dataset before updating bear-side params.
-ORB_BREAK_THRESHOLD = 0.001     # 0.1% BOS threshold — campaign champion (was 0.002)
+ORB_BREAK_THRESHOLD = 0.001     # 0.1% BOS threshold - campaign champion (was 0.002)
 FVG_MIN_SIZE_PCT = 0.005        # 0.5% minimum FVG size
 CONFIRMATION_TIMEOUT_BARS = 5   # Max bars to wait for confirmation
 
@@ -129,14 +129,14 @@ MIN_CONFIDENCE_BY_GRADE = {
 MIN_PRICE = 5.0                 # Minimum stock price
 MAX_PRICE = 500.0               # Maximum stock price
 MIN_VOLUME = 1_000_000          # Minimum daily volume
-MIN_RELATIVE_VOLUME = 2.0       # Minimum RVOL — campaign confirmed (cliff at 3.0x)
+MIN_RELATIVE_VOLUME = 2.0       # Minimum RVOL - campaign confirmed (cliff at 3.0x)
 MIN_ATR_MULTIPLIER = 4.0        # Minimum ATR for volatility
 
 # Campaign-derived signal quality filters
-MFI_MIN = 60                    # MFI floor — campaign winner (0=off, 60 best)
-OBV_BARS_MIN = 0                # OBV rising bars — noise in backtest, disabled
-VWAP_ZONE = 'above_vwap'        # VWAP zone — tied with 'none' but adds logic
-TF_CONFIRM = '1m'               # TF confirmation tier — campaign winner at >=30 trades
+MFI_MIN = 60                    # MFI floor - campaign winner (0=off, 60 best)
+OBV_BARS_MIN = 0                # OBV rising bars - noise in backtest, disabled
+VWAP_ZONE = 'above_vwap'        # VWAP zone - tied with 'none' but adds logic
+TF_CONFIRM = '1m'               # TF confirmation tier - campaign winner at >=30 trades
 
 # Time windows
 OR_START_TIME = dtime(9, 30)    # Opening range start
@@ -195,19 +195,19 @@ EXPLOSIVE_RVOL_THRESHOLD = 4.0    # RVOL threshold for regime bypass
 # ========================================
 # BACKTEST CAMPAIGN CHAMPION REFERENCE
 # ========================================
-# Audit trail — do not use directly in live code; reference only.
+# Audit trail - do not use directly in live code; reference only.
 # Update after each campaign run.
 
 BACKTEST_CHAMPION = {
     # Run date  : 2026-03-10
     # Dataset   : 15 tickers, 90 days (2025-12-10 to 2026-03-09), 134,028 bars
-    # Combos    : 32,400 tested → 4,760 saved → 183 qualifying (min 30 trades, 55% WR)
-    'bos_strength' : 0.001,        # 0.10% — dominant, score drops 44% at 0.15%
-    'tf_confirm'   : '1m',         # 1m — best at >=30 trade floor
+    # Combos    : 32,400 tested -> 4,760 saved -> 183 qualifying (min 30 trades, 55% WR)
+    'bos_strength' : 0.001,        # 0.10% - dominant, score drops 44% at 0.15%
+    'tf_confirm'   : '1m',         # 1m - best at >=30 trade floor
     'vwap_zone'    : 'above_vwap', # tied with 'none'; kept for directional logic
     'rvol_min'     : 3.0,          # hard cliff at 3.0x
     'mfi_min'      : 60,           # marginal but consistent
-    'obv_bars'     : 0,            # noise — disabled
+    'obv_bars'     : 0,            # noise - disabled
     'session'      : 'all_day',    # no session segmentation in data
     'direction'    : 'call_only',  # put_only eliminated; bear params need own run
     # Stats
