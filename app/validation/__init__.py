@@ -33,6 +33,10 @@ from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
 
+# RVOL threshold above which ADX regime check is bypassed.
+# High relative volume IS the trend signal — ADX is lagging, especially early session.
+RVOL_REGIME_BYPASS = 3.0
+
 
 def validate_signal(
     ticker: str,
@@ -94,20 +98,29 @@ def validate_signal(
     
     # ═══════════════════════════════════════════════════════════════════════════════════
     # GATE 2: REGIME FILTER (TRENDING VS CHOPPY MARKET)
+    # High RVOL (>= 3x) bypasses ADX check — volume IS the trend signal pre-ADX.
     # ═══════════════════════════════════════════════════════════════════════════════════
     if regime_filter:
-        regime_check = _check_regime(adx=adx)
-        if not regime_check['passed']:
-            return {
-                'passed': False,
-                'reason': regime_check['reason'],
-                'filters_passed': filters_passed,
-                'filters_failed': ['regime_filter'],
-                'adjusted_confidence': adjusted_confidence,
-                'ml_adjustment': 0.0,
-            }
-        filters_passed.append('regime_filter')
-        adjusted_confidence += regime_check.get('confidence_boost', 0)
+        if rvol >= RVOL_REGIME_BYPASS:
+            logger.info(
+                f"[VALIDATION] {ticker} RVOL={rvol:.1f}x >= {RVOL_REGIME_BYPASS}x "
+                f"— regime ADX bypass active"
+            )
+            filters_passed.append(f'regime_bypass(RVOL={rvol:.1f}x)')
+            adjusted_confidence += 3  # Small boost for high-volume confirmation
+        else:
+            regime_check = _check_regime(adx=adx)
+            if not regime_check['passed']:
+                return {
+                    'passed': False,
+                    'reason': regime_check['reason'],
+                    'filters_passed': filters_passed,
+                    'filters_failed': ['regime_filter'],
+                    'adjusted_confidence': adjusted_confidence,
+                    'ml_adjustment': 0.0,
+                }
+            filters_passed.append('regime_filter')
+            adjusted_confidence += regime_check.get('confidence_boost', 0)
     
     # ═══════════════════════════════════════════════════════════════════════════════════
     # GATE 3: VOLUME CONFIRMATION
@@ -126,7 +139,6 @@ def validate_signal(
     if greeks_available:
         greeks_check = _check_greeks(ticker=ticker)
         if not greeks_check['passed']:
-            # Don't reject, but log warning and reduce confidence
             filters_failed.append('greeks')
             adjusted_confidence -= 10
             logger.warning(
@@ -156,9 +168,7 @@ def validate_signal(
             }
             ml_prob = scorer.score_signal(_signal_for_ml)
             if ml_prob >= 0:  # -1.0 sentinel means model unavailable
-                # Map probability to a confidence adjustment: +/-15 pts max
-                # prob=0.70 → +6, prob=0.30 → -6, prob=0.50 → 0
-                ml_adjustment = round((ml_prob - 0.50) * 30.0, 1)   # pts
+                ml_adjustment = round((ml_prob - 0.50) * 30.0, 1)
                 ml_adjustment = max(-15.0, min(15.0, ml_adjustment))
                 ml_source = getattr(scorer, 'model_version', 'v2') or 'v2'
                 logger.info(
@@ -195,7 +205,7 @@ def validate_signal(
         'reason': 'All validation gates passed',
         'filters_passed': filters_passed,
         'filters_failed': filters_failed,
-        'adjusted_confidence': min(adjusted_confidence, 100.0),  # Cap at 100%
+        'adjusted_confidence': min(adjusted_confidence, 100.0),
         'ml_adjustment': ml_adjustment,
     }
 
@@ -215,33 +225,29 @@ def _check_time_of_day() -> dict:
     now_et = datetime.now(ZoneInfo("America/New_York"))
     current_time = now_et.time()
     
-    # Define time windows
     lunch_start = dtime(11, 30)
-    lunch_end = dtime(13, 0)  # 1:00 PM
-    close_danger_zone = dtime(15, 50)  # 3:50 PM
+    lunch_end = dtime(13, 0)
+    close_danger_zone = dtime(15, 50)
     market_close = dtime(16, 0)
     
     morning_prime_start = dtime(9, 30)
     morning_prime_end = dtime(11, 0)
     
-    afternoon_prime_start = dtime(14, 0)  # 2:00 PM
-    afternoon_prime_end = dtime(15, 30)  # 3:30 PM
+    afternoon_prime_start = dtime(14, 0)
+    afternoon_prime_end = dtime(15, 30)
     
-    # REJECT: Lunch chop (11:30 AM - 1:00 PM)
     if lunch_start <= current_time < lunch_end:
         return {
             'passed': False,
             'reason': 'Lunch chop period (11:30 AM - 1:00 PM ET) - low probability'
         }
     
-    # REJECT: Too close to market close (3:50 PM+)
     if close_danger_zone <= current_time < market_close:
         return {
             'passed': False,
             'reason': 'Too close to market close (3:50+ PM ET) - reversal risk'
         }
     
-    # BOOST: Morning prime time (9:30-11:00 AM)
     if morning_prime_start <= current_time < morning_prime_end:
         return {
             'passed': True,
@@ -249,7 +255,6 @@ def _check_time_of_day() -> dict:
             'reason': 'Morning prime time (high-quality period)'
         }
     
-    # BOOST: Afternoon prime time (2:00-3:30 PM)
     if afternoon_prime_start <= current_time < afternoon_prime_end:
         return {
             'passed': True,
@@ -257,7 +262,6 @@ def _check_time_of_day() -> dict:
             'reason': 'Afternoon push period (good quality)'
         }
     
-    # NEUTRAL: Other market hours
     return {
         'passed': True,
         'confidence_boost': 0,
@@ -269,6 +273,9 @@ def _check_regime(adx: float = None) -> dict:
     """
     Check if market is in trending regime (favorable for breakouts).
     
+    Note: This check is BYPASSED for tickers with RVOL >= RVOL_REGIME_BYPASS (3.0x).
+    High relative volume is a stronger early-session trend signal than lagging ADX.
+    
     Trending conditions:
     - ADX > 25 (strong trend)
     - VIX < 30 (not panic mode)
@@ -277,7 +284,6 @@ def _check_regime(adx: float = None) -> dict:
     - ADX < 20 (weak trend, likely ranging)
     - VIX > 35 (extreme fear, whipsaw risk)
     """
-    # If ADX data available, use it
     if adx is not None:
         if adx < 20:
             return {
@@ -303,8 +309,6 @@ def _check_regime(adx: float = None) -> dict:
                 'reason': f'Weak trend (ADX={adx:.1f})'
             }
     
-    # TODO: Check VIX level (requires SPY bars or VIX API)
-    # For now, pass if no ADX data (backward compatible)
     return {
         'passed': True,
         'confidence_boost': 0,
@@ -333,7 +337,6 @@ def _check_volume(rvol: float, signal_type: str) -> dict:
             'reason': f'Volume too low (RVOL={rvol:.1f}x < {min_rvol}x)'
         }
     
-    # Explosive mover boost
     if rvol >= 4.0:
         return {
             'passed': True,
@@ -366,8 +369,6 @@ def _check_greeks(ticker: str) -> dict:
     TODO: This is a stub - integrate with options_intelligence module
     to fetch real Greeks data from Tradier/IB.
     """
-    # Placeholder implementation
-    # In production, fetch real Greeks from options module
     try:
         from app.options import get_greeks
         greeks = get_greeks(ticker)
@@ -400,7 +401,6 @@ def _check_greeks(ticker: str) -> dict:
             }
     
     except ImportError:
-        # Options module not available - pass for now
         return {
             'passed': True,
             'confidence_boost': 0,
