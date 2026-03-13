@@ -39,23 +39,26 @@ _CACHE_TTL_SECONDS               = 90
 REGIME_DISCORD_INTERVAL_MINUTES  = 5
 EODHD_CACHE_SECONDS              = 60   # how long to reuse an EODHD-fetched bar list
 
+_ARROW_UP   = "\u2191"  # ↑  — defined at module level so f-strings never need backslashes
+_ARROW_DOWN = "\u2193"  # ↓
+
 _regime_cache: dict      = {}
 _last_discord_post: datetime = datetime.min.replace(tzinfo=_ET)
 _eodhd_bar_cache: dict   = {}  # symbol -> {"bars": [...], "ts": datetime}
 
 EMOJI_MAP = {
-    "STRONG_BULL":  "🟢🟢",
-    "BULL":         "🟢",
-    "NEUTRAL_BULL": "🟡",
-    "NEUTRAL":      "⚪",
-    "NEUTRAL_BEAR": "🟠",
-    "BEAR":         "🔴",
-    "STRONG_BEAR":  "🔴🔴",
-    "UNKNOWN":      "❓",
+    "STRONG_BULL":  "\U0001f7e2\U0001f7e2",
+    "BULL":         "\U0001f7e2",
+    "NEUTRAL_BULL": "\U0001f7e1",
+    "NEUTRAL":      "\u26aa",
+    "NEUTRAL_BEAR": "\U0001f7e0",
+    "BEAR":         "\U0001f534",
+    "STRONG_BEAR":  "\U0001f534\U0001f534",
+    "UNKNOWN":      "\u2753",
 }
 
 
-# ── EMA helpers ──────────────────────────────────────────────────────────────────────
+# ── EMA helpers ───────────────────────────────────────────────────────────────
 def _compute_ema(bars: list, period: int) -> float:
     closes = [b["close"] for b in bars if b.get("close")]
     if len(closes) < period:
@@ -75,9 +78,13 @@ def _get_slope_bull(bars: list, period: int) -> bool:
     return current >= previous
 
 
+def _arrow(slope_bull: bool) -> str:
+    return _ARROW_UP if slope_bull else _ARROW_DOWN
+
+
 def _fetch_eodhd_intraday(symbol: str, interval: str = "5m", limit: int = 60) -> list:
     """
-    Fetch today’s intraday bars from EODHD as a last-resort fallback.
+    Fetch today's intraday bars from EODHD as a last-resort fallback.
     Returns a list of {open, high, low, close, volume} dicts, or [].
     Result is cached in _eodhd_bar_cache for EODHD_CACHE_SECONDS.
     """
@@ -121,7 +128,7 @@ def _fetch_eodhd_intraday(symbol: str, interval: str = "5m", limit: int = 60) ->
         ]
         bars = bars[-limit:]
         _eodhd_bar_cache[symbol] = {"bars": bars, "ts": now}
-        print(f"[REGIME] ✅ EODHD fallback: {symbol} {len(bars)} bars fetched")
+        print(f"[REGIME] \u2705 EODHD fallback: {symbol} {len(bars)} bars fetched")
         return bars
     except Exception as e:
         print(f"[REGIME] EODHD fallback error for {symbol}: {e}")
@@ -149,7 +156,7 @@ def _get_5m_bars(symbol: str):
                     return bars_5m
             except Exception:
                 pass
-            return bars_1m  # return 1m if compression fails
+            return bars_1m
     except Exception:
         pass
 
@@ -173,7 +180,7 @@ def _get_5m_bars(symbol: str):
     return bars
 
 
-# ── Per-instrument regime score ──────────────────────────────────────────────────
+# ── Per-instrument regime score ───────────────────────────────────────────────
 def _score_instrument(symbol: str) -> dict:
     """
     Returns a dict with keys:
@@ -205,16 +212,16 @@ def _score_instrument(symbol: str) -> dict:
 
     if price > ema9 > ema21 > ema50 and slope_bull:
         label, score = "STRONG_BULL", 15
-        reason = f"{symbol} full bull stack slope↑"
+        reason = f"{symbol} full bull stack slope" + _ARROW_UP
     elif price > ema21 > ema50:
         label, score = "BULL", 8
         reason = f"{symbol} P>{ema21:.2f}>E50{ema50:.2f}"
     elif price > ema50 and ema9 <= ema21:
         label, score = "NEUTRAL_BULL", 3
-        reason = f"{symbol} above E50 but E9≤E21 — cautious"
+        reason = f"{symbol} above E50 but E9<=E21 — cautious"
     elif price < ema9 < ema21 < ema50 and not slope_bull:
         label, score = "STRONG_BEAR", -15
-        reason = f"{symbol} full bear stack slope↓"
+        reason = f"{symbol} full bear stack slope" + _ARROW_DOWN
     elif price < ema50:
         label, score = "BEAR", -8
         reason = f"{symbol} below E50{ema50:.2f}"
@@ -229,16 +236,15 @@ def _score_instrument(symbol: str) -> dict:
     }
 
 
-# ── Combined conviction label ───────────────────────────────────────────────────
+# ── Combined conviction label ─────────────────────────────────────────────────
 def _combine(spy: dict, qqq: dict) -> tuple:
     """
-    Average SPY + QQQ scores → single conviction label + score_adj.
+    Average SPY + QQQ scores -> single conviction label + score_adj.
     Returns (label: str, score_adj: int, reason: str)
     """
     if spy["label"] == "UNKNOWN" and qqq["label"] == "UNKNOWN":
         return "UNKNOWN", 0, "Both SPY and QQQ data unavailable"
 
-    # If one is unknown, use the other at half weight
     spy_score = spy["score"] if spy["label"] != "UNKNOWN" else 0
     qqq_score = qqq["score"] if qqq["label"] != "UNKNOWN" else 0
     avg = (spy_score + qqq_score) / 2.0
@@ -258,7 +264,6 @@ def _combine(spy: dict, qqq: dict) -> tuple:
     else:
         label, score_adj = "NEUTRAL", 0
 
-    # Agreement boosts conviction description
     if spy["label"] == qqq["label"]:
         agreement = "SPY+QQQ agree"
     else:
@@ -268,7 +273,7 @@ def _combine(spy: dict, qqq: dict) -> tuple:
     return label, score_adj, reason
 
 
-# ── Public API ──────────────────────────────────────────────────────────────────────
+# ── Public API ────────────────────────────────────────────────────────────────
 def get_market_regime(force_refresh: bool = False) -> dict:
     """
     Returns the combined SPY+QQQ regime dict (cached 90s).
@@ -317,21 +322,29 @@ def print_market_regime(regime: dict, ticker: str = ""):
     reason    = regime.get("reason", "")
     spy       = regime.get("spy", {})
     qqq       = regime.get("qqq", {})
-    emoji     = EMOJI_MAP.get(label, "❓")
+    emoji     = EMOJI_MAP.get(label, "?")
     adj_str   = f"+{score_adj}" if score_adj >= 0 else str(score_adj)
     prefix    = f"[{ticker}] " if ticker else ""
 
-    spy_line = (
-        f"SPY P={spy.get('price', 0):.2f} "
-        f"E9={spy.get('ema9', 0):.2f} E21={spy.get('ema21', 0):.2f} E50={spy.get('ema50', 0):.2f} "
-        f"{'\u2191' if spy.get('slope_bull') else '\u2193'}"
-    ) if spy else "SPY N/A"
+    if spy:
+        spy_arrow = _arrow(spy.get("slope_bull", True))
+        spy_line  = (
+            f"SPY P={spy.get('price', 0):.2f} "
+            f"E9={spy.get('ema9', 0):.2f} E21={spy.get('ema21', 0):.2f} "
+            f"E50={spy.get('ema50', 0):.2f} {spy_arrow}"
+        )
+    else:
+        spy_line = "SPY N/A"
 
-    qqq_line = (
-        f"QQQ P={qqq.get('price', 0):.2f} "
-        f"E9={qqq.get('ema9', 0):.2f} E21={qqq.get('ema21', 0):.2f} E50={qqq.get('ema50', 0):.2f} "
-        f"{'\u2191' if qqq.get('slope_bull') else '\u2193'}"
-    ) if qqq else "QQQ N/A"
+    if qqq:
+        qqq_arrow = _arrow(qqq.get("slope_bull", True))
+        qqq_line  = (
+            f"QQQ P={qqq.get('price', 0):.2f} "
+            f"E9={qqq.get('ema9', 0):.2f} E21={qqq.get('ema21', 0):.2f} "
+            f"E50={qqq.get('ema50', 0):.2f} {qqq_arrow}"
+        )
+    else:
+        qqq_line = "QQQ N/A"
 
     print(
         f"{prefix}{emoji} REGIME [{label}] adj={adj_str} | "
@@ -350,7 +363,7 @@ def send_regime_discord(regime: dict = None, force: bool = False):
 
     webhook_url = os.getenv("REGIME_WEBHOOK_URL", "")
     if not webhook_url:
-        return  # channel not configured — silently skip
+        return
 
     now = datetime.now(_ET)
     minutes_since = (now - _last_discord_post).total_seconds() / 60
@@ -366,15 +379,14 @@ def send_regime_discord(regime: dict = None, force: bool = False):
         reason    = regime.get("reason", "")
         spy       = regime.get("spy", {})
         qqq       = regime.get("qqq", {})
-        emoji     = EMOJI_MAP.get(label, "❓")
+        emoji     = EMOJI_MAP.get(label, "?")
         adj_str   = f"+{score_adj}" if score_adj >= 0 else str(score_adj)
         ts_str    = now.strftime("%I:%M %p ET")
 
-        # Conviction bar (visual)
         bar_steps  = 10
         filled     = int(round((score_adj + 15) / 30 * bar_steps))
         filled     = max(0, min(bar_steps, filled))
-        conv_bar   = "█" * filled + "░" * (bar_steps - filled)
+        conv_bar   = "\u2588" * filled + "\u2591" * (bar_steps - filled)
 
         def _fmt(d: dict, sym: str) -> str:
             if not d or d.get("label") == "UNKNOWN":
@@ -384,8 +396,8 @@ def send_regime_discord(regime: dict = None, force: bool = False):
             e9    = d.get("ema9",  0)
             e21   = d.get("ema21", 0)
             e50   = d.get("ema50", 0)
-            slope = "↑" if d.get("slope_bull") else "↓"
-            em    = EMOJI_MAP.get(lbl, "❓")
+            slope = _arrow(d.get("slope_bull", True))
+            em    = EMOJI_MAP.get(lbl, "?")
             return (
                 f"{em} **{sym}** `{lbl}` | "
                 f"P={p:.2f}  E9={e9:.2f}  E21={e21:.2f}  E50={e50:.2f}  {slope}"
@@ -396,8 +408,8 @@ def send_regime_discord(regime: dict = None, force: bool = False):
             f"`[{conv_bar}]` conviction\n\n"
             f"{_fmt(spy, 'SPY')}\n"
             f"{_fmt(qqq, 'QQQ')}\n\n"
-            f"📋 {reason}\n"
-            f"🕐 {ts_str} | passive nudge only — no signals blocked"
+            f"\U0001f4cb {reason}\n"
+            f"\U0001f550 {ts_str} | passive nudge only — no signals blocked"
         )
 
         import requests
@@ -405,4 +417,4 @@ def send_regime_discord(regime: dict = None, force: bool = False):
         _last_discord_post = now
 
     except Exception:
-        pass  # never crash the scan loop over a Discord post
+        pass
