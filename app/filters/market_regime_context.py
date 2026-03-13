@@ -19,6 +19,15 @@
 #   BEAR         (-8)  — both below EMA50
 #   STRONG_BEAR  (-15) — both full bear stack, slopes falling
 #   UNKNOWN       (0)  — insufficient bars
+#
+# FIXED (Phase 1.26):
+#   _get_5m_bars() now has a 3-tier fallback:
+#     1. data_manager memory (WS bars) — fastest, zero-cost
+#     2. data_manager.get_today_session_bars() — DB intraday rows
+#     3. EODHD intraday REST API — guarantees bars even if SPY/QQQ were
+#        never subscribed to the WS (e.g. mid-session redeploys before
+#        Phase 1.26 scanner.py is deployed). Result is cached per-symbol
+#        for EODHD_CACHE_SECONDS to avoid hammering the API.
 
 import os
 from datetime import datetime, timedelta
@@ -26,11 +35,13 @@ from zoneinfo import ZoneInfo
 
 _ET = ZoneInfo("America/New_York")
 
-_CACHE_TTL_SECONDS          = 90
-REGIME_DISCORD_INTERVAL_MINUTES = 5   # how often to post visual update
+_CACHE_TTL_SECONDS               = 90
+REGIME_DISCORD_INTERVAL_MINUTES  = 5
+EODHD_CACHE_SECONDS              = 60   # how long to reuse an EODHD-fetched bar list
 
-_regime_cache: dict   = {}
+_regime_cache: dict      = {}
 _last_discord_post: datetime = datetime.min.replace(tzinfo=_ET)
+_eodhd_bar_cache: dict   = {}  # symbol -> {"bars": [...], "ts": datetime}
 
 EMOJI_MAP = {
     "STRONG_BULL":  "🟢🟢",
@@ -44,7 +55,7 @@ EMOJI_MAP = {
 }
 
 
-# ── EMA helpers ──────────────────────────────────────────────────────────────
+# ── EMA helpers ──────────────────────────────────────────────────────────────────────
 def _compute_ema(bars: list, period: int) -> float:
     closes = [b["close"] for b in bars if b.get("close")]
     if len(closes) < period:
@@ -64,23 +75,105 @@ def _get_slope_bull(bars: list, period: int) -> bool:
     return current >= previous
 
 
-def _get_5m_bars(symbol: str):
-    """Return 5-minute compressed bars for symbol, falling back to 1m."""
-    from app.data.data_manager import data_manager
-    bars_5m = None
+def _fetch_eodhd_intraday(symbol: str, interval: str = "5m", limit: int = 60) -> list:
+    """
+    Fetch today’s intraday bars from EODHD as a last-resort fallback.
+    Returns a list of {open, high, low, close, volume} dicts, or [].
+    Result is cached in _eodhd_bar_cache for EODHD_CACHE_SECONDS.
+    """
+    global _eodhd_bar_cache
+    now = datetime.now(_ET)
+
+    cached = _eodhd_bar_cache.get(symbol)
+    if cached:
+        age = (now - cached["ts"]).total_seconds()
+        if age < EODHD_CACHE_SECONDS and cached["bars"]:
+            return cached["bars"]
+
+    api_key = os.getenv("EODHD_API_KEY", "")
+    if not api_key:
+        return []
+
     try:
-        from app.mtf.mtf_compression import compress_to_timeframe
-        bars_1m = data_manager.get_today_session_bars(symbol)
+        import requests
+        today_str = now.strftime("%Y-%m-%d")
+        url = (
+            f"https://eodhd.com/api/intraday/{symbol}.US"
+            f"?api_token={api_key}&interval={interval}"
+            f"&from={today_str}&fmt=json"
+        )
+        resp = requests.get(url, timeout=8)
+        if resp.status_code != 200:
+            return []
+        data = resp.json()
+        if not isinstance(data, list) or not data:
+            return []
+        bars = [
+            {
+                "open":   float(row.get("open",   0)),
+                "high":   float(row.get("high",   0)),
+                "low":    float(row.get("low",    0)),
+                "close":  float(row.get("close",  0)),
+                "volume": int(row.get("volume",   0)),
+            }
+            for row in data
+            if row.get("close")
+        ]
+        bars = bars[-limit:]
+        _eodhd_bar_cache[symbol] = {"bars": bars, "ts": now}
+        print(f"[REGIME] ✅ EODHD fallback: {symbol} {len(bars)} bars fetched")
+        return bars
+    except Exception as e:
+        print(f"[REGIME] EODHD fallback error for {symbol}: {e}")
+        return []
+
+
+def _get_5m_bars(symbol: str):
+    """
+    Return 5-minute compressed bars for symbol.
+
+    Tier 1: data_manager memory (WS feed) — zero latency
+    Tier 2: data_manager.get_today_session_bars() — DB intraday rows
+    Tier 3: EODHD intraday REST API — fallback when SPY/QQQ not in WS
+    """
+    from app.data.data_manager import data_manager
+
+    # Tier 1: WS memory bars
+    try:
+        bars_1m = data_manager.get_bars_from_memory(symbol, limit=390)
         if bars_1m and len(bars_1m) >= 10:
-            bars_5m = compress_to_timeframe(bars_1m, "5m")
+            try:
+                from app.mtf.mtf_compression import compress_to_timeframe
+                bars_5m = compress_to_timeframe(bars_1m, "5m")
+                if bars_5m and len(bars_5m) >= 10:
+                    return bars_5m
+            except Exception:
+                pass
+            return bars_1m  # return 1m if compression fails
     except Exception:
         pass
-    if not bars_5m or len(bars_5m) < 10:
-        bars_5m = data_manager.get_today_session_bars(symbol)
-    return bars_5m or []
+
+    # Tier 2: DB session bars
+    try:
+        bars_1m = data_manager.get_today_session_bars(symbol)
+        if bars_1m and len(bars_1m) >= 10:
+            try:
+                from app.mtf.mtf_compression import compress_to_timeframe
+                bars_5m = compress_to_timeframe(bars_1m, "5m")
+                if bars_5m and len(bars_5m) >= 10:
+                    return bars_5m
+            except Exception:
+                pass
+            return bars_1m
+    except Exception:
+        pass
+
+    # Tier 3: EODHD REST fallback
+    bars = _fetch_eodhd_intraday(symbol, interval="5m", limit=60)
+    return bars
 
 
-# ── Per-instrument regime score ───────────────────────────────────────────────
+# ── Per-instrument regime score ──────────────────────────────────────────────────
 def _score_instrument(symbol: str) -> dict:
     """
     Returns a dict with keys:
@@ -136,7 +229,7 @@ def _score_instrument(symbol: str) -> dict:
     }
 
 
-# ── Combined conviction label ─────────────────────────────────────────────────
+# ── Combined conviction label ───────────────────────────────────────────────────
 def _combine(spy: dict, qqq: dict) -> tuple:
     """
     Average SPY + QQQ scores → single conviction label + score_adj.
@@ -175,7 +268,7 @@ def _combine(spy: dict, qqq: dict) -> tuple:
     return label, score_adj, reason
 
 
-# ── Public API ────────────────────────────────────────────────────────────────
+# ── Public API ──────────────────────────────────────────────────────────────────────
 def get_market_regime(force_refresh: bool = False) -> dict:
     """
     Returns the combined SPY+QQQ regime dict (cached 90s).
@@ -231,13 +324,13 @@ def print_market_regime(regime: dict, ticker: str = ""):
     spy_line = (
         f"SPY P={spy.get('price', 0):.2f} "
         f"E9={spy.get('ema9', 0):.2f} E21={spy.get('ema21', 0):.2f} E50={spy.get('ema50', 0):.2f} "
-        f"{'↑' if spy.get('slope_bull') else '↓'}"
+        f"{'\u2191' if spy.get('slope_bull') else '\u2193'}"
     ) if spy else "SPY N/A"
 
     qqq_line = (
         f"QQQ P={qqq.get('price', 0):.2f} "
         f"E9={qqq.get('ema9', 0):.2f} E21={qqq.get('ema21', 0):.2f} E50={qqq.get('ema50', 0):.2f} "
-        f"{'↑' if qqq.get('slope_bull') else '↓'}"
+        f"{'\u2191' if qqq.get('slope_bull') else '\u2193'}"
     ) if qqq else "QQQ N/A"
 
     print(
