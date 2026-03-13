@@ -38,8 +38,6 @@ from app.risk.vix_sizing import get_vix_regime, get_vix_multiplier
 from app.risk.dynamic_thresholds import get_dynamic_threshold, get_threshold_stats
 
 # ── Kill switch ──────────────────────────────────────────────────────────────
-# Set KILL_SWITCH=1 in Railway env vars to halt all new positions immediately.
-# Existing open positions are unaffected — exits still process normally.
 _KILL_SWITCH_ACTIVE = os.getenv("KILL_SWITCH", "0").strip() == "1"
 
 
@@ -100,13 +98,14 @@ def evaluate_signal(
     if _KILL_SWITCH_ACTIVE:
         return _reject("KILL SWITCH active — no new positions", confidence, entry_price, or_high, or_low, bars, direction, grade)
 
-    # ── 2. Circuit breaker ───────────────────────────────────────────────────
-    breached, reason = position_manager.check_circuit_breaker()
+    # ── 2 & 3: Fetch stats once; pass into both circuit-breaker and drawdown ─
+    stats = position_manager.get_daily_stats()
+
+    breached, reason = position_manager.check_circuit_breaker(stats=stats)
     if breached:
         return _reject(reason, confidence, entry_price, or_high, or_low, bars, direction, grade)
 
-    # ── 3. Max drawdown ──────────────────────────────────────────────────────
-    breached, reason = position_manager.check_max_drawdown()
+    breached, reason = position_manager.check_max_drawdown(stats=stats)
     if breached:
         return _reject(reason, confidence, entry_price, or_high, or_low, bars, direction, grade)
 
@@ -152,7 +151,6 @@ def evaluate_signal(
     # ── All checks passed — calculate stop/targets ───────────────────────────
     stop, t1, t2 = compute_stop_and_targets(bars, direction, or_high, or_low, entry_price, grade)
 
-    # Validate R:R before approving
     rr_valid, rr_ratio = position_manager.validate_risk_reward(entry_price, stop, t2)
     if not rr_valid:
         return _reject(
@@ -276,22 +274,10 @@ def check_exits(current_prices: Dict[str, float]) -> None:
 # =============================================================================
 
 def get_fvg_threshold(bars: List[Dict], ticker: str) -> Tuple[float, float]:
-    """
-    Get adaptive FVG size threshold for current ticker volatility.
-
-    Returns:
-        (fvg_min_pct, confidence_adjustment) — e.g., (0.002, 1.0)
-    """
     return get_adaptive_fvg_threshold(bars, ticker)
 
 
 def get_orb_threshold(bars: List[Dict], breakout_idx: int) -> float:
-    """
-    Get adaptive ORB breakout confirmation threshold based on volume.
-
-    Returns:
-        float: Minimum % above OR high/low to confirm breakout
-    """
     return get_adaptive_orb_threshold(bars, breakout_idx)
 
 
@@ -303,6 +289,9 @@ def get_session_status() -> Dict:
     """
     Return a full session snapshot for logging and Discord alerts.
 
+    FIX #5: fetches daily_stats and open_positions exactly once, then
+    passes them into sub-calls to eliminate redundant DB checkouts.
+
     Keys returned:
       daily_stats      — trades, wins, losses, total_pnl, win_rate
       open_positions   — list of currently open position dicts
@@ -312,12 +301,17 @@ def get_session_status() -> Dict:
       kill_switch      — True if KILL_SWITCH env var is active
       risk_summary     — formatted string for printing/Discord
     """
-    daily_stats      = position_manager.get_daily_stats()
-    open_positions   = position_manager.get_open_positions()
-    circuit_breaker  = position_manager.check_circuit_breaker()
-    vix_regime_data  = get_vix_regime()
-    threshold_data   = get_threshold_stats()
-    risk_summary     = position_manager.get_risk_summary()
+    # Single DB checkout for stats, single for positions
+    daily_stats    = position_manager.get_daily_stats()
+    open_positions = position_manager.get_open_positions()
+
+    # Reuse fetched stats — no additional DB calls
+    circuit_breaker = position_manager.check_circuit_breaker(stats=daily_stats)
+    vix_regime_data = get_vix_regime()
+    threshold_data  = get_threshold_stats()
+
+    # Pass both pre-fetched datasets into get_risk_summary
+    risk_summary = position_manager.get_risk_summary(open_positions=open_positions)
 
     return {
         "daily_stats":     daily_stats,

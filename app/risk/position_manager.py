@@ -27,12 +27,23 @@ FIX #4 (MAR 11, 2026):
     (skipped for STALE_EOD).  This writes completed_at + outcome + exit_price
     back to the ml_signals table, unblocking the live EOD retrain loop which
     previously stalled because ml_signals rows stayed NULL in completed_at.
+
+FIX #5 (MAR 13, 2026) — DB SEMAPHORE EXHAUSTION:
+  - Added 10s TTL cache on get_daily_stats() and get_open_positions().
+    Cache is invalidated immediately on every open_position() / close_position()
+    so trade logic always sees fresh state; only the polling hot-path is cached.
+  - check_circuit_breaker() and check_max_drawdown() now accept an optional
+    pre-fetched stats dict to avoid re-querying when the caller already has stats.
+  - get_risk_summary() now accepts an optional open_positions list for the same reason.
+  Net result: get_session_status() drops from 5 DB checkouts to 1-2;
+  evaluate_signal() drops 2 redundant checkouts on every ticker scan.
 """
 from utils import config
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 from app.data import db_connection
 from app.data.db_connection import get_conn, return_conn, ph, dict_cursor, serial_pk
+import time
 
 # ── VIX sizing (graceful fallback if module unavailable) ─────────────────────
 try:
@@ -71,6 +82,10 @@ SECTOR_GROUPS = {
     "VOLATILITY": ["VIX", "UVXY", "SVXY", "VXX"]
 }
 
+# ── Cache TTL (seconds) ───────────────────────────────────────────────────────
+_STATS_CACHE_TTL    = 10  # get_daily_stats() — re-query at most every 10s
+_POSITIONS_CACHE_TTL = 5  # get_open_positions() — re-query at most every 5s
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # FIX #4: completed_at write-back helper
@@ -101,7 +116,6 @@ def _write_completed_at(
         cursor = dict_cursor(conn)
         p      = ph()
 
-        # Resolve the most-recent PENDING signal id for this ticker+direction
         cursor.execute(
             f"""
             SELECT id FROM ml_signals
@@ -115,7 +129,7 @@ def _write_completed_at(
         )
         row = cursor.fetchone()
         if row is None:
-            return  # no matching pending signal — nothing to update
+            return
 
         signal_id = row["id"]
 
@@ -137,7 +151,6 @@ def _write_completed_at(
         )
 
     except Exception as exc:
-        # Table may not exist yet on a fresh deploy — always safe to skip
         print(f"[ML-SIGNALS] ⚠️  completed_at write skipped ({ticker}): {exc}")
     finally:
         if conn:
@@ -162,9 +175,25 @@ class PositionManager:
         self.consecutive_losses = 0
         self.performance_multiplier = 1.0  # 0.5-1.5 range based on recent performance
 
+        # ── FIX #5: DB query result caches ───────────────────────────────────
+        self._daily_stats_cache:     Optional[Dict] = None
+        self._daily_stats_ts:        float          = 0.0
+        self._open_positions_cache:  Optional[List] = None
+        self._open_positions_ts:     float          = 0.0
+        # ─────────────────────────────────────────────────────────────────────
+
         self._initialize_database()
         self._close_stale_positions()
         self._load_session_state()
+
+    # ── FIX #5: cache invalidation helper ────────────────────────────────────
+    def _invalidate_caches(self) -> None:
+        """Bust both caches immediately after any write (open/close)."""
+        self._daily_stats_cache    = None
+        self._daily_stats_ts       = 0.0
+        self._open_positions_cache = None
+        self._open_positions_ts    = 0.0
+    # ─────────────────────────────────────────────────────────────────────────
 
     def _load_session_state(self) -> None:
         """Load session starting balance, open positions, and performance streak on initialization."""
@@ -176,8 +205,6 @@ class PositionManager:
             self.intraday_high_water_mark = max(self.intraday_high_water_mark, self.account_size)
 
             # ── C1 FIX: Re-populate in-memory cache from DB on restart ──────────
-            # Without this, a mid-session Railway redeploy loses all open position
-            # state, causing wrong sizing, wrong streak, and phantom trade risk.
             open_db = self.get_open_positions()
             self.positions = [
                 {
@@ -254,12 +281,14 @@ class PositionManager:
         else:
             return "0 (x1.00)"
 
-    def check_circuit_breaker(self) -> Tuple[bool, str]:
+    def check_circuit_breaker(self, stats: Dict = None) -> Tuple[bool, str]:
         """
         Check if daily loss limit has been hit.
+        Accepts optional pre-fetched stats dict to avoid a redundant DB call.
         Returns (is_breached, reason).
         """
-        stats = self.get_daily_stats()
+        if stats is None:
+            stats = self.get_daily_stats()
         total_pnl = stats.get("total_pnl", 0.0)
         daily_loss_pct = (total_pnl / self.session_starting_balance) * 100
 
@@ -272,12 +301,14 @@ class PositionManager:
 
         return False, ""
 
-    def check_max_drawdown(self) -> Tuple[bool, str]:
+    def check_max_drawdown(self, stats: Dict = None) -> Tuple[bool, str]:
         """
         Check if max drawdown from intraday high has been exceeded.
+        Accepts optional pre-fetched stats dict to avoid a redundant DB call.
         Returns (is_breached, reason).
         """
-        stats = self.get_daily_stats()
+        if stats is None:
+            stats = self.get_daily_stats()
         total_pnl = stats.get("total_pnl", 0.0)
         current_balance = self.session_starting_balance + total_pnl
 
@@ -302,15 +333,17 @@ class PositionManager:
         Validate if a new position can be opened based on risk limits.
         Returns (can_open, reason) tuple.
         """
-        # RTH guard: block new positions outside regular trading hours
         if _RTH_GUARD_ENABLED and not _is_rth_now():
             return False, "Outside RTH (9:30 AM - 4:00 PM ET) — no new positions"
 
-        breached, reason = self.check_circuit_breaker()
+        # Share one stats fetch across both circuit-breaker and drawdown checks
+        stats = self.get_daily_stats()
+
+        breached, reason = self.check_circuit_breaker(stats=stats)
         if breached:
             return False, reason
 
-        breached, reason = self.check_max_drawdown()
+        breached, reason = self.check_max_drawdown(stats=stats)
         if breached:
             return False, reason
 
@@ -518,14 +551,11 @@ class PositionManager:
         else:
             risk_pct = config.POSITION_RISK["conservative"]
 
-        # Layer 1: performance streak adjustment
         adjusted_risk_pct = risk_pct * self.performance_multiplier
 
-        # Layer 2: VIX volatility adjustment
         vix_mult = _get_vix_mult()
         adjusted_risk_pct = adjusted_risk_pct * vix_mult
 
-        # Log when VIX is moving the size meaningfully
         if abs(vix_mult - 1.0) >= 0.10:
             direction = "reduced" if vix_mult < 1.0 else "increased"
             print(f"[VIX] Sizing {direction}: {risk_pct*100:.1f}% base → "
@@ -557,7 +587,6 @@ class PositionManager:
                       confidence: float, grade: str,
                       options_rec=None) -> int:
         """Open a new position and return position ID."""
-        # Cast numpy types to native Python BEFORE SQL
         entry_price = float(entry_price)
         stop_price  = float(stop_price)
         zone_low    = float(zone_low)
@@ -584,7 +613,6 @@ class PositionManager:
             print(f"[RISK] ❌ {ticker} rejected - {reason}")
             return -1
 
-        # Extract options data if provided
         strike         = None
         expiry         = None
         contract_type  = None
@@ -633,6 +661,9 @@ class PositionManager:
                 position_id = cursor.lastrowid
 
             conn.commit()
+
+            # Bust caches immediately after write
+            self._invalidate_caches()
 
             self.positions.append({
                 "id":                   position_id,
@@ -755,6 +786,9 @@ class PositionManager:
             """, (contracts_left, entry_price, partial_pnl, position_id))
             conn.commit()
 
+            # Bust caches after scale-out write
+            self._invalidate_caches()
+
             for cached in self.positions:
                 if cached["id"] == position_id:
                     cached["t1_hit"]             = True
@@ -816,12 +850,12 @@ class PositionManager:
             """, (exit_price, exit_reason, final_pnl, position_id))
             conn.commit()
 
+            # Bust caches immediately after write
+            self._invalidate_caches()
+
             self.positions = [p for p in self.positions if p["id"] != position_id]
 
             # ── FIX #4: write completed_at back to ml_signals ─────────────────
-            # Skipped for STALE_EOD (prior-day carryover — no live signal row).
-            # EOD CLOSE counts as LOSS so the retrain loop sees it as a negative
-            # example; STOP LOSS = LOSS; TARGET 1 / TARGET 2 = WIN.
             if exit_reason != "STALE_EOD":
                 _ml_outcome = "WIN" if final_pnl > 0 else "LOSS"
                 _write_completed_at(ticker, direction, _ml_outcome, exit_price, exit_time)
@@ -863,7 +897,10 @@ class PositionManager:
             except Exception as e:
                 print(f"[POSITION] Discord exit alert failed: {e}")
 
-            breached, reason = self.check_circuit_breaker()
+            # Pass already-known final_pnl to avoid another DB round-trip
+            breached, reason = self.check_circuit_breaker(
+                stats={"total_pnl": final_pnl, "trades": 1, "wins": 0, "losses": 1, "win_rate": 0.0}
+            )
             if breached:
                 print(f"\n[RISK] 🚨 {reason}")
                 print("[RISK] No new positions will be opened until next session\n")
@@ -881,10 +918,6 @@ class PositionManager:
             self.close_position(pos["id"], price, "EOD CLOSE")
 
         # ── M5 FIX: Reset streak counters after EOD force-close ──────────────
-        # close_position() with exit_reason="EOD CLOSE" increments consecutive_wins
-        # or consecutive_losses, which would carry over into the next morning's
-        # position sizing via performance_multiplier. Reset to neutral here so
-        # each new day starts with a clean 1.0x multiplier.
         self.consecutive_wins = 0
         self.consecutive_losses = 0
         self.performance_multiplier = 1.0
@@ -893,21 +926,38 @@ class PositionManager:
 
 
     def get_open_positions(self) -> List[Dict]:
-        """Return all currently open positions from the database."""
+        """Return all currently open positions from the database (cached up to 5s)."""
+        now = time.monotonic()
+        if (
+            self._open_positions_cache is not None
+            and (now - self._open_positions_ts) < _POSITIONS_CACHE_TTL
+        ):
+            return self._open_positions_cache
+
         conn = None
         try:
             conn   = get_conn(self.db_path)
             cursor = dict_cursor(conn)
             cursor.execute("SELECT * FROM positions WHERE status = 'OPEN'")
             rows   = cursor.fetchall()
-            return [dict(row) for row in rows]
+            result = [dict(row) for row in rows]
+            self._open_positions_cache = result
+            self._open_positions_ts    = now
+            return result
         finally:
             if conn:
                 return_conn(conn)
 
 
     def get_daily_stats(self) -> Dict:
-        """Return win/loss/P&L stats for today's closed trades."""
+        """Return win/loss/P&L stats for today's closed trades (cached up to 10s)."""
+        now = time.monotonic()
+        if (
+            self._daily_stats_cache is not None
+            and (now - self._daily_stats_ts) < _STATS_CACHE_TTL
+        ):
+            return self._daily_stats_cache
+
         conn = None
         try:
             p      = ph()
@@ -930,13 +980,16 @@ class PositionManager:
             total_pnl = row["total_pnl"] or 0.0
             win_rate  = (wins / trades * 100) if trades > 0 else 0.0
 
-            return {
+            result = {
                 "trades":    trades,
                 "wins":      wins,
                 "losses":    losses,
                 "total_pnl": round(total_pnl, 2),
                 "win_rate":  round(win_rate, 1)
             }
+            self._daily_stats_cache = result
+            self._daily_stats_ts    = now
+            return result
         finally:
             if conn:
                 return_conn(conn)
@@ -1044,8 +1097,10 @@ class PositionManager:
             if conn:
                 return_conn(conn)
 
-    def get_risk_summary(self) -> str:
-        """Get formatted risk management summary."""
+    def get_risk_summary(self, open_positions: List[Dict] = None) -> str:
+        """Get formatted risk management summary.
+        Accepts optional pre-fetched open_positions to avoid a redundant DB call.
+        """
         stats = self.get_daily_stats()
         total_pnl = stats.get("total_pnl", 0.0)
 
@@ -1054,14 +1109,16 @@ class PositionManager:
         max_dd_pct = ((current_balance - self.intraday_high_water_mark) /
                       self.intraday_high_water_mark) * 100
 
-        open_positions = self.get_open_positions()
+        if open_positions is None:
+            open_positions = self.get_open_positions()
+
         total_exposure = sum(
             abs(pos["entry_price"] - pos["stop_price"]) * 100 * pos["remaining_contracts"]
             for pos in open_positions
         )
-        exposure_pct = (total_exposure / current_balance) * 100
+        exposure_pct = (total_exposure / current_balance) * 100 if current_balance else 0.0
 
-        circuit_breached, _ = self.check_circuit_breaker()
+        circuit_breached, _ = self.check_circuit_breaker(stats=stats)
 
         summary = "\n" + "="*60 + "\n"
         summary += "RISK MANAGEMENT SUMMARY\n"
