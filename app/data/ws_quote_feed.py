@@ -83,7 +83,7 @@ SPREAD_HISTORY_LEN  = 20     # rolling window for spread% averaging
 # Fail-open: if no quote data, returns 0.0 (entry allowed).
 MAX_SPREAD_PCT = getattr(config, "MAX_SPREAD_PCT", 0.15)
 
-# ── Shared state ─────────────────────────────────────────────────────────────────────────
+# ── Shared state ─────────────────────────────────────────────────────────────────────
 _lock              = threading.Lock()
 _quotes            = {}          # ticker → {bid, ask, spread, spread_pct, mid, ...}
 _spread_history    = defaultdict(lambda: deque(maxlen=SPREAD_HISTORY_LEN))
@@ -259,6 +259,10 @@ async def _ws_run():
       attempt resets to 0 after a clean successful connection.
     This prevents a tight reconnect storm when EODHD throws repeated 500s
     on subscription while still recovering quickly from normal brief drops.
+
+    FIX: 0.5s sleep after connect before subscribing allows EODHD auth
+    handshake to complete. Without this, subscribe messages race ahead of
+    the auth response and trigger 422 'Symbols limit reached' errors.
     """
     global _connected, _ws_connection, _subscribed
 
@@ -277,6 +281,11 @@ async def _ws_run():
 
                 with _sub_lock:
                     _subscribed.clear()
+
+                # Wait for EODHD auth handshake to complete before subscribing.
+                # Without this delay, subscribe messages race ahead of the auth
+                # response and trigger 422 'Symbols limit reached' errors.
+                await asyncio.sleep(0.5)
 
                 with _sub_lock:
                     master = list(_all_tickers)
