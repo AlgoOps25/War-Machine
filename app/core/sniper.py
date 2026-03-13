@@ -155,19 +155,17 @@ _orb_classifications = {}  # ticker -> OR classification dict, populated at 9:40
 # SPY EMA CONTEXT — 5m EMA 9/21/50 regime filter
 # ══════════════════════════════════════════════════════════════════════════════
 try:
-    from app.filters.spy_ema_context import (
-        get_spy_ema_regime, is_long_allowed,
-        is_short_allowed, print_spy_regime,
+    from app.filters.market_regime_context import (
+        get_market_regime, print_market_regime,
     )
     SPY_EMA_CONTEXT_ENABLED = True
     print("[SNIPER] ✅ SPY EMA context enabled (5m EMA 9/21/50)")
 except ImportError as e:
     SPY_EMA_CONTEXT_ENABLED = False
     print(f"[SNIPER] ⚠️  SPY EMA context disabled: {e}")
-    def get_spy_ema_regime(force_refresh=False): return {"label": "UNKNOWN", "score_adj": 0}
-    def is_long_allowed(r): return True
-    def is_short_allowed(r): return True
-    def print_spy_regime(r, ticker=""): pass
+    def get_market_regime(force_refresh=False): return {"label": "UNKNOWN", "score_adj": 0}
+    def print_market_regime(r, ticker=""): pass
+
 
 # ── ML Signal Scorer V2 ───────────────────────────────────────────────────────
 try:
@@ -823,15 +821,6 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
     else:
         print(f"[{ticker}] ✅ VWAP GATE: {vwap_reason}")
 
-        # ── SPY EMA Regime hard block ─────────────────────────────────────────────
-    if SPY_EMA_CONTEXT_ENABLED and spy_regime:
-        if direction == "bull" and not is_long_allowed(spy_regime):
-            print(f"[{ticker}] 🚫 SPY EMA REGIME: long blocked | {spy_regime.get('label')} — {spy_regime.get('reason')}")
-            return False
-        if direction == "bear" and not is_short_allowed(spy_regime):
-            print(f"[{ticker}] 🚫 SPY EMA REGIME: short blocked | {spy_regime.get('label')} — {spy_regime.get('reason')}")
-            return False
-
     # ── Step 8: Confirmation layers ──────────────────────────────────────────
     conf_result = grade_signal_with_confirmations(
         ticker=ticker, direction=direction, bars=bars_session,
@@ -1433,8 +1422,9 @@ def process_ticker(ticker: str):
         spy_regime = None
         if SPY_EMA_CONTEXT_ENABLED:
             try:
-                spy_regime = get_spy_ema_regime()
-                print_spy_regime(spy_regime, ticker)
+                spy_regime = get_market_regime()
+                print_market_regime(spy_regime, ticker)
+
             except Exception as e:
                 print(f"[{ticker}] SPY EMA context error (non-fatal): {e}")
 
