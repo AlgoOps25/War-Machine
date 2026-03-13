@@ -872,7 +872,7 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
 
 
     stop_price, t1, t2 = compute_stop_and_targets(
-        ticker, bars_session, direction, or_high_ref, or_low_ref, entry_price,
+        bars_session, direction, or_high_ref, or_low_ref, entry_price,
         grade=final_grade
     )
 
