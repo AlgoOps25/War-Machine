@@ -1,4 +1,4 @@
-﻿"""
+"""
 MTF FVG Priority Resolver
 Enforces Nitro Trades rule: "Always take the highest timeframe FVG when conflicts exist."
 
@@ -425,10 +425,6 @@ def print_priority_stats():
     print("="*80 + "\n")
 
 
-print("[MTF-PRIORITY] âœ… Multi-timeframe FVG priority resolver loaded")
+print("[MTF-PRIORITY] \u2705 Multi-timeframe FVG priority resolver loaded")
 print("[MTF-PRIORITY] Rule: Always trade the highest-TF FVG when conflicts exist")
 print("[MTF-PRIORITY] Priority order: 5m > 3m > 2m > 1m")
-
-
-
-
