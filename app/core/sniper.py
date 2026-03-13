@@ -1193,7 +1193,8 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
     else:
         print(f"[{ticker}] MTF: {mtf_result['reason']}")
 
-    _prelim_stop, _prelim_t1, _prelim_t2 = compute_stop_and_targets(
+
+    stop_price, t1, t2 = compute_stop_and_targets(
         ticker, bars_session, direction, or_high_ref, or_low_ref, entry_price,
         grade=final_grade
     )
@@ -1207,10 +1208,11 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
                 grade=final_grade,
                 confidence=compute_confidence(final_grade, "5m", ticker),
                 entry_price=entry_price,
-                stop_price=_prelim_stop,
-                t1_price=_prelim_t1,
-                t2_price=_prelim_t2
+                stop_price=stop_price,
+                t1_price=t1,
+                t2_price=t2
             )
+
             print(f"[PHASE 4] 📊 {ticker} signal GENERATED - {signal_type} {direction.upper()} {final_grade}")
         except Exception as e:
             print(f"[PHASE 4] Signal tracking error: {e}")
@@ -1312,6 +1314,8 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
             traceback.print_exc()
 
     ml_boost = 0.0  # default; overwritten if ML scorer fires
+    _meta = _get_ticker_screener_metadata(ticker)  # ← ADD THIS LINE
+
         # ── ML Score gate (Step 11c) ──────────────────────────────────────────────
     if ML_SCORER_ENABLED:
         try:
@@ -1343,11 +1347,6 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
                     print(f"[{ticker}] ML CONF BOOST: {ml_boost:+.3f} → {base_confidence + ml_boost:.3f}")
         except Exception as ml_err:
             print(f"[{ticker}] ML scorer error (non-fatal): {ml_err}")
-    
-    stop_price, t1, t2 = compute_stop_and_targets(
-        ticker, bars_session, direction, or_high_ref, or_low_ref, entry_price,
-        grade=final_grade
-    )
 
     options_rec = get_options_recommendation(
         ticker=ticker, direction=direction,
@@ -1525,14 +1524,14 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         validation_result=validation_result,
         bos_confirmation=bos_confirmation,
         bos_candle_type=bos_candle_type,
-        mtf_result=mtf_result
+        mtf_result=mtf_result, metadata=_meta
     )
     return True
 
 def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high,
                entry_price, stop_price, t1, t2, confidence, grade,
                options_rec=None, signal_type="CFW6_OR", validation_result=None,
-               bos_confirmation=None, bos_candle_type=None, mtf_result=None):
+               bos_confirmation=None, bos_candle_type=None, mtf_result=None, metadata=None):
 
     if abs(entry_price - stop_price) < entry_price * 0.001:
         print(f"[ARM] ⚠️ {ticker} stop too tight — skipping")
@@ -1548,7 +1547,7 @@ def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high,
 
     log_proposed_trade(ticker, signal_type, direction, entry_price, confidence, grade)
 
-    metadata = get_ticker_screener_metadata(ticker)
+    metadata = metadata or get_ticker_screener_metadata(ticker)
 
     mtf_convergence_count = None
     if mtf_result and mtf_result.get('convergence'):
@@ -1874,6 +1873,9 @@ def process_ticker(ticker: str):
         direction = breakout_idx = zone_low = zone_high = None
         or_high_ref = or_low_ref = scan_mode = None
         bos_confirmation = bos_candle_type = None
+
+        if _now_et().time() < time(9, 30):
+            return
 
         or_high, or_low = compute_opening_range_from_bars(bars_session)
         if or_high is not None:
