@@ -13,6 +13,12 @@ FIXED M8 (Mar 10 2026):
     the R:R guard in position_manager to reject a valid signal entirely.
     Fix: when or_low <= 0 or or_high <= 0, skip the OR boundary
     comparison and use the ATR stop exclusively.
+
+FIXED Mar 13 2026:
+    Low-vol FVG threshold lowered from 0.15% to 0.08%.
+    On tight tape days (ATR < 1%), gaps rarely exceed 0.15% so watches
+    expired on every ticker without ever finding an FVG. 0.08% matches
+    the actual gap sizes seen on low-volatility sessions.
 """
 import numpy as np
 from datetime import time as dtime
@@ -74,9 +80,10 @@ def get_adaptive_fvg_threshold(bars: List[Dict], ticker: str) -> Tuple[float, fl
     """
     CFW6 OPTIMIZATION: Adaptive FVG size based on ticker volatility
     Returns: (fvg_threshold, confidence_adjustment)
-    - High volatility (ATR > 2.0%): 0.3% minimum FVG, 0.95x confidence
-    - Medium volatility (ATR 1.0-2.0%): 0.2% minimum FVG, 1.0x confidence
-    - Low volatility (ATR < 1.0%): 0.15% minimum FVG, 1.05x confidence
+    - High volatility (ATR > 2.0%): 0.30% minimum FVG, 0.95x confidence
+    - Medium volatility (ATR 1.0-2.0%): 0.20% minimum FVG, 1.0x confidence
+    - Low volatility (ATR < 1.0%): 0.08% minimum FVG, 1.05x confidence
+      (lowered from 0.15% — tight tape days rarely produce gaps > 0.15%)
     """
     atr           = calculate_atr(bars, period=14)
     current_price = bars[-1]["close"]
@@ -102,7 +109,7 @@ def get_adaptive_fvg_threshold(bars: List[Dict], ticker: str) -> Tuple[float, fl
         confidence_adjustment = 1.0
         volatility_label      = "MEDIUM"
     else:
-        fvg_threshold         = 0.0015
+        fvg_threshold         = 0.0008  # FIXED: was 0.0015 — too high for low-vol tape
         confidence_adjustment = 1.05
         volatility_label      = "LOW"
 
@@ -110,7 +117,6 @@ def get_adaptive_fvg_threshold(bars: List[Dict], ticker: str) -> Tuple[float, fl
     if _rvol >= 5.0:
         fvg_threshold = min(fvg_threshold, 0.001)
         print(f"[ADAPTIVE] {ticker} HIGH RVOL ({_rvol:.1f}x) — FVG threshold lowered to {fvg_threshold*100:.2f}%")
-
 
     print(f"[ADAPTIVE] {ticker} ATR: {atr:.2f} ({atr_pct:.2f}%) - {volatility_label} volatility")
     print(f"  FVG threshold: {fvg_threshold*100:.2f}% | Confidence adj: {confidence_adjustment:.2f}x")
