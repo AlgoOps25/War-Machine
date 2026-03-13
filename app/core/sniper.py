@@ -1520,6 +1520,7 @@ def process_ticker(ticker: str):
                 print(f"[{ticker}] ⏰ Watch expired — clearing")
                 _state.remove_watching_signal(ticker)
                 _remove_watch_from_db(ticker)
+                return  # prevent re-arm on same breakout
             else:
                 print(f"[{ticker}] 👁️ WATCHING [{bars_since}/{MAX_WATCH_BARS}]")
                 fvg_threshold, _ = get_adaptive_fvg_threshold(bars_session, ticker)
