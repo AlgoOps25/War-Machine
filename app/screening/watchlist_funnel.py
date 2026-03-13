@@ -53,6 +53,17 @@ FIX v3.4 (MAR 12, 2026) - Final stage empty watchlist fix:
   - Lowered final stage min_score from 65 -> 50 (matches narrow stage)
   - Lowered final stage volume filter from 50,000 -> 10,000 (pre-open volume is thin)
   - Added fallback: if filtered_tickers still empty after volume filter, use all scored
+
+FIX v3.5 (MAR 12, 2026) - Issue #3 + #4:
+  - Issue #3: Raised live session min_score 25 -> 40 (professional floor for intraday
+    momentum). Score of 25 admitted weak-gap, mediocre-volume, no-catalyst tickers
+    that pollute the sniper scan and burn CPU on the ML/MTF/options pipeline.
+    Expansion fallback floor raised 15 -> 20 (still lenient enough for thin days).
+  - Issue #4: Symmetric volume signal adjustments in _build_narrow_scan().
+    Bearish penalty was -15 vs bullish reward of +10 — a 50% asymmetry that
+    structurally disadvantaged bearish setups on red-tape days. Both now ±10.
+    If long-bias is desired, filter direction=='bull' in sniper rather than
+    silently distorting watchlist scores.
 """
 import sys
 from pathlib import Path
@@ -201,7 +212,7 @@ class WatchlistFunnel:
                 "time_start": time(9, 30),
                 "time_end":   time(16, 0),
                 "max_tickers": 20,
-                "min_score":   25.0,
+                "min_score":   40.0,   # FIX #3: was 25 — raised to professional floor
                 "description": "Live session - Active movers"
             }
         }
@@ -325,7 +336,7 @@ class WatchlistFunnel:
                     if 'bullish' in signal['type'] or 'bottom' in signal['type']:
                         scored_ticker['composite_score'] += 10
                     elif 'bearish' in signal['type'] or 'climax_top' in signal['type']:
-                        scored_ticker['composite_score'] -= 15
+                        scored_ticker['composite_score'] -= 10  # FIX #4: was -15, now symmetric with +10
         self.scored_tickers.sort(key=lambda x: x['composite_score'], reverse=True)
         watchlist = _get_momentum_screener().get_top_n_movers(
             self.scored_tickers, stage_config["max_tickers"]
@@ -394,10 +405,10 @@ class WatchlistFunnel:
             expanded_candidates = [t['ticker'] for t in expanded_results[:100]]
             self.scored_tickers = _get_momentum_screener().run_momentum_screener(
                 expanded_candidates,
-                min_composite_score=15.0,
+                min_composite_score=20.0,  # FIX #3: was 15.0 — raised emergency floor to 20
                 use_cache=True
             )
-            print(f"[FUNNEL] Expanded search: {len(self.scored_tickers)} tickers (min_score=15.0)")
+            print(f"[FUNNEL] Expanded search: {len(self.scored_tickers)} tickers (min_score=20.0)")
 
         # Volume signal adjustments (existing logic — unchanged)
         volume_signals = self.volume_analyzer.get_active_signals()
