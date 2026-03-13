@@ -89,7 +89,14 @@ except ImportError:
     def cache_order_block(ticker, ob): pass
     def apply_ob_retest_boost(ticker, entry_price, direction, confidence): return confidence, None
     def clear_ob_cache(ticker=None): pass
-
+try:
+    from app.signals.opening_range import or_detector
+    ORB_TRACKER_ENABLED = True
+    print("[SNIPER] ✅ ORB Detector enabled")
+except ImportError:
+    ORB_TRACKER_ENABLED = False
+    or_detector = None
+    print("[SNIPER] ⚠️  ORB Detector disabled")
 try:
     from app.signals.vwap_reclaim import detect_vwap_reclaim
     VWAP_RECLAIM_ENABLED = True
@@ -142,6 +149,7 @@ except ImportError:
 
 from app.ml.metrics_cache import get_ticker_win_rates
 _TICKER_WIN_CACHE = get_ticker_win_rates(days=30)
+_orb_classifications = {}  # ticker -> OR classification dict, populated at 9:40
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SPY EMA CONTEXT — 5m EMA 9/21/50 regime filter
@@ -651,7 +659,7 @@ def send_bos_watch_alert(ticker, direction, bos_price, struct_high, struct_low,
         print(f"[WATCH] Alert error: {e}")
 
 def compute_opening_range_from_bars(bars):
-    or_bars = [b for b in bars if _bar_time(b) and time(9,30) <= _bar_time(b) < time(9,45)]
+    or_bars = [b for b in bars if _bar_time(b) and time(9,30) <= _bar_time(b) < time(9,40)]
     if len(or_bars) < 3:
         return None, None
     return max(b["high"] for b in or_bars), min(b["low"] for b in or_bars)
@@ -1700,6 +1708,19 @@ def process_ticker(ticker: str):
             spy_regime=spy_regime,
             skip_cfw6_confirmation=(scan_mode == "INTRADAY_BOS")
         )
+                # ── ORB classification cache ─────────────────────────────────────────
+        if ORB_TRACKER_ENABLED and or_detector and scan_mode is not None:
+            try:
+                or_data = or_detector.classify_or(ticker)
+                if or_data:
+                    _orb_classifications[ticker] = or_data
+                    print(
+                        f"[{ticker}] 📊 OR: {or_data['classification']} | "
+                        f"${or_data['or_low']:.2f}—${or_data['or_high']:.2f} | "
+                        f"ATR Ratio: {or_data['or_range_atr']:.2f}x"
+                    )
+            except Exception as orb_err:
+                print(f"[{ticker}] ORB classify error (non-fatal): {orb_err}")
 
                 # ── D1: VWAP Reclaim fallback scan ───────────────────────────────────
         if scan_mode is None and VWAP_RECLAIM_ENABLED:

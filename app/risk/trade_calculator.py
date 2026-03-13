@@ -82,6 +82,17 @@ def get_adaptive_fvg_threshold(bars: List[Dict], ticker: str) -> Tuple[float, fl
     current_price = bars[-1]["close"]
     atr_pct       = (atr / current_price) * 100 if current_price > 0 else 0
 
+    # RVOL-based threshold reduction for high momentum tickers
+    try:
+        from app.screening.watchlist_funnel import get_watchlist_with_metadata
+        _wl = get_watchlist_with_metadata(force_refresh=False)
+        _rvol = next(
+            (t.get('rvol', 1.0) for t in _wl.get('all_tickers_with_scores', [])
+             if t.get('ticker') == ticker), 1.0
+        )
+    except Exception:
+        _rvol = 1.0
+
     if atr_pct > 2.0:
         fvg_threshold         = 0.003
         confidence_adjustment = 0.95
@@ -94,6 +105,12 @@ def get_adaptive_fvg_threshold(bars: List[Dict], ticker: str) -> Tuple[float, fl
         fvg_threshold         = 0.0015
         confidence_adjustment = 1.05
         volatility_label      = "LOW"
+
+    # Lower threshold for high RVOL tickers (gap day movers)
+    if _rvol >= 5.0:
+        fvg_threshold = min(fvg_threshold, 0.001)
+        print(f"[ADAPTIVE] {ticker} HIGH RVOL ({_rvol:.1f}x) — FVG threshold lowered to {fvg_threshold*100:.2f}%")
+
 
     print(f"[ADAPTIVE] {ticker} ATR: {atr:.2f} ({atr_pct:.2f}%) - {volatility_label} volatility")
     print(f"  FVG threshold: {fvg_threshold*100:.2f}% | Confidence adj: {confidence_adjustment:.2f}x")

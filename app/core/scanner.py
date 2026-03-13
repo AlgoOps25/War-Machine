@@ -431,7 +431,7 @@ def start_scanner_loop():
     # Import process_ticker directly from sniper.py
     # ────────────────────────────────────────────────────────────────────────
     try:
-        from app.core.sniper import process_ticker, clear_armed_signals, clear_watching_signals
+        from app.core.sniper import process_ticker, clear_armed_signals, clear_watching_signals, _orb_classifications
         logger.info("[SCANNER] ✅ process_ticker loaded from sniper.py (CFW6 engine active)")
     except ImportError as e:
         logger.error(f"[SCANNER] ❌ sniper.py import failed: {e} — falling back to sniper_stubs")
