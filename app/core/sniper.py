@@ -1724,11 +1724,6 @@ def process_ticker(ticker: str):
 
         if _state.ticker_is_armed(ticker):
             return
-        
-            # ── D2: Cache S/D zones for this ticker ──────────────────────────────
-        if SD_ZONE_ENABLED:
-            cache_sd_zones(ticker, bars_session)
-
 
         if PRODUCTION_HELPERS_ENABLED:
             bars_session = _fetch_data_safe(
@@ -1753,7 +1748,11 @@ def process_ticker(ticker: str):
             f"{_bar_time(bars_session[0])} → {_bar_time(bars_session[-1])}"
         )
 
-                # ── SPY EMA regime context (cached, one compute per cycle) ────────────
+        # ── D2: Cache S/D zones for this ticker ──────────────────────────────
+        if SD_ZONE_ENABLED:
+            cache_sd_zones(ticker, bars_session)
+
+        # ── SPY EMA regime context (cached, one compute per cycle) ────────────
         spy_regime = None
         if SPY_EMA_CONTEXT_ENABLED:
             try:
