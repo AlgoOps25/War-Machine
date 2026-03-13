@@ -142,13 +142,20 @@ except ImportError:
     VPVR_ENABLED = False
     vpvr_calculator = None
 
+# In validation.py, replace the bare options lookup with:
 try:
     from app.options.options_optimizer import get_optimal_strikes_sync
-    OPTIONS_OPTIMIZER_ENABLED = True
-    print("[VALIDATION] ✅ Options chain optimizer loaded (parallel Greeks)")
+    _OPTIMIZER_AVAILABLE = True
 except ImportError:
-    OPTIONS_OPTIMIZER_ENABLED = False
-    print("[VALIDATION] ⚠️  Options optimizer not available")
+    _OPTIMIZER_AVAILABLE = False
+
+# Then in get_options_recommendation():
+if _OPTIMIZER_AVAILABLE:
+    strikes = get_optimal_strikes_sync(ticker, current_price, direction)
+    if strikes:
+        best = strikes[0]
+        # use best['strike'], best['delta'], best['mid'] for recommendation
+
 
 
 # ══════════════════════════════════════════════════════════════════════════════
