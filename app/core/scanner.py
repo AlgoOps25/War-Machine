@@ -77,6 +77,15 @@ PHASE 1.24 (MAR 13, 2026):
   - FIX 6: startup_backfill on redeploy skips tickers with a warm cache
     (last bar within 24h) — avoids redundant 30-day EODHD pulls on
     intraday redeployments.
+
+PHASE 1.25 (MAR 13, 2026):
+  - SPY+QQQ Market Regime — visual-only Discord, no hard blocks.
+  - Hard is_long_allowed / is_short_allowed blocks removed from sniper.py.
+  - score_adj remains as a passive confidence nudge only.
+  - send_regime_discord() called once per scan cycle — posts to
+    REGIME_WEBHOOK_URL (separate Discord channel) every 5 minutes.
+  - QQQ added alongside SPY for stronger conviction measurement.
+  - market_regime_context.py replaces spy_ema_context.py.
 """
 import os
 import time
@@ -112,6 +121,14 @@ from app.risk.risk_manager import (
     check_exits as risk_check_exits,
 )
 from app.risk.position_manager import position_manager as _pm
+
+# ── Market Regime — visual-only, no hard blocks (Phase 1.25) ─────────────────
+try:
+    from app.filters.market_regime_context import send_regime_discord
+    REGIME_DISCORD_AVAILABLE = True
+except Exception:
+    REGIME_DISCORD_AVAILABLE = False
+    def send_regime_discord(regime=None, force=False): pass
 
 logger = logging.getLogger(__name__)
 
@@ -447,7 +464,7 @@ def start_scanner_loop():
 
     # ── STARTUP BANNER ───────────────────────────────────────────────────────
     print("=" * 60, flush=True)
-    print("WAR MACHINE CFW6 SCANNER v1.24 - STARTUP", flush=True)
+    print("WAR MACHINE CFW6 SCANNER v1.25 - STARTUP", flush=True)
     print("=" * 60, flush=True)
     print("✓ DATA-INGEST    WebSocket starting (tickers TBD)", flush=True)
 
@@ -479,6 +496,11 @@ def start_scanner_loop():
     disc_msg  = "Alert notifications ready" if discord_webhook else "NOT CONFIGURED - no alerts"
     print(f"{disc_icon} DISCORD         {disc_msg}", flush=True)
 
+    regime_webhook = os.getenv('REGIME_WEBHOOK_URL')
+    reg_icon = "✓" if regime_webhook else "✗"
+    reg_msg  = "Regime channel active (SPY+QQQ visual)" if regime_webhook else "NOT CONFIGURED — set REGIME_WEBHOOK_URL"
+    print(f"{reg_icon} REGIME-DISCORD  {reg_msg}", flush=True)
+
     opts_icon = "✓" if OPTIONS_AVAILABLE else "✗"
     opts_msg  = "Integrated - Greeks analysis active" if OPTIONS_AVAILABLE else "NOT INTEGRATED"
     print(f"{opts_icon} OPTIONS-GATE    {opts_msg}", flush=True)
@@ -509,6 +531,7 @@ def start_scanner_loop():
     print("Session Guard:   ✅ FIXED   (skip premarket on redeploy — Phase 1.24)", flush=True)
     print("Log Noise:       ✅ REDUCED (no per-ticker banners, no lock spam — Phase 1.24)", flush=True)
     print("Smart Backfill:  ✅ ENABLED (skip warm cache tickers on redeploy — Phase 1.24)", flush=True)
+    print("Market Regime:   ✅ VISUAL  (SPY+QQQ → REGIME_WEBHOOK_URL, no blocks — Phase 1.25)", flush=True)
     print("=" * 60 + "\n", flush=True)
 
     # ─────────────────────────────────────────────────────────────────────
@@ -537,8 +560,8 @@ def start_scanner_loop():
 
     try:
         send_simple_message(
-            f"⚔️ WAR MACHINE ONLINE — CFW6 v1.24 | "
-            f"{'Resuming intraday' if _booting_into_market_hours else 'OR window active'} | Phase 1.24"
+            f"⚔️ WAR MACHINE ONLINE — CFW6 v1.25 | "
+            f"{'Resuming intraday' if _booting_into_market_hours else 'OR window active'} | Phase 1.25"
         )
     except Exception as e:
         logger.warning(f"[SCANNER] Discord unavailable: {e}")
@@ -711,6 +734,9 @@ def start_scanner_loop():
                     continue
 
                 cycle_count += 1
+
+                # ── Phase 1.25: Visual regime Discord post (rate-limited, non-blocking)
+                send_regime_discord()
 
                 try:
                     watchlist = get_current_watchlist(force_refresh=False)
