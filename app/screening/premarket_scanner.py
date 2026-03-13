@@ -51,6 +51,12 @@ PHASE 1.23 (MAR 12, 2026) - RVOL fix:
   - get_intraday_cumulative_volume(): sums all session bars from
     data_manager so RVOL is against full intraday volume, not a
     single 1-min bar snapshot.
+
+PHASE 1.23a (MAR 13, 2026) - REST bar RVOL clamp:
+  - REST bars from EODHD real-time API return full prior-day cumulative
+    volume, not pre-market volume. This causes extreme artificial RVOL
+    (e.g. RF 163x, SSL 309x) which triggers false high-priority signals.
+  - RVOL from REST-sourced bars is now clamped to 10x max pre-market.
 """
 from datetime import datetime, timedelta, time as dt_time
 from typing import List, Dict, Optional, Tuple
@@ -506,6 +512,12 @@ def _get_average_volume_from_bars(ticker: str, periods: int = 20) -> int:
 # PUBLIC API
 # ===============================================================================
 
+# PHASE 1.23a: Max RVOL for REST-sourced bars pre-market.
+# EODHD real-time REST API returns full prior-day cumulative volume,
+# not actual pre-market volume — this causes artificial extreme RVOL.
+REST_BAR_RVOL_MAX = 10.0
+
+
 def scan_ticker(ticker: str) -> Optional[Dict]:
     """
     Scan a single ticker with professional 3-tier scoring + v2 enhancements.
@@ -524,6 +536,11 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
         bars), NOT just the latest single bar.
       - time_pct is computed from real elapsed market minutes, NOT hardcoded
         to 0.25 (25% premarket assumption).
+
+    PHASE 1.23a REST bar RVOL clamp:
+      - REST bars return full prior-day volume, not pre-market volume.
+      - RVOL is clamped to REST_BAR_RVOL_MAX (10x) for REST-sourced bars
+        to prevent false high-priority signals from data artifacts.
     """
     print(f"[PREMARKET] Scanning {ticker}...")
     
@@ -536,12 +553,14 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
     print(f"[PREMARKET] {ticker}: Fundamentals - ADV={fundamentals['avg_daily_volume']:,}, ATR={fundamentals['atr']:.2f}")
 
     current_bar = None
+    bar_source  = None
     
     # Try WS first (optimization for subscribed tickers)
     if WS_AVAILABLE:
         try:
             current_bar = get_current_bar(ticker)
             if current_bar:
+                bar_source = "WS"
                 print(f"[PREMARKET] {ticker}: WS bar found")
         except Exception as e:
             print(f"[PREMARKET] {ticker}: WS lookup error: {e}")
@@ -553,6 +572,7 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
             bars = data_manager.get_today_session_bars(ticker)
             if bars:
                 current_bar = bars[-1]
+                bar_source  = "DB"
                 print(f"[PREMARKET] {ticker}: DB bar used")
         except Exception as e:
             print(f"[PREMARKET] {ticker}: DB lookup error: {e}")
@@ -572,6 +592,7 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
                     'close':  rt.get('close') or rt.get('previousClose', 0),
                     'volume': rt.get('volume', 0)
                 }
+                bar_source = "REST"
                 print(f"[PREMARKET] {ticker}: REST bar used")
             else:
                 print(f"[PREMARKET] {ticker}: REST API failed (HTTP {rt_resp.status_code})")
@@ -605,6 +626,21 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
         price,
         time_pct=time_pct
     )
+
+    # PHASE 1.23a: Clamp RVOL for REST-sourced bars.
+    # REST volume = full prior-day cumulative, not pre-market volume.
+    # Extreme values (e.g. 163x, 309x) are data artifacts, not real activity.
+    if bar_source == "REST" and volume_metrics['rvol'] > REST_BAR_RVOL_MAX:
+        print(
+            f"[PREMARKET] {ticker}: REST bar RVOL clamped "
+            f"{volume_metrics['rvol']:.1f}x → {REST_BAR_RVOL_MAX:.1f}x "
+            f"(prior-day volume artifact)"
+        )
+        volume_metrics['rvol'] = REST_BAR_RVOL_MAX
+        # Recompute volume_score based on clamped RVOL
+        rvol_score = 100 if REST_BAR_RVOL_MAX >= 5.0 else 90
+        dollar_score = volume_metrics.get('dollar_score', 25)
+        volume_score = round((rvol_score * 0.7) + (dollar_score * 0.3), 1)
     
     print(f"[PREMARKET] {ticker}: Volume score={volume_score:.1f}, RVOL={volume_metrics['rvol']:.2f}x")
     
