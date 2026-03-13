@@ -1348,11 +1348,7 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         except Exception as ml_err:
             print(f"[{ticker}] ML scorer error (non-fatal): {ml_err}")
 
-    options_rec = get_options_recommendation(
-        ticker=ticker, direction=direction,
-        entry_price=entry_price, target_price=t1,
-        stop_price=stop_price
-    )
+    options_rec = _pre_options_data  # already fetched in Step 6.5 pre-gate
     if _pre_options_data and _pre_options_data.get("gex_data"):
         print(f"[{ticker}] [OPTIONS] GEX data reused from Step 6.5 cache")
 
