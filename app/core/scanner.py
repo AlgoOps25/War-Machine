@@ -86,6 +86,17 @@ PHASE 1.25 (MAR 13, 2026):
     REGIME_WEBHOOK_URL (separate Discord channel) every 5 minutes.
   - QQQ added alongside SPY for stronger conviction measurement.
   - market_regime_context.py replaces spy_ema_context.py.
+
+PHASE 1.26 (MAR 13, 2026):
+  - FIX REGIME FILTER: SPY and QQQ are now always included in the WebSocket
+    subscription (REGIME_TICKERS constant). They are injected into:
+      1. startup_watchlist so they are subscribed from boot.
+      2. subscribe_and_prefetch_tickers() so they are never dropped when
+         the intraday watchlist is refreshed.
+    This guarantees data_manager always has SPY bars in memory, which is
+    the primary requirement for get_regime_filter()._get_spy_bars() to
+    return >= 14 bars. Without this, the regime filter returned
+    "Insufficient data for regime analysis" on every ticker every minute.
 """
 import os
 import time
@@ -131,6 +142,13 @@ except Exception:
     def send_regime_discord(regime=None, force=False): pass
 
 logger = logging.getLogger(__name__)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PHASE 1.26: Regime tickers — always subscribed to WS regardless of watchlist
+# SPY bars are required by get_regime_filter()._get_spy_bars() (needs >= 14).
+# QQQ is used by market_regime_context.py for trend confirmation.
+# ─────────────────────────────────────────────────────────────────────────────
+REGIME_TICKERS = ["SPY", "QQQ"]
 
 # ─────────────────────────────────────────────────────────────────────────────
 # P0-3 FIX: Ticker timeout watchdog
@@ -426,17 +444,20 @@ def subscribe_and_prefetch_tickers(new_tickers: list):
     if not new_tickers:
         return
     try:
-        subscribe_tickers(new_tickers)
-        subscribe_quote_tickers(new_tickers)
-        logger.info(f"[WS-SUBSCRIBE] ✅ Subscribed {len(new_tickers)} tickers: {', '.join(new_tickers)}")
+        # Phase 1.26: Always include REGIME_TICKERS (SPY, QQQ) in every
+        # subscription so data_manager has their bars for regime analysis.
+        combined = list(dict.fromkeys(new_tickers + REGIME_TICKERS))
+        subscribe_tickers(combined)
+        subscribe_quote_tickers(combined)
+        logger.info(f"[WS-SUBSCRIBE] ✅ Subscribed {len(new_tickers)} tickers + regime ({', '.join(REGIME_TICKERS)}): {', '.join(new_tickers)}")
         _fire_and_forget(
             lambda: (
-                data_manager.startup_backfill_with_cache(new_tickers, days=30),
-                data_manager.startup_intraday_backfill_today(new_tickers),
+                data_manager.startup_backfill_with_cache(combined, days=30),
+                data_manager.startup_intraday_backfill_today(combined),
             ),
             label=f"prefetch-{','.join(new_tickers[:3])}"
         )
-        logger.info(f"[PREFETCH] 🔄 Background backfill started for {len(new_tickers)} tickers")
+        logger.info(f"[PREFETCH] 🔄 Background backfill started for {len(combined)} tickers")
     except Exception as e:
         logger.error(f"[WS-SUBSCRIBE] ⚠️ Error subscribing tickers: {e}")
         import traceback
@@ -464,7 +485,7 @@ def start_scanner_loop():
 
     # ── STARTUP BANNER ───────────────────────────────────────────────────────
     print("=" * 60, flush=True)
-    print("WAR MACHINE CFW6 SCANNER v1.25 - STARTUP", flush=True)
+    print("WAR MACHINE CFW6 SCANNER v1.26 - STARTUP", flush=True)
     print("=" * 60, flush=True)
     print("✓ DATA-INGEST    WebSocket starting (tickers TBD)", flush=True)
 
@@ -532,6 +553,7 @@ def start_scanner_loop():
     print("Log Noise:       ✅ REDUCED (no per-ticker banners, no lock spam — Phase 1.24)", flush=True)
     print("Smart Backfill:  ✅ ENABLED (skip warm cache tickers on redeploy — Phase 1.24)", flush=True)
     print("Market Regime:   ✅ VISUAL  (SPY+QQQ → REGIME_WEBHOOK_URL, no blocks — Phase 1.25)", flush=True)
+    print(f"Regime WS Feed:  ✅ FIXED   (SPY+QQQ always subscribed for regime bars — Phase 1.26)", flush=True)
     print("=" * 60 + "\n", flush=True)
 
     # ─────────────────────────────────────────────────────────────────────
@@ -560,8 +582,8 @@ def start_scanner_loop():
 
     try:
         send_simple_message(
-            f"⚔️ WAR MACHINE ONLINE — CFW6 v1.25 | "
-            f"{'Resuming intraday' if _booting_into_market_hours else 'OR window active'} | Phase 1.25"
+            f"⚔️ WAR MACHINE ONLINE — CFW6 v1.26 | "
+            f"{'Resuming intraday' if _booting_into_market_hours else 'OR window active'} | Phase 1.26"
         )
     except Exception as e:
         logger.warning(f"[SCANNER] Discord unavailable: {e}")
@@ -574,7 +596,12 @@ def start_scanner_loop():
     _watchlist_lock_logged    = False  # FIX 2: only log locked watchlist once per session
 
     # ── STARTUP SEQUENCE ────────────────────────────────────────────────────
-    startup_watchlist = premarket_watchlist if premarket_watchlist else list(EMERGENCY_FALLBACK)
+    # Phase 1.26: Always seed startup_watchlist with REGIME_TICKERS so SPY+QQQ
+    # bars are available from the first WS connection, before the first scan cycle.
+    startup_watchlist = list(dict.fromkeys(
+        (premarket_watchlist if premarket_watchlist else list(EMERGENCY_FALLBACK))
+        + REGIME_TICKERS
+    ))
 
     ws_thread = threading.Thread(
         target=lambda: start_ws_feed(startup_watchlist),
@@ -645,8 +672,10 @@ def start_scanner_loop():
                         if new_tickers:
                             subscribe_and_prefetch_tickers(new_tickers)
                         else:
-                            subscribe_tickers(premarket_watchlist)
-                            subscribe_quote_tickers(premarket_watchlist)
+                            # Phase 1.26: ensure regime tickers included even on no-change path
+                            combined = list(dict.fromkeys(premarket_watchlist + REGIME_TICKERS))
+                            subscribe_tickers(combined)
+                            subscribe_quote_tickers(combined)
                         last_subscribed_watchlist = current_set
 
                         logger.info(f"[WS] Subscribed premarket watchlist ({len(premarket_watchlist)} tickers)")
@@ -695,8 +724,9 @@ def start_scanner_loop():
                             if new_tickers:
                                 subscribe_and_prefetch_tickers(new_tickers)
                             else:
-                                subscribe_tickers(premarket_watchlist)
-                                subscribe_quote_tickers(premarket_watchlist)
+                                combined = list(dict.fromkeys(premarket_watchlist + REGIME_TICKERS))
+                                subscribe_tickers(combined)
+                                subscribe_quote_tickers(combined)
                             last_subscribed_watchlist = current_set
                             metadata = watchlist_data['metadata']
                             logger.info(f"[FUNNEL] Stage: {metadata['stage'].upper()} — {metadata['stage_description']}")
