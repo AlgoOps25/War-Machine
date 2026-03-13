@@ -57,6 +57,15 @@ PHASE 1.23a (MAR 13, 2026) - REST bar RVOL clamp:
     volume, not pre-market volume. This causes extreme artificial RVOL
     (e.g. RF 163x, SSL 309x) which triggers false high-priority signals.
   - RVOL from REST-sourced bars is now clamped to 10x max pre-market.
+
+PHASE 1.24 (MAR 13, 2026):
+  - FIX: Removed duplicate fundamentals log in scan_ticker().
+    fetch_fundamental_data() already prints it; scan_ticker() was
+    printing the same line again immediately after the call.
+  - FIX: Early RVOL exit gate added after bar resolution.
+    Tickers with RVOL < 0.10x are skipped before running
+    gap analysis, news catalyst fetch, and sector rotation —
+    saving 3-4 EODHD API calls per dead ticker per premarket run.
 """
 from datetime import datetime, timedelta, time as dt_time
 from typing import List, Dict, Optional, Tuple
@@ -84,6 +93,10 @@ try:
 except ImportError as e:
     V2_ENABLED = False
     print(f"[PREMARKET] v2 modules not available: {e}")
+
+# Minimum RVOL required before running expensive API calls (gap/news/sector).
+# Tickers below this threshold are dead volume and will never make the watchlist.
+EARLY_EXIT_RVOL_MIN = 0.10
 
 
 # ===============================================================================
@@ -174,14 +187,9 @@ def calculate_time_elapsed_pct(now: Optional[datetime] = None) -> float:
                          inflated when very little session volume exists.
     Post-market (>16:00): capped at 1.0 (full day).
     Intraday:   elapsed_minutes / 390.0
-
-    Using UTC-aware datetime is not required here — Railway runs in UTC
-    but the log timestamps show ET offset, so we compare naive times.
     """
     if now is None:
-        now = datetime.utcnow()  # Railway container is UTC
-        # Convert UTC -> ET (UTC-4 in EDT, UTC-5 in EST)
-        # Use a fixed -4h offset (EDT, Mar-Nov). Acceptable for intraday use.
+        now = datetime.utcnow()
         now = now.replace(tzinfo=None) - timedelta(hours=4)
 
     market_open  = now.replace(hour=9,  minute=30, second=0, microsecond=0)
@@ -189,7 +197,7 @@ def calculate_time_elapsed_pct(now: Optional[datetime] = None) -> float:
     total_minutes = 390.0
 
     if now <= market_open:
-        return 0.01  # pre-market: tiny denominator keeps RVOL stable
+        return 0.01
     if now >= market_close:
         return 1.0
 
@@ -199,15 +207,8 @@ def calculate_time_elapsed_pct(now: Optional[datetime] = None) -> float:
 
 def get_intraday_cumulative_volume(ticker: str, single_bar_volume: int) -> int:
     """
-    Return the cumulative intraday volume for `ticker` by summing all
-    session bars stored in data_manager.
-
-    Falls back to `single_bar_volume` if WS/DB is unavailable or the
-    ticker has no session bars yet (e.g. just subscribed).
-
-    This is the key fix for RVOL=0.00x: a single 1-min bar at 12:43 ET
-    might show 10K shares, but the real cumulative volume since 9:30 is
-    potentially millions — using only the last bar decimates RVOL.
+    Return cumulative intraday volume by summing all session bars.
+    Falls back to single_bar_volume if WS/DB unavailable.
     """
     if not WS_AVAILABLE:
         return single_bar_volume
@@ -231,42 +232,17 @@ def get_intraday_cumulative_volume(ticker: str, single_bar_volume: int) -> int:
 def calculate_relative_volume(
     current_volume: int,
     avg_daily_volume: int,
-    time_elapsed_pct: float = 0.25  # 25% of day (pre-market)
+    time_elapsed_pct: float = 0.25
 ) -> float:
-    """
-    Calculate RVOL (Relative Volume) - Professional standard metric.
-
-    Formula: (Current Volume / Expected Volume at this time)
-    Expected Volume = Avg Daily Volume x Time Elapsed %
-
-    Example: If 9:00 AM (25% of trading day), and stock normally does 1M volume/day:
-      Expected volume = 1M x 0.25 = 250K
-      If current volume = 500K, RVOL = 500K / 250K = 2.0x
-
-    Professional thresholds:
-      RVOL > 1.5x = Notable
-      RVOL > 2.0x = Strong
-      RVOL > 3.0x = Exceptional (institutional activity)
-    """
     if avg_daily_volume == 0:
         return 0.0
-
     expected_volume = avg_daily_volume * time_elapsed_pct
-
     if expected_volume == 0:
         return 0.0
-
     return current_volume / expected_volume
 
 
 def calculate_dollar_volume(price: float, volume: int) -> float:
-    """
-    Dollar volume normalizes across price ranges.
-    $1 stock with 1M volume = $1M dollar volume
-    $100 stock with 10K volume = $1M dollar volume
-
-    Professional minimum: $5M+ dollar volume for liquidity
-    """
     return price * volume
 
 
@@ -276,30 +252,22 @@ def score_volume_quality(
     price: float,
     time_pct: float = 0.25
 ) -> Tuple[float, Dict]:
-    """
-    Score volume quality using professional metrics.
-
-    Returns:
-        (score: 0-100, metrics: dict)
-    """
     rvol = calculate_relative_volume(current_volume, avg_daily_volume, time_pct)
     dollar_vol = calculate_dollar_volume(price, current_volume)
 
-    # Volume score based on RVOL (primary metric)
     if rvol >= 5.0:
-        rvol_score = 100  # Extreme institutional activity
+        rvol_score = 100
     elif rvol >= 3.0:
-        rvol_score = 90   # Strong institutional
+        rvol_score = 90
     elif rvol >= 2.0:
-        rvol_score = 75   # Above average
+        rvol_score = 75
     elif rvol >= 1.5:
-        rvol_score = 60   # Notable
+        rvol_score = 60
     elif rvol >= 1.0:
-        rvol_score = 40   # Normal
+        rvol_score = 40
     else:
-        rvol_score = 20   # Below average
+        rvol_score = 20
 
-    # Dollar volume confirmation
     if dollar_vol >= 10_000_000:
         dollar_score = 100
     elif dollar_vol >= 5_000_000:
@@ -309,7 +277,6 @@ def score_volume_quality(
     else:
         dollar_score = 25
 
-    # Combined score (RVOL weighted 70%, dollar volume 30%)
     total_score = (rvol_score * 0.7) + (dollar_score * 0.3)
 
     metrics = {
@@ -329,27 +296,18 @@ def score_volume_quality(
 def fetch_fundamental_data(ticker: str) -> Dict:
     """
     Fetch fundamental data needed for professional scoring.
-
-    Data needed:
-      - ATR (Average True Range) - 14-day calculated from EOD data
-      - Market Cap
-      - Float (shares outstanding)
-      - Average Daily Volume (20-day calculated from EOD data)
-      - Previous close (for gap calculation)
-
-    Source: EODHD EOD API (historical daily bars)
-    Cached for entire session (slow-changing data)
+    Result is cached for the full session.
+    Logs fundamentals exactly once per ticker (cache hits are silent).
     """
-    # Check cache first
     cached = _scanner_cache.get_fundamental(ticker)
     if cached:
+        # FIX 1.24: do NOT re-log on cache hit — this was the source of the duplicate
         return cached
 
     try:
-        # Fetch last 30 days of EOD data to calculate ADV and ATR
-        end_date = datetime.now()
+        end_date   = datetime.now()
         start_date = end_date - timedelta(days=30)
-        
+
         url = f"https://eodhd.com/api/eod/{ticker}.US"
         params = {
             'api_token': config.EODHD_API_KEY,
@@ -368,43 +326,38 @@ def fetch_fundamental_data(ticker: str) -> Dict:
         if not eod_data or len(eod_data) < 14:
             print(f"[PREMARKET] {ticker}: Insufficient EOD data ({len(eod_data)} bars)")
             return _get_default_fundamentals(ticker)
-        
-        # Calculate 20-day ADV
-        volumes = [bar['volume'] for bar in eod_data[-20:]]
+
+        volumes    = [bar['volume'] for bar in eod_data[-20:]]
         avg_volume = int(statistics.mean(volumes)) if volumes else 0
-        
-        # Calculate 14-day ATR
-        atr = _calculate_atr_from_eod(eod_data[-14:])
-        
-        # Get previous close (most recent bar)
+        atr        = _calculate_atr_from_eod(eod_data[-14:])
         prev_close = eod_data[-1]['close'] if eod_data else 0
-        
-        # Try to get market cap from fundamentals API (lightweight call)
-        market_cap = 0
+
+        market_cap   = 0
         float_shares = 0
         try:
-            fund_url = f"https://eodhd.com/api/fundamentals/{ticker}.US?api_token={config.EODHD_API_KEY}&fmt=json"
+            fund_url  = f"https://eodhd.com/api/fundamentals/{ticker}.US?api_token={config.EODHD_API_KEY}&fmt=json"
             fund_resp = requests.get(fund_url, timeout=5)
             if fund_resp.status_code == 200:
-                fund_data = fund_resp.json()
-                highlights = fund_data.get('Highlights', {})
+                fund_data   = fund_resp.json()
+                highlights  = fund_data.get('Highlights', {})
                 shares_stats = fund_data.get('SharesStats', {})
-                market_cap = highlights.get('MarketCapitalization', 0) or 0
+                market_cap   = highlights.get('MarketCapitalization', 0) or 0
                 float_shares = shares_stats.get('SharesFloat', 0) or shares_stats.get('SharesOutstanding', 0) or 0
-        except:
+        except Exception:
             pass
 
         fundamentals = {
-            'ticker':          ticker,
-            'market_cap':      market_cap,
-            'float_shares':    float_shares,
-            'atr':             atr,
+            'ticker':           ticker,
+            'market_cap':       market_cap,
+            'float_shares':     float_shares,
+            'atr':              atr,
             'avg_daily_volume': avg_volume,
-            'prev_close':      prev_close,
-            'timestamp':       datetime.now().isoformat()
+            'prev_close':       prev_close,
+            'timestamp':        datetime.now().isoformat()
         }
 
         _scanner_cache.set_fundamental(ticker, fundamentals)
+        # Log once here — scan_ticker() must NOT log this again
         print(f"[PREMARKET] {ticker}: Fundamentals - ADV={avg_volume:,}, ATR={atr:.2f}")
         return fundamentals
 
@@ -414,60 +367,41 @@ def fetch_fundamental_data(ticker: str) -> Dict:
 
 
 def _calculate_atr_from_eod(bars: List[Dict], periods: int = 14) -> float:
-    """
-    Calculate ATR from EOD bars.
-    
-    Args:
-        bars: List of daily bars with 'high', 'low', 'close'
-        periods: Number of periods for ATR (default 14)
-    
-    Returns:
-        ATR value
-    """
     if not bars or len(bars) < 2:
         return 0.0
-    
     true_ranges = []
     for i in range(1, len(bars)):
         prev_close = bars[i - 1]['close']
-        curr_high = bars[i]['high']
-        curr_low = bars[i]['low']
+        curr_high  = bars[i]['high']
+        curr_low   = bars[i]['low']
         tr = max(
             curr_high - curr_low,
             abs(curr_high - prev_close),
-            abs(curr_low - prev_close)
+            abs(curr_low  - prev_close)
         )
         true_ranges.append(tr)
-    
     return statistics.mean(true_ranges) if true_ranges else 0.0
 
 
 def _get_default_fundamentals(ticker: str) -> Dict:
-    """Return default/fallback fundamental data."""
     return {
-        'ticker':          ticker,
-        'market_cap':      0,
-        'float_shares':    0,
-        'atr':             0,
+        'ticker':           ticker,
+        'market_cap':       0,
+        'float_shares':     0,
+        'atr':              0,
         'avg_daily_volume': 0,
-        'prev_close':      0,
-        'timestamp':       datetime.now().isoformat()
+        'prev_close':       0,
+        'timestamp':        datetime.now().isoformat()
     }
 
 
 def _calculate_atr_from_bars(ticker: str, periods: int = 14) -> float:
-    """
-    Calculate ATR from recent 1m bars stored in intraday_bars.
-    Used as fallback when EODHD fundamentals API has no ATR data.
-    """
     if not WS_AVAILABLE:
         return 0.0
-
     try:
         bars = data_manager.get_today_session_bars(ticker)
         if not bars or len(bars) < 2:
             return 0.0
-
         true_ranges = []
         for i in range(1, len(bars)):
             prev_close = bars[i - 1]['close']
@@ -479,30 +413,21 @@ def _calculate_atr_from_bars(ticker: str, periods: int = 14) -> float:
                 abs(curr_low  - prev_close)
             )
             true_ranges.append(tr)
-
         return statistics.mean(true_ranges) if true_ranges else 0.0
-
     except Exception as e:
         print(f"[PREMARKET] Error calculating ATR for {ticker}: {e}")
         return 0.0
 
 
 def _get_average_volume_from_bars(ticker: str, periods: int = 20) -> int:
-    """
-    Calculate average volume from recent 1m bars stored in intraday_bars.
-    Used as fallback when EODHD fundamentals API has no volume data.
-    """
     if not WS_AVAILABLE:
         return 0
-
     try:
         bars = data_manager.get_today_session_bars(ticker)
         if not bars:
             return 0
-
         volumes = [bar['volume'] for bar in bars]
         return int(statistics.mean(volumes)) if volumes else 0
-
     except Exception as e:
         print(f"[PREMARKET] Error calculating avg volume for {ticker}: {e}")
         return 0
@@ -513,60 +438,40 @@ def _get_average_volume_from_bars(ticker: str, periods: int = 20) -> int:
 # ===============================================================================
 
 # PHASE 1.23a: Max RVOL for REST-sourced bars pre-market.
-# EODHD real-time REST API returns full prior-day cumulative volume,
-# not actual pre-market volume — this causes artificial extreme RVOL.
 REST_BAR_RVOL_MAX = 10.0
 
 
 def scan_ticker(ticker: str) -> Optional[Dict]:
     """
     Scan a single ticker with professional 3-tier scoring + v2 enhancements.
-    Returns scan result or None if ticker doesn't qualify.
-    Compatible with watchlist_funnel.py.
-    
-    TASK 12: Now includes gap quality, news catalyst, and sector rotation.
 
-    Bar resolution order:
-      1. WS get_current_bar()          - real-time, preferred (if available)
-      2. data_manager session bars[-1] - DB fallback for subscribed tickers
-      3. EODHD real-time REST quote    - fallback for unsubscribed tickers (PRIMARY for screener)
-
-    PHASE 1.23 RVOL fix:
-      - volume passed to scorer is cumulative intraday (sum of all session
-        bars), NOT just the latest single bar.
-      - time_pct is computed from real elapsed market minutes, NOT hardcoded
-        to 0.25 (25% premarket assumption).
-
-    PHASE 1.23a REST bar RVOL clamp:
-      - REST bars return full prior-day volume, not pre-market volume.
-      - RVOL is clamped to REST_BAR_RVOL_MAX (10x) for REST-sourced bars
-        to prevent false high-priority signals from data artifacts.
+    PHASE 1.24 changes:
+      - Duplicate fundamentals log removed (fetch_fundamental_data() logs once).
+      - Early RVOL exit: tickers with RVOL < EARLY_EXIT_RVOL_MIN skip the
+        expensive gap/news/sector API chain entirely.
     """
     print(f"[PREMARKET] Scanning {ticker}...")
-    
+
     cached = _scanner_cache.get_scan(ticker)
     if cached:
         print(f"[PREMARKET] {ticker}: Using cached scan (score={cached.get('composite_score', 0):.1f})")
         return cached
 
+    # fetch_fundamental_data() logs once on first fetch; silent on cache hit
     fundamentals = fetch_fundamental_data(ticker)
-    print(f"[PREMARKET] {ticker}: Fundamentals - ADV={fundamentals['avg_daily_volume']:,}, ATR={fundamentals['atr']:.2f}")
+    # FIX 1.24: removed duplicate print here — fetch_fundamental_data() already printed it
 
     current_bar = None
     bar_source  = None
-    
-    # Try WS first (optimization for subscribed tickers)
+
     if WS_AVAILABLE:
         try:
             current_bar = get_current_bar(ticker)
             if current_bar:
                 bar_source = "WS"
-                print(f"[PREMARKET] {ticker}: WS bar found")
-        except Exception as e:
-            print(f"[PREMARKET] {ticker}: WS lookup error: {e}")
+        except Exception:
             pass
 
-    # Fallback 1: DB session bars (for subscribed tickers)
     if not current_bar and WS_AVAILABLE:
         try:
             bars = data_manager.get_today_session_bars(ticker)
@@ -574,14 +479,12 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
                 current_bar = bars[-1]
                 bar_source  = "DB"
                 print(f"[PREMARKET] {ticker}: DB bar used")
-        except Exception as e:
-            print(f"[PREMARKET] {ticker}: DB lookup error: {e}")
+        except Exception:
             pass
 
-    # Fallback 2: EODHD REST API (PRIMARY for unsubscribed screener tickers)
     if not current_bar:
         try:
-            rt_url = (
+            rt_url  = (
                 f"https://eodhd.com/api/real-time/{ticker}.US"
                 f"?api_token={config.EODHD_API_KEY}&fmt=json"
             )
@@ -598,28 +501,19 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
                 print(f"[PREMARKET] {ticker}: REST API failed (HTTP {rt_resp.status_code})")
         except Exception as e:
             print(f"[PREMARKET] {ticker}: REST API error: {e}")
-            pass
 
     if not current_bar:
         print(f"[PREMARKET] {ticker}: No data available (all sources failed)")
         return None
 
-    price           = current_bar.get('close', 0)
-    single_bar_vol  = current_bar.get('volume', 0)
-
-    # PHASE 1.23: Use cumulative intraday volume, not a single bar snapshot.
-    # For tickers in data_manager (WS-subscribed), this sums every bar since
-    # 9:30. For REST-only tickers the REST volume field is already cumulative
-    # daily volume from EODHD, so get_intraday_cumulative_volume falls back
-    # to single_bar_vol cleanly.
-    volume = get_intraday_cumulative_volume(ticker, single_bar_vol)
-
-    # PHASE 1.23: Compute real time-elapsed fraction instead of hardcoded 0.25.
-    time_pct = calculate_time_elapsed_pct()
+    price          = current_bar.get('close', 0)
+    single_bar_vol = current_bar.get('volume', 0)
+    volume         = get_intraday_cumulative_volume(ticker, single_bar_vol)
+    time_pct       = calculate_time_elapsed_pct()
 
     print(f"[PREMARKET] {ticker}: Bar resolved - price={price:.2f}, volume={volume:,} (cumulative), time_pct={time_pct:.2f}")
 
-    # Tier 1: Volume score (60% weight)
+    # Tier 1: Volume score
     volume_score, volume_metrics = score_volume_quality(
         volume,
         fundamentals['avg_daily_volume'],
@@ -627,9 +521,7 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
         time_pct=time_pct
     )
 
-    # PHASE 1.23a: Clamp RVOL for REST-sourced bars.
-    # REST volume = full prior-day cumulative, not pre-market volume.
-    # Extreme values (e.g. 163x, 309x) are data artifacts, not real activity.
+    # PHASE 1.23a: Clamp RVOL for REST-sourced bars
     if bar_source == "REST" and volume_metrics['rvol'] > REST_BAR_RVOL_MAX:
         print(
             f"[PREMARKET] {ticker}: REST bar RVOL clamped "
@@ -637,22 +529,56 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
             f"(prior-day volume artifact)"
         )
         volume_metrics['rvol'] = REST_BAR_RVOL_MAX
-        # Recompute volume_score based on clamped RVOL
-        rvol_score = 100 if REST_BAR_RVOL_MAX >= 5.0 else 90
+        rvol_score   = 100 if REST_BAR_RVOL_MAX >= 5.0 else 90
         dollar_score = volume_metrics.get('dollar_score', 25)
         volume_score = round((rvol_score * 0.7) + (dollar_score * 0.3), 1)
-    
+
     print(f"[PREMARKET] {ticker}: Volume score={volume_score:.1f}, RVOL={volume_metrics['rvol']:.2f}x")
-    
-    # TASK 12: Tier 2 - Gap quality (25% weight)
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # FIX 1.24: Early RVOL exit gate
+    # Tickers with negligible volume (<0.10x RVOL) have no chance of making
+    # the final watchlist. Skip gap analysis, news fetch, and sector rotation
+    # entirely — saves 3-4 EODHD API calls per dead ticker per morning.
+    # ──────────────────────────────────────────────────────────────────────────
+    if volume_metrics['rvol'] < EARLY_EXIT_RVOL_MIN:
+        composite_score = volume_score * 0.60  # gap/catalyst/sector all zero
+        print(
+            f"[PREMARKET] {ticker}: EARLY EXIT — RVOL={volume_metrics['rvol']:.2f}x "
+            f"< {EARLY_EXIT_RVOL_MIN}x — skipping gap/news/sector (score={composite_score:.1f})"
+        )
+        result = {
+            'ticker':           ticker,
+            'price':            price,
+            'volume':           volume,
+            'volume_score':     volume_score,
+            'gap_score':        0,
+            'catalyst_score':   0,
+            'sector_bonus':     0,
+            'composite_score':  round(composite_score, 1),
+            'rvol':             volume_metrics['rvol'],
+            'dollar_volume':    volume_metrics['dollar_volume'],
+            'atr':              fundamentals['atr'],
+            'market_cap':       fundamentals['market_cap'],
+            'float':            fundamentals['float_shares'],
+            'avg_daily_volume': fundamentals['avg_daily_volume'],
+            'gap_data':         None,
+            'catalyst_data':    None,
+            'sector_data':      None,
+            'timestamp':        datetime.now()
+        }
+        _scanner_cache.set_scan(ticker, result)
+        return result
+
+    # Tier 2: Gap quality (25% weight) — only reached if RVOL >= 0.10x
     gap_score = 0
-    gap_data = None
+    gap_data  = None
     if V2_ENABLED and fundamentals['prev_close'] > 0:
         try:
-            catalyst = detect_catalyst(ticker)
-            has_earnings = catalyst and catalyst.catalyst_type == 'earnings'
-            has_news = catalyst is not None
-            gap_result = analyze_gap(
+            catalyst_pre  = detect_catalyst(ticker)
+            has_earnings  = catalyst_pre and catalyst_pre.catalyst_type == 'earnings'
+            has_news      = catalyst_pre is not None
+            gap_result    = analyze_gap(
                 ticker,
                 fundamentals['prev_close'],
                 price,
@@ -661,66 +587,65 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
                 has_news
             )
             gap_score = gap_result.quality_score
-            gap_data = gap_result.to_dict()
+            gap_data  = gap_result.to_dict()
         except Exception as e:
             print(f"[PREMARKET] {ticker}: Gap analysis error: {e}")
-    
-    # TASK 12: Tier 3 - News catalyst (15% weight)
+
+    # Tier 3: News catalyst (15% weight)
     catalyst_score = 0
-    catalyst_data = None
+    catalyst_data  = None
     if V2_ENABLED:
         try:
             catalyst = detect_catalyst(ticker)
             if catalyst:
                 catalyst_score = min(100, catalyst.weight * 4)
-                catalyst_data = catalyst.to_dict()
+                catalyst_data  = catalyst.to_dict()
                 print(f"[PREMARKET] {ticker}: Catalyst detected - {catalyst.catalyst_type} (weight={catalyst.weight}, score={catalyst_score:.1f})")
             else:
                 print(f"[PREMARKET] {ticker}: No catalyst detected")
         except Exception as e:
             print(f"[PREMARKET] {ticker}: Catalyst detection error: {e}")
-    
-    # TASK 12: Sector rotation bonus (+15 pts if hot sector)
+
+    # Sector rotation bonus (+15 pts if hot sector)
     sector_bonus = 0
-    sector_data = None
+    sector_data  = None
     if V2_ENABLED:
         try:
             is_hot, sector_name = is_hot_sector_stock(ticker)
             if is_hot:
                 sector_bonus = 15
-                sector_data = {'sector': sector_name, 'is_hot': True}
+                sector_data  = {'sector': sector_name, 'is_hot': True}
         except Exception as e:
             print(f"[PREMARKET] {ticker}: Sector check error: {e}")
-    
-    # Composite score (weighted)
+
     composite_score = (
-        volume_score * 0.60 +
-        gap_score * 0.25 +
+        volume_score   * 0.60 +
+        gap_score      * 0.25 +
         catalyst_score * 0.15 +
         sector_bonus
     )
-    
+
     print(f"[PREMARKET] {ticker}: Composite score={composite_score:.1f} (vol={volume_score:.1f}, gap={gap_score:.1f}, catalyst={catalyst_score:.1f}, sector={sector_bonus:.1f})")
 
     result = {
-        'ticker':          ticker,
-        'price':           price,
-        'volume':          volume,
-        'volume_score':    volume_score,
-        'gap_score':       gap_score,
-        'catalyst_score':  catalyst_score,
-        'sector_bonus':    sector_bonus,
-        'composite_score': round(composite_score, 1),
-        'rvol':            volume_metrics['rvol'],
-        'dollar_volume':   volume_metrics['dollar_volume'],
-        'atr':             fundamentals['atr'],
-        'market_cap':      fundamentals['market_cap'],
-        'float':           fundamentals['float_shares'],
+        'ticker':           ticker,
+        'price':            price,
+        'volume':           volume,
+        'volume_score':     volume_score,
+        'gap_score':        gap_score,
+        'catalyst_score':   catalyst_score,
+        'sector_bonus':     sector_bonus,
+        'composite_score':  round(composite_score, 1),
+        'rvol':             volume_metrics['rvol'],
+        'dollar_volume':    volume_metrics['dollar_volume'],
+        'atr':              fundamentals['atr'],
+        'market_cap':       fundamentals['market_cap'],
+        'float':            fundamentals['float_shares'],
         'avg_daily_volume': fundamentals['avg_daily_volume'],
-        'gap_data':        gap_data,
-        'catalyst_data':   catalyst_data,
-        'sector_data':     sector_data,
-        'timestamp':       datetime.now()
+        'gap_data':         gap_data,
+        'catalyst_data':    catalyst_data,
+        'sector_data':      sector_data,
+        'timestamp':        datetime.now()
     }
 
     _scanner_cache.set_scan(ticker, result)
@@ -756,12 +681,10 @@ def scan_watchlist(tickers: List[str], min_score: float = 60.0) -> List[Dict]:
 
 
 def get_cache_stats() -> Dict:
-    """Return cache statistics for monitoring."""
     return _scanner_cache.get_stats()
 
 
 def clear_cache():
-    """Clear all scanner caches."""
     _scanner_cache.clear()
     print("[PREMARKET] All caches cleared")
 
@@ -770,7 +693,6 @@ def lock_scanner_cache():
     """
     PHASE 1.18: Lock the scanner cache for the rest of the session.
     Called by watchlist_funnel._build_live_watchlist() at market open.
-    Extends per-ticker TTL to ~23h so entries never expire mid-day.
     """
     _scanner_cache.lock_until_eod()
 
@@ -784,57 +706,24 @@ def run_momentum_screener(
     min_composite_score: float = 60.0,
     use_cache: bool = True
 ) -> List[Dict]:
-    """
-    Compatibility stub for watchlist_funnel.py.
-    Maps to scan_watchlist() with renamed parameters.
-    
-    Args:
-        tickers: List of ticker symbols to scan
-        min_composite_score: Minimum score threshold (maps to min_score)
-        use_cache: Whether to use caching (always enabled in unified scanner)
-    
-    Returns:
-        List of scored ticker dicts with 'composite_score' field
-    """
     print(f"[PREMARKET] run_momentum_screener() called with {len(tickers)} tickers, min_score={min_composite_score}")
     return scan_watchlist(tickers, min_score=min_composite_score)
 
 
 def get_top_n_movers(scored_tickers: List[Dict], n: int = 10) -> List[str]:
-    """
-    Get top N tickers from scored results.
-    Compatibility function for watchlist_funnel.py.
-    
-    Args:
-        scored_tickers: List of dicts with 'composite_score' or 'volume_score'
-        n: Number of top tickers to return
-
-    Returns:
-        List of ticker symbols (strings)
-    """
     sorted_tickers = sorted(
-        scored_tickers, 
-        key=lambda x: x.get('composite_score', x.get('volume_score', 0)), 
+        scored_tickers,
+        key=lambda x: x.get('composite_score', x.get('volume_score', 0)),
         reverse=True
     )
     return [t['ticker'] for t in sorted_tickers[:n]]
 
 
 def print_momentum_summary(scored_tickers: List[Dict], top_n: int = 10):
-    """
-    Print formatted summary of top N movers.
-    Compatibility function for watchlist_funnel.py.
-
-    TASK 12: Enhanced with gap/catalyst/sector info.
-    
-    Args:
-        scored_tickers: List of scored ticker dicts
-        top_n: Number of top tickers to display
-    """
     if not scored_tickers:
         print("[PREMARKET] No tickers to display")
         return
-    
+
     if V2_ENABLED:
         try:
             hot_sectors = get_hot_sectors()
@@ -846,26 +735,23 @@ def print_momentum_summary(scored_tickers: List[Dict], top_n: int = 10):
                     print(f"  {sector_name}: {momentum_pct:+.1f}%")
         except Exception as e:
             print(f"[PREMARKET] Error fetching hot sectors: {e}")
-    
+
     print(f"\n{'='*80}")
     print(f"TOP {min(top_n, len(scored_tickers))} MOMENTUM MOVERS")
     print(f"{'='*80}")
     print(f"{'Rank':<6} {'Ticker':<8} {'Score':<8} {'RVOL':<8} {'Gap':<8} {'Catalyst':<12} {'Price':<10}")
     print(f"{'-'*80}")
-    
+
     for i, ticker_data in enumerate(scored_tickers[:top_n], 1):
-        rank = f"#{i}"
-        ticker = ticker_data.get('ticker', 'N/A')
-        score = ticker_data.get('composite_score', ticker_data.get('volume_score', 0))
-        rvol = ticker_data.get('rvol', 0)
-        price = ticker_data.get('price', 0)
-        gap_data = ticker_data.get('gap_data', {})
-        gap_str = f"{gap_data.get('size_pct', 0):+.1f}%" if gap_data else "N/A"
+        rank         = f"#{i}"
+        ticker       = ticker_data.get('ticker', 'N/A')
+        score        = ticker_data.get('composite_score', ticker_data.get('volume_score', 0))
+        rvol         = ticker_data.get('rvol', 0)
+        price        = ticker_data.get('price', 0)
+        gap_data     = ticker_data.get('gap_data', {})
+        gap_str      = f"{gap_data.get('size_pct', 0):+.1f}%" if gap_data else "N/A"
         catalyst_data = ticker_data.get('catalyst_data', {})
-        if catalyst_data:
-            catalyst_str = catalyst_data.get('type', 'N/A')[:10]
-        else:
-            catalyst_str = "-"
+        catalyst_str  = catalyst_data.get('type', 'N/A')[:10] if catalyst_data else "-"
         print(f"{rank:<6} {ticker:<8} {score:<8.1f} {rvol:<8.2f} {gap_str:<8} {catalyst_str:<12} ${price:<9.2f}")
-    
+
     print(f"{'='*80}\n")
