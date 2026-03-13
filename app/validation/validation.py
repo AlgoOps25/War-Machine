@@ -36,6 +36,12 @@ PHASE 3A PATCH 2 (Mar 12, 2026) — Bug Fixes:
   - Fix 4 (P2): Removed ghost earnings guard comment. The docstring claimed an
     earnings guard was active — no such code exists anywhere in the pipeline.
 
+PHASE 1.26a (Mar 13, 2026) — Bug Fix:
+  - Fix OPTIONS_OPTIMIZER_ENABLED NameError in find_best_strike().
+    The try/except import block set _OPTIMIZER_AVAILABLE but find_best_strike()
+    referenced the undefined OPTIONS_OPTIMIZER_ENABLED name, throwing a NameError
+    on every ONDS scan cycle. Changed to use _OPTIMIZER_AVAILABLE consistently.
+
 VALIDATION CONFIGURATION:
   • Minimum Final Confidence: 50% (configurable via min_final_confidence)
   • Minimum ADX: 15.0 (VIX-aware dynamic threshold, was 25.0)
@@ -142,19 +148,11 @@ except ImportError:
     VPVR_ENABLED = False
     vpvr_calculator = None
 
-# In validation.py, replace the bare options lookup with:
 try:
     from app.options.options_optimizer import get_optimal_strikes_sync
     _OPTIMIZER_AVAILABLE = True
 except ImportError:
     _OPTIMIZER_AVAILABLE = False
-
-# Then in get_options_recommendation():
-if _OPTIMIZER_AVAILABLE:
-    strikes = get_optimal_strikes_sync(ticker, current_price, direction)
-    if strikes:
-        best = strikes[0]
-        # use best['strike'], best['delta'], best['mid'] for recommendation
 
 
 
@@ -592,9 +590,9 @@ class OptionsFilter:
     def find_best_strike(self, ticker, direction, entry_price, target_price, stop_price=0.0):
         """
         Find optimal option strike with parallel Greeks fetching.
-        Uses OPTIONS_OPTIMIZER_ENABLED for 5-10x speed improvement.
+        Uses _OPTIMIZER_AVAILABLE for 5-10x speed improvement.
         """
-        if OPTIONS_OPTIMIZER_ENABLED:
+        if _OPTIMIZER_AVAILABLE:
             try:
                 strikes = get_optimal_strikes_sync(
                     ticker=ticker,
