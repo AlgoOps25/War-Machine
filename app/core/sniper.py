@@ -42,6 +42,13 @@
 #   - app/core/confidence_model.py  : GRADE_CONFIDENCE_RANGES, compute_confidence
 #   - app/core/arm_signal.py        : arm_ticker (position open + Discord + armed state)
 #   - app/core/sniper_log.py        : log_proposed_trade
+#
+# FIX #15 (Mar 14 2026):
+#   - Wired signal_generator_cooldown into _run_signal_pipeline.
+#   - is_on_cooldown(ticker, direction) checked at entry — blocks duplicate signals
+#     across Railway restarts (cooldown persisted to signal_cooldowns DB table).
+#   - set_cooldown(ticker, direction, signal_type) called after arm_ticker() succeeds
+#     so the 30-min same-direction / 15-min reversal window is registered in DB.
 import traceback
 import requests
 import json
@@ -85,6 +92,10 @@ from app.core.gate_stats import (
 from app.core.confidence_model import GRADE_CONFIDENCE_RANGES, compute_confidence
 from app.core.arm_signal import arm_ticker
 from app.core.sniper_log import log_proposed_trade
+
+# ── FIX #15: DB-persisted signal cooldown (survives Railway restarts) ─────────
+from app.core.signal_generator_cooldown import is_on_cooldown, set_cooldown
+print("[SNIPER] ✅ Signal cooldown gate loaded (DB-persisted, restart-safe)")
 
 try:
     from app.validation.volume_profile import get_volume_analyzer
@@ -514,10 +525,22 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
                           bos_confirmation=None, bos_candle_type=None, spy_regime=None,
                           skip_cfw6_confirmation=False):
 
+    # ── FIX #15: DB-persisted cooldown gate (restart-safe) ────────────────────
+    # This is the primary deduplication guard — checks the signal_cooldowns table
+    # which survives Railway restarts, unlike the in-memory analytics tracker below.
+    try:
+        blocked, cooldown_reason = is_on_cooldown(ticker, direction)
+        if blocked:
+            print(f"[{ticker}] 🚫 SIGNAL COOLDOWN: {cooldown_reason}")
+            return False
+    except Exception as _cd_err:
+        print(f"[{ticker}] [COOLDOWN] Check error (non-fatal): {_cd_err}")
+
+    # Analytics cooldown tracker (in-memory reporting, non-blocking)
     if TRACKERS_ENABLED and cooldown_tracker:
         if cooldown_tracker.is_in_cooldown(ticker):
             remaining = cooldown_tracker.get_cooldown_remaining(ticker)
-            print(f"[{ticker}] 🚫 COOLDOWN: {remaining:.0f}s remaining — signal dropped")
+            print(f"[{ticker}] 🚫 ANALYTICS COOLDOWN: {remaining:.0f}s remaining — signal dropped")
             return False
 
     _pre_options_data = None
@@ -984,6 +1007,14 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         bos_candle_type=bos_candle_type,
         mtf_result=mtf_result, metadata=_meta
     )
+
+    # ── FIX #15: Register cooldown in DB after signal is armed ───────────────
+    # Persisted to signal_cooldowns table so restarts cannot re-fire the same signal.
+    try:
+        set_cooldown(ticker, direction, signal_type)
+    except Exception as _cd_set_err:
+        print(f"[{ticker}] [COOLDOWN] Set error (non-fatal): {_cd_set_err}")
+
     return True
 
 def clear_armed_signals():
