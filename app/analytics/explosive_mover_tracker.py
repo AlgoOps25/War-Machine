@@ -86,18 +86,6 @@ def track_explosive_override(
 ):
     """
     Record when a signal bypasses regime filter due to explosive mover override.
-    
-    Args:
-        ticker: Stock symbol
-        direction: 'bull' or 'bear'
-        score: Screener score
-        rvol: Relative volume
-        tier: RVOL tier (A/B/C)
-        regime_type: Regime at time of override (e.g., 'VOLATILE', 'CHOPPY')
-        vix_level: VIX level at time of override
-        entry_price: Signal entry price
-        grade: Signal grade
-        confidence: Final confidence after multipliers
     """
     try:
         from app.data.db_connection import get_conn, ph as _ph
@@ -105,14 +93,12 @@ def track_explosive_override(
         now = datetime.now(ZoneInfo("America/New_York"))
         hour = now.hour
         
-        # Update daily stats
         _daily_stats['total_overrides'] += 1
         _daily_stats['by_hour'][hour] = _daily_stats['by_hour'].get(hour, 0) + 1
         _daily_stats['by_regime'][regime_type] = _daily_stats['by_regime'].get(regime_type, 0) + 1
         _daily_stats['total_score'] += score
         _daily_stats['total_rvol'] += rvol
         
-        # Store signal data for outcome tracking
         _override_signals[ticker] = {
             'direction': direction,
             'score': score,
@@ -126,7 +112,6 @@ def track_explosive_override(
             'timestamp': now
         }
         
-        # Persist to DB
         conn = get_conn()
         cursor = conn.cursor()
         p = _ph()
@@ -154,25 +139,17 @@ def track_explosive_override(
 
 
 def update_override_outcome(ticker: str, outcome: str, pnl_pct: float):
-    """
-    Update outcome for an explosive override signal when trade closes.
-    
-    Args:
-        ticker: Stock symbol
-        outcome: 'WIN' or 'LOSS'
-        pnl_pct: P&L percentage
-    """
+    """Update outcome for an explosive override signal when trade closes."""
     try:
         from app.data.db_connection import get_conn, ph as _ph
         
         if ticker not in _override_signals:
-            return  # Not an override signal
+            return
         
         conn = get_conn()
         cursor = conn.cursor()
         p = _ph()
         
-        # Update most recent override for this ticker
         cursor.execute(
             f"""
             UPDATE explosive_mover_overrides
@@ -187,9 +164,7 @@ def update_override_outcome(ticker: str, outcome: str, pnl_pct: float):
         conn.commit()
         conn.close()
         
-        # Remove from tracking
         del _override_signals[ticker]
-        
         print(f"[EXPLOSIVE-OVERRIDE] {ticker} outcome: {outcome} ({pnl_pct:+.2f}%)")
         
     except Exception as e:
@@ -207,18 +182,14 @@ def get_daily_override_stats() -> Dict:
         
         conn = get_conn()
         cursor = conn.cursor()
-        
-        # Today's date
         today = datetime.now(ZoneInfo("America/New_York")).date()
         
-        # Total overrides today
         cursor.execute(
             "SELECT COUNT(*) FROM explosive_mover_overrides WHERE DATE(timestamp) = ?",
             (today,)
         )
         total = cursor.fetchone()[0]
         
-        # Win/loss breakdown
         cursor.execute(
             "SELECT outcome, COUNT(*) FROM explosive_mover_overrides "
             "WHERE DATE(timestamp) = ? AND outcome != 'PENDING' "
@@ -227,14 +198,12 @@ def get_daily_override_stats() -> Dict:
         )
         outcomes = dict(cursor.fetchall())
         
-        # Average metrics
         cursor.execute(
             "SELECT AVG(score), AVG(rvol), AVG(confidence) "
             "FROM explosive_mover_overrides WHERE DATE(timestamp) = ?",
             (today,)
         )
         avg_row = cursor.fetchone()
-        
         conn.close()
         
         wins = outcomes.get('WIN', 0)
@@ -276,14 +245,12 @@ def print_explosive_override_summary():
     print(f"  RVOL: {stats['avg_rvol']:.2f}x")
     print(f"  Confidence: {stats['avg_confidence']:.1%}")
     
-    # Hourly distribution
     if _daily_stats['by_hour']:
         print(f"\nHourly Distribution:")
         for hour in sorted(_daily_stats['by_hour'].keys()):
             count = _daily_stats['by_hour'][hour]
             print(f"  {hour:02d}:00 - {count} override(s)")
     
-    # Regime distribution
     if _daily_stats['by_regime']:
         print(f"\nRegime Distribution:")
         for regime, count in sorted(_daily_stats['by_regime'].items(), key=lambda x: -x[1]):
@@ -293,25 +260,15 @@ def print_explosive_override_summary():
 
 
 def get_threshold_optimization_data(days: int = 30) -> Dict:
-    """
-    Get data for optimizing explosive override thresholds.
-    Analyzes win rates at different score and RVOL levels.
-    
-    Args:
-        days: Number of days to analyze
-    
-    Returns:
-        Dict with threshold optimization suggestions
-    """
+    """Get data for optimizing explosive override thresholds."""
     try:
         from app.data.db_connection import get_conn
+        from datetime import timedelta
         
         conn = get_conn()
         cursor = conn.cursor()
-        
         cutoff_date = (datetime.now(ZoneInfo("America/New_York")) - timedelta(days=days)).date()
         
-        # Score brackets
         score_brackets = [(70, 80), (80, 90), (90, 100)]
         score_analysis = {}
         
@@ -327,13 +284,8 @@ def get_threshold_optimization_data(days: int = 30) -> Dict:
             row = cursor.fetchone()
             total, wins = row[0], row[1]
             win_rate = (wins / total * 100) if total > 0 else 0.0
-            score_analysis[f"{low}-{high}"] = {
-                'total': total,
-                'wins': wins,
-                'win_rate': win_rate
-            }
+            score_analysis[f"{low}-{high}"] = {'total': total, 'wins': wins, 'win_rate': win_rate}
         
-        # RVOL brackets
         rvol_brackets = [(3.0, 4.0), (4.0, 5.0), (5.0, 10.0)]
         rvol_analysis = {}
         
@@ -349,11 +301,7 @@ def get_threshold_optimization_data(days: int = 30) -> Dict:
             row = cursor.fetchone()
             total, wins = row[0], row[1]
             win_rate = (wins / total * 100) if total > 0 else 0.0
-            rvol_analysis[f"{low:.1f}-{high:.1f}x"] = {
-                'total': total,
-                'wins': wins,
-                'win_rate': win_rate
-            }
+            rvol_analysis[f"{low:.1f}-{high:.1f}x"] = {'total': total, 'wins': wins, 'win_rate': win_rate}
         
         conn.close()
         
@@ -383,22 +331,65 @@ def print_threshold_recommendations():
     print(f"{'Bracket':<12} {'Total':<8} {'Wins':<8} {'Win Rate':<12}")
     print("-" * 45)
     for bracket, stats in data['score_brackets'].items():
-        print(
-            f"{bracket:<12} {stats['total']:<8} {stats['wins']:<8} "
-            f"{stats['win_rate']:.1f}%"
-        )
+        print(f"{bracket:<12} {stats['total']:<8} {stats['wins']:<8} {stats['win_rate']:.1f}%")
     
     print("\nRVOL Bracket Analysis:")
     print(f"{'Bracket':<12} {'Total':<8} {'Wins':<8} {'Win Rate':<12}")
     print("-" * 45)
     for bracket, stats in data['rvol_brackets'].items():
-        print(
-            f"{bracket:<12} {stats['total']:<8} {stats['wins']:<8} "
-            f"{stats['win_rate']:.1f}%"
-        )
+        print(f"{bracket:<12} {stats['total']:<8} {stats['wins']:<8} {stats['win_rate']:.1f}%")
     
     print("\n💡 Recommendations:")
     print("  - Review brackets with >60% win rate for threshold tightening")
     print("  - Review brackets with <45% win rate for threshold loosening")
     print("  - Minimum 20 samples per bracket for statistical significance")
     print("="*80 + "\n")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Backward-Compat: explosive_tracker.py → explosive_mover_tracker.py
+# Consumers that imported: from app.analytics.explosive_tracker import explosive_tracker
+# Now import from here instead.
+# ══════════════════════════════════════════════════════════════════════════════
+
+class ExplosiveMoverTracker:
+    """
+    Compat shim for legacy explosive_tracker.ExplosiveMoverTracker.
+    Delegates record_override() to track_explosive_override().
+    """
+    def record_override(self, ticker: str, score: int, rvol: float, tier: str = "N/A") -> None:
+        track_explosive_override(
+            ticker=ticker,
+            direction="unknown",
+            score=score,
+            rvol=rvol,
+            tier=tier,
+            regime_type="UNKNOWN",
+            vix_level=0.0,
+            entry_price=0.0,
+            grade="N/A",
+            confidence=0.0
+        )
+
+    def get_overrides_today(self) -> list:
+        return list(_override_signals.values())
+
+    def get_override_count(self) -> int:
+        return _daily_stats['total_overrides']
+
+    def get_tier_breakdown(self) -> dict:
+        return _daily_stats.get('by_regime', {})
+
+    def print_eod_report(self) -> None:
+        print_explosive_override_summary()
+
+    def reset_daily_stats(self) -> None:
+        _override_signals.clear()
+        _daily_stats.update({
+            'total_overrides': 0, 'by_hour': {}, 'by_regime': {},
+            'total_score': 0.0, 'total_rvol': 0.0
+        })
+
+
+# Legacy singleton — satisfies: from app.analytics.explosive_tracker import explosive_tracker
+explosive_tracker = ExplosiveMoverTracker()

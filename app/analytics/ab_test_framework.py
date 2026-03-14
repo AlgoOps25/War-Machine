@@ -37,7 +37,6 @@ ET = ZoneInfo("America/New_York")
 class ABTestFramework:
     """A/B testing framework for signal filter optimization."""
     
-    # Parameter experiments (A vs B variants)
     EXPERIMENTS = {
         'volume_threshold': {
             'A': 2.0,
@@ -66,14 +65,12 @@ class ABTestFramework:
         }
     }
     
-    SAMPLE_SIZE_REQUIRED = 30  # Min samples before declaring winner
-    MIN_WIN_RATE_DIFF = 5.0    # Min 5% win rate difference to declare winner
+    SAMPLE_SIZE_REQUIRED = 30
+    MIN_WIN_RATE_DIFF = 5.0
     
     def __init__(self, db_path: str = "market_memory.db"):
         self.db_path = db_path
         self._initialize_database()
-        
-        # Cache for variant assignments (ticker+date -> variant)
         self.variant_cache: Dict[str, str] = {}
     
     def _initialize_database(self):
@@ -105,28 +102,14 @@ class ABTestFramework:
         print("[AB_TEST] A/B test framework database initialized")
     
     def _get_session(self) -> str:
-        """Get current session date."""
         return datetime.now(ET).strftime("%Y-%m-%d")
     
     def _hash_ticker_date(self, ticker: str, param: str) -> str:
-        """Generate deterministic hash for ticker+param+date."""
         today = self._get_session()
         combined = f"{ticker}_{param}_{today}"
         return hashlib.md5(combined.encode()).hexdigest()
     
     def get_variant(self, ticker: str, param: str) -> str:
-        """
-        Get A/B test variant for a ticker and parameter.
-        
-        Uses deterministic hashing so same ticker gets same variant per day.
-        
-        Args:
-            ticker: Stock symbol
-            param: Parameter name (e.g., 'volume_threshold')
-        
-        Returns:
-            'A' or 'B'
-        """
         if param not in self.EXPERIMENTS:
             raise ValueError(f"Unknown parameter: {param}")
         
@@ -135,41 +118,16 @@ class ABTestFramework:
         if cache_key in self.variant_cache:
             return self.variant_cache[cache_key]
         
-        # Use hash to deterministically assign 50/50
         hash_val = self._hash_ticker_date(ticker, param)
         variant = 'A' if int(hash_val[:8], 16) % 2 == 0 else 'B'
-        
         self.variant_cache[cache_key] = variant
         return variant
     
     def get_param(self, ticker: str, param: str) -> Any:
-        """
-        Get parameter value for ticker based on A/B test assignment.
-        
-        Args:
-            ticker: Stock symbol
-            param: Parameter name
-        
-        Returns:
-            Parameter value (type depends on parameter)
-        """
         variant = self.get_variant(ticker, param)
         return self.EXPERIMENTS[param][variant]
     
-    def record_outcome(
-        self,
-        ticker: str,
-        param: str,
-        hit_target: bool
-    ):
-        """
-        Record outcome of A/B test variant.
-        
-        Args:
-            ticker: Stock symbol
-            param: Parameter name
-            hit_target: Whether signal hit target (True) or stopped out (False)
-        """
+    def record_outcome(self, ticker: str, param: str, hit_target: bool):
         if param not in self.EXPERIMENTS:
             return
         
@@ -190,24 +148,7 @@ class ABTestFramework:
         conn.commit()
         conn.close()
     
-    def get_variant_stats(
-        self,
-        param: str,
-        days_back: int = 30
-    ) -> Dict[str, Dict]:
-        """
-        Get win rate statistics for both variants of a parameter.
-        
-        Args:
-            param: Parameter name
-            days_back: Number of days to look back
-        
-        Returns:
-            {
-                'A': {'samples': int, 'wins': int, 'win_rate': float},
-                'B': {'samples': int, 'wins': int, 'win_rate': float}
-            }
-        """
+    def get_variant_stats(self, param: str, days_back: int = 30) -> Dict[str, Dict]:
         if param not in self.EXPERIMENTS:
             return {}
         
@@ -236,14 +177,8 @@ class ABTestFramework:
             samples = row['samples'] or 0
             wins = row['wins'] or 0
             win_rate = (wins / samples * 100) if samples > 0 else 0
-            
-            stats[variant] = {
-                'samples': samples,
-                'wins': wins,
-                'win_rate': round(win_rate, 1)
-            }
+            stats[variant] = {'samples': samples, 'wins': wins, 'win_rate': round(win_rate, 1)}
         
-        # Fill in missing variants with zeros
         for variant in ['A', 'B']:
             if variant not in stats:
                 stats[variant] = {'samples': 0, 'wins': 0, 'win_rate': 0.0}
@@ -251,24 +186,6 @@ class ABTestFramework:
         return stats
     
     def check_winners(self, days_back: int = 30) -> Dict[str, Dict]:
-        """
-        Check all experiments for clear winners.
-        
-        Args:
-            days_back: Number of days to analyze
-        
-        Returns:
-            Dict of parameters with clear winners:
-            {
-                'volume_threshold': {
-                    'winner': 'B',
-                    'winner_value': 3.0,
-                    'winner_win_rate': 71.2,
-                    'loser_win_rate': 62.5,
-                    'samples': 45
-                }
-            }
-        """
         winners = {}
         
         for param in self.EXPERIMENTS:
@@ -277,19 +194,16 @@ class ABTestFramework:
             a_samples = stats['A']['samples']
             b_samples = stats['B']['samples']
             
-            # Need minimum samples for both variants
             if a_samples < self.SAMPLE_SIZE_REQUIRED or b_samples < self.SAMPLE_SIZE_REQUIRED:
                 continue
             
             a_win_rate = stats['A']['win_rate']
             b_win_rate = stats['B']['win_rate']
             
-            # Check if difference is significant
             diff = abs(a_win_rate - b_win_rate)
             if diff < self.MIN_WIN_RATE_DIFF:
                 continue
             
-            # Determine winner
             if a_win_rate > b_win_rate:
                 winner_variant = 'A'
                 winner_win_rate = a_win_rate
@@ -311,15 +225,6 @@ class ABTestFramework:
         return winners
     
     def get_ab_test_report(self, days_back: int = 30) -> str:
-        """
-        Generate formatted A/B test report.
-        
-        Args:
-            days_back: Number of days to analyze
-        
-        Returns:
-            Formatted report string
-        """
         lines = []
         lines.append("\n" + "="*80)
         lines.append("🧪 A/B TEST RESULTS")
@@ -339,7 +244,6 @@ class ABTestFramework:
                 lines.append(f"    Samples: {data['samples']} per variant")
                 lines.append(f"    {data['description']}\n")
         
-        # Show all experiments
         lines.append("─"*80)
         lines.append("📊 ALL EXPERIMENTS:\n")
         
@@ -352,29 +256,27 @@ class ABTestFramework:
                         f"{stats['B']['win_rate']:.1f}% (n={stats['B']['samples']})\n")
         
         lines.append("="*80 + "\n")
-        
         return "\n".join(lines)
+
+    # ── Legacy compat methods (from ab_test.py stub) ──────────────────────
+    def record_result(self, variant: str, outcome: str, **kwargs):
+        pass
+
+    def get_summary(self) -> dict:
+        return {}
+
+    def print_report(self):
+        pass
+
+    def reset(self):
+        pass
 
 
 # Global A/B test instance
 ab_test = ABTestFramework()
 
-
-if __name__ == "__main__":
-    print("Testing A/B Test Framework...\n")
-    
-    # Test variant assignment
-    print("Testing variant assignments:")
-    for ticker in ['AAPL', 'TSLA', 'NVDA']:
-        vol_variant = ab_test.get_variant(ticker, 'volume_threshold')
-        vol_value = ab_test.get_param(ticker, 'volume_threshold')
-        print(f"  {ticker}: volume_threshold = {vol_value} (variant {vol_variant})")
-    
-    # Simulate outcomes
-    print("\nSimulating outcomes...")
-    ab_test.record_outcome('AAPL', 'volume_threshold', hit_target=True)
-    ab_test.record_outcome('TSLA', 'volume_threshold', hit_target=False)
-    ab_test.record_outcome('NVDA', 'volume_threshold', hit_target=True)
-    
-    # Generate report
-    print(ab_test.get_ab_test_report(days_back=30))
+# ══════════════════════════════════════════════════════════════════════════════
+# Backward-Compat: ab_test.py → ab_test_framework.py
+# ABTest was the class name in the stub. Alias it here.
+# ══════════════════════════════════════════════════════════════════════════════
+ABTest = ABTestFramework
