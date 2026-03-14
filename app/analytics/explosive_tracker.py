@@ -1,10 +1,25 @@
 """
-DEPRECATED NAME — explosive_tracker is the old import path.
-This shim re-exports explosive_mover_tracker so sniper.py imports don't fail.
+Shim: app.analytics.explosive_tracker
+--------------------------------------
+sniper.py imports:  from app.analytics.explosive_tracker import explosive_tracker
 
-Real implementation: app/analytics/explosive_mover_tracker.py
+The real implementation lives in app.analytics.explosive_mover_tracker.
+This file re-exports the singleton so the old import path keeps working.
 """
-from app.analytics.explosive_mover_tracker import *  # noqa: F401, F403
 from app.analytics.explosive_mover_tracker import (  # noqa: F401
-    explosive_mover_tracker,
+    explosive_tracker,
+    ExplosiveMoverTracker,
+    track_explosive_override,
+    update_override_outcome,
+    print_explosive_override_summary,
+    get_daily_override_stats,
 )
+
+__all__ = [
+    "explosive_tracker",
+    "ExplosiveMoverTracker",
+    "track_explosive_override",
+    "update_override_outcome",
+    "print_explosive_override_summary",
+    "get_daily_override_stats",
+]
