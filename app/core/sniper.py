@@ -156,7 +156,7 @@ except ImportError:
     def apply_sweep_boost(ticker, bars, direction, or_high, or_low, confidence, vwap=0.0):
         return confidence, None
 try:
-    from app.core.sniper_mtf_trend_patch import run_mtf_trend_step
+    from app.mtf.mtf_integration import run_mtf_trend_step
     MTF_TREND_ENABLED = True
     print("[SNIPER] ✅ MTF trend validator enabled (Step 8.5)")
 except ImportError:
