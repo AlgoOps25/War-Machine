@@ -43,6 +43,11 @@ FIX #6 (MAR 14, 2026) — TEST HOOK:
     can_open_position(). open_position() now calls _check_risk_limits() instead
     of can_open_position() directly, so tests can monkeypatch the risk gate
     cleanly without touching internals.
+
+FIX #7 (MAR 14, 2026) — PY 3.10 F-STRING COMPAT:
+  - Python 3.10 (Railway runtime) forbids backslashes inside f-string expressions.
+  - Pre-compute circuit_breaker_label variable before the f-string in
+    get_risk_summary() to stay compatible with both Py 3.10 and 3.11.
 """
 from utils import config
 from datetime import datetime, timedelta
@@ -380,10 +385,6 @@ class PositionManager:
         """
         Thin wrapper around can_open_position() so tests can monkeypatch
         the risk gate without touching internals.
-
-        open_position() calls this instead of can_open_position() directly,
-        meaning `monkeypatch.setattr(pm, '_check_risk_limits', lambda *a, **kw: (False, 'reason'))`
-        will correctly block position opens in tests.
         """
         return self.can_open_position(ticker, risk_dollars)
     # ─────────────────────────────────────────────────────────────────────────────
@@ -1140,6 +1141,10 @@ class PositionManager:
 
         circuit_breached, _ = self.check_circuit_breaker(stats=stats)
 
+        # FIX #7: pre-compute label — backslashes inside f-string expressions
+        # are a SyntaxError on Python 3.10 (Railway runtime).
+        cb_label = "\ud83d\udea8 TRIGGERED" if circuit_breached else "\u2705 OK"
+
         summary = "\n" + "="*60 + "\n"
         summary += "RISK MANAGEMENT SUMMARY\n"
         summary += "="*60 + "\n"
@@ -1151,7 +1156,7 @@ class PositionManager:
         summary += f"Open Positions:   {len(open_positions)} / {self.max_open_positions} max\n"
         summary += f"Total Exposure:   ${total_exposure:,.0f} ({exposure_pct:.1f}%)\n"
         summary += f"Performance:      {self._format_streak()}\n"
-        summary += f"Circuit Breaker:  {'\ud83d\udea8 TRIGGERED' if circuit_breached else '\u2705 OK'}\n"
+        summary += f"Circuit Breaker:  {cb_label}\n"
         summary += "="*60 + "\n"
 
         return summary
