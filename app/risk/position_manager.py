@@ -37,6 +37,12 @@ FIX #5 (MAR 13, 2026) — DB SEMAPHORE EXHAUSTION:
   - get_risk_summary() now accepts an optional open_positions list for the same reason.
   Net result: get_session_status() drops from 5 DB checkouts to 1-2;
   evaluate_signal() drops 2 redundant checkouts on every ticker scan.
+
+FIX #6 (MAR 14, 2026) — TEST HOOK:
+  - Added _check_risk_limits(ticker, risk_dollars) as a testable wrapper around
+    can_open_position(). open_position() now calls _check_risk_limits() instead
+    of can_open_position() directly, so tests can monkeypatch the risk gate
+    cleanly without touching internals.
 """
 from utils import config
 from datetime import datetime, timedelta
@@ -45,7 +51,7 @@ from app.data import db_connection
 from app.data.db_connection import get_conn, return_conn, ph, dict_cursor, serial_pk
 import time
 
-# ── VIX sizing (graceful fallback if module unavailable) ─────────────────────
+# ── VIX sizing (graceful fallback if module unavailable) ────────────────────
 try:
     from app.risk.vix_sizing import get_vix_multiplier as _get_vix_mult
     _VIX_SIZING_ENABLED = True
@@ -53,7 +59,7 @@ except ImportError:
     _VIX_SIZING_ENABLED = False
     def _get_vix_mult(): return 1.0
 
-# ── RTH guard (graceful fallback if module unavailable) ─────────────────────
+# ── RTH guard (graceful fallback if module unavailable) ────────────────────
 try:
     from app.analytics.rth_filter import is_rth_now as _is_rth_now
     _RTH_GUARD_ENABLED = True
@@ -65,11 +71,11 @@ except ImportError:
 try:
     from app.signals.signal_analytics import signal_tracker
     SIGNAL_TRACKING_ENABLED = True
-    print("[POSITION] ✅ Signal trade tracking enabled (signal_analytics)")
+    print("[POSITION] \u2705 Signal trade tracking enabled (signal_analytics)")
 except ImportError:
     signal_tracker = None
     SIGNAL_TRACKING_ENABLED = False
-    print("[POSITION] ⚠️  Signal trade tracking disabled (signal_analytics not available)")
+    print("[POSITION] \u26a0\ufe0f  Signal trade tracking disabled (signal_analytics not available)")
 
 
 # Sector/ticker correlation mapping used to prevent over-concentration in correlated assets
@@ -82,7 +88,7 @@ SECTOR_GROUPS = {
     "VOLATILITY": ["VIX", "UVXY", "SVXY", "VXX"]
 }
 
-# ── Cache TTL (seconds) ───────────────────────────────────────────────────────
+# ── Cache TTL (seconds) ────────────────────────────────────────────────
 _STATS_CACHE_TTL    = 10  # get_daily_stats() — re-query at most every 10s
 _POSITIONS_CACHE_TTL = 5  # get_open_positions() — re-query at most every 5s
 
@@ -146,12 +152,12 @@ def _write_completed_at(
         )
         conn.commit()
         print(
-            f"[ML-SIGNALS] ✅ completed_at written: {ticker} {direction.upper()} "
+            f"[ML-SIGNALS] \u2705 completed_at written: {ticker} {direction.upper()} "
             f"{outcome} @ ${exit_price:.2f} (signal_id={signal_id})"
         )
 
     except Exception as exc:
-        print(f"[ML-SIGNALS] ⚠️  completed_at write skipped ({ticker}): {exc}")
+        print(f"[ML-SIGNALS] \u26a0\ufe0f  completed_at write skipped ({ticker}): {exc}")
     finally:
         if conn:
             return_conn(conn)
@@ -175,25 +181,25 @@ class PositionManager:
         self.consecutive_losses = 0
         self.performance_multiplier = 1.0  # 0.5-1.5 range based on recent performance
 
-        # ── FIX #5: DB query result caches ───────────────────────────────────
+        # ── FIX #5: DB query result caches ──────────────────────────────────
         self._daily_stats_cache:     Optional[Dict] = None
         self._daily_stats_ts:        float          = 0.0
         self._open_positions_cache:  Optional[List] = None
         self._open_positions_ts:     float          = 0.0
-        # ─────────────────────────────────────────────────────────────────────
+        # ───────────────────────────────────────────────────────────────────
 
         self._initialize_database()
         self._close_stale_positions()
         self._load_session_state()
 
-    # ── FIX #5: cache invalidation helper ────────────────────────────────────
+    # ── FIX #5: cache invalidation helper ──────────────────────────────────
     def _invalidate_caches(self) -> None:
         """Bust both caches immediately after any write (open/close)."""
         self._daily_stats_cache    = None
         self._daily_stats_ts       = 0.0
         self._open_positions_cache = None
         self._open_positions_ts    = 0.0
-    # ─────────────────────────────────────────────────────────────────────────
+    # ───────────────────────────────────────────────────────────────────
 
     def _load_session_state(self) -> None:
         """Load session starting balance, open positions, and performance streak on initialization."""
@@ -204,7 +210,7 @@ class PositionManager:
             self.account_size = self.session_starting_balance + total_pnl
             self.intraday_high_water_mark = max(self.intraday_high_water_mark, self.account_size)
 
-            # ── C1 FIX: Re-populate in-memory cache from DB on restart ──────────
+            # ── C1 FIX: Re-populate in-memory cache from DB on restart ────────────
             open_db = self.get_open_positions()
             self.positions = [
                 {
@@ -226,10 +232,10 @@ class PositionManager:
             ]
             if self.positions:
                 tickers = ", ".join(p["ticker"] for p in self.positions)
-                print(f"[RISK] 🔄 Reloaded {len(self.positions)} open position(s) "
+                print(f"[RISK] \ud83d\udd04 Reloaded {len(self.positions)} open position(s) "
                       f"from DB after restart: {tickers}")
             else:
-                print("[RISK] ✅ No open positions to reload — clean session start")
+                print("[RISK] \u2705 No open positions to reload \u2014 clean session start")
             # ─────────────────────────────────────────────────────────────────────
 
             closed_trades = self.get_todays_closed_trades()
@@ -322,7 +328,7 @@ class PositionManager:
         if drawdown <= -max_drawdown_pct:
             reason = (
                 f"MAX DRAWDOWN EXCEEDED: {drawdown:.1f}% from peak "
-                f"(${self.intraday_high_water_mark:,.0f} → ${current_balance:,.0f})"
+                f"(${self.intraday_high_water_mark:,.0f} \u2192 ${current_balance:,.0f})"
             )
             return True, reason
 
@@ -334,7 +340,7 @@ class PositionManager:
         Returns (can_open, reason) tuple.
         """
         if _RTH_GUARD_ENABLED and not _is_rth_now():
-            return False, "Outside RTH (9:30 AM - 4:00 PM ET) — no new positions"
+            return False, "Outside RTH (9:30 AM - 4:00 PM ET) \u2014 no new positions"
 
         # Share one stats fetch across both circuit-breaker and drawdown checks
         stats = self.get_daily_stats()
@@ -368,6 +374,19 @@ class PositionManager:
                 return False, f"Position already open for {ticker}"
 
         return True, "OK"
+
+    # ── FIX #6: testable risk-gate hook ─────────────────────────────────────────
+    def _check_risk_limits(self, ticker: str, risk_dollars: float) -> Tuple[bool, str]:
+        """
+        Thin wrapper around can_open_position() so tests can monkeypatch
+        the risk gate without touching internals.
+
+        open_position() calls this instead of can_open_position() directly,
+        meaning `monkeypatch.setattr(pm, '_check_risk_limits', lambda *a, **kw: (False, 'reason'))`
+        will correctly block position opens in tests.
+        """
+        return self.can_open_position(ticker, risk_dollars)
+    # ─────────────────────────────────────────────────────────────────────────────
 
     def _get_ticker_sector(self, ticker: str) -> Optional[str]:
         """Get sector for ticker from SECTOR_GROUPS mapping."""
@@ -516,11 +535,11 @@ class PositionManager:
                 print("[POSITION] No stale positions from prior sessions")
                 return
 
-            print(f"[POSITION] ⚠️  Found {len(stale)} stale position(s) — force closing before session")
+            print(f"[POSITION] \u26a0\ufe0f  Found {len(stale)} stale position(s) \u2014 force closing before session")
             for pos in stale:
                 pos = dict(pos)
                 print(f"[POSITION] Force closing {pos['ticker']} {pos['direction'].upper()} "
-                      f"(ID: {pos['id']}) entered @ ${pos['entry_price']:.2f} — STALE EOD")
+                      f"(ID: {pos['id']}) entered @ ${pos['entry_price']:.2f} \u2014 STALE EOD")
                 self.close_position(pos["id"], pos["entry_price"], "STALE_EOD")
         finally:
             if conn:
@@ -536,8 +555,8 @@ class PositionManager:
 
         Sizing stack (multiplicative):
           base_risk_pct  (from grade/confidence tier)
-          × performance_multiplier  (win/loss streak: 0.5–1.25)
-          × vix_multiplier          (volatility regime: 0.3–1.3)
+          \u00d7 performance_multiplier  (win/loss streak: 0.5\u20131.25)
+          \u00d7 vix_multiplier          (volatility regime: 0.3\u20131.3)
           = final_risk_pct
         """
         account_size = account_size or self.account_size
@@ -558,8 +577,8 @@ class PositionManager:
 
         if abs(vix_mult - 1.0) >= 0.10:
             direction = "reduced" if vix_mult < 1.0 else "increased"
-            print(f"[VIX] Sizing {direction}: {risk_pct*100:.1f}% base → "
-                  f"{adjusted_risk_pct*100:.1f}% adjusted ({vix_mult:.2f}×)")
+            print(f"[VIX] Sizing {direction}: {risk_pct*100:.1f}% base \u2192 "
+                  f"{adjusted_risk_pct*100:.1f}% adjusted ({vix_mult:.2f}\u00d7)")
 
         position_risk = account_size * adjusted_risk_pct
         contracts     = max(1, int(position_risk / (risk_per_share * 100)))
@@ -599,7 +618,7 @@ class PositionManager:
 
         is_valid_rr, risk_reward = self.validate_risk_reward(entry_price, stop_price, t2)
         if not is_valid_rr:
-            print(f"[RISK] ❌ {ticker} rejected - R:R {risk_reward:.2f} < {self.min_risk_reward_ratio:.2f} minimum")
+            print(f"[RISK] \u274c {ticker} rejected - R:R {risk_reward:.2f} < {self.min_risk_reward_ratio:.2f} minimum")
             return -1
 
         risk_per_share = round(abs(entry_price - stop_price), 4) or 1.0
@@ -608,9 +627,10 @@ class PositionManager:
         contracts = sizing["contracts"]
         risk_dollars = sizing["risk_dollars"]
 
-        can_open, reason = self.can_open_position(ticker, risk_dollars)
+        # FIX #6: call _check_risk_limits() so tests can monkeypatch this hook
+        can_open, reason = self._check_risk_limits(ticker, risk_dollars)
         if not can_open:
-            print(f"[RISK] ❌ {ticker} rejected - {reason}")
+            print(f"[RISK] \u274c {ticker} rejected - {reason}")
             return -1
 
         strike         = None
@@ -797,9 +817,9 @@ class PositionManager:
                     cached["pnl"]                = cached.get("pnl", 0) + partial_pnl
                     break
 
-            print(f"[POSITION] ⚡ SCALE OUT {ticker} @ {exit_price:.2f}")
+            print(f"[POSITION] \u26a1 SCALE OUT {ticker} @ {exit_price:.2f}")
             print(f"  Closed {contracts_to_close} contracts | Remaining: {contracts_left}")
-            print(f"  Partial P&L: ${partial_pnl:.2f} | Stop → BE: {entry_price:.2f}")
+            print(f"  Partial P&L: ${partial_pnl:.2f} | Stop \u2192 BE: {entry_price:.2f}")
 
             try:
                 from app.discord_helpers import send_scaling_alert
@@ -872,7 +892,7 @@ class PositionManager:
                 closed_trades = self.get_todays_closed_trades()
                 self._update_performance_streak(closed_trades)
 
-            emoji = "✅" if final_pnl > 0 else "❌"
+            emoji = "\u2705" if final_pnl > 0 else "\u274c"
             print(f"[POSITION] {emoji} CLOSED {ticker} @ {exit_price:.2f} | {exit_reason}")
             print(f"  Total P&L: ${final_pnl:.2f}  Streak: {self._format_streak()}")
 
@@ -902,7 +922,7 @@ class PositionManager:
                 stats={"total_pnl": final_pnl, "trades": 1, "wins": 0, "losses": 1, "win_rate": 0.0}
             )
             if breached:
-                print(f"\n[RISK] 🚨 {reason}")
+                print(f"\n[RISK] \ud83d\udea8 {reason}")
                 print("[RISK] No new positions will be opened until next session\n")
         finally:
             if conn:
@@ -917,11 +937,11 @@ class PositionManager:
             price  = current_prices.get(ticker, pos["entry_price"])
             self.close_position(pos["id"], price, "EOD CLOSE")
 
-        # ── M5 FIX: Reset streak counters after EOD force-close ──────────────
+        # ── M5 FIX: Reset streak counters after EOD force-close ──────────────────
         self.consecutive_wins = 0
         self.consecutive_losses = 0
         self.performance_multiplier = 1.0
-        print("[POSITION] 🔄 EOD streak reset — performance_multiplier → 1.0x for next session")
+        print("[POSITION] \ud83d\udd04 EOD streak reset \u2014 performance_multiplier \u2192 1.0x for next session")
         # ─────────────────────────────────────────────────────────────────────
 
 
@@ -1048,7 +1068,7 @@ class PositionManager:
 
         lines = [
             "=" * 50,
-            "WAR MACHINE — END OF DAY REPORT",
+            "WAR MACHINE \u2014 END OF DAY REPORT",
             "=" * 50,
             f"Date:         {datetime.now().strftime('%A, %B %d, %Y')}",
             f"Total Trades: {trades}",
@@ -1059,7 +1079,7 @@ class PositionManager:
             f"Max Drawdown: {max_dd_pct:.2f}%",
             f"Final Streak: {self._format_streak()}",
             "",
-            "─ 30-Day Grade Breakdown ─"
+            "\u2500 30-Day Grade Breakdown \u2500"
         ]
 
         if win_rate_data:
@@ -1131,11 +1151,11 @@ class PositionManager:
         summary += f"Open Positions:   {len(open_positions)} / {self.max_open_positions} max\n"
         summary += f"Total Exposure:   ${total_exposure:,.0f} ({exposure_pct:.1f}%)\n"
         summary += f"Performance:      {self._format_streak()}\n"
-        summary += f"Circuit Breaker:  {'🚨 TRIGGERED' if circuit_breached else '✅ OK'}\n"
+        summary += f"Circuit Breaker:  {'\ud83d\udea8 TRIGGERED' if circuit_breached else '\u2705 OK'}\n"
         summary += "="*60 + "\n"
 
         return summary
 
 
-# ── Global singleton ────────────────────────────────────────────────────────────────────────────────
+# ── Global singleton ─────────────────────────────────────────────────────────────────────────────
 position_manager = PositionManager()
