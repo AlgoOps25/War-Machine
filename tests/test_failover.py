@@ -154,8 +154,8 @@ def test_rest_cache_no_double_fetch():
         "volume": 50000,
         "source": "rest",
     }
-    # Plant a fresh cache entry with ts = now (within TTL)
-    _wf._rest_cache[ticker] = {"bar": fake_cached_bar, "ts": time.monotonic()}
+    # Plant a fresh cache entry with fetched_at = now (within TTL)
+    _wf._rest_cache[ticker] = {"bar": fake_cached_bar, "fetched_at": time.monotonic()}
 
     hits_before = get_failover_stats()["rest_hits"]
     bar = get_current_bar_with_fallback(ticker)
