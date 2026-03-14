@@ -71,6 +71,13 @@ PHASE 1.27 (MAR 14, 2026) - Market calendar guard:
     that occurred all weekend from Fri EOD through Sun night.
   - Uses market_calendar.is_active_session() (covers 4 AM - 4 PM ET on trading days).
   - Logs a clear [FUNNEL] message so Railway logs confirm the guard fired.
+
+FIX v3.6 (MAR 14, 2026) - Force ticker uppercase at all funnel output points (#13):
+  - All watchlist lists returned by build_watchlist(), _build_live_watchlist(),
+    and get_current_watchlist() are forced to uppercase via a single
+    [t.upper() for t in watchlist] normalisation.
+  - Eliminates the case-sensitivity bug in scanner.py's last_subscribed_watchlist
+    set that caused duplicate WS subscriptions for mixed-case ticker strings.
 """
 import sys
 from pathlib import Path
@@ -94,6 +101,11 @@ def _get_momentum_screener():
     """Lazy import to avoid circular dependency."""
     from app.screening import premarket_scanner
     return premarket_scanner
+
+
+def _normalise(watchlist: List[str]) -> List[str]:
+    """Force all ticker symbols to uppercase. Single canonical normalisation point."""
+    return [t.upper() for t in watchlist if t]
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -294,6 +306,9 @@ class WatchlistFunnel:
         else:
             watchlist = self._build_live_watchlist()
 
+        # FIX v3.6: normalise all tickers to uppercase at the single exit point
+        watchlist = _normalise(watchlist)
+
         self.current_watchlist = watchlist
         self.last_update_time  = datetime.now()
 
@@ -446,11 +461,17 @@ class WatchlistFunnel:
         )
 
         _get_momentum_screener().lock_scanner_cache()
-        self._locked_watchlist = watchlist
+        # NOTE: _normalise() is applied in build_watchlist() after this returns
+        self._locked_watchlist = None  # will be set after normalise in build_watchlist
         self._locked_at = datetime.now()
         print(f"[FUNNEL] Watchlist LOCKED at {self._locked_at.strftime('%H:%M:%S')} ET — {len(watchlist)} tickers will not be re-scored until next session")
 
         return watchlist
+
+    def _finalise_lock(self, watchlist: List[str]) -> None:
+        """Called by build_watchlist() after normalise to persist the locked list."""
+        if self.current_stage == "live" and self._locked_at is not None and self._locked_watchlist is None:
+            self._locked_watchlist = watchlist
 
     def get_watchlist_metadata(self) -> Dict:
         cache_stats = _get_momentum_screener().get_cache_stats()
