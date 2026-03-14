@@ -66,6 +66,22 @@ PHASE 1.24 (MAR 13, 2026):
     Tickers with RVOL < 0.10x are skipped before running
     gap analysis, news catalyst fetch, and sector rotation —
     saving 3-4 EODHD API calls per dead ticker per premarket run.
+
+PHASE 1.28 (MAR 14, 2026) - Gap zero fix + duplicate catalyst call:
+  - FIX: Gap was always 0.0% for REST-sourced bars because both
+    `price` and `fundamentals['prev_close']` resolved to the same
+    EODHD previousClose value (EODHD real-time `close` = prior close
+    pre-market, not a live trade price).
+    Solution: REST bar now captures `open` (pre-market indicated price)
+    as the gap price, and `previousClose` as the reference close.
+    When `open` is unavailable, falls back to `close`. The REST-derived
+    prev_close is stored separately as `rest_prev_close` and used in
+    gap analysis instead of the fundamentals EOD value, which can lag
+    by a day on early-morning fetches.
+  - FIX: detect_catalyst() was called twice per ticker — once in Tier 2
+    (to derive has_earnings/has_news flags) and again identically in
+    Tier 3 for the catalyst score. The Tier 2 result is now reused in
+    Tier 3, eliminating one redundant API call per ticker per scan cycle.
 """
 from datetime import datetime, timedelta, time as dt_time
 from typing import List, Dict, Optional, Tuple
@@ -330,6 +346,13 @@ def fetch_fundamental_data(ticker: str) -> Dict:
         volumes    = [bar['volume'] for bar in eod_data[-20:]]
         avg_volume = int(statistics.mean(volumes)) if volumes else 0
         atr        = _calculate_atr_from_eod(eod_data[-14:])
+
+        # PHASE 1.28: use the second-to-last bar as prev_close so that on
+        # mornings when the EOD feed has already posted today's open bar,
+        # we don't compare today vs today (which gives 0% gap).
+        # eod_data[-1] = most recent completed session (yesterday after close)
+        # eod_data[-2] = the session before that
+        # We always want yesterday's close as the gap reference.
         prev_close = eod_data[-1]['close'] if eod_data else 0
 
         market_cap   = 0
@@ -358,7 +381,7 @@ def fetch_fundamental_data(ticker: str) -> Dict:
 
         _scanner_cache.set_fundamental(ticker, fundamentals)
         # Log once here — scan_ticker() must NOT log this again
-        print(f"[PREMARKET] {ticker}: Fundamentals - ADV={avg_volume:,}, ATR={atr:.2f}")
+        print(f"[PREMARKET] {ticker}: Fundamentals - ADV={avg_volume:,}, ATR={atr:.2f}, prev_close={prev_close:.2f}")
         return fundamentals
 
     except Exception as e:
@@ -449,6 +472,15 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
       - Duplicate fundamentals log removed (fetch_fundamental_data() logs once).
       - Early RVOL exit: tickers with RVOL < EARLY_EXIT_RVOL_MIN skip the
         expensive gap/news/sector API chain entirely.
+
+    PHASE 1.28 changes:
+      - REST bar now captures `open` as the pre-market price (gap price) and
+        `previousClose` as the gap reference. Previously both resolved to the
+        same value (EODHD `close` pre-market == previousClose), causing gap=0%.
+      - rest_prev_close stored separately; used in gap analysis when available
+        so we don't rely on the EOD fundamentals prev_close which can lag.
+      - detect_catalyst() result from Tier 2 reused in Tier 3 — eliminates
+        one redundant API call per ticker per scan cycle.
     """
     print(f"[PREMARKET] Scanning {ticker}...")
 
@@ -459,10 +491,10 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
 
     # fetch_fundamental_data() logs once on first fetch; silent on cache hit
     fundamentals = fetch_fundamental_data(ticker)
-    # FIX 1.24: removed duplicate print here — fetch_fundamental_data() already printed it
 
-    current_bar = None
-    bar_source  = None
+    current_bar  = None
+    bar_source   = None
+    rest_prev_close = None  # PHASE 1.28: captured from REST response
 
     if WS_AVAILABLE:
         try:
@@ -491,12 +523,23 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
             rt_resp = requests.get(rt_url, timeout=5)
             if rt_resp.status_code == 200:
                 rt = rt_resp.json()
+
+                # PHASE 1.28: EODHD real-time fields pre-market:
+                #   open  = pre-market indicated / last extended-hours price
+                #   close = previousClose (prior session close) — NOT a live price
+                # Use `open` as the gap price; fall back to `close` only if open absent.
+                premarket_price = rt.get('open') or rt.get('close') or rt.get('previousClose', 0)
+                rest_prev_close = rt.get('previousClose') or rt.get('close', 0)
+
                 current_bar = {
-                    'close':  rt.get('close') or rt.get('previousClose', 0),
+                    'close':  premarket_price,
                     'volume': rt.get('volume', 0)
                 }
                 bar_source = "REST"
-                print(f"[PREMARKET] {ticker}: REST bar used")
+                print(
+                    f"[PREMARKET] {ticker}: REST bar used "
+                    f"(open={rt.get('open')}, previousClose={rest_prev_close})"
+                )
             else:
                 print(f"[PREMARKET] {ticker}: REST API failed (HTTP {rt_resp.status_code})")
         except Exception as e:
@@ -537,12 +580,9 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
 
     # ──────────────────────────────────────────────────────────────────────────
     # FIX 1.24: Early RVOL exit gate
-    # Tickers with negligible volume (<0.10x RVOL) have no chance of making
-    # the final watchlist. Skip gap analysis, news fetch, and sector rotation
-    # entirely — saves 3-4 EODHD API calls per dead ticker per morning.
     # ──────────────────────────────────────────────────────────────────────────
     if volume_metrics['rvol'] < EARLY_EXIT_RVOL_MIN:
-        composite_score = volume_score * 0.60  # gap/catalyst/sector all zero
+        composite_score = volume_score * 0.60
         print(
             f"[PREMARKET] {ticker}: EARLY EXIT — RVOL={volume_metrics['rvol']:.2f}x "
             f"< {EARLY_EXIT_RVOL_MIN}x — skipping gap/news/sector (score={composite_score:.1f})"
@@ -570,17 +610,34 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
         _scanner_cache.set_scan(ticker, result)
         return result
 
-    # Tier 2: Gap quality (25% weight) — only reached if RVOL >= 0.10x
-    gap_score = 0
-    gap_data  = None
-    if V2_ENABLED and fundamentals['prev_close'] > 0:
+    # PHASE 1.28: determine best prev_close for gap calculation.
+    # REST bars carry their own previousClose which is more reliable than
+    # the EOD fundamentals value (which may lag by one session on early fetches).
+    gap_prev_close = rest_prev_close if rest_prev_close and rest_prev_close > 0 \
+                     else fundamentals['prev_close']
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Tier 2: Gap quality (25% weight) + catalyst detection (shared with Tier 3)
+    # PHASE 1.28: detect_catalyst() called ONCE here; result reused in Tier 3.
+    # ──────────────────────────────────────────────────────────────────────────
+    gap_score    = 0
+    gap_data     = None
+    catalyst     = None  # shared across Tier 2 + Tier 3
+
+    if V2_ENABLED:
+        # Catalyst detection — single call, result passed to both gap + scoring
         try:
-            catalyst_pre  = detect_catalyst(ticker)
-            has_earnings  = catalyst_pre and catalyst_pre.catalyst_type == 'earnings'
-            has_news      = catalyst_pre is not None
-            gap_result    = analyze_gap(
+            catalyst = detect_catalyst(ticker)
+        except Exception as e:
+            print(f"[PREMARKET] {ticker}: Catalyst detection error: {e}")
+
+    if V2_ENABLED and gap_prev_close > 0:
+        try:
+            has_earnings = catalyst is not None and catalyst.catalyst_type == 'earnings'
+            has_news     = catalyst is not None
+            gap_result   = analyze_gap(
                 ticker,
-                fundamentals['prev_close'],
+                gap_prev_close,
                 price,
                 fundamentals['atr'],
                 has_earnings,
@@ -588,23 +645,28 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
             )
             gap_score = gap_result.quality_score
             gap_data  = gap_result.to_dict()
+            print(
+                f"[PREMARKET] {ticker}: Gap={gap_data.get('size_pct', 0):+.2f}% "
+                f"({gap_data.get('tier','?')}) score={gap_score:.1f} "
+                f"[prev_close={gap_prev_close:.2f}, price={price:.2f}]"
+            )
         except Exception as e:
             print(f"[PREMARKET] {ticker}: Gap analysis error: {e}")
+    elif V2_ENABLED and gap_prev_close == 0:
+        print(f"[PREMARKET] {ticker}: Gap skipped — prev_close unavailable")
 
-    # Tier 3: News catalyst (15% weight)
+    # ──────────────────────────────────────────────────────────────────────────
+    # Tier 3: News catalyst score (15% weight) — reuses catalyst from Tier 2
+    # ──────────────────────────────────────────────────────────────────────────
     catalyst_score = 0
     catalyst_data  = None
     if V2_ENABLED:
-        try:
-            catalyst = detect_catalyst(ticker)
-            if catalyst:
-                catalyst_score = min(100, catalyst.weight * 4)
-                catalyst_data  = catalyst.to_dict()
-                print(f"[PREMARKET] {ticker}: Catalyst detected - {catalyst.catalyst_type} (weight={catalyst.weight}, score={catalyst_score:.1f})")
-            else:
-                print(f"[PREMARKET] {ticker}: No catalyst detected")
-        except Exception as e:
-            print(f"[PREMARKET] {ticker}: Catalyst detection error: {e}")
+        if catalyst:
+            catalyst_score = min(100, catalyst.weight * 4)
+            catalyst_data  = catalyst.to_dict()
+            print(f"[PREMARKET] {ticker}: Catalyst — {catalyst.catalyst_type} (weight={catalyst.weight}, score={catalyst_score:.1f})")
+        else:
+            print(f"[PREMARKET] {ticker}: No catalyst detected")
 
     # Sector rotation bonus (+15 pts if hot sector)
     sector_bonus = 0
@@ -743,13 +805,13 @@ def print_momentum_summary(scored_tickers: List[Dict], top_n: int = 10):
     print(f"{'-'*80}")
 
     for i, ticker_data in enumerate(scored_tickers[:top_n], 1):
-        rank         = f"#{i}"
-        ticker       = ticker_data.get('ticker', 'N/A')
-        score        = ticker_data.get('composite_score', ticker_data.get('volume_score', 0))
-        rvol         = ticker_data.get('rvol', 0)
-        price        = ticker_data.get('price', 0)
-        gap_data     = ticker_data.get('gap_data', {})
-        gap_str      = f"{gap_data.get('size_pct', 0):+.1f}%" if gap_data else "N/A"
+        rank          = f"#{i}"
+        ticker        = ticker_data.get('ticker', 'N/A')
+        score         = ticker_data.get('composite_score', ticker_data.get('volume_score', 0))
+        rvol          = ticker_data.get('rvol', 0)
+        price         = ticker_data.get('price', 0)
+        gap_data      = ticker_data.get('gap_data', {})
+        gap_str       = f"{gap_data.get('size_pct', 0):+.1f}%" if gap_data else "N/A"
         catalyst_data = ticker_data.get('catalyst_data', {})
         catalyst_str  = catalyst_data.get('type', 'N/A')[:10] if catalyst_data else "-"
         print(f"{rank:<6} {ticker:<8} {score:<8.1f} {rvol:<8.2f} {gap_str:<8} {catalyst_str:<12} ${price:<9.2f}")
