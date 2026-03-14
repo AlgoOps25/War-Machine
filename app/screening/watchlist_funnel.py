@@ -61,9 +61,16 @@ FIX v3.5 (MAR 12, 2026) - Issue #3 + #4:
     Expansion fallback floor raised 15 -> 20 (still lenient enough for thin days).
   - Issue #4: Symmetric volume signal adjustments in _build_narrow_scan().
     Bearish penalty was -15 vs bullish reward of +10 — a 50% asymmetry that
-    structurally disadvantaged bearish setups on red-tape days. Both now ±10.
+    structurally disadvantaged bearish setups on red-tape days. Both now +/-10.
     If long-bias is desired, filter direction=='bull' in sniper rather than
     silently distorting watchlist scores.
+
+PHASE 1.27 (MAR 14, 2026) - Market calendar guard:
+  - build_watchlist() now returns [] immediately on weekends and US holidays.
+  - Eliminates wasted EODHD API calls, WS reconnect loops, and timeout errors
+    that occurred all weekend from Fri EOD through Sun night.
+  - Uses market_calendar.is_active_session() (covers 4 AM - 4 PM ET on trading days).
+  - Logs a clear [FUNNEL] message so Railway logs confirm the guard fired.
 """
 import sys
 from pathlib import Path
@@ -77,6 +84,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from app.screening import volume_analyzer
 from app.screening import dynamic_screener
+from app.screening.market_calendar import is_active_session, is_market_day, next_market_open
 from utils import config
 
 from zoneinfo import ZoneInfo
@@ -156,17 +164,17 @@ def _apply_relative_outlier_boost(scored_tickers: List[Dict]) -> List[Dict]:
                 t['outlier_group_avg_gap'] = round(group_avg_gap, 2)
                 outlier_count += 1
                 print(
-                    f"[FUNNEL] 🎯 OUTLIER BOOST: {t['ticker']} "
+                    f"[FUNNEL] \U0001f3af OUTLIER BOOST: {t['ticker']} "
                     f"gap={gap_pct:+.2f}% vs sector '{sector}' avg={group_avg_gap:+.2f}% "
-                    f"→ +20 score (new={t['composite_score']:.1f})"
+                    f"\u2192 +20 score (new={t['composite_score']:.1f})"
                 )
             else:
                 t['relative_outlier'] = False
 
     if outlier_count == 0:
-        print("[FUNNEL] ℹ️  No relative outliers detected in sector groups (all moving together)")
+        print("[FUNNEL] \u2139\ufe0f  No relative outliers detected in sector groups (all moving together)")
     else:
-        print(f"[FUNNEL] ✅ Relative outlier boost applied to {outlier_count} ticker(s)")
+        print(f"[FUNNEL] \u2705 Relative outlier boost applied to {outlier_count} ticker(s)")
 
     return scored_tickers
 
@@ -245,6 +253,20 @@ class WatchlistFunnel:
 
     def build_watchlist(self, force_refresh: bool = False) -> List[str]:
         """Build watchlist based on current stage and market conditions."""
+
+        # ── PHASE 1.27: Market calendar guard ──────────────────────────────
+        # Abort immediately on weekends and US market holidays.
+        # is_active_session() covers 4:00 AM - 4:00 PM ET on trading days.
+        now_et = datetime.now(tz=ET)
+        if not is_active_session(now_et):
+            nxt = next_market_open(now_et)
+            print(
+                f"[FUNNEL] Market closed (weekend/holiday) — "
+                f"no scan. Next open: {nxt.strftime('%a %b %d %I:%M %p ET')}"
+            )
+            return []
+        # ────────────────────────────────────────────────────────────────────
+
         # PHASE 1.18: return frozen watchlist immediately if locked
         if self._locked_watchlist is not None and self.get_current_stage() == "live" and not force_refresh:
             print(f"[FUNNEL] Using locked watchlist ({len(self._locked_watchlist)} tickers, locked at {self._locked_at.strftime('%H:%M:%S') if self._locked_at else '?'})")
@@ -283,7 +305,7 @@ class WatchlistFunnel:
                 except Exception:
                     pass
 
-        print(f"\n✅ Watchlist: {len(watchlist)} tickers")
+        print(f"\n\u2705 Watchlist: {len(watchlist)} tickers")
         print(f"{', '.join(watchlist[:15])}{'...' if len(watchlist) > 15 else ''}\n")
 
         return watchlist
@@ -360,18 +382,17 @@ class WatchlistFunnel:
                 use_cache=True
             )
         # FIX v3.4: lowered volume threshold from 50,000 -> 10,000
-        # Pre-open volume is naturally thin; 50k was killing all candidates
         filtered_tickers = [
             t for t in self.scored_tickers if t.get('volume', 0) > 10000
         ]
         if not filtered_tickers:
-            print("[FUNNEL] ⚠️  No tickers passed final volume filter, using top scorers")
+            print("[FUNNEL] \u26a0\ufe0f  No tickers passed final volume filter, using top scorers")
             filtered_tickers = self.scored_tickers
         watchlist = _get_momentum_screener().get_top_n_movers(
             filtered_tickers, stage_config["max_tickers"]
         )
         print("\n" + "="*80)
-        print("🎯 FINAL TOP 3 FOR MARKET OPEN")
+        print("\U0001f3af FINAL TOP 3 FOR MARKET OPEN")
         print("="*80)
         _get_momentum_screener().print_momentum_summary(filtered_tickers, top_n=3)
         return watchlist
@@ -398,19 +419,18 @@ class WatchlistFunnel:
         )
         print(f"[FUNNEL] {len(self.scored_tickers)} tickers passed scoring (min_score={stage_config['min_score']})")
         if len(self.scored_tickers) < 10:
-            print(f"[FUNNEL] ⚠️  Only {len(self.scored_tickers)} tickers passed — expanding search...")
+            print(f"[FUNNEL] \u26a0\ufe0f  Only {len(self.scored_tickers)} tickers passed — expanding search...")
             expanded_results = dynamic_screener.get_scored_tickers(
                 max_tickers=100, min_score=0, force_refresh=True
             )
             expanded_candidates = [t['ticker'] for t in expanded_results[:100]]
             self.scored_tickers = _get_momentum_screener().run_momentum_screener(
                 expanded_candidates,
-                min_composite_score=20.0,  # FIX #3: was 15.0 — raised emergency floor to 20
+                min_composite_score=20.0,
                 use_cache=True
             )
             print(f"[FUNNEL] Expanded search: {len(self.scored_tickers)} tickers (min_score=20.0)")
 
-        # Volume signal adjustments (existing logic — unchanged)
         volume_signals = self.volume_analyzer.get_active_signals()
         for signal in volume_signals:
             ticker = signal['ticker']
@@ -418,9 +438,6 @@ class WatchlistFunnel:
                 if scored_ticker['ticker'] == ticker:
                     scored_ticker['composite_score'] += 5
 
-        # PHASE 1.19: Relative strength/weakness outlier boost (Nitro Trades alignment)
-        # Boosts tickers moving OPPOSITE to their sector peers by +20 score.
-        # Must run BEFORE the final sort so outliers surface to the top.
         self.scored_tickers = _apply_relative_outlier_boost(self.scored_tickers)
 
         self.scored_tickers.sort(key=lambda x: x['composite_score'], reverse=True)
@@ -428,7 +445,6 @@ class WatchlistFunnel:
             self.scored_tickers, stage_config["max_tickers"]
         )
 
-        # PHASE 1.18: freeze — lock the cache and this watchlist for the session
         _get_momentum_screener().lock_scanner_cache()
         self._locked_watchlist = watchlist
         self._locked_at = datetime.now()
@@ -494,8 +510,8 @@ if __name__ == "__main__":
     print("Testing Watchlist Funnel...\n")
     funnel    = WatchlistFunnel()
     watchlist = funnel.build_watchlist(force_refresh=True)
-    print(f"\n📦 Current Stage: {funnel.current_stage}")
-    print(f"🎯 Watchlist: {len(watchlist)} tickers")
-    print(f"📈 Top 5: {watchlist[:5]}")
+    print(f"\n\U0001f4e6 Current Stage: {funnel.current_stage}")
+    print(f"\U0001f3af Watchlist: {len(watchlist)} tickers")
+    print(f"\U0001f4c8 Top 5: {watchlist[:5]}")
     metadata = funnel.get_watchlist_metadata()
-    print(f"\n📊 Metadata: {metadata}")
+    print(f"\n\U0001f4ca Metadata: {metadata}")
