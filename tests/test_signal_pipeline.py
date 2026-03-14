@@ -257,7 +257,7 @@ class TestPositionManagerRejection:
 def _watchdog(fn, ticker, timeout_seconds):
     """
     Isolated watchdog helper for tests — uses a fresh executor each call
-    so test runs don’t share the production module-level executor whose
+    so test runs don't share the production module-level executor whose
     single worker thread may still be occupied by a previous hung task.
     """
     with ThreadPoolExecutor(max_workers=1) as ex:
@@ -316,19 +316,25 @@ class TestTickerWatchdog:
         Prove the loop processes subsequent tickers even if one hangs.
         Uses a fresh executor per call (_watchdog) so the hung HUNG task
         does not block the single production worker thread.
+        Uses a 2s timeout so this test completes well under pytest-timeout=60.
         """
         processed = []
-        TIMEOUT = 1  # seconds
+        TIMEOUT = 2  # seconds — short enough to finish, long enough to be reliable
+        _stop = threading.Event()
 
         def process(ticker):
             if ticker == 'HUNG':
-                time.sleep(60)
+                # Simulate a hung ticker using an interruptible wait
+                # so the thread exits cleanly when the test is done.
+                _stop.wait(timeout=30)
             else:
                 processed.append(ticker)
 
         watchlist = ['GOOD1', 'HUNG', 'GOOD2', 'GOOD3']
         for t in watchlist:
             _watchdog(process, t, TIMEOUT)
+
+        _stop.set()  # unblock any lingering hung thread
 
         assert 'GOOD1' in processed
         assert 'HUNG' not in processed

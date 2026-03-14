@@ -17,6 +17,10 @@ class FunnelTracker:
     def record_filter(self, ticker: str, filter_name: str, reason: str = "", **kwargs):
         pass
 
+    def log_screened(self, ticker: str, **kwargs):
+        """Log a screened ticker through the funnel. Stub."""
+        pass
+
     def get_daily_summary(self) -> dict:
         return {}
 
@@ -29,3 +33,8 @@ class FunnelTracker:
 
 # Module-level singleton
 funnel_tracker = FunnelTracker()
+
+
+def log_screened(ticker: str, **kwargs):
+    """Module-level convenience wrapper around funnel_tracker.log_screened()."""
+    funnel_tracker.log_screened(ticker, **kwargs)
