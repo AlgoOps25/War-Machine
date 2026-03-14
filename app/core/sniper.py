@@ -35,6 +35,13 @@
 # FIXED IMPORTS: signal_analytics, dynamic_thresholds, hourly_gate, production_helpers
 # FIXED (Mar 10 2026): All get_conn() calls now use try/finally: return_conn(conn) — no leaks
 # FIXED C2 (Mar 10 2026): Discord alert now fires AFTER position open succeeds (position_id > 0)
+#
+# REFACTOR (Mar 14 2026):
+#   - app/filters/vwap_gate.py      : compute_vwap, passes_vwap_gate, VWAP_GATE_ENABLED
+#   - app/core/gate_stats.py        : _gate_stats, _track_gate_result, print_gate_distribution_stats
+#   - app/core/confidence_model.py  : GRADE_CONFIDENCE_RANGES, compute_confidence
+#   - app/core/arm_signal.py        : arm_ticker (position open + Discord + armed state)
+#   - app/core/sniper_log.py        : log_proposed_trade
 import traceback
 import requests
 import json
@@ -66,6 +73,18 @@ from app.analytics.explosive_mover_tracker import (
     print_explosive_override_summary,
     get_daily_override_stats
 )
+
+# ── Refactored modules ────────────────────────────────────────────────────────
+from app.filters.vwap_gate import (
+    VWAP_GATE_ENABLED, compute_vwap, passes_vwap_gate
+)
+from app.core.gate_stats import (
+    _gate_stats, _get_confidence_bucket, _track_gate_result,
+    print_gate_distribution_stats
+)
+from app.core.confidence_model import GRADE_CONFIDENCE_RANGES, compute_confidence
+from app.core.arm_signal import arm_ticker
+from app.core.sniper_log import log_proposed_trade
 
 try:
     from app.validation.volume_profile import get_volume_analyzer
@@ -208,168 +227,21 @@ except ImportError as e:
     TRACKERS_ENABLED = False
     print(f"[SNIPER] ⚠️  Analytics trackers not available: {e}")
 
-# ══════════════════════════════════════════════════════════════════════════════
-# PHASE 2: WIN RATE ENHANCEMENTS - HYBRID CONFIDENCE MODEL
-# ══════════════════════════════════════════════════════════════════════════════
 import random
 
-GRADE_CONFIDENCE_RANGES = {
-    "A+":     (0.88, 0.92),
-    "A":      (0.83, 0.87),
-    "A-":     (0.78, 0.82),
-    "B+":     (0.72, 0.76),
-    "B":      (0.66, 0.70),
-    "B-":     (0.60, 0.64),
-    "C+":     (0.55, 0.60),
-    "C":      (0.50, 0.55),
-    "C-":     (0.45, 0.50),
-}
-
-def compute_confidence(grade: str, timeframe: str, ticker: str) -> float:
-    if grade not in GRADE_CONFIDENCE_RANGES:
-        return 0.75
-    min_conf, max_conf = GRADE_CONFIDENCE_RANGES[grade]
-    return (min_conf + max_conf) / 2.0
-
-# ══════════════════════════════════════════════════════════════════════════════
-# ISSUE #23: CONFIDENCE GATE DISTRIBUTION TRACKING
-# Tracks grade/signal-type/histogram data at the Step 11b gate for EOD analytics
-# ══════════════════════════════════════════════════════════════════════════════
-_gate_stats = {
-    'by_grade': {
-        'A+': {'tested': 0, 'passed': 0, 'filtered': 0, 'avg_confidence': 0.0},
-        'A':  {'tested': 0, 'passed': 0, 'filtered': 0, 'avg_confidence': 0.0},
-        'A-': {'tested': 0, 'passed': 0, 'filtered': 0, 'avg_confidence': 0.0},
-        'B+': {'tested': 0, 'passed': 0, 'filtered': 0, 'avg_confidence': 0.0},
-        'B':  {'tested': 0, 'passed': 0, 'filtered': 0, 'avg_confidence': 0.0},
-        'B-': {'tested': 0, 'passed': 0, 'filtered': 0, 'avg_confidence': 0.0},
-        'C+': {'tested': 0, 'passed': 0, 'filtered': 0, 'avg_confidence': 0.0},
-        'C':  {'tested': 0, 'passed': 0, 'filtered': 0, 'avg_confidence': 0.0},
-        'C-': {'tested': 0, 'passed': 0, 'filtered': 0, 'avg_confidence': 0.0},
-    },
-    'by_signal_type': {
-        'CFW6_OR':      {'tested': 0, 'passed': 0, 'filtered': 0},
-        'CFW6_INTRADAY': {'tested': 0, 'passed': 0, 'filtered': 0},
-    },
-    'confidence_ranges': {
-        '0.40-0.50': 0,
-        '0.50-0.60': 0,
-        '0.60-0.70': 0,
-        '0.70-0.80': 0,
-        '0.80-0.90': 0,
-        '0.90-0.95': 0,
-    }
-}
-
-def _get_confidence_bucket(confidence: float) -> str:
-    """Map a confidence value to its histogram bucket label."""
-    if confidence < 0.50: return '0.40-0.50'
-    if confidence < 0.60: return '0.50-0.60'
-    if confidence < 0.70: return '0.60-0.70'
-    if confidence < 0.80: return '0.70-0.80'
-    if confidence < 0.90: return '0.80-0.90'
-    return '0.90-0.95'
-
-def _track_gate_result(grade: str, signal_type: str, confidence: float, passed: bool):
-    """Record confidence gate result for EOD grade distribution analytics."""
-    if grade in _gate_stats['by_grade']:
-        stats = _gate_stats['by_grade'][grade]
-        stats['tested'] += 1
-        if passed:
-            stats['passed'] += 1
-        else:
-            stats['filtered'] += 1
-        n = stats['tested']
-        stats['avg_confidence'] = (stats['avg_confidence'] * (n - 1) + confidence) / n
-
-    if signal_type in _gate_stats['by_signal_type']:
-        st = _gate_stats['by_signal_type'][signal_type]
-        st['tested'] += 1
-        if passed:
-            st['passed'] += 1
-        else:
-            st['filtered'] += 1
-
-    bucket = _get_confidence_bucket(confidence)
-    if bucket in _gate_stats['confidence_ranges']:
-        _gate_stats['confidence_ranges'][bucket] += 1
-
-def print_gate_distribution_stats():
-    """Print EOD confidence gate grade distribution report."""
-    total_tested = sum(v['tested'] for v in _gate_stats['by_grade'].values())
-    if total_tested == 0:
-        return
-
-    print("\n" + "=" * 80)
-    print("CONFIDENCE GATE — GRADE DISTRIBUTION")
-    print("=" * 80)
-
-    print(f"\n{'Grade':<6} {'Tested':<8} {'Passed':<8} {'Filtered':<10} {'Pass Rate':<12} {'Avg Conf':<10}")
-    print("-" * 80)
-    for grade in ['A+', 'A', 'A-', 'B+', 'B', 'B-', 'C+', 'C', 'C-']:
-        s = _gate_stats['by_grade'][grade]
-        if s['tested'] == 0:
-            continue
-        pass_rate = s['passed'] / s['tested'] * 100
-        emoji = "✅" if pass_rate >= 80 else "⚠️ " if pass_rate >= 50 else "🚫"
-        print(
-            f"{grade:<6} {s['tested']:<8} {s['passed']:<8} "
-            f"{s['filtered']:<10} {pass_rate:>5.1f}% {emoji:<4} "
-            f"{s['avg_confidence']:.3f}"
-        )
-
-    print("\nBy Signal Type:")
-    print(f"{'Type':<15} {'Tested':<8} {'Passed':<8} {'Filtered':<10} {'Pass Rate':<12}")
-    print("-" * 80)
-    for sig_type, st in _gate_stats['by_signal_type'].items():
-        if st['tested'] == 0:
-            continue
-        pr = st['passed'] / st['tested'] * 100
-        print(f"{sig_type:<15} {st['tested']:<8} {st['passed']:<8} {st['filtered']:<10} {pr:>5.1f}%")
-
-    print("\nConfidence Distribution:")
-    max_count = max(_gate_stats['confidence_ranges'].values()) or 1
-    for bucket, count in _gate_stats['confidence_ranges'].items():
-        bar = '█' * int((count / max_count) * 40)
-        print(f"{bucket}: {bar} ({count})")
-
-    print("\n💡 Analysis:")
-    b_plus = _gate_stats['by_grade']['B+']
-    if b_plus['tested'] > 5 and (b_plus['passed'] / b_plus['tested']) < 0.30:
-        print("  ⚠️  B+ signals heavily filtered (<30% pass rate) — consider lowering gate threshold")
-    c_stats = _gate_stats['by_grade']['C']
-    if c_stats['tested'] > 5 and (c_stats['passed'] / c_stats['tested']) > 0.50:
-        print("  ⚠️  C signals passing frequently (>50% pass rate) — consider raising gate threshold")
-    or_st = _gate_stats['by_signal_type']['CFW6_OR']
-    id_st = _gate_stats['by_signal_type']['CFW6_INTRADAY']
-    if or_st['tested'] > 0 and id_st['tested'] > 0:
-        or_pr  = or_st['passed']  / or_st['tested']
-        id_pr  = id_st['passed']  / id_st['tested']
-        if abs(or_pr - id_pr) > 0.30:
-            print(
-                f"  ⚠️  Large pass rate gap: OR={or_pr:.1%} vs Intraday={id_pr:.1%} "
-                f"— gate thresholds may need adjustment"
-            )
-    if not any([
-        b_plus['tested'] > 5 and (b_plus['passed'] / b_plus['tested']) < 0.30,
-        c_stats['tested'] > 5 and (c_stats['passed'] / c_stats['tested']) > 0.50,
-        or_st['tested'] > 0 and id_st['tested'] > 0 and abs(
-            or_st['passed'] / or_st['tested'] - id_st['passed'] / id_st['tested']
-        ) > 0.30,
-    ]):
-        print("  ✅ Gate distribution looks healthy — no threshold adjustments needed")
-
-    print("=" * 80 + "\n")
+print("[SNIPER] ✅ VWAP directional gate enabled (app.filters.vwap_gate)")
+print("[SNIPER] ✅ Confidence model loaded (app.core.confidence_model)")
+print("[SNIPER] ✅ Gate stats tracker loaded (app.core.gate_stats)")
+print("[SNIPER] ✅ arm_ticker loaded (app.core.arm_signal)")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PHASE 4 INTEGRATION - Signal Analytics & Performance Monitoring
-# FIXED: Corrected import paths from original broken versions
 # ══════════════════════════════════════════════════════════════════════════════
 try:
-    from app.signals.signal_analytics import signal_tracker  # FIXED: was `from signal_analytics`
+    from app.signals.signal_analytics import signal_tracker
     from app.analytics.performance_monitor import performance_monitor
     PHASE_4_ENABLED = True
-    alert_manager = None  # performance_alerts module not available; alerts go through discord_helpers
+    alert_manager = None
     print("[SIGNALS] ✅ Phase 4 monitoring enabled (analytics + performance)")
 except ImportError as import_err:
     signal_tracker = None
@@ -386,13 +258,11 @@ except ImportError:
     PRODUCTION_HELPERS_ENABLED = False
     print("[SNIPER] ⚠️  Production helpers not available")
 
-# Dashboard/alert timing now managed by thread-safe state
 DASHBOARD_UPDATE_INTERVAL_MINUTES = 30
 ALERT_CHECK_INTERVAL_MINUTES = 15
 
 # ══════════════════════════════════════════════════════════════════════════════
 # HOURLY CONFIDENCE GATE
-# FIXED: was bare `from hourly_gate` — now graceful fallback
 # ══════════════════════════════════════════════════════════════════════════════
 try:
     from app.validation.hourly_gate import get_hourly_confidence_multiplier, get_current_hour_context, print_hourly_gate_stats
@@ -464,41 +334,6 @@ EXPLOSIVE_SCORE_THRESHOLD = 80
 EXPLOSIVE_RVOL_THRESHOLD = 3.0
 print(f"[SNIPER] ✅ Explosive mover override enabled (score>={EXPLOSIVE_SCORE_THRESHOLD} + RVOL>={EXPLOSIVE_RVOL_THRESHOLD}x)")
 
-VWAP_GATE_ENABLED = True
-print("[SNIPER] ✅ VWAP directional gate enabled (Phase 2 win rate enhancement)")
-
-def compute_vwap(bars: list) -> float:
-    if not bars or len(bars) < 5:
-        return 0.0
-    cumulative_tpv = 0.0
-    cumulative_vol = 0.0
-    for bar in bars:
-        typical_price = (bar['high'] + bar['low'] + bar['close']) / 3.0
-        volume = bar.get('volume', 0)
-        cumulative_tpv += typical_price * volume
-        cumulative_vol += volume
-    if cumulative_vol == 0:
-        return 0.0
-    return cumulative_tpv / cumulative_vol
-
-def passes_vwap_gate(bars: list, direction: str, current_price: float) -> tuple:
-    if not VWAP_GATE_ENABLED:
-        return True, "VWAP gate disabled"
-    vwap = compute_vwap(bars)
-    if vwap == 0.0:
-        return True, "VWAP unavailable (insufficient data)"
-    if direction == "bull":
-        if current_price > vwap:
-            return True, f"BULL + price above VWAP (${current_price:.2f} > ${vwap:.2f})"
-        else:
-            return False, f"BULL signal rejected: price below VWAP (${current_price:.2f} < ${vwap:.2f})"
-    elif direction == "bear":
-        if current_price < vwap:
-            return True, f"BEAR + price below VWAP (${current_price:.2f} < ${vwap:.2f})"
-        else:
-            return False, f"BEAR signal rejected: price above VWAP (${current_price:.2f} > ${vwap:.2f})"
-    return True, "Unknown direction"
-
 MAX_WATCH_BARS = 12
 OPTIONS_PRE_GATE_MODE = "HARD"
 
@@ -536,31 +371,6 @@ def _get_ticker_screener_metadata(ticker: str) -> dict:
     except Exception as e:
         print(f"[EXPLOSIVE] Metadata fetch error for {ticker}: {e}")
         return {'score': 0, 'rvol': 0.0, 'qualified': False, 'tier': 'N/A'}
-
-def log_proposed_trade(ticker, signal_type, direction, price, confidence, grade):
-    from app.data.db_connection import get_conn, return_conn, serial_pk
-    conn = None
-    try:
-        conn = get_conn()
-        cursor = conn.cursor()
-        p = get_placeholder(conn)
-        cursor.execute(f"""
-            CREATE TABLE IF NOT EXISTS proposed_trades (
-                id {serial_pk()}, ticker TEXT, signal_type TEXT,
-                direction TEXT, price REAL, confidence REAL, grade TEXT,
-                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        query = build_insert("proposed_trades",
-                            ["ticker", "signal_type", "direction", "price", "confidence", "grade"],
-                            p)
-        safe_execute(cursor, query, (ticker, signal_type, direction, price, confidence, grade))
-        conn.commit()
-    except Exception as e:
-        print(f"[TRACKER] Error: {e}")
-    finally:
-        if conn:
-            return_conn(conn)
 
 def print_validation_stats():
     if not VALIDATOR_ENABLED:
@@ -766,8 +576,6 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
             print(f"[{ticker}] Volume profile validation error (non-fatal): {vp_err}")
 
     if skip_cfw6_confirmation:
-        # BOS path: confirmation already done in scan_bos_fvg() via check_fvg_entry()
-        # Use the last closed bar's open as entry, and the grade from bos_confirmation
         entry_price = bars_session[-1]["open"]
         base_grade  = bos_confirmation if bos_confirmation in ("A+", "A", "A-", "B+", "B") else "A-"
         confirm_idx = len(bars_session) - 1
@@ -807,7 +615,6 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         except Exception as timing_err:
             print(f"[{ticker}] Entry timing validation error (non-fatal): {timing_err}")
 
-        # ── C2: Cache order block for this BOS ───────────────────────────────────
     if ORDER_BLOCK_ENABLED:
         _ob = identify_order_block(bars_session, breakout_idx, direction)
         if _ob:
@@ -821,7 +628,6 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
     else:
         print(f"[{ticker}] ✅ VWAP GATE: {vwap_reason}")
 
-    # ── Step 8: Confirmation layers ──────────────────────────────────────────
     conf_result = grade_signal_with_confirmations(
         ticker=ticker, direction=direction, bars=bars_session,
         current_price=entry_price, breakout_idx=breakout_idx, base_grade=base_grade
@@ -831,9 +637,6 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         return False
     final_grade = conf_result["final_grade"]
 
-    # ── Step 8.5: MTF trend alignment ─────────────────────────────────────────
-    # Boosts confidence +5/+10/+15% when 1m/5m/15m/30m trend all agree.
-    # Non-gating: low score logs a warning but does NOT kill the signal.
     _mtf_trend_signal_data = {}
     base_confidence_pre_mtf_trend = compute_confidence(final_grade, "5m", ticker)
     base_confidence_pre_mtf_trend, _mtf_trend_signal_data = run_mtf_trend_step(
@@ -842,7 +645,6 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
     )
     _mtf_trend_boost = _mtf_trend_signal_data.get('mtf_trend', {}).get('boost', 0.0)
 
-    # ── Step 9: MTF FVG convergence boost ────────────────────────────────────
     mtf_result = enhance_signal_with_mtf(
         ticker=ticker,
         direction=direction,
@@ -858,7 +660,6 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         )
     else:
         print(f"[{ticker}] MTF: {mtf_result['reason']}")
-
 
     stop_price, t1, t2 = compute_stop_and_targets(
         bars_session, direction, or_high_ref, or_low_ref, entry_price,
@@ -878,7 +679,6 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
                 t1_price=t1,
                 t2_price=t2
             )
-
             print(f"[PHASE 4] 📊 {ticker} signal GENERATED - {signal_type} {direction.upper()} {final_grade}")
         except Exception as e:
             print(f"[PHASE 4] Signal tracking error: {e}")
@@ -886,7 +686,7 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
     latest_bar = bars_session[-1]
     current_volume = latest_bar.get("volume", 0)
     signal_direction = "LONG" if direction == "bull" else "SHORT"
-    base_confidence = base_confidence_pre_mtf_trend  # already has MTF trend boost applied
+    base_confidence = base_confidence_pre_mtf_trend
     original_confidence = compute_confidence(final_grade, "5m", ticker)
 
     validation_result = None
@@ -979,10 +779,9 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
             print(f"[VALIDATOR] Error validating {ticker}: {e}")
             traceback.print_exc()
 
-    ml_boost = 0.0  # default; overwritten if ML scorer fires
-    _meta = _get_ticker_screener_metadata(ticker)  # ← ADD THIS LINE
+    ml_boost = 0.0
+    _meta = _get_ticker_screener_metadata(ticker)
 
-        # ── ML Score gate (Step 11c) ──────────────────────────────────────────────
     if ML_SCORER_ENABLED:
         try:
             scorer = get_scorer_v2()
@@ -1014,7 +813,7 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         except Exception as ml_err:
             print(f"[{ticker}] ML scorer error (non-fatal): {ml_err}")
 
-    options_rec = _pre_options_data  # already fetched in Step 6.5 pre-gate
+    options_rec = _pre_options_data
     if _pre_options_data and _pre_options_data.get("gex_data"):
         print(f"[{ticker}] [OPTIONS] GEX data reused from Step 6.5 cache")
 
@@ -1044,15 +843,14 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
     final_confidence = base_confidence + ticker_adj + mode_adj + ivr_adj + uoa_adj + gex_adj + mtf_boost + ml_boost
     final_confidence = max(0.40, min(final_confidence, 0.95))
 
-        # ── SPY EMA confidence adjustment ─────────────────────────────────────────
     if SPY_EMA_CONTEXT_ENABLED and spy_regime:
         score_adj = spy_regime.get("score_adj", 0)
         spy_regime_adj = (max(0, score_adj) / 100.0 if direction == "bull"
                          else max(0, -score_adj) / 100.0)
         final_confidence = max(0.40, min(final_confidence + spy_regime_adj, 0.95))
         print(f"[{ticker}] SPY EMA ADJ: {spy_regime_adj:+.3f} | Regime={spy_regime.get('label')}")
-        
-        # ── C1: Liquidity sweep boost ─────────────────────────────────────
+
+    _sweep_result = None
     if LIQUIDITY_SWEEP_ENABLED:
         _sweep_vwap = compute_vwap(bars_session)
         final_confidence, _sweep_result = apply_sweep_boost(
@@ -1063,8 +861,8 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         )
         if _sweep_result is None:
             print(f"[{ticker}] — No liquidity sweep detected")
-    
-        # ── C2: Order block retest boost ─────────────────────────────────────
+
+    _ob_result = None
     if ORDER_BLOCK_ENABLED:
         final_confidence, _ob_result = apply_ob_retest_boost(
             ticker, entry_price, direction, final_confidence
@@ -1072,7 +870,7 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         if _ob_result is None:
             print(f"[{ticker}] — No OB retest detected")
 
-        # ── D2: S/D zone confluence boost ────────────────────────────────────
+    _sd_result = None
     if SD_ZONE_ENABLED:
         final_confidence, _sd_result = apply_sd_confluence_boost(
             ticker, entry_price, direction, final_confidence
@@ -1080,7 +878,6 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         if _sd_result is None:
             print(f"[{ticker}] — No S/D zone confluence")
 
-        # ── B3: Post-3PM confidence decay ────────────────────────────────────────
     now_time = _now_et().time()
     if now_time >= time(15, 0):
         minutes_past_3 = (now_time.hour - 15) * 60 + now_time.minute
@@ -1098,7 +895,7 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         f"+ UOA:{uoa_adj:+.3f}[{uoa_label}] "
         f"+ GEX:{gex_adj:+.3f}[{gex_label}] "
         f"+ MTF:{mtf_boost:+.3f} "
-        f"+ ML:{ml_boost:+.3f} " 
+        f"+ ML:{ml_boost:+.3f} "
         f"+ Sweep:{(_sweep_result['boost'] if _sweep_result else 0.0):+.3f} "
         f"+ OB:{(0.03 if _ob_result else 0.0):+.3f} "
         f"+ SD:{(0.03 if _sd_result else 0.0):+.3f} "
@@ -1134,7 +931,6 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         except Exception as hourly_err:
             print(f"[HOURLY GATE] Error (non-fatal): {hourly_err}")
 
-    # ── Step 11b: Confidence gate + distribution tracking (Issue #23) ─────────
     if final_confidence < eff_min:
         _track_gate_result(final_grade, signal_type, final_confidence, passed=False)
         if TRACKERS_ENABLED and grade_gate_tracker:
@@ -1190,130 +986,6 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
     )
     return True
 
-def arm_ticker(ticker, direction, zone_low, zone_high, or_low, or_high,
-               entry_price, stop_price, t1, t2, confidence, grade,
-               options_rec=None, signal_type="CFW6_OR", validation_result=None,
-               bos_confirmation=None, bos_candle_type=None, mtf_result=None, metadata=None):
-
-    if abs(entry_price - stop_price) < entry_price * 0.001:
-        print(f"[ARM] ⚠️ {ticker} stop too tight — skipping")
-        return
-
-    open_positions = position_manager.get_open_positions()
-    mode_label = " [OR]" if signal_type == "CFW6_OR" else " [INTRADAY]"
-    print(
-        f"✅ {ticker} ARMED{mode_label}: {direction.upper()} | "
-        f"Entry:${entry_price:.2f} Stop:${stop_price:.2f} "
-        f"T1:${t1:.2f} T2:${t2:.2f} | {confidence*100:.1f}% ({grade})"
-    )
-
-    log_proposed_trade(ticker, signal_type, direction, entry_price, confidence, grade)
-
-    metadata = metadata or get_ticker_screener_metadata(ticker)
-
-    mtf_convergence_count = None
-    if mtf_result and mtf_result.get('convergence'):
-        mtf_convergence_count = len(mtf_result.get('timeframes', []))
-
-    # ── FIX C2: Open position FIRST — only alert Discord if it succeeds ───────
-    # Previously the Discord alert fired unconditionally before open_position(),
-    # meaning risk-rejected trades (max positions, circuit breaker, sector cap,
-    # duplicate ticker, etc.) still blasted a false signal to Discord.
-    position_id = position_manager.open_position(
-        ticker=ticker, direction=direction,
-        zone_low=zone_low, zone_high=zone_high,
-        or_low=or_low, or_high=or_high,
-        entry_price=entry_price, stop_price=stop_price,
-        t1=t1, t2=t2, confidence=confidence, grade=grade, options_rec=options_rec
-    )
-
-    if position_id == -1:
-        print(f"[ARM] ❌ {ticker} position rejected by risk manager — Discord alert suppressed")
-        return
-
-    # Position confirmed open — now safe to fire Discord alert
-    if PRODUCTION_HELPERS_ENABLED:
-        _send_alert_safe(
-            send_options_signal_alert,
-            ticker=ticker, direction=direction,
-            entry=entry_price, stop=stop_price, t1=t1, t2=t2,
-            confidence=confidence, timeframe="5m", grade=grade,
-            options_data=options_rec,
-            confirmation=bos_confirmation, candle_type=bos_candle_type,
-            rvol=metadata.get('rvol'),
-            volume_rank=None,
-            composite_score=metadata.get('score'),
-            mtf_convergence=mtf_convergence_count,
-            explosive_mover=metadata.get('qualified', False)
-        )
-    else:
-        try:
-            greeks_data = None
-            if options_rec:
-                try:
-                    from app.validation.greeks_precheck import get_cached_greeks
-                    greeks_list = get_cached_greeks(ticker, direction)
-                    if greeks_list:
-                        best_option = greeks_list[0]
-                        greeks_data = {
-                            'is_valid': True,
-                            'reason': f"ATM {direction.upper()} options available with good Greeks",
-                            'best_strike': best_option['strike'],
-                            'details': {
-                                'delta': best_option['delta'],
-                                'iv': best_option['iv'],
-                                'dte': best_option['dte'],
-                                'spread_pct': best_option['spread_pct'],
-                                'liquidity_ok': best_option['is_liquid']
-                            }
-                        }
-                except Exception as greeks_err:
-                    print(f"[ARM] Greeks data extraction error (non-fatal): {greeks_err}")
-
-            send_options_signal_alert(
-                ticker=ticker, direction=direction,
-                entry=entry_price, stop=stop_price, t1=t1, t2=t2,
-                confidence=confidence, timeframe="5m", grade=grade,
-                options_data=options_rec,
-                confirmation=bos_confirmation, candle_type=bos_candle_type,
-                greeks_data=greeks_data,
-                rvol=metadata.get('rvol'),
-                volume_rank=None,
-                composite_score=metadata.get('score'),
-                mtf_convergence=mtf_convergence_count,
-                explosive_mover=metadata.get('qualified', False)
-            )
-        except Exception as e:
-            print(f"[DISCORD] ❌ Alert failed: {e}")
-
-    armed_signal_data = {
-        "position_id": position_id, "direction": direction,
-        "entry_price": entry_price, "stop_price": stop_price,
-        "t1": t1, "t2": t2, "confidence": confidence,
-        "grade": grade, "signal_type": signal_type,
-        "validation": validation_result
-    }
-    _state.set_armed_signal(ticker, armed_signal_data)
-    _persist_armed_signal(ticker, armed_signal_data)
-
-    print(f"[ARMED] {ticker} ID:{position_id}")
-
-    if TRACKERS_ENABLED and cooldown_tracker:
-        cooldown_tracker.set_cooldown(ticker)
-        print(f"[COOLDOWN] {ticker} cooldown set (15min)")
-
-    if PHASE_4_ENABLED and alert_manager:
-        try:
-            alerts = alert_manager.check_all_conditions()
-            for alert in alerts:
-                print(f"[ALERT] {alert['emoji']} {alert['title']}")
-                try:
-                    send_simple_message(f"{alert['emoji']} **{alert['title']}**\n{alert['message']}")
-                except:
-                    pass
-        except Exception as e:
-            print(f"[PHASE 4] Alert check error: {e}")
-
 def clear_armed_signals():
     _state.clear_armed_signals()
     from app.data.db_connection import get_conn, return_conn
@@ -1351,7 +1023,7 @@ def _get_or_threshold(spy_regime) -> float:
     try:
         vix = get_regime_filter().get_regime_state().vix
     except Exception:
-        vix = 20.0  # safe fallback
+        vix = 20.0
     return config.get_vix_or_threshold(vix, spy_regime)
 
 def process_ticker(ticker: str):
@@ -1414,17 +1086,14 @@ def process_ticker(ticker: str):
             f"{_bar_time(bars_session[0])} → {_bar_time(bars_session[-1])}"
         )
 
-        # ── D2: Cache S/D zones for this ticker ──────────────────────────────
         if SD_ZONE_ENABLED:
             cache_sd_zones(ticker, bars_session)
 
-        # ── SPY EMA regime context (cached, one compute per cycle) ────────────
         spy_regime = None
         if SPY_EMA_CONTEXT_ENABLED:
             try:
                 spy_regime = get_market_regime()
                 print_market_regime(spy_regime, ticker)
-
             except Exception as e:
                 print(f"[{ticker}] SPY EMA context error (non-fatal): {e}")
 
@@ -1434,7 +1103,7 @@ def process_ticker(ticker: str):
             print_validation_call_stats()
             print_mtf_stats()
             print_priority_stats()
-            print_gate_distribution_stats()  # Issue #23: EOD gate distribution report
+            print_gate_distribution_stats()
 
             if SD_ZONE_ENABLED:
                 clear_sd_cache()
@@ -1510,7 +1179,7 @@ def process_ticker(ticker: str):
                 print(f"[{ticker}] ⏰ Watch expired — clearing")
                 _state.remove_watching_signal(ticker)
                 _remove_watch_from_db(ticker)
-                return  # prevent re-arm on same breakout
+                return
             else:
                 print(f"[{ticker}] 👁️ WATCHING [{bars_since}/{MAX_WATCH_BARS}]")
                 fvg_threshold, _ = get_adaptive_fvg_threshold(bars_session, ticker)
@@ -1527,8 +1196,6 @@ def process_ticker(ticker: str):
                     bars_session, w["breakout_idx"],
                     spy_regime=spy_regime
                 )
-
-
                 _state.remove_watching_signal(ticker)
                 _remove_watch_from_db(ticker)
                 return
@@ -1559,7 +1226,6 @@ def process_ticker(ticker: str):
                         f"[{ticker}] EARLY SESSION GATE: CFW6_OR blocked before 9:45 AM "
                         f"(OR={or_range_pct:.2%} < {or_threshold:.2%})"
                     )
-
                     return
 
                 direction, breakout_idx = detect_breakout_after_or(bars_session, or_high, or_low)
@@ -1625,8 +1291,6 @@ def process_ticker(ticker: str):
                                     sr["sr_high"], sr["sr_low"], "CFW6_OR"
                                 )
                                 return
-
-                            ...
 
         else:
             print(f"[{ticker}] No OR bars")
@@ -1699,7 +1363,7 @@ def process_ticker(ticker: str):
             spy_regime=spy_regime,
             skip_cfw6_confirmation=(scan_mode == "INTRADAY_BOS")
         )
-                # ── ORB classification cache ─────────────────────────────────────────
+
         if ORB_TRACKER_ENABLED and or_detector and scan_mode is not None:
             try:
                 or_data = or_detector.classify_or(ticker)
@@ -1713,7 +1377,6 @@ def process_ticker(ticker: str):
             except Exception as orb_err:
                 print(f"[{ticker}] ORB classify error (non-fatal): {orb_err}")
 
-                # ── D1: VWAP Reclaim fallback scan ───────────────────────────────────
         if scan_mode is None and VWAP_RECLAIM_ENABLED:
             vr = detect_vwap_reclaim(bars_session)
             if vr:
