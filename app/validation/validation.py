@@ -42,6 +42,15 @@ PHASE 1.26a (Mar 13, 2026) — Bug Fix:
     referenced the undefined OPTIONS_OPTIMIZER_ENABLED name, throwing a NameError
     on every ONDS scan cycle. Changed to use _OPTIMIZER_AVAILABLE consistently.
 
+PHASE 1.28 (Mar 14, 2026) — Bug Fix:
+  - Fix P0: technical_indicators import path updated.
+    technical_indicators.py was moved to app/indicators/ during Phase 2 file
+    restructure but the import on line 111 was never updated, causing sniper.py
+    to fail on every boot with:
+      ImportError: cannot import name 'technical_indicators' from 'app.analytics'
+    Changed: from app.analytics import technical_indicators as ti
+         To: from app.indicators import technical_indicators as ti
+
 VALIDATION CONFIGURATION:
   • Minimum Final Confidence: 50% (configurable via min_final_confidence)
   • Minimum ADX: 15.0 (VIX-aware dynamic threshold, was 25.0)
@@ -108,7 +117,8 @@ from dataclasses import dataclass
 import time
 import requests
 
-from app.analytics import technical_indicators as ti
+# PHASE 1.28 FIX P0: technical_indicators moved to app/indicators/ — updated import path
+from app.indicators import technical_indicators as ti
 from utils import config
 
 # Import IV/GEX modules for options filter
