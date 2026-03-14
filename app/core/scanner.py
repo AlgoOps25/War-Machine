@@ -97,6 +97,18 @@ PHASE 1.26 (MAR 13, 2026):
     the primary requirement for get_regime_filter()._get_spy_bars() to
     return >= 14 bars. Without this, the regime filter returned
     "Insufficient data for regime analysis" on every ticker every minute.
+
+PHASE 1.27 (MAR 14, 2026):
+  - FIX HEALTHCHECK: start_health_server() moved to module level, called
+    immediately after imports — BEFORE any blocking DB connect, ws_thread
+    joins, or quote_thread joins.
+    Previously it was called inside start_scanner_loop(), which is only
+    entered after ~40s of blocking startup work (DB connect_timeout=10s +
+    ws_thread.join(20s) + quote_thread.join(20s)). Railway's 30s healthcheck
+    retry window expired before /health ever responded, causing every deploy
+    to fail with "1/1 replicas never became healthy".
+    Now /health returns 200 within milliseconds of container start.
+    Duplicate call removed from inside start_scanner_loop().
 """
 import os
 import time
@@ -123,6 +135,11 @@ from app.screening.watchlist_funnel import (
 
 # ── Health server (C5 fix) ────────────────────────────────────────────────────
 from app.core.health_server import start_health_server, health_heartbeat
+
+# ── PHASE 1.27: Start health server immediately at module load — before any
+# blocking DB connect or WS joins so Railway's /health probe gets a 200
+# within milliseconds of container start, well inside the 30s retry window.
+start_health_server()
 
 # ── Risk layer — single import, all risk calls go through here ────────────────
 from app.risk.risk_manager import (
@@ -481,11 +498,13 @@ def start_scanner_loop():
         learning_engine = None
         HAS_AI_LEARNING = False
 
-    start_health_server()
+    # NOTE: start_health_server() is intentionally NOT called here.
+    # It is called at module load (Phase 1.27) so Railway's /health probe
+    # gets a 200 before any blocking DB/WS startup work begins.
 
     # ── STARTUP BANNER ───────────────────────────────────────────────────────
     print("=" * 60, flush=True)
-    print("WAR MACHINE CFW6 SCANNER v1.26 - STARTUP", flush=True)
+    print("WAR MACHINE CFW6 SCANNER v1.27 - STARTUP", flush=True)
     print("=" * 60, flush=True)
     print("✓ DATA-INGEST    WebSocket starting (tickers TBD)", flush=True)
 
@@ -554,6 +573,7 @@ def start_scanner_loop():
     print("Smart Backfill:  ✅ ENABLED (skip warm cache tickers on redeploy — Phase 1.24)", flush=True)
     print("Market Regime:   ✅ VISUAL  (SPY+QQQ → REGIME_WEBHOOK_URL, no blocks — Phase 1.25)", flush=True)
     print(f"Regime WS Feed:  ✅ FIXED   (SPY+QQQ always subscribed for regime bars — Phase 1.26)", flush=True)
+    print("Health Boot Fix: ✅ FIXED   (start_health_server at module load — Phase 1.27)", flush=True)
     print("=" * 60 + "\n", flush=True)
 
     # ─────────────────────────────────────────────────────────────────────
@@ -582,8 +602,8 @@ def start_scanner_loop():
 
     try:
         send_simple_message(
-            f"⚔️ WAR MACHINE ONLINE — CFW6 v1.26 | "
-            f"{'Resuming intraday' if _booting_into_market_hours else 'OR window active'} | Phase 1.26"
+            f"⚔️ WAR MACHINE ONLINE — CFW6 v1.27 | "
+            f"{'Resuming intraday' if _booting_into_market_hours else 'OR window active'} | Phase 1.27"
         )
     except Exception as e:
         logger.warning(f"[SCANNER] Discord unavailable: {e}")
