@@ -147,12 +147,10 @@ def arm_ticker(
 
     # ── Cooldown ──────────────────────────────────────────────────────────────
     try:
-        from app.analytics.cooldown_tracker import cooldown_tracker
-        if cooldown_tracker:
-            cooldown_tracker.set_cooldown(ticker)
-            print(f"[COOLDOWN] {ticker} cooldown set (15min)")
-    except ImportError:
-        pass
+        from app.core.signal_generator_cooldown import set_cooldown as _set_cooldown
+        _set_cooldown(ticker, direction, signal_type)
+    except Exception as e:
+        print(f"[COOLDOWN] Warning: could not set cooldown for {ticker}: {e}")
 
     # ── Phase 4 alert check ───────────────────────────────────────────────────
     try:
