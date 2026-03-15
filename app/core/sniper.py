@@ -91,7 +91,13 @@ from app.core.gate_stats import (
 )
 from app.core.confidence_model import GRADE_CONFIDENCE_RANGES, compute_confidence
 from app.core.arm_signal import arm_ticker
-from app.core.sniper_log import log_proposed_trade
+from app.core.sniper_log import (
+    log_proposed_trade,
+    _get_signal_id,
+    _track_validation_call,
+    print_validation_stats,
+    print_validation_call_stats,
+)
 
 # ── FIX #15: DB-persisted signal cooldown (survives Railway restarts) ─────────
 from app.analytics.cooldown_tracker import is_on_cooldown, set_cooldown
@@ -293,22 +299,6 @@ VALIDATOR_ENABLED = True
 VALIDATOR_TEST_MODE = False
 print("[SIGNALS] ✅ Multi-indicator validator ACTIVE (filtering enabled)")
 
-def _get_signal_id(ticker: str, direction: str, price: float) -> str:
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M')
-    return f"{ticker}_{direction}_{price:.2f}_{timestamp}"
-
-def _track_validation_call(ticker: str, direction: str, price: float) -> bool:
-    signal_id = _get_signal_id(ticker, direction, price)
-    call_count = _state.track_validation_call(signal_id)
-    if call_count > 1:
-        print(
-            f"[VALIDATOR] ⚠️  WARNING: {ticker} validated {call_count} times "
-            f"(possible duplicate call - signal_id: {signal_id})"
-        )
-        return True
-    else:
-        return False
-
 OPTIONS_PRE_GATE_ENABLED = True
 print("[SNIPER] ✅ Options pre-validation gate enabled (via validation.py)")
 
@@ -382,52 +372,6 @@ def _get_ticker_screener_metadata(ticker: str) -> dict:
     except Exception as e:
         print(f"[EXPLOSIVE] Metadata fetch error for {ticker}: {e}")
         return {'score': 0, 'rvol': 0.0, 'qualified': False, 'tier': 'N/A'}
-
-def print_validation_stats():
-    if not VALIDATOR_ENABLED:
-        return
-    stats = _state.get_validator_stats()
-    if stats['tested'] == 0:
-        return
-    total = stats['tested']
-    pass_pct = (stats['passed'] / total * 100) if total > 0 else 0
-    filter_pct = (stats['filtered'] / total * 100) if total > 0 else 0
-    boost_pct = (stats['boosted'] / total * 100) if total > 0 else 0
-    print("\n" + "="*80)
-    print("VALIDATOR DAILY STATISTICS")
-    print("="*80)
-    print(f"Total Signals Tested: {total}")
-    print(f"Passed: {stats['passed']} ({pass_pct:.1f}%)")
-    print(f"Filtered: {stats['filtered']} ({filter_pct:.1f}%)")
-    print(f"Confidence Boosted: {stats['boosted']} ({boost_pct:.1f}%)")
-    print(f"Confidence Penalized: {stats['penalized']}")
-    print("="*80)
-    if VALIDATOR_TEST_MODE:
-        print("⚠️  TEST MODE ACTIVE - Signals NOT being filtered")
-    print("="*80 + "\n")
-
-def print_validation_call_stats():
-    tracker = _state.get_validation_call_tracker()
-    if not tracker:
-        return
-    total_signals = len(tracker)
-    duplicate_calls = [
-        (sig_id, count) for sig_id, count in tracker.items()
-        if count > 1
-    ]
-    print("\n" + "="*80)
-    print("VALIDATOR CALL TRACKING - DAILY STATISTICS")
-    print("="*80)
-    print(f"Total Unique Signals: {total_signals}")
-    print(f"Signals with Duplicate Validations: {len(duplicate_calls)}")
-    if duplicate_calls:
-        print(f"\n⚠️  DUPLICATE VALIDATIONS DETECTED:")
-        for sig_id, count in duplicate_calls:
-            print(f"  • {sig_id}: validated {count} times")
-        print(f"\n⚠️  Action required: Investigate duplicate validation calls")
-    else:
-        print(f"\n✅ No duplicate validations detected - all signals validated exactly once")
-    print("="*80 + "\n")
 
 def _check_performance_dashboard():
     if not PHASE_4_ENABLED or performance_monitor is None:
@@ -1130,7 +1074,7 @@ def process_ticker(ticker: str):
 
         if is_force_close_time(bars_session[-1]):
             position_manager.close_all_eod({ticker: bars_session[-1]["close"]})
-            print_validation_stats()
+            print_validation_stats(VALIDATOR_ENABLED, VALIDATOR_TEST_MODE)
             print_validation_call_stats()
             print_mtf_stats()
             print_priority_stats()
