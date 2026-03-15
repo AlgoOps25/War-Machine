@@ -110,6 +110,8 @@ PHASE 1.27 (MAR 14, 2026):
     Now /health returns 200 within milliseconds of container start.
     Duplicate call removed from inside start_scanner_loop().
 """
+from app.core.health_server import start_health_server, health_heartbeat
+
 # ── PHASE 1.27: Start health server immediately at module load — before any
 # blocking DB connect or WS joins so Railway's /health probe gets a 200
 # within milliseconds of container start, well inside the 30s retry window.
@@ -137,10 +139,6 @@ from app.screening.watchlist_funnel import (
     get_watchlist_with_metadata,
     get_funnel
 )
-
-# ── Health server (C5 fix) ────────────────────────────────────────────────────
-from app.core.health_server import start_health_server, health_heartbeat
-
 # ── Risk layer — single import, all risk calls go through here ────────────────
 from app.risk.risk_manager import (
     get_loss_streak,
