@@ -177,3 +177,23 @@ def _maybe_load_watches():
     loaded = _load_watches_from_db()
     if loaded:
         _state.update_watching_signals_bulk(loaded)
+
+
+def send_bos_watch_alert(ticker, direction, bos_price, struct_high, struct_low,
+                          signal_type="CFW6_INTRADAY"):
+    """Send Discord alert when BOS is detected and we enter watch mode."""
+    from app.discord_helpers import send_simple_message
+    arrow = "🟢" if direction == "bull" else "🔴"
+    level = f"${struct_high:.2f}" if direction == "bull" else f"${struct_low:.2f}"
+    mode_tag = "[OR]" if signal_type == "CFW6_OR" else "[INTRADAY]"
+    msg = (
+        f"📡 **BOS ALERT {mode_tag}: {ticker}** — {arrow} {direction.upper()}\n"
+        f"Break: **${bos_price:.2f}** | Level: {level}\n"
+        f"⏳ Watching for FVG (up to {MAX_WATCH_BARS} min) | "
+        f"🕐 {_now_et().strftime('%I:%M %p ET')}"
+    )
+    try:
+        send_simple_message(msg)
+        print(f"[WATCH] 📡 {ticker} {direction.upper()} BOS @ ${bos_price:.2f}")
+    except Exception as e:
+        print(f"[WATCH] Alert error: {e}")

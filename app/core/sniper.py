@@ -68,7 +68,8 @@ from app.filters.early_session_disqualifier import should_skip_cfw6_or_early
 from app.screening.screener_integration import get_ticker_screener_metadata
 from app.core.watch_signal_store import (
     _ensure_watch_db, _persist_watch, _remove_watch_from_db,
-    _cleanup_stale_watches, _load_watches_from_db, _maybe_load_watches
+    _cleanup_stale_watches, _load_watches_from_db, _maybe_load_watches,
+    send_bos_watch_alert,
 )
 from app.core.armed_signal_store import (
     _ensure_armed_db, _persist_armed_signal, _remove_armed_from_db,
@@ -369,23 +370,6 @@ def _get_ticker_screener_metadata(ticker: str) -> dict:
     except Exception as e:
         print(f"[EXPLOSIVE] Metadata fetch error for {ticker}: {e}")
         return {'score': 0, 'rvol': 0.0, 'qualified': False, 'tier': 'N/A'}
-
-def send_bos_watch_alert(ticker, direction, bos_price, struct_high, struct_low,
-                          signal_type="CFW6_INTRADAY"):
-    arrow = "🟢" if direction == "bull" else "🔴"
-    level = f"${struct_high:.2f}" if direction == "bull" else f"${struct_low:.2f}"
-    mode_tag = "[OR]" if signal_type == "CFW6_OR" else "[INTRADAY]"
-    msg = (
-        f"📡 **BOS ALERT {mode_tag}: {ticker}** — {arrow} {direction.upper()}\n"
-        f"Break: **${bos_price:.2f}** | Level: {level}\n"
-        f"⏳ Watching for FVG (up to {MAX_WATCH_BARS} min) | "
-        f"🕐 {_now_et().strftime('%I:%M %p ET')}"
-    )
-    try:
-        send_simple_message(msg)
-        print(f"[WATCH] 📡 {ticker} {direction.upper()} BOS @ ${bos_price:.2f}")
-    except Exception as e:
-        print(f"[WATCH] Alert error: {e}")
 
 def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
                           or_high_ref, or_low_ref, signal_type,
