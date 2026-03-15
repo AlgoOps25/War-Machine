@@ -50,8 +50,6 @@
 #   - set_cooldown(ticker, direction, signal_type) called after arm_ticker() succeeds
 #     so the 30-min same-direction / 15-min reversal window is registered in DB.
 import traceback
-import requests
-import json
 from datetime import datetime, time, timedelta
 from utils.time_helpers import _now_et, _bar_time, _strip_tz
 from app.discord_helpers import send_options_signal_alert, send_simple_message
@@ -288,9 +286,6 @@ try:
 except ImportError:
     PRODUCTION_HELPERS_ENABLED = False
     print("[SNIPER] ⚠️  Production helpers not available")
-
-DASHBOARD_UPDATE_INTERVAL_MINUTES = 30
-ALERT_CHECK_INTERVAL_MINUTES = 15
 
 # ══════════════════════════════════════════════════════════════════════════════
 # HOURLY CONFIDENCE GATE
@@ -1207,9 +1202,3 @@ def process_ticker(ticker: str):
     except Exception as e:
         print(f"process_ticker error {ticker}:", e)
         traceback.print_exc()
-
-def send_discord(message: str):
-    try:
-        requests.post(config.DISCORD_WEBHOOK_URL, json={"content": message}, timeout=10)
-    except Exception as e:
-        print(f"[DISCORD] Error: {e}")
