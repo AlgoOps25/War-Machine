@@ -53,7 +53,7 @@ import traceback
 import requests
 import json
 from datetime import datetime, time, timedelta
-from zoneinfo import ZoneInfo
+from utils.time_helpers import _now_et, _bar_time, _strip_tz
 from app.discord_helpers import send_options_signal_alert, send_simple_message
 from app.filters.order_block_cache import clear_ob_cache
 from app.filters.sd_zone_confluence import clear_sd_cache
@@ -127,7 +127,13 @@ except ImportError:
     def apply_ob_retest_boost(ticker, entry_price, direction, confidence): return confidence, None
     def clear_ob_cache(ticker=None): pass
 try:
-    from app.signals.opening_range import or_detector
+    from app.signals.opening_range import (
+        or_detector,
+        compute_opening_range_from_bars,
+        compute_premarket_range,
+        detect_breakout_after_or,
+        detect_fvg_after_break,
+)
     ORB_TRACKER_ENABLED = True
     print("[SNIPER] ✅ ORB Detector enabled")
 except ImportError:
@@ -339,20 +345,6 @@ print(f"[SNIPER] ✅ Explosive mover override enabled (score>={EXPLOSIVE_SCORE_T
 MAX_WATCH_BARS = 12
 OPTIONS_PRE_GATE_MODE = "HARD"
 
-def _now_et():
-    return datetime.now(ZoneInfo("America/New_York"))
-
-def _bar_time(bar):
-    bt = bar.get("datetime")
-    if bt is None:
-        return None
-    return bt.time() if hasattr(bt, "time") else bt
-
-def _strip_tz(dt):
-    if dt is None:
-        return None
-    return dt.replace(tzinfo=None) if hasattr(dt, "tzinfo") and dt.tzinfo else dt
-
 def _get_ticker_screener_metadata(ticker: str) -> dict:
     try:
         from app.screening.watchlist_funnel import get_watchlist_with_metadata
@@ -421,48 +413,6 @@ def send_bos_watch_alert(ticker, direction, bos_price, struct_high, struct_low,
         print(f"[WATCH] 📡 {ticker} {direction.upper()} BOS @ ${bos_price:.2f}")
     except Exception as e:
         print(f"[WATCH] Alert error: {e}")
-
-def compute_opening_range_from_bars(bars):
-    or_bars = [b for b in bars if _bar_time(b) and time(9,30) <= _bar_time(b) < time(9,40)]
-    if len(or_bars) < 3:
-        return None, None
-    return max(b["high"] for b in or_bars), min(b["low"] for b in or_bars)
-
-def compute_premarket_range(bars):
-    pm_bars = [b for b in bars if _bar_time(b) and time(4,0) <= _bar_time(b) < time(9,30)]
-    if len(pm_bars) < 10:
-        return None, None
-    return max(b["high"] for b in pm_bars), min(b["low"] for b in pm_bars)
-
-def detect_breakout_after_or(bars, or_high, or_low):
-    for i, bar in enumerate(bars):
-        bt = _bar_time(bar)
-        if bt is None or bt < time(9, 45):
-            continue
-        if bar["close"] > or_high * (1 + config.ORB_BREAK_THRESHOLD):
-            print(f"[BREAKOUT] BULL idx {i} ${bar['close']:.2f}")
-            return "bull", i
-        if bar["close"] < or_low * (1 - config.ORB_BREAK_THRESHOLD):
-            print(f"[BREAKOUT] BEAR idx {i} ${bar['close']:.2f}")
-            return "bear", i
-    return None, None
-
-def detect_fvg_after_break(bars, breakout_idx, direction):
-    for i in range(breakout_idx + 3, len(bars)):
-        if i < 2:
-            continue
-        c0, c2 = bars[i-2], bars[i]
-        if direction == "bull":
-            gap = c2["low"] - c0["high"]
-            if gap > 0 and (gap / c0["high"]) >= config.FVG_MIN_SIZE_PCT:
-                print(f"[FVG] BULL ${c0['high']:.2f}—${c2['low']:.2f}")
-                return c0["high"], c2["low"]
-        elif direction == "bear":
-            gap = c0["low"] - c2["high"]
-            if gap > 0 and (gap / c0["low"]) >= config.FVG_MIN_SIZE_PCT:
-                print(f"[FVG] BEAR ${c2['high']:.2f}—${c0['low']:.2f}")
-                return c2["high"], c0["low"]
-    return None, None
 
 def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
                           or_high_ref, or_low_ref, signal_type,

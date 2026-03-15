@@ -754,6 +754,63 @@ def get_secondary_range_levels(ticker: str) -> Dict:
     """
     return or_detector.get_secondary_range_levels(ticker)
 
+# ========================================
+# PHASE 5 #24 — OR Scanner Functions
+# (extracted from app/core/sniper.py)
+# ========================================
+def compute_opening_range_from_bars(bars):
+    """Compute OR high/low from 9:30-9:40 bars."""
+    from utils.time_helpers import _bar_time
+    or_bars = [b for b in bars if _bar_time(b) and time(9, 30) <= _bar_time(b) < time(9, 40)]
+    if len(or_bars) < 3:
+        return None, None
+    return max(b["high"] for b in or_bars), min(b["low"] for b in or_bars)
+
+
+def compute_premarket_range(bars):
+    """Compute premarket high/low from 4:00-9:30 bars."""
+    from utils.time_helpers import _bar_time
+    pm_bars = [b for b in bars if _bar_time(b) and time(4, 0) <= _bar_time(b) < time(9, 30)]
+    if len(pm_bars) < 10:
+        return None, None
+    return max(b["high"] for b in pm_bars), min(b["low"] for b in pm_bars)
+
+
+def detect_breakout_after_or(bars, or_high, or_low):
+    """Scan bars after 9:45 for ORB breakout. Returns (direction, idx) or (None, None)."""
+    from utils.time_helpers import _bar_time
+    from utils import config
+    for i, bar in enumerate(bars):
+        bt = _bar_time(bar)
+        if bt is None or bt < time(9, 45):
+            continue
+        if bar["close"] > or_high * (1 + config.ORB_BREAK_THRESHOLD):
+            print(f"[BREAKOUT] BULL idx {i} ${bar['close']:.2f}")
+            return "bull", i
+        if bar["close"] < or_low * (1 - config.ORB_BREAK_THRESHOLD):
+            print(f"[BREAKOUT] BEAR idx {i} ${bar['close']:.2f}")
+            return "bear", i
+    return None, None
+
+
+def detect_fvg_after_break(bars, breakout_idx, direction):
+    """Find first FVG after a breakout. Returns (fvg_low, fvg_high) or (None, None)."""
+    from utils import config
+    for i in range(breakout_idx + 3, len(bars)):
+        if i < 2:
+            continue
+        c0, c2 = bars[i - 2], bars[i]
+        if direction == "bull":
+            gap = c2["low"] - c0["high"]
+            if gap > 0 and (gap / c0["high"]) >= config.FVG_MIN_SIZE_PCT:
+                print(f"[FVG] BULL ${c0['high']:.2f}—${c2['low']:.2f}")
+                return c0["high"], c2["low"]
+        elif direction == "bear":
+            gap = c0["low"] - c2["high"]
+            if gap > 0 and (gap / c0["low"]) >= config.FVG_MIN_SIZE_PCT:
+                print(f"[FVG] BEAR ${c2['high']:.2f}—${c0['low']:.2f}")
+                return c2["high"], c0["low"]
+    return None, None
 
 # ========================================
 # USAGE EXAMPLE
