@@ -52,12 +52,11 @@
 import traceback
 from datetime import datetime, time, timedelta
 from utils.time_helpers import _now_et, _bar_time, _strip_tz
-from app.discord_helpers import send_options_signal_alert, send_simple_message
+from app.discord_helpers import send_simple_message
 from app.validation.validation import get_validator, get_regime_filter
 from app.validation.cfw6_confirmation import wait_for_confirmation, grade_signal_with_confirmations
 from app.risk.trade_calculator import compute_stop_and_targets, get_adaptive_fvg_threshold
 from app.data.data_manager import data_manager
-from app.risk.position_manager import position_manager
 from utils import config
 from app.mtf.bos_fvg_engine import scan_bos_fvg, is_force_close_time, find_fvg_after_bos
 from app.filters.early_session_disqualifier import should_skip_cfw6_or_early
@@ -826,13 +825,11 @@ def process_ticker(ticker: str):
         check_performance_dashboard(_state, PHASE_4_ENABLED)
         check_performance_alerts(_state, PHASE_4_ENABLED, alert_manager, send_simple_message)
 
-        regime_bypassed = False
         if REGIME_FILTER_ENABLED:
             regime_filter = get_regime_filter()
             if not regime_filter.is_favorable_regime():
                 metadata = get_ticker_screener_metadata(ticker)
                 if metadata['qualified']:
-                    regime_bypassed = True
                     if TRACKERS_ENABLED and explosive_tracker:
                         explosive_tracker.record_override(
                             ticker=ticker,
