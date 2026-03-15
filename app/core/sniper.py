@@ -53,9 +53,7 @@ import traceback
 from datetime import datetime, time, timedelta
 from utils.time_helpers import _now_et, _bar_time, _strip_tz
 from app.discord_helpers import send_options_signal_alert, send_simple_message
-from app.filters.order_block_cache import clear_ob_cache
-from app.filters.sd_zone_confluence import clear_sd_cache
-from app.validation.validation import get_options_recommendation, get_validator, get_regime_filter
+from app.validation.validation import get_validator, get_regime_filter
 from app.validation.cfw6_confirmation import wait_for_confirmation, grade_signal_with_confirmations
 from app.risk.trade_calculator import compute_stop_and_targets, get_adaptive_fvg_threshold
 from app.data.data_manager import data_manager
@@ -65,42 +63,20 @@ from app.mtf.bos_fvg_engine import scan_bos_fvg, is_force_close_time, find_fvg_a
 from app.filters.early_session_disqualifier import should_skip_cfw6_or_early
 from app.screening.screener_integration import get_ticker_screener_metadata
 from app.core.watch_signal_store import (
-    _ensure_watch_db, _persist_watch, _remove_watch_from_db,
-    _cleanup_stale_watches, _load_watches_from_db, _maybe_load_watches,
-    send_bos_watch_alert,
-    clear_watching_signals,
+    _persist_watch, _remove_watch_from_db, _maybe_load_watches,
+    send_bos_watch_alert, clear_watching_signals,
 )
 from app.core.armed_signal_store import (
-    _ensure_armed_db, _persist_armed_signal, _remove_armed_from_db,
-    _cleanup_stale_armed_signals, _load_armed_signals_from_db, _maybe_load_armed_signals,
+    _persist_armed_signal, _remove_armed_from_db, _maybe_load_armed_signals,
     clear_armed_signals,
 )
-from app.analytics.explosive_mover_tracker import (
-    track_explosive_override,
-    update_override_outcome,
-    print_explosive_override_summary,
-    get_daily_override_stats
-)
-
 # ── Refactored modules ────────────────────────────────────────────────────────
 from app.core.eod_reporter import run_eod_reports
-from app.filters.vwap_gate import (
-    VWAP_GATE_ENABLED, compute_vwap, passes_vwap_gate
-)
-from app.core.gate_stats import (
-    _gate_stats, _get_confidence_bucket, _track_gate_result,
-    print_gate_distribution_stats
-)
-from app.core.confidence_model import GRADE_CONFIDENCE_RANGES, compute_confidence
+from app.filters.vwap_gate import compute_vwap, passes_vwap_gate
+from app.core.gate_stats import _track_gate_result
+from app.core.confidence_model import compute_confidence
 from app.core.arm_signal import arm_ticker
-from app.core.sniper_log import (
-    log_proposed_trade,
-    _get_signal_id,
-    _track_validation_call,
-    print_validation_stats,
-    print_validation_call_stats,
-)
-
+from app.core.sniper_log import _track_validation_call
 # ── FIX #15: DB-persisted signal cooldown (survives Railway restarts) ─────────
 from app.analytics.cooldown_tracker import is_on_cooldown, set_cooldown
 print("[SNIPER] ✅ Signal cooldown gate loaded (DB-persisted, restart-safe)")
@@ -228,14 +204,6 @@ from app.core.thread_safe_state import get_state
 
 _state = get_state()
 print("[SNIPER] ✅ Thread-safe state management enabled")
-
-# ══════════════════════════════════════════════════════════════════════════════
-# FIX #3: SQL INJECTION PREVENTION
-# ══════════════════════════════════════════════════════════════════════════════
-from app.data.sql_safe import safe_execute, safe_query, build_insert, safe_insert_dict, safe_in_clause, get_placeholder
-
-print("[SNIPER] ✅ SQL injection prevention enabled (parameterized queries)")
-
 # ══════════════════════════════════════════════════════════════════════════════
 # INTEGRATION POINT #1: IMPORT TRACKERS
 # ══════════════════════════════════════════════════════════════════════════════
@@ -251,8 +219,6 @@ except ImportError as e:
     grade_gate_tracker = None
     TRACKERS_ENABLED = False
     print(f"[SNIPER] ⚠️  Analytics trackers not available: {e}")
-
-import random
 
 print("[SNIPER] ✅ VWAP directional gate enabled (app.filters.vwap_gate)")
 print("[SNIPER] ✅ Confidence model loaded (app.core.confidence_model)")
