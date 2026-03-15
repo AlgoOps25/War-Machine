@@ -82,6 +82,7 @@ from app.analytics.explosive_mover_tracker import (
 )
 
 # ── Refactored modules ────────────────────────────────────────────────────────
+from app.core.eod_reporter import run_eod_reports
 from app.filters.vwap_gate import (
     VWAP_GATE_ENABLED, compute_vwap, passes_vwap_gate
 )
@@ -1073,54 +1074,22 @@ def process_ticker(ticker: str):
                 print(f"[{ticker}] SPY EMA context error (non-fatal): {e}")
 
         if is_force_close_time(bars_session[-1]):
-            position_manager.close_all_eod({ticker: bars_session[-1]["close"]})
-            print_validation_stats(VALIDATOR_ENABLED, VALIDATOR_TEST_MODE)
-            print_validation_call_stats()
-            print_mtf_stats()
-            print_priority_stats()
-            print_gate_distribution_stats()
-
-            if SD_ZONE_ENABLED:
-                clear_sd_cache()
-                print("[SD-CACHE] 🧹 EOD clear — all S/D zones flushed")
-
-            if TRACKERS_ENABLED:
-                if cooldown_tracker:
-                    cooldown_tracker.print_eod_report()
-                if explosive_tracker:
-                    print_explosive_override_summary()
-                if grade_gate_tracker:
-                    grade_gate_tracker.print_eod_report()
-
-            if PHASE_4_ENABLED:
-                try:
-                    if signal_tracker:
-                        print(signal_tracker.get_daily_summary())
-                    if performance_monitor:
-                        print(performance_monitor.get_daily_performance_report())
-                except Exception as e:
-                    print(f"[PHASE 4] EOD report error: {e}")
-
-            if HOURLY_GATE_ENABLED:
-                try:
-                    print_hourly_gate_stats()
-                except Exception as e:
-                    print(f"[HOURLY GATE] EOD stats error: {e}")
-
-            if REGIME_FILTER_ENABLED:
-                try:
-                    regime_filter = get_regime_filter()
-                    regime_filter.print_regime_summary()
-                except Exception as e:
-                    print(f"[EOD] Regime summary error: {e}")
-
-            try:
-                if ORDER_BLOCK_ENABLED:
-                    clear_ob_cache()
-                    print("[OB-CACHE] 🧹 EOD clear — all order blocks flushed")
-            except NameError:
-                pass
-
+            run_eod_reports(
+                bars_session[-1],
+                validator_enabled=VALIDATOR_ENABLED,
+                validator_test_mode=VALIDATOR_TEST_MODE,
+                sd_zone_enabled=SD_ZONE_ENABLED,
+                trackers_enabled=TRACKERS_ENABLED,
+                cooldown_tracker=cooldown_tracker,
+                explosive_tracker=explosive_tracker,
+                grade_gate_tracker=grade_gate_tracker,
+                phase_4_enabled=PHASE_4_ENABLED,
+                signal_tracker=signal_tracker,
+                performance_monitor=performance_monitor,
+                hourly_gate_enabled=HOURLY_GATE_ENABLED,
+                regime_filter_enabled=REGIME_FILTER_ENABLED,
+                order_block_enabled=ORDER_BLOCK_ENABLED,
+            )
             return
 
         if _state.ticker_is_watching(ticker):
