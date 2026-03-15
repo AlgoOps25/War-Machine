@@ -268,7 +268,7 @@ test_component("Explosive Mover Tracker", test_explosive_tracker)
 
 def test_signal_cooldown():
     """Call is_on_cooldown with whatever arguments its real signature requires."""
-    from app.core.signal_generator_cooldown import is_on_cooldown
+    from app.analytics.cooldown_tracker import is_on_cooldown
     import inspect
     sig    = inspect.signature(is_on_cooldown)
     params = list(sig.parameters.keys())

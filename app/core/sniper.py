@@ -94,7 +94,7 @@ from app.core.arm_signal import arm_ticker
 from app.core.sniper_log import log_proposed_trade
 
 # ── FIX #15: DB-persisted signal cooldown (survives Railway restarts) ─────────
-from app.core.signal_generator_cooldown import is_on_cooldown, set_cooldown
+from app.analytics.cooldown_tracker import is_on_cooldown, set_cooldown
 print("[SNIPER] ✅ Signal cooldown gate loaded (DB-persisted, restart-safe)")
 
 try:
