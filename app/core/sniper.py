@@ -70,10 +70,12 @@ from app.core.watch_signal_store import (
     _ensure_watch_db, _persist_watch, _remove_watch_from_db,
     _cleanup_stale_watches, _load_watches_from_db, _maybe_load_watches,
     send_bos_watch_alert,
+    clear_watching_signals,
 )
 from app.core.armed_signal_store import (
     _ensure_armed_db, _persist_armed_signal, _remove_armed_from_db,
-    _cleanup_stale_armed_signals, _load_armed_signals_from_db, _maybe_load_armed_signals
+    _cleanup_stale_armed_signals, _load_armed_signals_from_db, _maybe_load_armed_signals,
+    clear_armed_signals,
 )
 from app.analytics.explosive_mover_tracker import (
     track_explosive_override,
@@ -868,38 +870,6 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         print(f"[{ticker}] [COOLDOWN] Set error (non-fatal): {_cd_set_err}")
 
     return True
-
-def clear_armed_signals():
-    _state.clear_armed_signals()
-    from app.data.db_connection import get_conn, return_conn
-    conn = None
-    try:
-        conn = get_conn()
-        cursor = conn.cursor()
-        safe_execute(cursor, "DELETE FROM armed_signals_persist")
-        conn.commit()
-    except Exception as e:
-        print(f"[ARMED-DB] Clear error: {e}")
-    finally:
-        if conn:
-            return_conn(conn)
-    print("[ARMED] Cleared")
-
-def clear_watching_signals():
-    _state.clear_watching_signals()
-    from app.data.db_connection import get_conn, return_conn
-    conn = None
-    try:
-        conn = get_conn()
-        cursor = conn.cursor()
-        safe_execute(cursor, "DELETE FROM watching_signals_persist")
-        conn.commit()
-    except Exception as e:
-        print(f"[WATCH-DB] Clear error: {e}")
-    finally:
-        if conn:
-            return_conn(conn)
-    print("[WATCHING] Cleared")
 
 def _get_or_threshold(spy_regime) -> float:
     from app.validation.validation import get_regime_filter

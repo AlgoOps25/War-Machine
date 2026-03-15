@@ -212,3 +212,21 @@ def _maybe_load_armed_signals():
     loaded = _load_armed_signals_from_db()
     if loaded:
         _state.update_armed_signals_bulk(loaded)
+
+def clear_armed_signals():
+    """Clear all armed signals from memory and DB."""
+    from app.data.db_connection import get_conn, return_conn
+    from app.data.sql_safe import safe_execute
+    _state.clear_armed_signals()
+    conn = None
+    try:
+        conn = get_conn()
+        cursor = conn.cursor()
+        safe_execute(cursor, "DELETE FROM armed_signals_persist")
+        conn.commit()
+    except Exception as e:
+        print(f"[ARMED-DB] Clear error: {e}")
+    finally:
+        if conn:
+            return_conn(conn)
+    print("[ARMED] Cleared")

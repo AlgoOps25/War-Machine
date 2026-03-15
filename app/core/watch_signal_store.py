@@ -197,3 +197,21 @@ def send_bos_watch_alert(ticker, direction, bos_price, struct_high, struct_low,
         print(f"[WATCH] 📡 {ticker} {direction.upper()} BOS @ ${bos_price:.2f}")
     except Exception as e:
         print(f"[WATCH] Alert error: {e}")
+
+def clear_watching_signals():
+    """Clear all watching signals from memory and DB."""
+    from app.data.db_connection import get_conn, return_conn
+    from app.data.sql_safe import safe_execute
+    _state.clear_watching_signals()
+    conn = None
+    try:
+        conn = get_conn()
+        cursor = conn.cursor()
+        safe_execute(cursor, "DELETE FROM watching_signals_persist")
+        conn.commit()
+    except Exception as e:
+        print(f"[WATCH-DB] Clear error: {e}")
+    finally:
+        if conn:
+            return_conn(conn)
+    print("[WATCHING] Cleared")
