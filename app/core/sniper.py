@@ -352,27 +352,6 @@ print(f"[SNIPER] ✅ Explosive mover override enabled (score>={EXPLOSIVE_SCORE_T
 MAX_WATCH_BARS = 12
 OPTIONS_PRE_GATE_MODE = "HARD"
 
-def _get_ticker_screener_metadata(ticker: str) -> dict:
-    try:
-        from app.screening.watchlist_funnel import get_watchlist_with_metadata
-        watchlist_data = get_watchlist_with_metadata(force_refresh=False)
-        all_tickers = watchlist_data.get('all_tickers_with_scores', [])
-        for entry in all_tickers:
-            if entry.get('ticker') == ticker:
-                score = entry.get('score', 0)
-                rvol = entry.get('rvol', 0.0)
-                qualified = score >= EXPLOSIVE_SCORE_THRESHOLD and rvol >= EXPLOSIVE_RVOL_THRESHOLD
-                return {
-                    'score': score,
-                    'rvol': rvol,
-                    'qualified': qualified,
-                    'tier': entry.get('tier', 'C')
-                }
-        return {'score': 0, 'rvol': 0.0, 'qualified': False, 'tier': 'N/A'}
-    except Exception as e:
-        print(f"[EXPLOSIVE] Metadata fetch error for {ticker}: {e}")
-        return {'score': 0, 'rvol': 0.0, 'qualified': False, 'tier': 'N/A'}
-
 def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
                           or_high_ref, or_low_ref, signal_type,
                           bars_session, breakout_idx,
@@ -657,13 +636,13 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
             traceback.print_exc()
 
     ml_boost = 0.0
-    _meta = _get_ticker_screener_metadata(ticker)
+    _meta = get_ticker_screener_metadata(ticker)
 
     if ML_SCORER_ENABLED:
         try:
             scorer = get_scorer_v2()
             if scorer:
-                _meta = _get_ticker_screener_metadata(ticker)
+                _meta = get_ticker_screener_metadata(ticker)
                 ml_signal_data = {
                     'confidence':            base_confidence,
                     'rvol':                  _meta.get('rvol', 1.0),
@@ -890,7 +869,7 @@ def process_ticker(ticker: str):
         if REGIME_FILTER_ENABLED:
             regime_filter = get_regime_filter()
             if not regime_filter.is_favorable_regime():
-                metadata = _get_ticker_screener_metadata(ticker)
+                metadata = get_ticker_screener_metadata(ticker)
                 if metadata['qualified']:
                     regime_bypassed = True
                     if TRACKERS_ENABLED and explosive_tracker:
