@@ -263,7 +263,11 @@ print("[SNIPER] ✅ arm_ticker loaded (app.core.arm_signal)")
 # ══════════════════════════════════════════════════════════════════════════════
 try:
     from app.signals.signal_analytics import signal_tracker
-    from app.analytics.performance_monitor import performance_monitor
+    from app.analytics.performance_monitor import (
+        performance_monitor,
+        check_performance_dashboard,
+        check_performance_alerts,
+    )
     PHASE_4_ENABLED = True
     alert_manager = None
     print("[SIGNALS] ✅ Phase 4 monitoring enabled (analytics + performance)")
@@ -365,37 +369,6 @@ def _get_ticker_screener_metadata(ticker: str) -> dict:
     except Exception as e:
         print(f"[EXPLOSIVE] Metadata fetch error for {ticker}: {e}")
         return {'score': 0, 'rvol': 0.0, 'qualified': False, 'tier': 'N/A'}
-
-def _check_performance_dashboard():
-    if not PHASE_4_ENABLED or performance_monitor is None:
-        return
-    now = datetime.now()
-    minutes_since_last = (now - _state.get_last_dashboard_check()).total_seconds() / 60
-    if minutes_since_last >= DASHBOARD_UPDATE_INTERVAL_MINUTES:
-        try:
-            print(performance_monitor.get_live_dashboard())
-            _state.update_last_dashboard_check(now)
-        except Exception as e:
-            print(f"[PHASE 4] Dashboard error: {e}")
-
-def _check_performance_alerts():
-    if not PHASE_4_ENABLED or alert_manager is None:
-        return
-    now = datetime.now()
-    minutes_since_last = (now - _state.get_last_alert_check()).total_seconds() / 60
-    if minutes_since_last >= ALERT_CHECK_INTERVAL_MINUTES:
-        try:
-            alerts = alert_manager.check_all_conditions()
-            for alert in alerts:
-                print(f"[ALERT] {alert['emoji']} {alert['title']}")
-                print(f"        {alert['message']}")
-                try:
-                    send_simple_message(f"{alert['emoji']} **{alert['title']}**\n{alert['message']}")
-                except:
-                    pass
-            _state.update_last_alert_check(now)
-        except Exception as e:
-            print(f"[PHASE 4] Alert check error: {e}")
 
 def send_bos_watch_alert(ticker, direction, bos_price, struct_high, struct_low,
                           signal_type="CFW6_INTRADAY"):
@@ -956,8 +929,8 @@ def process_ticker(ticker: str):
     try:
         _maybe_load_watches()
         _maybe_load_armed_signals()
-        _check_performance_dashboard()
-        _check_performance_alerts()
+        check_performance_dashboard(_state, PHASE_4_ENABLED)
+        check_performance_alerts(_state, PHASE_4_ENABLED, alert_manager, send_simple_message)
 
         regime_bypassed = False
         if REGIME_FILTER_ENABLED:

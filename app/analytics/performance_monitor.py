@@ -518,6 +518,50 @@ class PerformanceMonitor:
 
 performance_monitor = PerformanceMonitor()
 
+# ══════════════════════════════════════════════════════════════════════════════
+# PHASE 5 #25 — Phase 4 Monitor Functions
+# (extracted from app/core/sniper.py)
+# ══════════════════════════════════════════════════════════════════════════════
+
+DASHBOARD_UPDATE_INTERVAL_MINUTES = 30
+ALERT_CHECK_INTERVAL_MINUTES = 15
+
+
+def check_performance_dashboard(state, phase_4_enabled):
+    """Print live dashboard if interval has elapsed."""
+    if not phase_4_enabled or performance_monitor is None:
+        return
+    now = datetime.now()
+    minutes_since_last = (now - state.get_last_dashboard_check()).total_seconds() / 60
+    if minutes_since_last >= DASHBOARD_UPDATE_INTERVAL_MINUTES:
+        try:
+            print(performance_monitor.get_live_dashboard())
+            state.update_last_dashboard_check(now)
+        except Exception as e:
+            print(f"[PHASE 4] Dashboard error: {e}")
+
+
+def check_performance_alerts(state, phase_4_enabled, alert_manager, send_simple_message_fn):
+    """Fire risk alerts if interval has elapsed."""
+    if not phase_4_enabled or alert_manager is None:
+        return
+    now = datetime.now()
+    minutes_since_last = (now - state.get_last_alert_check()).total_seconds() / 60
+    if minutes_since_last >= ALERT_CHECK_INTERVAL_MINUTES:
+        try:
+            alerts = alert_manager.check_all_conditions()
+            for alert in alerts:
+                print(f"[ALERT] {alert['emoji']} {alert['title']}")
+                print(f"        {alert['message']}")
+                try:
+                    send_simple_message_fn(
+                        f"{alert['emoji']} **{alert['title']}**\n{alert['message']}"
+                    )
+                except Exception:
+                    pass
+            state.update_last_alert_check(now)
+        except Exception as e:
+            print(f"[PHASE 4] Alert check error: {e}")
 
 if __name__ == "__main__":
     print("Testing Performance Monitor...\n")
