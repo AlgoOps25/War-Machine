@@ -61,6 +61,11 @@ PHASE 1.29 (MAR 16, 2026):
     * loss_streak derived from session["daily_stats"] (no extra DB call)
     * monitor_open_positions() accepts optional pre-fetched session kwarg
     Net: 3 DB checkouts per cycle -> 1, preventing pool exhaustion at OR open.
+
+PHASE 1.30 (MAR 16, 2026):
+  - FIX: Remove dead sniper_stubs fallback. sniper_stubs was deprecated;
+    the try/except was masking the real numpy/libstdc++ ImportError with
+    a confusing ModuleNotFoundError. Hard raise now surfaces real error.
 """
 from app.core.health_server import start_health_server, health_heartbeat
 
@@ -465,12 +470,9 @@ def start_scanner_loop():
     # ── PHASE 1.28: Validate required env vars before any blocking work ──────────
     validate_required_env_vars()
 
-    try:
-        from app.core.sniper import process_ticker, clear_armed_signals, clear_watching_signals, _orb_classifications
-        logger.info("[SCANNER] ✅ process_ticker loaded from sniper.py (CFW6 engine active)")
-    except ImportError as e:
-        logger.error(f"[SCANNER] ❌ sniper.py import failed: {e} — falling back to sniper_stubs")
-        from app.core.sniper_stubs import process_ticker, clear_armed_signals, clear_watching_signals
+    # ── PHASE 1.30: Hard import — no stubs fallback (sniper_stubs deprecated) ───
+    from app.core.sniper import process_ticker, clear_armed_signals, clear_watching_signals, _orb_classifications
+    logger.info("[SCANNER] ✅ process_ticker loaded from sniper.py (CFW6 engine active)")
 
     from app.discord_helpers import send_simple_message
 
@@ -483,7 +485,7 @@ def start_scanner_loop():
 
     # ── STARTUP BANNER ────────────────────────────────────────────────────────────────
     print("=" * 60, flush=True)
-    print("WAR MACHINE CFW6 SCANNER v1.29 - STARTUP", flush=True)
+    print("WAR MACHINE CFW6 SCANNER v1.30 - STARTUP", flush=True)
     print("=" * 60, flush=True)
     print("✓ REGIME-FILTER  VIX/SPY regime detection active", flush=True)
     print("=" * 60, flush=True)
@@ -557,6 +559,7 @@ def start_scanner_loop():
     print("Health Boot Fix: ✅ FIXED   (start_health_server at module load — Phase 1.27)", flush=True)
     print("Env Var Guard:   ✅ ENABLED (validate_required_env_vars — Phase 1.28)", flush=True)
     print("DB Checkout Fix: ✅ FIXED   (single get_session_status per cycle — Phase 1.29)", flush=True)
+    print("Sniper Import:   ✅ FIXED   (hard import, no dead stubs fallback — Phase 1.30)", flush=True)
     print("=" * 60 + "\n", flush=True)
 
     _booting_into_market_hours = is_market_hours()
@@ -580,8 +583,8 @@ def start_scanner_loop():
 
     try:
         send_simple_message(
-            f"⚔️ WAR MACHINE ONLINE — CFW6 v1.29 | "
-            f"{'Resuming intraday' if _booting_into_market_hours else 'OR window active'} | Phase 1.29"
+            f"⚔️ WAR MACHINE ONLINE — CFW6 v1.30 | "
+            f"{'Resuming intraday' if _booting_into_market_hours else 'OR window active'} | Phase 1.30"
         )
     except Exception as e:
         logger.warning(f"[SCANNER] Discord unavailable: {e}")
@@ -736,13 +739,9 @@ def start_scanner_loop():
                         _or_window_logged = True
 
                 # ── FIX #9 (PHASE 1.29): Single get_session_status() per cycle ──
-                # Previously: get_loss_streak() + monitor_open_positions() +
-                # get_session_status() = 3 DB checkouts every 5s OR cycle.
-                # Now: one call, result passed to all consumers below.
                 session     = get_session_status()
                 daily_stats = session["daily_stats"]
 
-                # Derive loss streak from cached session data — no extra DB call
                 _has_loss_streak = (
                     daily_stats.get("losses", 0) >= 3
                     and daily_stats.get("wins", 0) == 0
@@ -760,7 +759,6 @@ def start_scanner_loop():
                             pass
                         loss_streak_alerted = True
                         logger.warning("[RISK] Daily loss streak reached — halting new scans.")
-                    # Pass pre-fetched session — zero extra DB calls
                     monitor_open_positions(session=session)
                     time.sleep(60)
                     continue
@@ -806,7 +804,6 @@ def start_scanner_loop():
                     except Exception as e:
                         logger.error(f"[ANALYTICS] Monitor error: {e}")
 
-                # Pass pre-fetched session — skips second get_session_status() call
                 monitor_open_positions(session=session)
 
                 logger.info(
