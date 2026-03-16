@@ -48,6 +48,21 @@ FIX #7 (MAR 14, 2026) — PY 3.10 F-STRING COMPAT:
   - Python 3.10 (Railway runtime) forbids backslashes inside f-string expressions.
   - Pre-compute circuit_breaker_label variable before the f-string in
     get_risk_summary() to stay compatible with both Py 3.10 and 3.11.
+
+FIX #8 (MAR 15, 2026) — CIRCUIT BREAKER POST-CLOSE USES REAL SESSION P&L:
+  - close_position() was passing a manually-constructed stats dict containing
+    only the current trade's P&L to check_circuit_breaker(). This meant the
+    breaker only saw the last trade's result, not the running session total.
+    Fix: call self.get_daily_stats() (cache already busted at this point) so
+    the breaker evaluates the true accumulated session P&L.
+
+FIX #9 (MAR 15, 2026) — check_exits T1/T2 RACE VIA STALE CACHE:
+  - check_exits() read t1_hit from the cached get_open_positions() result.
+    If _scale_out() ran and a price gap pushed through T2 in the same scan
+    cycle, the stale t1_hit=False could allow close_position(TARGET 2) to fire
+    on the same position in the same loop iteration.
+    Fix: after _scale_out() call, re-fetch t1_hit live from DB before checking
+    the T2 condition, ensuring mutual exclusivity between T1 scale and T2 close.
 """
 from utils import config
 from datetime import datetime, timedelta
@@ -762,6 +777,11 @@ class PositionManager:
                     self.close_position(pos_id, current_price, "STOP LOSS")
                 elif current_price >= t1 and not t1_hit:
                     self._scale_out(pos_id, current_price, entry)
+                    # FIX #9: re-read t1_hit from DB after scale_out before
+                    # evaluating T2 — prevents double-fire on a gap-through bar
+                    t1_hit = self._get_t1_hit_from_db(pos_id)
+                    if current_price >= t2 and t1_hit:
+                        self.close_position(pos_id, current_price, "TARGET 2")
                 elif current_price >= t2 and t1_hit:
                     self.close_position(pos_id, current_price, "TARGET 2")
             else:  # bear
@@ -769,8 +789,34 @@ class PositionManager:
                     self.close_position(pos_id, current_price, "STOP LOSS")
                 elif current_price <= t1 and not t1_hit:
                     self._scale_out(pos_id, current_price, entry)
+                    # FIX #9: re-read t1_hit from DB after scale_out before
+                    # evaluating T2 — prevents double-fire on a gap-through bar
+                    t1_hit = self._get_t1_hit_from_db(pos_id)
+                    if current_price <= t2 and t1_hit:
+                        self.close_position(pos_id, current_price, "TARGET 2")
                 elif current_price <= t2 and t1_hit:
                     self.close_position(pos_id, current_price, "TARGET 2")
+
+
+    def _get_t1_hit_from_db(self, position_id: int) -> bool:
+        """FIX #9: Re-read t1_hit directly from DB (bypasses cache) after _scale_out."""
+        conn = None
+        try:
+            p      = ph()
+            conn   = get_conn(self.db_path)
+            cursor = dict_cursor(conn)
+            cursor.execute(
+                f"SELECT t1_hit FROM positions WHERE id = {p}",
+                (position_id,)
+            )
+            row = cursor.fetchone()
+            return bool(row["t1_hit"]) if row else False
+        except Exception as e:
+            print(f"[POSITION] _get_t1_hit_from_db error (non-fatal): {e}")
+            return False
+        finally:
+            if conn:
+                return_conn(conn)
 
 
     def _scale_out(self, position_id: int, exit_price: float, entry_price: float):
@@ -918,10 +964,11 @@ class PositionManager:
             except Exception as e:
                 print(f"[POSITION] Discord exit alert failed: {e}")
 
-            # Pass already-known final_pnl to avoid another DB round-trip
-            breached, reason = self.check_circuit_breaker(
-                stats={"total_pnl": final_pnl, "trades": 1, "wins": 0, "losses": 1, "win_rate": 0.0}
-            )
+            # FIX #8: use real session P&L from DB (cache already busted above)
+            # — previously passed only this trade's final_pnl which could show
+            # a false positive on a day with prior losses.
+            session_stats = self.get_daily_stats()
+            breached, reason = self.check_circuit_breaker(stats=session_stats)
             if breached:
                 print(f"\n[RISK] \ud83d\udea8 {reason}")
                 print("[RISK] No new positions will be opened until next session\n")
