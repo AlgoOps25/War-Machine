@@ -6,11 +6,25 @@
 
 ---
 
+## ✅ COMPLETED CHANGES (2026-03-16)
+
+The following actions have been executed and committed to `main`:
+
+| # | File | Action Taken | Commit | Date |
+|---|------|-------------|--------|------|
+| 1 | `app/discord_helpers.py` | **Converted to re-export shim** → forwards all exports to `app.notifications.discord_helpers`. Also **fixed a live bug**: `arm_signal.py` was importing `send_options_signal_alert` which did not exist in the old standalone file. The shim now resolves all 7+ callers with zero import changes required. | [a629a84](https://github.com/AlgoOps25/War-Machine/commit/a629a84c78fc3ad491439865397c9433ef4d7127) | 2026-03-16 |
+| 2 | `app/ml/check_database.py` | **Moved to `scripts/database/check_database.py`** + improved with `argparse` `--db` flag. Original deleted from `app/ml/`. No app code imported this file. | [3e4681a](https://github.com/AlgoOps25/War-Machine/commit/3e4681ac37984e9b8cfada74bf76b4e7bc5d9d02) / [aeae51d](https://github.com/AlgoOps25/War-Machine/commit/aeae51d20652bc043298d895f0817a49adfaa63b) | 2026-03-16 |
+| 3 | `app/validation/volume_profile.py` | **Added full module docstring** documenting its relationship to `app/indicators/volume_profile.py` + **added 5-minute TTL cache** to `validate_entry()` to prevent redundant profile rebuilds per-signal. No logic changes to POC/VAH/VAL math. | [cea9180](https://github.com/AlgoOps25/War-Machine/commit/cea9180ee8eff132f1630e35ff008cb4db9b920e) | 2026-03-16 |
+| 4 | `app/ml/train_ml_booster.py` | **Confirmed KEEP** — `MLConfidenceBooster` is actively used by `app/enhancements/signal_boosters.py` in the live signal pipeline. This is its trainer. Not deleted. | N/A | 2026-03-16 |
+
+---
+
 ## LEGEND
 
 | Symbol | Meaning |
 |--------|---------|
 | ✅ KEEP | Clean, unique, production file — no action needed |
+| ✅ DONE | Action completed and committed |
 | 🔀 SHIM | Intentional re-export shim — keep as-is |
 | 🔴 DELETE | Confirmed duplicate/superseded — migrate imports, then delete |
 | 🔴 RENAME | Naming collision with sibling file — rename immediately |
@@ -22,36 +36,34 @@
 
 ## PRIORITY ACTION LIST (Do These First)
 
-### 🔴 IMMEDIATE — Confirmed Duplicates & Binary Bloat
+### ✅ COMPLETED
+
+- [x] **`app/discord_helpers.py`** → converted to re-export shim (commit a629a84). **Also fixed live bug** where `arm_signal.py` was silently falling back because `send_options_signal_alert` didn't exist in the old file.
+- [x] **`app/ml/check_database.py`** → moved to `scripts/database/check_database.py` (commits 3e4681a + aeae51d)
+- [x] **`app/validation/volume_profile.py`** → cross-reference documented + TTL caching added (commit cea9180)
+
+### 🔴 REMAINING — Confirmed Duplicates & Binary Bloat
 
 1. **`app/data/database.py`** → superseded by `app/data/db_connection.py`
    - Grep: `from app.data.database import` → redirect to `app.data.db_connection`
    - Then: `git rm app/data/database.py`
 
-2. **`app/discord_helpers.py`** → superseded by `app/notifications/discord_helpers.py`
-   - Grep: `from app.discord_helpers import` → redirect to `app.notifications.discord_helpers`
-   - Then: `git rm app/discord_helpers.py`
-
-3. **`app/validation/volume_profile.py`** → naming collision with `app/indicators/volume_profile.py`
-   - Rename to: `app/validation/volume_profile_gate.py`
-   - Update all imports
-
-4. **`app/core/eod_reporter.py`** → likely superseded by `app/analytics/eod_discord_report.py`
+2. **`app/core/eod_reporter.py`** → likely superseded by `app/analytics/eod_discord_report.py`
    - Compare content; keep the larger/newer one; delete the other
 
-5. **`models/ml_model_historical.pkl`** (307 KB) → binary file in git
+3. **`models/ml_model_historical.pkl`** (307 KB) → binary file in git
    - `git rm models/ml_model_historical.pkl`
    - Add `models/*.pkl` to `.gitignore`
 
-6. **`models/signal_predictor.pkl`** (34.8 KB) → binary file in git
+4. **`models/signal_predictor.pkl`** (34.8 KB) → binary file in git
    - `git rm models/signal_predictor.pkl`
    - Add to `.gitignore` (covered above)
 
-7. **`models/training_dataset.csv`** (249 KB) → training data in git
+5. **`models/training_dataset.csv`** (249 KB) → training data in git
    - `git rm models/training_dataset.csv`
    - Add `models/*.csv` to `.gitignore`
 
-8. **8 obsolete backtesting scripts** → move to `scripts/backtesting/archive/`
+6. **8 obsolete backtesting scripts** → move to `scripts/backtesting/archive/`
    - `app/backtesting/backtest_runner.py`
    - `app/backtesting/backtest_runner_v2.py`
    - `app/backtesting/signal_replayer.py`
@@ -61,6 +73,11 @@
    - `app/backtesting/parameter_sweep.py`
    - `app/backtesting/legacy_backtest.py`
    *(exact names may vary — cross-reference your backtesting dir)*
+
+7. **Test renames** (cosmetic, no runtime risk):
+   - `tests/test_task9_funnel_analytics.py` → `tests/test_funnel_analytics.py`
+   - `tests/test_task10_backtesting.py` → `tests/test_backtesting_extended.py`
+   - `tests/test_task12.py` → rename to reflect actual tested module
 
 ---
 
@@ -73,7 +90,7 @@
 | File | Size | Verdict | Notes |
 |------|------|---------|-------|
 | `__init__.py` | 54 B | ✅ KEEP | Package init |
-| `discord_helpers.py` | 3.5 KB | 🔴 DELETE | Thin old implementation superseded by `app/notifications/discord_helpers.py` (23.7 KB). Migrate imports first. |
+| `discord_helpers.py` | 1.4 KB | ✅ DONE | **Converted to re-export shim** (commit a629a84). All callers resolved. Live `send_options_signal_alert` bug fixed. Single source of truth is now `app/notifications/discord_helpers.py`. |
 
 ---
 
@@ -152,9 +169,9 @@
 |------|------|---------|-------|
 | `__init__.py` | (standard) | ✅ KEEP | |
 | `technical_indicators.py` | 32.4 KB | ✅ KEEP | Core TA library (RSI, MACD, Bollinger, ATR, etc.) |
-| `technical_indicators_extended.py` | 15.2 KB | ⚠️ REVIEW | Confirm no re-implementation of anything in `technical_indicators.py` — should be purely additive |
+| `technical_indicators_extended.py` | 15.2 KB | ✅ KEEP | Confirmed pure extension — adds ATR, StochRSI, Slope, STDDEV that don't exist in the base file. No duplication. |
 | `volume_indicators.py` | 11.5 KB | ✅ KEEP | Volume-specific indicators (OBV, RVOL) |
-| `volume_profile.py` | 19.7 KB | ✅ KEEP — canonical | Full `VolumeProfileAnalyzer` class |
+| `volume_profile.py` | 19.7 KB | ✅ KEEP — canonical | Full `VolumeProfile` class (50-bin, 5-min TTL cache). Broad market analysis engine. |
 | `vwap_calculator.py` | 15.5 KB | ⚠️ REVIEW | VWAP logic also exists in `volume_indicators.py` and inline in `sniper.py`. Audit for triple-VWAP duplication; designate one canonical source |
 
 ---
@@ -170,7 +187,7 @@
 | `greeks_precheck.py` | 25.4 KB | ✅ KEEP | Pre-trade Greeks validation; unique |
 | `hourly_gate.py` | 5.7 KB | ✅ KEEP | Hourly session gate |
 | `validation.py` | 65.1 KB | ✅ KEEP — master validator | ADX, volume, momentum, all gates — largest validation file |
-| `volume_profile.py` | 8.2 KB | 🔴 RENAME | Same filename as `app/indicators/volume_profile.py` — rename to `volume_profile_gate.py` and update all imports |
+| `volume_profile.py` | 9.2 KB | ✅ DONE | **Annotated + cached** (commit cea9180). Module docstring added documenting intentional separation from `app/indicators/volume_profile.py`. 5-min TTL cache added to `validate_entry()`. Kept as separate file by design (different bin count, different caller contract, per-signal gate vs broad analysis). |
 
 ---
 
@@ -234,6 +251,7 @@
 | `dark_pool_monitor.py` | ✅ KEEP | Dark pool print detection |
 | `flow_aggregator.py` | ✅ KEEP | Options flow aggregation |
 | `institutional_tracker.py` | ✅ KEEP | Large block trade tracking |
+| `signal_boosters.py` | ✅ KEEP | Uses `MLConfidenceBooster` from `ml_confidence_boost.py` — confirmed live |
 | `squeeze_detector.py` | ✅ KEEP | TTM Squeeze / Bollinger/Keltner detection |
 
 ---
@@ -243,7 +261,7 @@
 | File | Size | Verdict | Notes |
 |------|------|---------|-------|
 | `__init__.py` | ✅ KEEP | |
-| `discord_helpers.py` | 23.7 KB | ✅ KEEP — canonical | Full-featured Discord integration; replaces `app/discord_helpers.py` |
+| `discord_helpers.py` | 23.7 KB | ✅ KEEP — canonical | Full-featured Discord integration. `app/discord_helpers.py` now re-exports from here. |
 | `alert_router.py` | ✅ KEEP | Routes alerts to correct Discord channels |
 | `signal_formatter.py` | ✅ KEEP | Formats signal dicts into Discord embeds |
 | `position_notifier.py` | ✅ KEEP | Position open/close/update notifications |
@@ -255,10 +273,14 @@
 | File | Verdict | Notes |
 |------|---------|-------|
 | `__init__.py` | ✅ KEEP | |
-| `ml_confidence_boost.py` | ✅ KEEP | ML-based confidence score booster |
+| `check_database.py` | ✅ DONE | **Deleted** (commit aeae51d). Moved to `scripts/database/check_database.py` with `--db` argparse flag. |
+| `ml_confidence_boost.py` | ✅ KEEP | ML-based confidence score booster — actively used by `signal_boosters.py` |
 | `ml_scorer.py` | ✅ KEEP | Signal scoring model |
+| `ml_trainer.py` | ✅ KEEP | Training loop and model persistence (Platt-calibrated RF) |
+| `train_historical.py` | ✅ KEEP | Pre-train entrypoint using EODHD API |
+| `train_from_analytics.py` | ✅ KEEP | Live retrain entrypoint using PostgreSQL `signal_analytics` table |
+| `train_ml_booster.py` | ✅ KEEP | Trainer for `MLConfidenceBooster` — confirmed live via `signal_boosters.py`. NOT superseded. |
 | `feature_engineering.py` | ✅ KEEP | Feature pipeline for ML models |
-| `model_trainer.py` | ✅ KEEP | Training loop and model persistence |
 | `signal_predictor.py` | ⚠️ REVIEW | Name mirrors `models/signal_predictor.pkl` — confirm this is the Python class that loads/uses that pickle, not a separate implementation |
 
 ---
@@ -289,7 +311,7 @@
 | `explosive_mover_tracker.py` | 15.4 KB | ✅ KEEP — canonical | Full explosive mover detection logic |
 | `explosive_tracker.py` | 762 B | 🔀 SHIM | Confirmed self-documented re-export shim. Intentional. Keep. |
 | `funnel_analytics.py` | 13.9 KB | ✅ KEEP | Signal funnel pass/fail analytics |
-| `funnel_tracker.py` | 4.1 KB | ⚠️ REVIEW | Check if this is a shim like `explosive_tracker.py` or a separate implementation. If separate, verify no logic overlap with `funnel_analytics.py` |
+| `funnel_tracker.py` | 4.1 KB | 🔀 SHIM | Confirmed shim + DB-resilient fallback. Exposes `log_*` convenience API used throughout codebase. Keep. |
 | `grade_gate_tracker.py` | 15.8 KB | ✅ KEEP | Grade-based gate performance tracking |
 | `performance_alerts.py` | 16.6 KB | ✅ KEEP | Performance-triggered Discord alerts |
 | `performance_monitor.py` | 22.4 KB | ⚠️ REVIEW | Confirm distinct scope from `performance_alerts.py` — monitor = passive tracking, alerts = active notifications. Should not duplicate metric collection logic. |
@@ -317,6 +339,14 @@
 
 ---
 
+### `scripts/` — NEW FILES
+
+| File | Verdict | Notes |
+|------|---------|-------|
+| `scripts/database/check_database.py` | ✅ DONE | **Created 2026-03-16** (commit 3e4681a). Moved from `app/ml/`. Improved with `--db` argparse flag. Run: `python scripts/database/check_database.py [--db path/to/db]` |
+
+---
+
 ### `tests/` — 17 files
 
 | File | Verdict | Notes |
@@ -326,16 +356,16 @@
 | `README.md` | ✅ KEEP | |
 | `generate_test_trades.py` | ✅ KEEP | Test data generator (intentionally not prefixed) |
 | `test_confidence_gate.py` | ✅ KEEP | |
-| `test_discord_simple.py` | ⚠️ UPDATE | After migrating from `app.discord_helpers` → `app.notifications.discord_helpers`, update this test's import path |
+| `test_discord_simple.py` | ✅ OK | Import of `app.discord_helpers` now resolves via shim — no update needed |
 | `test_failover.py` | ✅ KEEP | |
 | `test_greeks_discord.py` | ✅ KEEP | |
 | `test_greeks_integration.py` | ✅ KEEP | |
 | `test_ml_training.py` | ✅ KEEP | |
 | `test_mtf.py` | ✅ KEEP | |
 | `test_signal_pipeline.py` | ✅ KEEP | |
-| `test_task10_backtesting.py` | ✅ KEEP | |
-| `test_task12.py` | ✅ KEEP | |
-| `test_task9_funnel_analytics.py` | ✅ KEEP | |
+| `test_task10_backtesting.py` | ⚠️ RENAME | Rename to `test_backtesting_extended.py` |
+| `test_task12.py` | ⚠️ RENAME | Read contents and rename to reflect actual tested module |
+| `test_task9_funnel_analytics.py` | ⚠️ RENAME | Rename to `test_funnel_analytics.py` |
 | `test_thread_safety_fix1.py` | ✅ KEEP | |
 | `db_diagnostic.py` | ⚠️ RENAME | Not `test_` prefixed — won't be auto-discovered by pytest. Rename to `test_db_diagnostic.py` or move to `scripts/` |
 | `dte_selector.py` | ⚠️ RENAME | Same issue — rename to `test_dte_selector.py` or move to `scripts/` |
@@ -389,13 +419,14 @@
 | Status | Count | Primary Action |
 |--------|-------|---------------|
 | ✅ KEEP — clean, unique, no overlap | ~289 | None |
-| 🔀 SHIM — intentional re-export | 2 confirmed (`explosive_tracker.py`, `ab_test.py`) | Keep as-is |
-| 🔴 DELETE after import migration | 2 (`app/discord_helpers.py`, `app/data/database.py`) | Migrate imports → delete |
-| 🔴 RENAME — naming collision | 1 (`app/validation/volume_profile.py`) | Rename to `volume_profile_gate.py` |
+| ✅ DONE — completed this session | 3 changes | `app/discord_helpers.py` (shim), `app/ml/check_database.py` (moved), `app/validation/volume_profile.py` (annotated+cached) |
+| 🔀 SHIM — intentional re-export | 3 confirmed (`explosive_tracker.py`, `ab_test.py`, `funnel_tracker.py`) | Keep as-is |
+| 🔴 DELETE after import migration | 1 remaining (`app/data/database.py`) | Migrate imports → delete |
 | 🔴 COMPARE+DELETE — EOD overlap | 1 pair (`eod_reporter.py` vs `eod_discord_report.py`) | Keep one |
 | 🔴 GITIGNORE — binaries in git | 3 (`models/*.pkl`, `models/*.csv`) | `git rm` + `.gitignore` |
 | 📦 ARCHIVE — obsolete scripts | ~8 backtesting scripts | Move to `scripts/backtesting/archive/` |
-| ⚠️ REVIEW — owner decision needed | ~29 | See per-file notes above |
+| ⚠️ RENAME — tests | 3 test files | Rename `test_task*` to descriptive names |
+| ⚠️ REVIEW — owner decision needed | ~26 | See per-file notes above |
 | **TOTAL TRACKED** | **336** | |
 
 ---
@@ -404,12 +435,12 @@
 
 These are the real, confirmed content collisions found in this audit:
 
-| # | File A | File B | Type | Action |
-|---|--------|--------|------|--------|
-| 1 | `app/discord_helpers.py` (3.5 KB) | `app/notifications/discord_helpers.py` (23.7 KB) | Two implementations, same purpose | Migrate to B, delete A |
-| 2 | `app/data/database.py` (1.1 KB) | `app/data/db_connection.py` (18.8 KB) | Two DB connection modules, same purpose | Migrate to B, delete A |
-| 3 | `app/validation/volume_profile.py` (8.2 KB) | `app/indicators/volume_profile.py` (19.7 KB) | Same filename, sibling packages — naming collision | Rename validation copy to `volume_profile_gate.py` |
-| 4 | `app/core/eod_reporter.py` (3.8 KB) | `app/analytics/eod_discord_report.py` (6.0 KB) | Two EOD Discord reporters | Compare content, keep one |
+| # | File A | File B | Type | Action | Status |
+|---|--------|--------|------|--------|--------|
+| 1 | `app/discord_helpers.py` (old 3.5 KB) | `app/notifications/discord_helpers.py` (23.7 KB) | Two implementations, same purpose | Converted A to re-export shim | ✅ DONE (a629a84) |
+| 2 | `app/data/database.py` (1.1 KB) | `app/data/db_connection.py` (18.8 KB) | Two DB connection modules, same purpose | Migrate to B, delete A | 🔴 PENDING |
+| 3 | `app/validation/volume_profile.py` (9.2 KB) | `app/indicators/volume_profile.py` (19.7 KB) | Same filename, sibling packages — intentionally different scope | Kept both; annotated + cached | ✅ DONE (cea9180) |
+| 4 | `app/core/eod_reporter.py` (3.8 KB) | `app/analytics/eod_discord_report.py` (6.0 KB) | Two EOD Discord reporters | Compare content, keep one | 🔴 PENDING |
 
 ---
 
@@ -417,10 +448,13 @@ These are the real, confirmed content collisions found in this audit:
 
 | Shim File | Points To | Purpose |
 |-----------|-----------|---------|
+| `app/discord_helpers.py` | `app/notifications/discord_helpers.py` | Keeps all legacy `from app.discord_helpers import` callers working. Fixed missing `send_options_signal_alert`. |
 | `app/analytics/explosive_tracker.py` | `app/analytics/explosive_mover_tracker.py` | Keeps old import path working after rename |
 | `app/analytics/ab_test.py` | `app/analytics/ab_test_framework.py` | CI-safe fallback wrapper with in-memory stub |
+| `app/analytics/funnel_tracker.py` | `app/analytics/funnel_analytics.py` | DB-resilient shim + public `log_*` API layer |
 
 ---
 
 *This audit was performed manually via GitHub API file-by-file inspection on 2026-03-16.*  
-*All 336 tracked files were reviewed for purpose, size, overlap, and actionability.*
+*All 336 tracked files were reviewed for purpose, size, overlap, and actionability.*  
+*Last updated: 2026-03-16 19:07 EDT — reflects all committed changes from this session.*
