@@ -366,6 +366,8 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
             print(f"[{ticker}] OPTIONS-GATE error (non-fatal): {_gate_err}")
             _pre_options_data = None
 
+    vp_boost = 0.0
+
     if VOLUME_PROFILE_ENABLED:
         try:
             analyzer = get_volume_analyzer()
@@ -380,11 +382,15 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
                 vp_emoji = "✅" if is_valid else "❌"
                 print(f"[{ticker}] {vp_emoji} VOLUME PROFILE: {vp_reason}")
                 if vp_data:
+                    vp_boost = vp_data.get('confidence_boost', 0.0)
+                    vp_bias  = vp_data.get('options_bias', 'NEUTRAL')
                     print(
                         f"[{ticker}] VP Details: POC=${vp_data.get('poc', 0):.2f} | "
                         f"Distance={vp_data.get('distance_from_poc_pct', 0):.1%} | "
-                        f"Volume Rank={vp_data.get('volume_rank', 'N/A')}"
+                        f"Volume Rank={vp_data.get('volume_rank', 'N/A')} | "
+                        f"Bias={vp_bias} | Boost={vp_boost:+.2f}"
                     )
+
                 if not is_valid:
                     print(f"[{ticker}] 🚫 Signal dropped: Volume profile validation failed")
                     return False
@@ -656,7 +662,8 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
     uoa_adj    = mult_to_adjustment(uoa_multiplier, base_confidence)
     gex_adj    = mult_to_adjustment(gex_multiplier, base_confidence)
 
-    final_confidence = base_confidence + ticker_adj + mode_adj + ivr_adj + uoa_adj + gex_adj + mtf_boost + ml_boost
+    vp_boost = vp_boost if VOLUME_PROFILE_ENABLED else 0.0
+    final_confidence = base_confidence + ticker_adj + mode_adj + ivr_adj + uoa_adj + gex_adj + mtf_boost + ml_boost + vp_boost
     final_confidence = max(0.40, min(final_confidence, 0.95))
 
     if SPY_EMA_CONTEXT_ENABLED and spy_regime:
@@ -712,6 +719,7 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         f"+ GEX:{gex_adj:+.3f}[{gex_label}] "
         f"+ MTF:{mtf_boost:+.3f} "
         f"+ ML:{ml_boost:+.3f} "
+        f"+ VP:{vp_boost:+.3f} "        # ← add this line
         f"+ Sweep:{(_sweep_result['boost'] if _sweep_result else 0.0):+.3f} "
         f"+ OB:{(0.03 if _ob_result else 0.0):+.3f} "
         f"+ SD:{(0.03 if _sd_result else 0.0):+.3f} "
