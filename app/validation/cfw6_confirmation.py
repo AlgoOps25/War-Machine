@@ -2,11 +2,16 @@
 CFW6 Confirmation System - Consolidated Confirmation Logic
 Replaces: confirmation_layers.py, cfw6_confirmation_enhanced.py, candle_confirmation.py
 Implements exact CFW6 video rules for candle confirmation + multi-factor validation
+
+FIXED (Mar 16 2026): Removed private calculate_vwap() (used close price only — wrong formula).
+                     Now imports compute_vwap() + passes_vwap_gate() from app.filters.vwap_gate
+                     which uses correct typical price formula: (H+L+C)/3.
 """
 from typing import Dict, List, Tuple
 from datetime import datetime
 import time
 from utils import config
+from app.filters.vwap_gate import compute_vwap, passes_vwap_gate
 
 
 def _parse_bar_datetime(bar: Dict):
@@ -207,21 +212,10 @@ def wait_for_confirmation(
 # =============================================================================
 # MULTI-FACTOR CONFIRMATION LAYERS
 # =============================================================================
-
-def calculate_vwap(bars: List[Dict]) -> float:
-    """Calculate Volume-Weighted Average Price."""
-    total_pv     = sum(bar["close"] * bar["volume"] for bar in bars)
-    total_volume = sum(bar["volume"] for bar in bars)
-    return total_pv / total_volume if total_volume > 0 else 0
-
-
-def check_vwap_alignment(bars: List[Dict], direction: str, current_price: float) -> bool:
-    """Check if price is aligned with VWAP."""
-    vwap = calculate_vwap(bars)
-    if direction == "bull":
-        return current_price > vwap
-    else:
-        return current_price < vwap
+# NOTE: VWAP helpers previously defined here (calculate_vwap, check_vwap_alignment)
+#       used close price only — incorrect formula. Removed Mar 16 2026.
+#       Now delegates to app.filters.vwap_gate: compute_vwap (typical price H+L+C/3)
+#       and passes_vwap_gate (directional alignment check).
 
 
 def check_previous_day_levels(ticker: str, current_price: float, direction: str) -> Dict:
@@ -268,7 +262,7 @@ def grade_signal_with_confirmations(
     Apply 3 active confirmation layers and adjust grade.
 
     Layers:
-    1. VWAP alignment
+    1. VWAP alignment  — via app.filters.vwap_gate.passes_vwap_gate() (correct H+L+C/3 formula)
     2. Previous day levels (PDH/PDL)
     3. Institutional volume
     (Options flow removed until real data source is wired in)
@@ -280,9 +274,9 @@ def grade_signal_with_confirmations(
     """
     print(f"[CONFIRM] Checking confirmation layers for {ticker}...")
 
-    vwap_ok   = check_vwap_alignment(bars, direction, current_price)
-    pd_result = check_previous_day_levels(ticker, current_price, direction)
-    inst_ok   = check_institutional_volume(bars, breakout_idx)
+    vwap_ok, vwap_reason = passes_vwap_gate(bars, direction, current_price)
+    pd_result            = check_previous_day_levels(ticker, current_price, direction)
+    inst_ok              = check_institutional_volume(bars, breakout_idx)
 
     aligned_count = sum([vwap_ok, pd_result["aligned"], inst_ok])
 
@@ -291,7 +285,7 @@ def grade_signal_with_confirmations(
     inst_emoji = "OK" if inst_ok else "FAIL"
 
     print(f"[CONFIRM] Aligned: {aligned_count}/3")
-    print(f"  VWAP:          {vwap_emoji}")
+    print(f"  VWAP:          {vwap_emoji} | {vwap_reason}")
     print(f"  Prev Day:      {pd_emoji} ({pd_result.get('level','?')} @ ${pd_result.get('level_price',0):.2f})")
     print(f"  Institutional: {inst_emoji}")
 
