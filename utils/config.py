@@ -11,8 +11,11 @@ docs/ISSUE_20_WARMACHINECONFIG_ANALYSIS.md for the archived implementation.
 """
 
 import os
+import sys
+import logging
 from datetime import time as dtime
 
+logger = logging.getLogger(__name__)
 
 # ========================================
 # API KEYS & CREDENTIALS
@@ -57,24 +60,7 @@ MIN_OR_RANGE_PCT = 0.030          # default / BULL
 MIN_OR_RANGE_PCT_BEAR = 0.027     # BEAR regime
 MIN_OR_RANGE_PCT_STRONG_BEAR = 0.025  # STRONG_BEAR regime
 
-# ── A1: VIX-Scaled OR Threshold ──────────────────────────────────────────────
-# Maps current VIX level to a dynamic minimum OR range %.
-# Lower VIX = stricter threshold (low-vol days have tighter, cleaner ORs).
-# Higher VIX = looser threshold (high-vol days expand intraday range).
-#
-# Usage (sniper.py _get_or_threshold):
-#   from utils.config import get_vix_or_threshold
-#   threshold = get_vix_or_threshold(current_vix, spy_regime)
-#
-# VIX tiers (upper bound, exclusive):
-#   < 15  → 3.0%  calm market, standard bar
-#   < 20  → 2.5%  normal vol
-#   < 28  → 1.8%  elevated vol (today: VIX ~26 falls here)
-#   < 35  → 1.5%  high vol / fear
-#   ≥ 35  → 1.2%  crisis — accept almost any OR that prints
-#
-# The regime-aware static values (MIN_OR_RANGE_PCT_BEAR etc.) still act as
-# a floor when the VIX lookup returns a value higher than the regime floor.
+# ── A1: VIX-Scaled OR Threshold ──────────────────────────────────────────────────────────────
 VIX_OR_THRESHOLDS = [
     (15,  0.030),   # VIX <15  → 3.0%
     (20,  0.025),   # VIX <20  → 2.5%
@@ -87,20 +73,6 @@ VIX_OR_THRESHOLDS = [
 def get_vix_or_threshold(vix: float, spy_regime: dict = None) -> float:
     """
     Return the VIX-scaled minimum OR range % threshold.
-
-    Walks VIX_OR_THRESHOLDS and returns the threshold for the first
-    tier where vix < upper_bound.
-
-    Also enforces the existing regime-aware static floors so a STRONG_BEAR
-    regime never gets a threshold BELOW MIN_OR_RANGE_PCT_STRONG_BEAR.
-
-    Args:
-        vix:        Current VIX level (float).
-        spy_regime: Optional SPY EMA regime dict (keys: 'label', 'score_adj').
-                    Used to enforce static regime floor.
-
-    Returns:
-        float: Minimum OR range % (e.g. 0.018 = 1.8%)
     """
     vix_threshold = MIN_OR_RANGE_PCT  # fallback
     for upper_bound, pct in VIX_OR_THRESHOLDS:
@@ -108,7 +80,6 @@ def get_vix_or_threshold(vix: float, spy_regime: dict = None) -> float:
             vix_threshold = pct
             break
 
-    # Regime floor: never go BELOW the static regime minimum
     if spy_regime:
         label = spy_regime.get("label", "")
         if label == "STRONG_BEAR":
@@ -117,9 +88,6 @@ def get_vix_or_threshold(vix: float, spy_regime: dict = None) -> float:
             regime_floor = MIN_OR_RANGE_PCT_BEAR
         else:
             regime_floor = MIN_OR_RANGE_PCT
-        # Use whichever is LOWER: VIX wants to relax the threshold on high-VIX
-        # days, so take the minimum of (vix_threshold, regime_floor).
-        # This means on a STRONG_BEAR + VIX=40 day we accept 1.2% ORs.
         return min(vix_threshold, regime_floor)
 
     return vix_threshold
@@ -128,56 +96,45 @@ def get_vix_or_threshold(vix: float, spy_regime: dict = None) -> float:
 # ========================================
 # SECONDARY RANGE (Power Hour — B1)
 # ========================================
-# 10:00–10:30 AM ET consolidation range used as a mid-session BOS anchor
-# when the 9:30 OR has been broken OR when no OR signal fired by 10:00.
-# Detected and cached by OpeningRangeDetector.classify_secondary_range().
 
 SECONDARY_RANGE_ENABLED = True
 SECONDARY_RANGE_START = dtime(10, 0)   # 10:00 AM ET
 SECONDARY_RANGE_END   = dtime(10, 30)  # 10:30 AM ET
+SECONDARY_RANGE_MIN_BARS = 20
+SECONDARY_RANGE_MIN_PCT = 0.005
 
-# Minimum bar count inside the secondary window to classify it
-SECONDARY_RANGE_MIN_BARS = 20  # 20 x 1m bars = full 10:00–10:20 window minimum
-
-# Secondary range must be at least this wide to be useful as a BOS anchor
-SECONDARY_RANGE_MIN_PCT = 0.005  # 0.5% — tighter than OR because it's a consolidation
-
-# Options filtering thresholds - TASK 3 INTEGRATION
-MIN_DTE = 0  # Minimum days to expiration (0DTE allowed)
-MAX_DTE = 7  # Maximum days to expiration (weekly options)
-IDEAL_DTE = 2  # Ideal DTE for scoring (2 days out)
-MIN_OPTION_OI = 100  # Minimum open interest
-MIN_OPTION_VOLUME = 50  # Minimum daily volume
-MAX_BID_ASK_SPREAD_PCT = 0.10  # Maximum 10% spread
-TARGET_DELTA_MIN = 0.40  # Minimum delta (0.40-0.70 range)
-TARGET_DELTA_MAX = 0.70  # Maximum delta
-MAX_THETA_DECAY_PCT = 0.05  # Maximum 5% theta decay per day
+# Options filtering thresholds
+MIN_DTE = 0
+MAX_DTE = 7
+IDEAL_DTE = 2
+MIN_OPTION_OI = 100
+MIN_OPTION_VOLUME = 50
+MAX_BID_ASK_SPREAD_PCT = 0.10
+TARGET_DELTA_MIN = 0.40
+TARGET_DELTA_MAX = 0.70
+MAX_THETA_DECAY_PCT = 0.05
 
 # ========================================
-# MARKET HOURS (datetime.time objects for proper comparisons)
+# MARKET HOURS
 # ========================================
 
-# FIX: Must be datetime.time objects, NOT strings.
-# scanner.py and data_manager.py compare these with datetime.time values.
-MARKET_OPEN  = dtime(9, 30)   # 9:30 AM ET
-MARKET_CLOSE = dtime(16, 0)   # 4:00 PM ET
-PRE_MARKET_START = dtime(4, 0)   # 4:00 AM ET (extended hours open)
-AFTER_HOURS_END  = dtime(20, 0)  # 8:00 PM ET (extended hours close)
+MARKET_OPEN  = dtime(9, 30)
+MARKET_CLOSE = dtime(16, 0)
+PRE_MARKET_START = dtime(4, 0)
+AFTER_HOURS_END  = dtime(20, 0)
 
 # ========================================
 # WEBSOCKET FEED
 # ========================================
 
-ENABLE_WEBSOCKET_FEED = True  # Enable EODHD WebSocket real-time feed
+ENABLE_WEBSOCKET_FEED = True
 
 # ========================================
 # DISCORD ALERTS
 # ========================================
 
-# Primary signals channel
 DISCORD_WEBHOOK_URL = os.getenv('DISCORD_WEBHOOK_URL', '')
 
-# Dedicated news/catalyst channel (Phase 1.18)
 DISCORD_NEWS_WEBHOOK_URL = os.getenv(
     'DISCORD_NEWS_WEBHOOK_URL',
     'https://discord.com/api/webhooks/1481012609158479992/3a0xzUeNK4hbWQPW3i_6uRrFeOb_nsOR3HoIOMFhoHwq4yRruEIEQ40aULSoRKPQvIhQ'
@@ -187,23 +144,14 @@ DISCORD_NEWS_WEBHOOK_URL = os.getenv(
 # BASELINE SCANNER CONFIGURATION
 # ========================================
 
-# ── Backtest Campaign Champion (2026-03-10) ─────────────────────────────────────────────────────
-# Run   : 32,400 combos x 15 tickers x 90 days (2025-12-10 -> 2026-03-09)
-# Result: 70.6% WR  |  +0.44 avg-R  |  34 trades  |  score=0.3130
-# Filter: min_trades=30, min_wr=55%  (183 qualifying combos)
-# Locked: BOS=0.10%, RVOL=2.0x, direction=call_only, MFI>=60
-# Note  : put_only eliminated (no qualifying combos); extend to 180-day
-#         dataset before updating bear-side params.
-ORB_BREAK_THRESHOLD = 0.001     # 0.1% BOS threshold - campaign champion (was 0.002)
-FVG_MIN_SIZE_PCT = 0.005        # 0.5% minimum FVG size
-CONFIRMATION_TIMEOUT_BARS = 5   # Max bars to wait for confirmation
+ORB_BREAK_THRESHOLD = 0.001
+FVG_MIN_SIZE_PCT = 0.005
+CONFIRMATION_TIMEOUT_BARS = 5
 
-# Confidence thresholds
-MIN_CONFIDENCE_OR = 0.75        # Minimum confidence for OR-anchored signals
-MIN_CONFIDENCE_INTRADAY = 0.70  # Minimum confidence for intraday signals
-CONFIDENCE_ABSOLUTE_FLOOR = 0.65  # Hard floor regardless of grade
+MIN_CONFIDENCE_OR = 0.75
+MIN_CONFIDENCE_INTRADAY = 0.70
+CONFIDENCE_ABSOLUTE_FLOOR = 0.65
 
-# Grade-specific confidence floors
 MIN_CONFIDENCE_BY_GRADE = {
     "A+": 0.75,
     "A":  0.70,
@@ -216,120 +164,173 @@ MIN_CONFIDENCE_BY_GRADE = {
     "C-": 0.35,
 }
 
-# Scanner parameters
-MIN_PRICE = 5.0                 # Minimum stock price
-MAX_PRICE = 500.0               # Maximum stock price
-MIN_VOLUME = 1_000_000          # Minimum daily volume
-MIN_RELATIVE_VOLUME = 2.0       # Minimum RVOL - campaign confirmed (cliff at 3.0x)
-MIN_ATR_MULTIPLIER = 4.0        # Minimum ATR for volatility
+MIN_PRICE = 5.0
+MAX_PRICE = 500.0
+MIN_VOLUME = 1_000_000
+MIN_RELATIVE_VOLUME = 2.0
+MIN_ATR_MULTIPLIER = 4.0
 
-# Campaign-derived signal quality filters
-MFI_MIN = 60                    # MFI floor - campaign winner (0=off, 60 best)
-OBV_BARS_MIN = 0                # OBV rising bars - noise in backtest, disabled
-VWAP_ZONE = 'above_vwap'        # VWAP zone - tied with 'none' but adds logic
-TF_CONFIRM = '1m'               # TF confirmation tier - campaign winner at >=30 trades
+MFI_MIN = 60
+OBV_BARS_MIN = 0
+VWAP_ZONE = 'above_vwap'
+TF_CONFIRM = '1m'
 
-# Time windows
-OR_START_TIME = dtime(9, 30)    # Opening range start
-OR_END_TIME = dtime(9, 45)      # Opening range end (widened from 9:40)
-TRADING_START = dtime(9, 45)    # Start looking for signals
-TRADING_END = dtime(15, 45)     # Stop new signals
-FORCE_CLOSE_TIME = dtime(15, 50) # Force close all positions
+OR_START_TIME = dtime(9, 30)
+OR_END_TIME = dtime(9, 45)
+TRADING_START = dtime(9, 45)
+TRADING_END = dtime(15, 45)
+FORCE_CLOSE_TIME = dtime(15, 50)
 
 # ========================================
 # RISK MANAGEMENT
 # ========================================
 
-STOP_LOSS_MULTIPLIER = 1.5      # ATR multiplier for stop loss
-TAKE_PROFIT_MULTIPLIER = 3.0    # Risk multiplier for take profit
-MAX_LOSS_PER_TRADE_PCT = 2.0    # Maximum % loss per trade
-TRAILING_STOP_ACTIVATION = 1.0  # R:R ratio to activate trailing stop
+STOP_LOSS_MULTIPLIER = 1.5
+TAKE_PROFIT_MULTIPLIER = 3.0
+MAX_LOSS_PER_TRADE_PCT = 2.0
+TRAILING_STOP_ACTIVATION = 1.0
 
 # ========================================
 # VALIDATION
 # ========================================
 
-# Multi-indicator validator thresholds
-VALIDATOR_MIN_SCORE = 0.6       # Minimum score to pass validator
-VALIDATOR_ENABLED = True        # Enable multi-indicator validation
+VALIDATOR_MIN_SCORE = 0.6
+VALIDATOR_ENABLED = True
 
-# Options validation
-OPTIONS_FILTER_ENABLED = True   # Enable options pre-validation
-OPTIONS_FILTER_MODE = "HARD"    # "SOFT" (log only) or "HARD" (filter)
+OPTIONS_FILTER_ENABLED = True
+OPTIONS_FILTER_MODE = "HARD"
 
-# Regime filter
-REGIME_FILTER_ENABLED = True    # Enable VIX/SPY market condition check
-MIN_VIX_LEVEL = 12.0            # Minimum VIX for favorable regime
-MAX_VIX_LEVEL = 35.0            # Maximum VIX for favorable regime
+REGIME_FILTER_ENABLED = True
+MIN_VIX_LEVEL = 12.0
+MAX_VIX_LEVEL = 35.0
 
 # ========================================
 # ADVANCED FEATURES
 # ========================================
 
-# MTF (Multi-timeframe) settings
-MTF_ENABLED = True              # Enable multi-timeframe FVG detection
-MTF_CONVERGENCE_BOOST = 0.05    # +5% confidence for MTF convergence
+MTF_ENABLED = True
+MTF_CONVERGENCE_BOOST = 0.05
 
-# Candle confirmation settings
-CANDLE_CONFIRMATION_ENABLED = True  # Enable 3-tier candle quality model
+CANDLE_CONFIRMATION_ENABLED = True
 
-# Hourly gate settings
-HOURLY_GATE_ENABLED = True      # Enable time-based confidence adjustment
+HOURLY_GATE_ENABLED = True
 
-# Correlation check settings
-CORRELATION_CHECK_ENABLED = True  # Enable sector-aware correlation filter
+CORRELATION_CHECK_ENABLED = True
 
-# Explosive mover override
-EXPLOSIVE_SCORE_THRESHOLD = 80    # Score threshold for regime bypass
-EXPLOSIVE_RVOL_THRESHOLD = 4.0    # RVOL threshold for regime bypass
+EXPLOSIVE_SCORE_THRESHOLD = 80
+EXPLOSIVE_RVOL_THRESHOLD = 4.0
 
 # ========================================
 # BACKTEST CAMPAIGN CHAMPION REFERENCE
 # ========================================
-# Audit trail - do not use directly in live code; reference only.
-# Update after each campaign run.
 
 BACKTEST_CHAMPION = {
-    # Run date  : 2026-03-10
-    # Dataset   : 15 tickers, 90 days (2025-12-10 to 2026-03-09), 134,028 bars
-    # Combos    : 32,400 tested -> 4,760 saved -> 183 qualifying (min 30 trades, 55% WR)
-    'bos_strength' : 0.001,        # 0.10% - dominant, score drops 44% at 0.15%
-    'tf_confirm'   : '1m',         # 1m - best at >=30 trade floor
-    'vwap_zone'    : 'above_vwap', # tied with 'none'; kept for directional logic
-    'rvol_min'     : 3.0,          # hard cliff at 3.0x
-    'mfi_min'      : 60,           # marginal but consistent
-    'obv_bars'     : 0,            # noise - disabled
-    'session'      : 'all_day',    # no session segmentation in data
-    'direction'    : 'call_only',  # put_only eliminated; bear params need own run
-    # Stats
+    'bos_strength' : 0.001,
+    'tf_confirm'   : '1m',
+    'vwap_zone'    : 'above_vwap',
+    'rvol_min'     : 3.0,
+    'mfi_min'      : 60,
+    'obv_bars'     : 0,
+    'session'      : 'all_day',
+    'direction'    : 'call_only',
     'win_rate'     : 0.706,
     'avg_r'        : 0.44,
     'score'        : 0.3130,
     'trades'       : 34,
     'tickers'      : 'AAPL,AMD,META,MSFT,NVDA,TSLA,AMZN,ORCL,WMT,BAC,CSCO',
-    # Next action: extend dataset to 180 days; run bear-specific campaign
 }
 
 # ========================================
 # DEVELOPMENT & TESTING
 # ========================================
 
-DEBUG_MODE = False              # Enable verbose logging
-BACKTEST_MODE = False           # Backtesting mode (no live trading)
-PAPER_TRADING = False           # Paper trading mode
+DEBUG_MODE = False
+BACKTEST_MODE = False
+PAPER_TRADING = False
 
 # ========================================
 # PRODUCTION SAFETY
 # ========================================
 
-MAX_DAILY_TRADES = 15           # Maximum trades per day
-COOLDOWN_SAME_DIRECTION = 30    # Minutes before same-direction signal (Issue #19)
-COOLDOWN_OPPOSITE_DIRECTION = 15 # Minutes before opposite-direction signal (Issue #19)
+MAX_DAILY_TRADES = 15
+COOLDOWN_SAME_DIRECTION = 30
+COOLDOWN_OPPOSITE_DIRECTION = 15
+
+
+# ========================================
+# STARTUP ENV-VAR VALIDATION
+# ========================================
+
+# Hard-required: missing any of these = immediate sys.exit(1) before market open
+_REQUIRED_VARS = [
+    ("EODHD_API_KEY",      "Market data feed (EODHD WebSocket + REST)"),
+    ("DATABASE_URL",       "PostgreSQL analytics DB"),
+    ("DISCORD_WEBHOOK_URL","Primary Discord alerts channel"),
+]
+
+# Soft-required: missing = WARNING in logs, system continues
+_OPTIONAL_VARS = [
+    ("DISCORD_ALERTS_WEBHOOK_URL", "Performance alerts channel"),
+    ("DISCORD_EXIT_WEBHOOK_URL",   "Position exit alerts channel"),
+    ("REGIME_WEBHOOK_URL",         "SPY+QQQ regime visual channel"),
+    ("TRADIER_API_KEY",            "Options data (Greeks / chain)"),
+    ("UNUSUAL_WHALES_API_KEY",     "Dark pool / UOA flow data"),
+]
+
+
+def validate_required_env_vars() -> None:
+    """
+    Validate all required and optional environment variables at startup.
+
+    - REQUIRED vars: missing → prints error table and calls sys.exit(1).
+    - OPTIONAL vars: missing → logs WARNING; system continues degraded.
+
+    Call this once at the top of start_scanner_loop() before any
+    blocking work (DB connect, WS init, etc.) so Railway surfaces a
+    clear config error instead of a cryptic mid-boot crash.
+    """
+    print("\n" + "=" * 62, flush=True)
+    print("[CONFIG] Environment variable validation", flush=True)
+    print("=" * 62, flush=True)
+
+    missing_required = []
+
+    for var, description in _REQUIRED_VARS:
+        value = os.getenv(var, "").strip()
+        if value:
+            masked = value[:6] + "..." if len(value) > 6 else "***"
+            print(f"  ✅ {var:<36} {masked}", flush=True)
+        else:
+            print(f"  ❌ {var:<36} MISSING  ← {description}", flush=True)
+            missing_required.append(var)
+
+    for var, description in _OPTIONAL_VARS:
+        value = os.getenv(var, "").strip()
+        if value:
+            masked = value[:6] + "..." if len(value) > 6 else "***"
+            print(f"  ✅ {var:<36} {masked}", flush=True)
+        else:
+            print(f"  ⚠️  {var:<35} not set  ({description})", flush=True)
+
+    print("=" * 62, flush=True)
+
+    if missing_required:
+        print("\n[CONFIG] ❌ FATAL — Missing required environment variables:", flush=True)
+        for var in missing_required:
+            print(f"         • {var}", flush=True)
+        print(
+            "\n         Set these in Railway → Variables before deploying.\n",
+            flush=True
+        )
+        sys.exit(1)
+
+    print("[CONFIG] ✅ All required vars present — boot continuing\n", flush=True)
+
 
 if __name__ == "__main__":
-    print("="*70)
+    print("=" * 70)
     print("WAR MACHINE CONFIGURATION")
-    print("="*70)
+    print("=" * 70)
     print(f"Account Size: ${ACCOUNT_SIZE:,.0f}")
     print(f"Max Open Positions: {MAX_OPEN_POSITIONS}")
     print(f"Max Daily Loss: {MAX_DAILY_LOSS_PCT}%")
@@ -360,4 +361,5 @@ if __name__ == "__main__":
     print(f"  MFI Floor     : {MFI_MIN}")
     print(f"  VWAP Zone     : {VWAP_ZONE}")
     print(f"  TF Confirm    : {TF_CONFIRM}")
-    print("="*70)
+    print("=" * 70)
+    validate_required_env_vars()

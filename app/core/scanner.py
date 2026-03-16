@@ -10,111 +10,53 @@ PHASE 1.16b (MAR 9, 2026):
 
 PHASE 1.17 (MAR 9, 2026):
   - FIXED: startup_backfill demoted to fire-and-forget background daemon
-  - No more 45s timeout warning — backfill runs silently in background
-  - set_backfill_complete() called immediately; WS starts right away
-  - subscribe_and_prefetch_tickers() also non-blocking (background thread)
-  - Main loop enters in <5s regardless of EODHD API latency
-  - Banner updated to v1.17
 
 PHASE 1.18 (MAR 10, 2026):
   - FIXED: DB startup block now uses print() so status always visible in Railway logs
-  - FIXED: Removed sslmode=require injection (internal Railway host needs no SSL)
-  - FIXED: Added connect_timeout=10 to surface connection failures immediately
 
 PHASE 1.18a (MAR 10, 2026):
   - FIXED: Cache dir uses os.getcwd() instead of __file__ relative path (Railway compat)
-  - FIXED: os.makedirs on cache dir so it is always created if missing
-  - FIXED: Options import now logs the actual exception (not just ImportError)
 
 PHASE 1.19 (MAR 10, 2026):
   - FIX C5: start_health_server() called once at startup before WS init
-  - FIX C5: health_heartbeat() called at top of every main loop cycle
-  - Railway now gets a real 200/503 signal from GET /health instead of
-    always-200 (health endpoint was missing entirely before this fix)
 
 PHASE 1.20 (MAR 10, 2026):
-  - FIX H1: analytics_conn wrapped in reconnect helper — survives Railway DB
-    restarts, idle-connection timeouts, and transient TCP drops without crashing
-    the scanner process. A dead connection is detected before use and replaced.
+  - FIX H1: analytics_conn wrapped in reconnect helper
 
 PHASE 1.21 (MAR 10, 2026):
-  - FIX P0-3: Ticker timeout watchdog — process_ticker() now runs in a
-    ThreadPoolExecutor with a 45-second hard timeout per ticker.
-    A hung EODHD call, confirmation wait, or DB query can no longer stall
-    the entire scan loop. Timed-out tickers are logged and skipped cleanly.
+  - FIX P0-3: Ticker timeout watchdog — 45-second hard timeout per ticker
 
 PHASE 1.22 (MAR 10, 2026):
-  - FIX: candle_cache EOD cleanup now runs alongside DB bar cleanup.
-    DB bars: rolling 60-day window (unchanged).
-    Candle cache: rolling 30-day window (matches startup_backfill_with_cache).
-    Also prunes orphaned cache_metadata rows for tickers with no remaining bars.
-    Prevents unbounded candle_cache table growth on long-running deployments.
+  - FIX: candle_cache EOD cleanup now runs alongside DB bar cleanup
 
 PHASE 1.23 (MAR 12, 2026):
-  - FIX OR WINDOW: Removed dead `should_scan_now()` guard that was blocking
-    all scanning from 9:30-9:40. scanner_optimizer now returns True from 9:30
-    with 5s intervals so every 1m bar is captured for BOS+FVG detection.
-  - Added OR window log banner so Railway logs show active BOS build status.
-  - At 9:40 the first valid A+/A/A- confirmation candle fires the signal
-    immediately — no 15s sleep gap between OR close and signal generation.
+  - FIX OR WINDOW: Removed dead should_scan_now() guard blocking 9:30-9:40
 
 PHASE 1.23a (MAR 12, 2026):
-  - FIX: REGIME-FILTER banner check now imports from correct module path
-    (app.validation.validation.get_regime_filter) instead of app.filters.
+  - FIX: REGIME-FILTER banner check imports from correct module path
 
 PHASE 1.24 (MAR 13, 2026):
-  - FIX 1: Boot-time session guard — on redeploy during market hours,
-    premarket_built is set True immediately so the premarket funnel is
-    never re-run. Watchlist is loaded from the existing lock instead.
-  - FIX 2: Suppressed [FUNNEL] 'Using locked watchlist' spam — only logs
-    once per session, not on every scan cycle cache hit.
-  - FIX 3: Removed per-ticker [idx/total] cycle banner — reduces 20+ log
-    lines per cycle to a single summary line.
-  - FIX 4: process_ticker() no longer called during premarket — it is the
-    intraday signal engine and has no business running at 8 AM.
-  - FIX 5: Cycle separator banner demoted from logger.info to logger.debug
-    so it only appears when DEBUG logging is enabled.
-  - FIX 6: startup_backfill on redeploy skips tickers with a warm cache
-    (last bar within 24h) — avoids redundant 30-day EODHD pulls on
-    intraday redeployments.
+  - FIX 1: Boot-time session guard on redeploy during market hours
+  - FIX 2-6: Log noise, premarket guard, smart backfill improvements
 
 PHASE 1.25 (MAR 13, 2026):
-  - SPY+QQQ Market Regime — visual-only Discord, no hard blocks.
-  - Hard is_long_allowed / is_short_allowed blocks removed from sniper.py.
-  - score_adj remains as a passive confidence nudge only.
-  - send_regime_discord() called once per scan cycle — posts to
-    REGIME_WEBHOOK_URL (separate Discord channel) every 5 minutes.
-  - QQQ added alongside SPY for stronger conviction measurement.
-  - market_regime_context.py replaces spy_ema_context.py.
+  - SPY+QQQ Market Regime — visual-only Discord, no hard blocks
 
 PHASE 1.26 (MAR 13, 2026):
-  - FIX REGIME FILTER: SPY and QQQ are now always included in the WebSocket
-    subscription (REGIME_TICKERS constant). They are injected into:
-      1. startup_watchlist so they are subscribed from boot.
-      2. subscribe_and_prefetch_tickers() so they are never dropped when
-         the intraday watchlist is refreshed.
-    This guarantees data_manager always has SPY bars in memory, which is
-    the primary requirement for get_regime_filter()._get_spy_bars() to
-    return >= 14 bars. Without this, the regime filter returned
-    "Insufficient data for regime analysis" on every ticker every minute.
+  - FIX REGIME FILTER: SPY and QQQ always included in WS subscription
 
 PHASE 1.27 (MAR 14, 2026):
-  - FIX HEALTHCHECK: start_health_server() moved to module level, called
-    immediately after imports — BEFORE any blocking DB connect, ws_thread
-    joins, or quote_thread joins.
-    Previously it was called inside start_scanner_loop(), which is only
-    entered after ~40s of blocking startup work (DB connect_timeout=10s +
-    ws_thread.join(20s) + quote_thread.join(20s)). Railway's 30s healthcheck
-    retry window expired before /health ever responded, causing every deploy
-    to fail with "1/1 replicas never became healthy".
-    Now /health returns 200 within milliseconds of container start.
-    Duplicate call removed from inside start_scanner_loop().
+  - FIX HEALTHCHECK: start_health_server() moved to module level
+
+PHASE 1.28 (MAR 16, 2026):
+  - FIX #10: validate_required_env_vars() called at top of start_scanner_loop()
+    Hard-fails on missing EODHD_API_KEY / DATABASE_URL / DISCORD_WEBHOOK_URL
+    before any blocking DB/WS work begins. Surfaces config errors immediately
+    in Railway logs with a clear table instead of a cryptic mid-boot crash.
 """
 from app.core.health_server import start_health_server, health_heartbeat
 
-# ── PHASE 1.27: Start health server immediately at module load — before any
-# blocking DB connect or WS joins so Railway's /health probe gets a 200
-# within milliseconds of container start, well inside the 30s retry window.
+# ── PHASE 1.27: Start health server immediately at module load ───────────────
 start_health_server()
 
 import os
@@ -125,9 +67,12 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeou
 from datetime import datetime, time as dtime
 from zoneinfo import ZoneInfo
 from utils import config
-# Scanner optimizer caches (moved from scanner_optimizer.py)
+from utils.config import validate_required_env_vars
+
+# Scanner optimizer caches
 _last_logged_interval = None
 _last_logged_watchlist_size = None
+
 from app.data.data_manager import data_manager
 from app.data.ws_feed import start_ws_feed, subscribe_tickers, set_backfill_complete
 from app.data.ws_quote_feed import start_quote_feed, subscribe_quote_tickers
@@ -136,7 +81,6 @@ from app.screening.watchlist_funnel import (
     get_watchlist_with_metadata,
     get_funnel
 )
-# ── Risk layer — single import, all risk calls go through here ────────────────
 from app.risk.risk_manager import (
     get_loss_streak,
     get_session_status,
@@ -145,7 +89,6 @@ from app.risk.risk_manager import (
 )
 from app.risk.position_manager import position_manager as _pm
 
-# ── Market Regime — visual-only, no hard blocks (Phase 1.25) ─────────────────
 try:
     from app.filters.market_regime_context import send_regime_discord
     REGIME_DISCORD_AVAILABLE = True
@@ -155,16 +98,8 @@ except Exception:
 
 logger = logging.getLogger(__name__)
 
-# ─────────────────────────────────────────────────────────────────────────────
-# PHASE 1.26: Regime tickers — always subscribed to WS regardless of watchlist
-# SPY bars are required by get_regime_filter()._get_spy_bars() (needs >= 14).
-# QQQ is used by market_regime_context.py for trend confirmation.
-# ─────────────────────────────────────────────────────────────────────────────
 REGIME_TICKERS = ["SPY", "QQQ"]
 
-# ─────────────────────────────────────────────────────────────────────────────
-# P0-3 FIX: Ticker timeout watchdog
-# ─────────────────────────────────────────────────────────────────────────────
 TICKER_TIMEOUT_SECONDS = 45
 _ticker_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ticker_watchdog")
 
@@ -185,9 +120,6 @@ def _run_ticker_with_timeout(process_ticker_fn, ticker: str) -> bool:
         return False
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# H1 FIX: analytics_conn with reconnect guard
-# ─────────────────────────────────────────────────────────────────────────────
 ANALYTICS_AVAILABLE = False
 analytics_conn = None
 DATABASE_URL = os.getenv('DATABASE_URL')
@@ -291,9 +223,6 @@ API_KEY = os.getenv("EODHD_API_KEY", "")
 EMERGENCY_FALLBACK = ["SPY", "QQQ", "AAPL", "MSFT", "NVDA", "TSLA", "META", "AMD"]
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# BACKGROUND FIRE-AND-FORGET HELPER (Phase 1.17)
-# ─────────────────────────────────────────────────────────────────────────────
 def _fire_and_forget(fn, label: str):
     def _wrapper():
         try:
@@ -306,11 +235,6 @@ def _fire_and_forget(fn, label: str):
     return t
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# FIX 6: Cache-aware startup backfill
-# Only backfills tickers whose cache is stale (no bar within 24h).
-# On intraday redeployments the cache is warm — zero EODHD calls made.
-# ─────────────────────────────────────────────────────────────────────────────
 def _get_stale_tickers(tickers: list) -> list:
     """Return tickers that have no cached bar in the last 24 hours."""
     stale = []
@@ -327,14 +251,10 @@ def _get_stale_tickers(tickers: list) -> list:
                 if last_bar_time is None or last_bar_time < cutoff:
                     stale.append(ticker)
     except Exception:
-        # If cache check fails, treat all as stale to be safe
         return list(tickers)
     return stale
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# HELPER FUNCTIONS
-# ─────────────────────────────────────────────────────────────────────────────
 def _extract_premarket_metrics(watchlist_data: dict) -> dict:
     try:
         all_tickers = watchlist_data.get('all_tickers_with_scores', [])
@@ -410,22 +330,10 @@ def is_market_hours():
         return False
     return config.MARKET_OPEN <= now.time() <= config.MARKET_CLOSE
 
+
 def get_adaptive_scan_interval() -> int:
-    """
-    CFW6 OPTIMIZATION: Scan more frequently during high-activity periods.
-
-    OR Formation    (9:30-9:40):   5 seconds — capture every bar, no sleep during BOS build
-    Post-OR Active  (9:40-11:00):  45 seconds
-    Midday Chop     (11:00-14:00): 180 seconds
-    Afternoon Setup (14:00-15:30): 60 seconds
-    Power Hour      (15:30-16:00): 45 seconds
-    Outside market:                300 seconds
-    """
     global _last_logged_interval
-
-    # Use local ET time (scanner.py already has ZoneInfo + datetime imports)
     now = datetime.now(ZoneInfo("America/New_York")).time()
-
     if dtime(9, 30) <= now < dtime(9, 40):
         interval = 5
         label = "OR Formation (BOS build)"
@@ -444,21 +352,13 @@ def get_adaptive_scan_interval() -> int:
     else:
         interval = 300
         label = "Outside Market Hours"
-
     if interval != _last_logged_interval:
         print(f"[SCANNER] {label} -> Scanning every {interval}s")
         _last_logged_interval = interval
-
     return interval
 
 
 def should_scan_now() -> bool:
-    """
-    CFW6 RULE: Scan during 9:30-9:40 ET at high frequency so BOS+FVG can be
-    built from OR bars in real time.
-
-    Returns True during 9:30-16:00 ET on weekdays.
-    """
     now = datetime.now(ZoneInfo("America/New_York"))
     if now.weekday() >= 5:
         return False
@@ -467,19 +367,8 @@ def should_scan_now() -> bool:
 
 
 def calculate_optimal_watchlist_size() -> int:
-    """
-    Adjust watchlist size by time of day.
-
-    OR window     (9:30-9:40):  30 tickers
-    Early morning (9:40-10:30): 30 tickers
-    Mid-session   (10:30-15:00): 50 tickers
-    Late day      (15:00-16:00): 35 tickers
-    Default:                     40 tickers
-    """
     global _last_logged_watchlist_size
-
     now = datetime.now(ZoneInfo("America/New_York")).time()
-
     if dtime(9, 30) <= now < dtime(9, 40):
         size = 30
     elif dtime(9, 40) <= now < dtime(10, 30):
@@ -490,15 +379,13 @@ def calculate_optimal_watchlist_size() -> int:
         size = 35
     else:
         size = 40
-
     if size != _last_logged_watchlist_size:
         print(f"[SCANNER] Watchlist size adjusted to {size} tickers")
         _last_logged_watchlist_size = size
-
     return size
 
+
 def _is_or_window():
-    """True during 9:30-9:39:59 ET — OR formation / BOS+FVG build window."""
     now = _now_et().time()
     return dtime(9, 30) <= now < dtime(9, 40)
 
@@ -542,8 +429,6 @@ def subscribe_and_prefetch_tickers(new_tickers: list):
     if not new_tickers:
         return
     try:
-        # Phase 1.26: Always include REGIME_TICKERS (SPY, QQQ) in every
-        # subscription so data_manager has their bars for regime analysis.
         combined = list(dict.fromkeys(new_tickers + REGIME_TICKERS))
         subscribe_tickers(combined)
         subscribe_quote_tickers(combined)
@@ -563,6 +448,12 @@ def subscribe_and_prefetch_tickers(new_tickers: list):
 
 
 def start_scanner_loop():
+    # ── PHASE 1.28: Validate required env vars before any blocking work ──────────
+    # Hard-fails (sys.exit 1) if EODHD_API_KEY / DATABASE_URL /
+    # DISCORD_WEBHOOK_URL are missing. Surfaces config errors in Railway
+    # logs immediately instead of a cryptic crash deep in the boot sequence.
+    validate_required_env_vars()
+
     try:
         from app.core.sniper import process_ticker, clear_armed_signals, clear_watching_signals, _orb_classifications
         logger.info("[SCANNER] ✅ process_ticker loaded from sniper.py (CFW6 engine active)")
@@ -579,14 +470,13 @@ def start_scanner_loop():
         learning_engine = None
         HAS_AI_LEARNING = False
 
-    # NOTE: start_health_server() is intentionally NOT called here.
-    # It is called at module load (Phase 1.27) so Railway's /health probe
-    # gets a 200 before any blocking DB/WS startup work begins.
-
-    # ── STARTUP BANNER ───────────────────────────────────────────────────────
+    # ── STARTUP BANNER ────────────────────────────────────────────────────────────────
     print("=" * 60, flush=True)
-    print("WAR MACHINE CFW6 SCANNER v1.27 - STARTUP", flush=True)
+    print("WAR MACHINE CFW6 SCANNER v1.28 - STARTUP", flush=True)
     print("=" * 60, flush=True)
+    print("✓ REGIME-FILTER  VIX/SPY regime detection active", flush=True)
+    print("=" * 60, flush=True)
+    print("Risk Manager:    ✅ ENABLED (unified risk layer — Phase 1.15)", flush=True)
     print("✓ DATA-INGEST    WebSocket starting (tickers TBD)", flush=True)
 
     try:
@@ -596,6 +486,15 @@ def start_scanner_loop():
         print(f"✓ CACHE          {cache_files} cached ticker files, 30d history", flush=True)
     except Exception as e:
         print(f"? CACHE          Status unknown: {e}", flush=True)
+
+    db_icon = "✓" if ANALYTICS_AVAILABLE else "✗"
+    db_msg  = "Connected - Analytics tracking enabled" if ANALYTICS_AVAILABLE else "OFFLINE - no volume/signal/P&L tracking"
+    print(f"✓ DATABASE        {db_msg}", flush=True)
+
+    discord_webhook = os.getenv('DISCORD_WEBHOOK_URL')
+    disc_icon = "✓" if discord_webhook else "✗"
+    disc_msg  = "Alert notifications ready" if discord_webhook else "NOT CONFIGURED - no alerts"
+    print(f"{disc_icon} DISCORD         {disc_msg}", flush=True)
 
     screener_icon = "✓" if API_KEY else "✗"
     screener_msg  = ("EODHD API configured (" + API_KEY[:8] + "...)") if API_KEY else "EODHD_API_KEY not set"
@@ -607,15 +506,6 @@ def start_scanner_loop():
         print("✓ REGIME-FILTER  VIX/SPY regime detection active", flush=True)
     except Exception:
         print("? REGIME-FILTER  Module not found (may be inline)", flush=True)
-
-    db_icon = "✓" if ANALYTICS_AVAILABLE else "✗"
-    db_msg  = "Connected - Analytics tracking enabled" if ANALYTICS_AVAILABLE else "OFFLINE - no volume/signal/P&L tracking"
-    print(f"{db_icon} DATABASE        {db_msg}", flush=True)
-
-    discord_webhook = os.getenv('DISCORD_WEBHOOK_URL')
-    disc_icon = "✓" if discord_webhook else "✗"
-    disc_msg  = "Alert notifications ready" if discord_webhook else "NOT CONFIGURED - no alerts"
-    print(f"{disc_icon} DISCORD         {disc_msg}", flush=True)
 
     regime_webhook = os.getenv('REGIME_WEBHOOK_URL')
     reg_icon = "✓" if regime_webhook else "✗"
@@ -639,7 +529,6 @@ def start_scanner_loop():
     print("WS Failover:     ✅ ENABLED (REST API fallback on disconnect)", flush=True)
     print("Spread Gate:     ✅ ENABLED (us-quote bid/ask filter active)", flush=True)
     print("Dynamic WS:      ✅ ENABLED (live session ticker subscription)", flush=True)
-    print("Risk Manager:    ✅ ENABLED (unified risk layer — Phase 1.15)", flush=True)
     print("CFW6 Engine:     ✅ ENABLED (sniper.py direct — Phase 1.16)", flush=True)
     print("BG Backfill:     ✅ ENABLED (fire-and-forget — Phase 1.17)", flush=True)
     print("Cache Dir Fix:   ✅ FIXED   (os.getcwd() — Phase 1.18a)", flush=True)
@@ -655,13 +544,9 @@ def start_scanner_loop():
     print("Market Regime:   ✅ VISUAL  (SPY+QQQ → REGIME_WEBHOOK_URL, no blocks — Phase 1.25)", flush=True)
     print(f"Regime WS Feed:  ✅ FIXED   (SPY+QQQ always subscribed for regime bars — Phase 1.26)", flush=True)
     print("Health Boot Fix: ✅ FIXED   (start_health_server at module load — Phase 1.27)", flush=True)
+    print("Env Var Guard:   ✅ ENABLED (validate_required_env_vars — Phase 1.28)", flush=True)
     print("=" * 60 + "\n", flush=True)
 
-    # ─────────────────────────────────────────────────────────────────────
-    # FIX 1: Boot-time session guard
-    # If we redeploy during market hours, the locked watchlist already
-    # exists — skip premarket entirely and go straight to intraday loop.
-    # ─────────────────────────────────────────────────────────────────────
     _booting_into_market_hours = is_market_hours()
     premarket_watchlist = []
     premarket_built     = False
@@ -679,12 +564,12 @@ def start_scanner_loop():
         except Exception as e:
             premarket_watchlist = list(EMERGENCY_FALLBACK)
             logger.warning(f"[SCANNER] ⚠️ Could not load locked watchlist ({e}) — using emergency fallback")
-        premarket_built = True  # prevent premarket block from firing
+        premarket_built = True
 
     try:
         send_simple_message(
-            f"⚔️ WAR MACHINE ONLINE — CFW6 v1.27 | "
-            f"{'Resuming intraday' if _booting_into_market_hours else 'OR window active'} | Phase 1.27"
+            f"⚔️ WAR MACHINE ONLINE — CFW6 v1.28 | "
+            f"{'Resuming intraday' if _booting_into_market_hours else 'OR window active'} | Phase 1.28"
         )
     except Exception as e:
         logger.warning(f"[SCANNER] Discord unavailable: {e}")
@@ -694,11 +579,8 @@ def start_scanner_loop():
     loss_streak_alerted       = False
     last_subscribed_watchlist = set()
     _or_window_logged         = False
-    _watchlist_lock_logged    = False  # FIX 2: only log locked watchlist once per session
+    _watchlist_lock_logged    = False
 
-    # ── STARTUP SEQUENCE ────────────────────────────────────────────────────
-    # Phase 1.26: Always seed startup_watchlist with REGIME_TICKERS so SPY+QQQ
-    # bars are available from the first WS connection, before the first scan cycle.
     startup_watchlist = list(dict.fromkeys(
         (premarket_watchlist if premarket_watchlist else list(EMERGENCY_FALLBACK))
         + REGIME_TICKERS
@@ -720,7 +602,6 @@ def start_scanner_loop():
     quote_thread.join(timeout=20)
     logger.info("[QUOTE] Quote feed started (or timed out gracefully)")
 
-    # FIX 6: Only backfill tickers with a stale cache
     stale = _get_stale_tickers(startup_watchlist)
     if stale:
         logger.info(f"[BACKFILL] {len(stale)} stale tickers need backfill: {', '.join(stale)}")
@@ -747,10 +628,9 @@ def start_scanner_loop():
             current_time_str = now_et.strftime('%I:%M:%S %p ET')
             current_day      = now_et.strftime('%Y-%m-%d')
 
-            # ── PRE-MARKET ────────────────────────────────────────────────
             if is_premarket():
-                _or_window_logged      = False  # reset for next session
-                _watchlist_lock_logged = False  # reset lock-log flag
+                _or_window_logged      = False
+                _watchlist_lock_logged = False
                 if not premarket_built:
                     logger.info(f"[PRE-MARKET] {current_time_str} - Building Watchlist")
                     try:
@@ -773,7 +653,6 @@ def start_scanner_loop():
                         if new_tickers:
                             subscribe_and_prefetch_tickers(new_tickers)
                         else:
-                            # Phase 1.26: ensure regime tickers included even on no-change path
                             combined = list(dict.fromkeys(premarket_watchlist + REGIME_TICKERS))
                             subscribe_tickers(combined)
                             subscribe_quote_tickers(combined)
@@ -804,9 +683,6 @@ def start_scanner_loop():
                             msg += f"\n\n⚠️ {len(volume_signals)} volume signals active"
                         send_simple_message(msg)
 
-                        # FIX 4: Do NOT call process_ticker() during premarket —
-                        # it is the intraday signal engine, not a premarket tool.
-
                     except Exception as e:
                         logger.error(f"[PRE-MARKET] Funnel error: {e}")
                         import traceback
@@ -831,7 +707,6 @@ def start_scanner_loop():
                             last_subscribed_watchlist = current_set
                             metadata = watchlist_data['metadata']
                             logger.info(f"[FUNNEL] Stage: {metadata['stage'].upper()} — {metadata['stage_description']}")
-                            # FIX 4: No process_ticker() calls during premarket
                         except Exception as e:
                             logger.error(f"[PRE-MARKET] Refresh error: {e}")
                     else:
@@ -839,7 +714,6 @@ def start_scanner_loop():
                     time.sleep(60)
                 continue
 
-            # ── MARKET HOURS ──────────────────────────────────────────────
             elif is_market_hours():
                 if _is_or_window():
                     if not _or_window_logged:
@@ -866,7 +740,6 @@ def start_scanner_loop():
 
                 cycle_count += 1
 
-                # ── Phase 1.25: Visual regime Discord post (rate-limited, non-blocking)
                 send_regime_discord()
 
                 try:
@@ -887,12 +760,10 @@ def start_scanner_loop():
                     subscribe_and_prefetch_tickers(new_tickers)
                     last_subscribed_watchlist = current_set
 
-                # FIX 2: Only log locked watchlist once per session
                 if not _watchlist_lock_logged:
                     logger.info(f"[SCANNER] Cycle #{cycle_count} | {len(watchlist)} tickers | {current_time_str}")
                     _watchlist_lock_logged = True
                 else:
-                    # FIX 5: Demote cycle banner to debug — avoids log flood
                     logger.debug(f"[SCANNER] Cycle #{cycle_count} | {len(watchlist)} tickers | {current_time_str}")
 
                 if ANALYTICS_AVAILABLE and analytics:
@@ -919,7 +790,6 @@ def start_scanner_loop():
                     f"P&L: ${daily_stats['total_pnl']:+.2f}"
                 )
 
-                # FIX 3: No per-ticker [idx/N] banner — just run them
                 for ticker in watchlist:
                     try:
                         _run_ticker_with_timeout(process_ticker, ticker)
@@ -933,7 +803,6 @@ def start_scanner_loop():
                 logger.debug(f"[SCANNER] Cycle #{cycle_count} complete — sleeping {scan_interval}s")
                 time.sleep(scan_interval)
 
-            # ── AFTER HOURS / EOD ─────────────────────────────────────────
             else:
                 if last_report_day != current_day:
                     logger.info(f"[EOD] Market Closed — Generating Reports for {current_day}")
