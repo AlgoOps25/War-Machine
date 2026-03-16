@@ -78,6 +78,12 @@ FIX v3.6 (MAR 14, 2026) - Force ticker uppercase at all funnel output points (#1
     [t.upper() for t in watchlist] normalisation.
   - Eliminates the case-sensitivity bug in scanner.py's last_subscribed_watchlist
     set that caused duplicate WS subscriptions for mixed-case ticker strings.
+
+PHASE 1.29 (MAR 16, 2026) - Discord watchlist channel:
+  - build_watchlist() now calls send_premarket_watchlist() after every stage
+    build (wide / narrow / final / live), posting a rich embed to the
+    dedicated #watchlist Discord channel (DISCORD_WATCHLIST_WEBHOOK_URL).
+  - Falls back to signals channel if watchlist URL not configured.
 """
 import sys
 from pathlib import Path
@@ -101,6 +107,12 @@ def _get_momentum_screener():
     """Lazy import to avoid circular dependency."""
     from app.screening import premarket_scanner
     return premarket_scanner
+
+
+def _get_discord_helpers():
+    """Lazy import to avoid circular dependency."""
+    from app.notifications import discord_helpers
+    return discord_helpers
 
 
 def _normalise(watchlist: List[str]) -> List[str]:
@@ -266,9 +278,7 @@ class WatchlistFunnel:
     def build_watchlist(self, force_refresh: bool = False) -> List[str]:
         """Build watchlist based on current stage and market conditions."""
 
-        # ── PHASE 1.27: Market calendar guard ──────────────────────────────
-        # Abort immediately on weekends and US market holidays.
-        # is_active_session() covers 4:00 AM - 4:00 PM ET on trading days.
+        # ── PHASE 1.27: Market calendar guard ────────────────────────────────────
         now_et = datetime.now(tz=ET)
         if not is_active_session(now_et):
             nxt = next_market_open(now_et)
@@ -277,7 +287,7 @@ class WatchlistFunnel:
                 f"no scan. Next open: {nxt.strftime('%a %b %d %I:%M %p ET')}"
             )
             return []
-        # ────────────────────────────────────────────────────────────────────
+        # ────────────────────────────────────────────────────────────────────────────
 
         # PHASE 1.18: return frozen watchlist immediately if locked
         if self._locked_watchlist is not None and self.get_current_stage() == "live" and not force_refresh:
@@ -322,6 +332,16 @@ class WatchlistFunnel:
 
         print(f"\n\u2705 Watchlist: {len(watchlist)} tickers")
         print(f"{', '.join(watchlist[:15])}{'...' if len(watchlist) > 15 else ''}\n")
+
+        # PHASE 1.29: post to dedicated #watchlist Discord channel
+        try:
+            _get_discord_helpers().send_premarket_watchlist(
+                tickers=watchlist,
+                scored_tickers=self.scored_tickers,
+                stage=self.current_stage,
+            )
+        except Exception as e:
+            print(f"[FUNNEL] ⚠️  Discord watchlist post failed (non-blocking): {e}")
 
         return watchlist
 
