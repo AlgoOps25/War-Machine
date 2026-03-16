@@ -451,7 +451,7 @@ class PositionManager:
         conn = None
         try:
             today  = datetime.now().strftime("%Y-%m-%d")
-            conn   = get_conn(self.db_path)
+            conn   = get_conn()
             cursor = dict_cursor(conn)
             p      = ph()
             cursor.execute(
@@ -490,7 +490,7 @@ class PositionManager:
         """Create positions table if not exists with options columns."""
         conn = None
         try:
-            conn = get_conn(self.db_path)
+            conn = get_conn()
             cursor = conn.cursor()
             cursor.execute(f"""
                 CREATE TABLE IF NOT EXISTS positions (
@@ -536,7 +536,7 @@ class PositionManager:
         try:
             today  = datetime.now().strftime("%Y-%m-%d")
             p      = ph()
-            conn   = get_conn(self.db_path)
+            conn   = get_conn()
             cursor = dict_cursor(conn)
 
             cursor.execute(f"""
@@ -671,7 +671,7 @@ class PositionManager:
 
         conn   = None
         try:
-            conn   = get_conn(self.db_path)
+            conn   = get_conn()
             cursor = dict_cursor(conn)
 
             if db_connection.USE_POSTGRES:
@@ -803,7 +803,7 @@ class PositionManager:
         conn = None
         try:
             p      = ph()
-            conn   = get_conn(self.db_path)
+            conn   = get_conn()
             cursor = dict_cursor(conn)
             cursor.execute(
                 f"SELECT t1_hit FROM positions WHERE id = {p}",
@@ -824,7 +824,7 @@ class PositionManager:
         conn = None
         try:
             p      = ph()
-            conn   = get_conn(self.db_path)
+            conn   = get_conn()
             cursor = dict_cursor(conn)
             cursor.execute(f"SELECT * FROM positions WHERE id = {p}", (position_id,))
             pos = cursor.fetchone()
@@ -884,7 +884,7 @@ class PositionManager:
         conn = None
         try:
             p      = ph()
-            conn   = get_conn(self.db_path)
+            conn   = get_conn()
             cursor = dict_cursor(conn)
             cursor.execute(f"SELECT * FROM positions WHERE id = {p}", (position_id,))
             pos = cursor.fetchone()
@@ -1004,7 +1004,7 @@ class PositionManager:
 
         conn = None
         try:
-            conn   = get_conn(self.db_path)
+            conn   = get_conn()
             cursor = dict_cursor(conn)
             cursor.execute("SELECT * FROM positions WHERE status = 'OPEN'")
             rows   = cursor.fetchall()
@@ -1029,7 +1029,7 @@ class PositionManager:
         conn = None
         try:
             p      = ph()
-            conn   = get_conn(self.db_path)
+            conn   = get_conn()
             cursor = dict_cursor(conn)
             today  = datetime.now().strftime("%Y-%m-%d")
             cursor.execute(f"""
@@ -1068,7 +1068,7 @@ class PositionManager:
         conn = None
         try:
             p      = ph()
-            conn   = get_conn(self.db_path)
+            conn   = get_conn()
             cursor = dict_cursor(conn)
             since  = (datetime.now() - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
             cursor.execute(f"""
@@ -1150,7 +1150,7 @@ class PositionManager:
         conn = None
         try:
             p      = ph()
-            conn   = get_conn(self.db_path)
+            conn   = get_conn()
             cursor = dict_cursor(conn)
             today  = datetime.now().strftime("%Y-%m-%d")
             cursor.execute(f"""
