@@ -350,9 +350,12 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
             if greeks_valid or OPTIONS_PRE_GATE_MODE == "SOFT":
                 from app.validation.validation import get_options_filter
                 options_filter = get_options_filter()
+                _is_explosive = get_ticker_screener_metadata(ticker).get('qualified', False)
                 _tradeable, _opts_data, _reason = options_filter.validate_signal_for_options(
-                    ticker, direction, _proxy_entry, _proxy_entry * 1.05
+                    ticker, direction, _proxy_entry, _proxy_entry * 1.05,
+                    explosive_mover=_is_explosive
                 )
+
                 _pre_options_data = _opts_data
                 if OPTIONS_PRE_GATE_MODE == "HARD":
                     if not _tradeable:
