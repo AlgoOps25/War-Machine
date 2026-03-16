@@ -27,6 +27,16 @@
 
 ---
 
+## ✅ COMPLETED CHANGES — SESSION 3 (2026-03-16 ~19:28 EDT)
+
+| # | File | Action Taken | Commit | Date |
+|---|------|-------------|--------|------|
+| 8 | `tests/test_task10_backtesting.py` | **Renamed → `tests/test_backtesting_extended.py`**. Content identical + docstring clarified (print-based integration demo, not pytest suite). Old file deleted. | [dd750bb](https://github.com/AlgoOps25/War-Machine/commit/dd750bb58cd2aa782a71dd52e2bc47cb94e6ea24) / [0454fd4](https://github.com/AlgoOps25/War-Machine/commit/0454fd405b4595ee6e576fbecdb5a89a6df9d120) | 2026-03-16 |
+| 9 | `tests/test_task12.py` | **Renamed → `tests/test_premarket_scanner_v2.py`**. Content identical + docstring updated (tests `gap_analyzer`, `news_catalyst`, `sector_rotation`, `premarket_scanner`). Old file deleted. | [dd750bb](https://github.com/AlgoOps25/War-Machine/commit/dd750bb58cd2aa782a71dd52e2bc47cb94e6ea24) / [7944437](https://github.com/AlgoOps25/War-Machine/commit/794443735c63749f29c9a8b45f66af4051484c5f) | 2026-03-16 |
+| 10 | `app/discord_helpers.py` — verdict corrected | **Re-confirmed KEEP (shim).** Pre-flight investigation via GitHub code search confirmed all 10 callers import from `app.discord_helpers`. File is already a perfect re-export shim (committed in S1). Earlier batch suggestion to "DELETE" was incorrect — the shim MUST stay to preserve all caller import paths. Verdict updated in all audit tables. | N/A | 2026-03-16 |
+
+---
+
 ## LEGEND
 
 | Symbol | Meaning |
@@ -45,14 +55,16 @@
 
 ## PRIORITY ACTION LIST
 
-### ✅ COMPLETED (Sessions 1 + 2)
+### ✅ COMPLETED (Sessions 1 + 2 + 3)
 
-- [x] **`app/discord_helpers.py`** → re-export shim (a629a84). Fixed live `send_options_signal_alert` bug.
+- [x] **`app/discord_helpers.py`** → re-export shim (a629a84). Fixed live `send_options_signal_alert` bug. **Re-confirmed KEEP in S3** — 10 callers depend on this shim.
 - [x] **`app/ml/check_database.py`** → moved to `scripts/database/check_database.py` (3e4681a + aeae51d)
 - [x] **`app/validation/volume_profile.py`** → annotated + TTL cache added (cea9180)
 - [x] **`app/data/database.py`** → re-export shim over `db_connection` (9cd17f5)
 - [x] **`.gitignore`** → added `models/signal_predictor.pkl` exclusion (5828488)
 - [x] **EOD reporter pair** → investigated, cleared as non-conflict (both kept)
+- [x] **`tests/test_task10_backtesting.py`** → renamed to `test_backtesting_extended.py` (dd750bb + 0454fd4)
+- [x] **`tests/test_task12.py`** → renamed to `test_premarket_scanner_v2.py` (dd750bb + 7944437)
 
 ### 🔴 REMAINING — Binary Bloat in Git
 
@@ -69,10 +81,30 @@
 ### ⚠️ REMAINING — Test Renames (Cosmetic, No Runtime Risk)
 
 - `tests/test_task9_funnel_analytics.py` → rename to `tests/test_funnel_analytics.py`
-- `tests/test_task10_backtesting.py` → rename to `tests/test_backtesting_extended.py`
-- `tests/test_task12.py` → rename to reflect actual tested module
 - `tests/db_diagnostic.py` → rename to `test_db_diagnostic.py` or move to `scripts/`
 - `tests/dte_selector.py` → rename to `test_dte_selector.py` or move to `scripts/`
+
+### ⚠️ REMAINING — Owner Decisions (⚠️ REVIEW items)
+
+These require your context to decide — they are not automatable without risk:
+
+| File | Question |
+|------|----------|
+| `app/core/armed_signal_store.py` vs `watch_signal_store.py` | Confirm two distinct lifecycle states (armed vs watching) with no logic duplication |
+| `app/core/confidence_model.py` (976 B) | Confirm it's a live interface stub, not dead code superseded by `app/ml/` |
+| `app/data/ws_quote_feed.py` vs `ws_feed.py` | Confirm distinct data type (quotes vs candles). Likely intentional but verify no duplicated connection logic |
+| `app/signals/signal_analytics.py` vs `app/analytics/funnel_analytics.py` | Confirm per-signal metadata vs funnel-level (different scopes) |
+| `app/filters/entry_timing_optimizer.py` vs `app/validation/entry_timing.py` | Filter vs validator — confirm not overlapping |
+| `app/filters/options_dte_filter.py` vs `app/options/options_dte_selector.py` | One filters bad DTE, one selects best — confirm no duplicate logic |
+| `app/filters/vwap_gate.py` (1.8 KB) | Small stub — `validation.py` also has VWAP gate logic. Consider consolidating |
+| `app/indicators/vwap_calculator.py` | VWAP also in `volume_indicators.py` and inline `sniper.py` — designate one canonical source |
+| `app/validation/cfw6_confirmation.py` vs `cfw6_gate_validator.py` | Both CFW6 — confirm pre-entry gate vs signal check (different pipeline stage) |
+| `app/options/__init__.py` (30.5 KB) | Unusually large — consider refactoring to `options_core.py` |
+| `app/analytics/performance_monitor.py` vs `performance_alerts.py` | Confirm distinct roles (monitoring vs alerting) |
+| `app/ml/signal_predictor.py` | Confirm loads `models/signal_predictor.pkl`, not a separate implementation |
+| `app/ai/ai_learning.py` | Possible legacy precursor to `app/ml/` — confirm active use |
+| `audit_repo.py` (28.5 KB) | Root-level script — consider moving to `scripts/` |
+| `war_machine_architecture_doc.txt` (51 KB) | Consider moving to `docs/` |
 
 ---
 
@@ -85,7 +117,7 @@
 | File | Size | Verdict | Notes |
 |------|------|---------|-------|
 | `__init__.py` | 54 B | ✅ KEEP | Package init |
-| `discord_helpers.py` | 1.4 KB | ✅ DONE (S1) | Re-export shim → `app.notifications.discord_helpers`. Fixed live `send_options_signal_alert` bug. Commit a629a84. |
+| `discord_helpers.py` | 1.4 KB | ✅ DONE (S1) + ✅ RE-CONFIRMED (S3) | Re-export shim → `app.notifications.discord_helpers`. **10 callers confirmed via code search — shim MUST stay.** Fixed live `send_options_signal_alert` bug. Commit a629a84. |
 
 ---
 
@@ -324,6 +356,7 @@
 | File | Verdict | Notes |
 |------|---------|-------|
 | `conftest.py` | ✅ KEEP | |
+| `test_backtesting_extended.py` | ✅ DONE (S3) | Renamed from `test_task10_backtesting.py`. Docstring updated. Commits dd750bb + 0454fd4. |
 | `test_confidence_gate.py` | ✅ KEEP | |
 | `test_discord_simple.py` | ✅ OK | `app.discord_helpers` import resolves through shim — no update needed |
 | `test_failover.py` | ✅ KEEP | |
@@ -331,10 +364,9 @@
 | `test_greeks_integration.py` | ✅ KEEP | |
 | `test_ml_training.py` | ✅ KEEP | |
 | `test_mtf.py` | ✅ KEEP | |
+| `test_premarket_scanner_v2.py` | ✅ DONE (S3) | Renamed from `test_task12.py`. Docstring updated. Commits dd750bb + 7944437. |
 | `test_signal_pipeline.py` | ✅ KEEP | |
-| `test_task10_backtesting.py` | ⚠️ RENAME | → `test_backtesting_extended.py` |
-| `test_task12.py` | ⚠️ RENAME | Read contents, rename to reflect actual module |
-| `test_task9_funnel_analytics.py` | ⚠️ RENAME | → `test_funnel_analytics.py` |
+| `test_task9_funnel_analytics.py` | ⚠️ RENAME | → `test_funnel_analytics.py` (next batch) |
 | `test_thread_safety_fix1.py` | ✅ KEEP | |
 | `db_diagnostic.py` | ⚠️ RENAME | Not `test_` prefixed — pytest won't discover it |
 | `dte_selector.py` | ⚠️ RENAME | Same issue |
@@ -383,10 +415,12 @@
 | ✅ KEEP — clean, unique, no overlap | ~291 | |
 | ✅ DONE — S1 (19:07 EDT) | 3 committed changes | discord_helpers shim, check_database moved, volume_profile.py cache |
 | ✅ DONE — S2 (19:11 EDT) | 2 committed changes | database.py shim (9cd17f5), .gitignore update (5828488) |
+| ✅ DONE — S3 (19:28 EDT) | 2 committed changes | test_task10 renamed, test_task12 renamed |
 | ✅ CLEARED — S2 | 1 false positive | eod_reporter.py vs eod_discord_report.py — different jobs, both keep |
+| ✅ RE-CONFIRMED — S3 | 1 verdict corrected | discord_helpers.py KEEP (shim), NOT delete — 10 callers confirmed |
 | 🔀 SHIM — intentional re-export | 5 confirmed | discord_helpers, database, explosive_tracker, ab_test, funnel_tracker |
-| ⚠️ REVIEW — owner decision needed | ~25 | See per-file notes |
-| ⚠️ RENAME — tests | 5 test files | Cosmetic only |
+| ⚠️ REVIEW — owner decision needed | ~14 | See per-file notes above |
+| ⚠️ RENAME — tests remaining | 3 test files | test_task9, db_diagnostic, dte_selector |
 | 📦 ARCHIVE — obsolete backtesting | ~8 scripts | `backtest_runner_v*.py`, `legacy_*.py`, `batch_*.py` |
 | **TOTAL TRACKED** | **336** | |
 
@@ -407,7 +441,7 @@
 
 | Shim File | Canonical Target | Purpose |
 |-----------|------------------|---------|
-| `app/discord_helpers.py` | `app.notifications.discord_helpers` | Legacy import compatibility + live bug fix |
+| `app/discord_helpers.py` | `app.notifications.discord_helpers` | Legacy import compatibility + live bug fix. **10 callers confirmed (S3).** |
 | `app/data/database.py` | `app.data.db_connection` | Legacy `get_db_connection()` / `close_db_connection()` API |
 | `app/analytics/explosive_tracker.py` | `app.analytics.explosive_mover_tracker` | Keeps old import path after rename |
 | `app/analytics/ab_test.py` | `app.analytics.ab_test_framework` | CI-safe in-memory fallback wrapper |
@@ -418,4 +452,5 @@
 *Audit started: 2026-03-16 (manual file-by-file review via GitHub API across all 336 tracked files)*  
 *Session 1 completed: 2026-03-16 ~19:07 EDT — 3 commits*  
 *Session 2 completed: 2026-03-16 ~19:13 EDT — 2 commits, 1 false-positive cleared*  
+*Session 3 completed: 2026-03-16 ~19:28 EDT — 2 commits (test renames), 1 verdict corrected (discord_helpers KEEP confirmed)*  
 *All changes are committed to `main` and cross-referenced by commit SHA above.*
