@@ -4,6 +4,8 @@ Analyzes win/loss patterns and adjusts strategy parameters
 
 CONSOLIDATED: Now includes learning_policy functions (compute_confidence, grade_to_label)
 FIXED (Mar 10 2026): All get_conn() calls now use try/finally: return_conn(conn) — no leaks.
+FIXED (Mar 16 2026): Extended _GRADE_BASE to all 9 grades (A+/A/A-/B+/B/B-/C+/C/C-).
+                     Fixed bare 'import db_connection' -> 'from app.data import db_connection'.
 """
 
 import json
@@ -11,7 +13,7 @@ import os
 from datetime import datetime, timedelta
 from typing import Dict, List
 import numpy as np
-import db_connection
+from app.data import db_connection
 from utils import config
 
 
@@ -19,11 +21,19 @@ from utils import config
 # CONFIDENCE SCORING (formerly learning_policy.py)
 # =============================================================================
 
-# Grade baseline confidence map (CFW6 video rules)
+# Grade baseline confidence map — all 9 CFW6 grades.
+# A+/A/A- midpoints align with original learning_policy values.
+# B+/B/B-/C+/C/C- midpoints sourced from confidence_model.py (Phase 2 extraction).
 _GRADE_BASE = {
-    "A+": 0.85,
-    "A":  0.70,
-    "A-": 0.55,
+    "A+":  0.90,   # midpoint of (0.88, 0.92)
+    "A":   0.85,   # midpoint of (0.83, 0.87)
+    "A-":  0.80,   # midpoint of (0.78, 0.82)
+    "B+":  0.74,   # midpoint of (0.72, 0.76)
+    "B":   0.68,   # midpoint of (0.66, 0.70)
+    "B-":  0.62,   # midpoint of (0.60, 0.64)
+    "C+":  0.575,  # midpoint of (0.55, 0.60)
+    "C":   0.525,  # midpoint of (0.50, 0.55)
+    "C-":  0.475,  # midpoint of (0.45, 0.50)
 }
 
 # Timeframe multiplier: higher timeframe = higher weight
@@ -47,14 +57,15 @@ def compute_confidence(
     Compute base confidence score for a CFW6 signal.
 
     Args:
-        grade:     Signal grade string - "A+", "A", "A-"
+        grade:     Signal grade string - "A+" through "C-" (9 grades)
         timeframe: Bar timeframe - "1m", "2m", "3m", "5m"
         ticker:    Ticker symbol (reserved for future per-ticker tuning)
 
     Returns:
         Float in [0.0, 1.0] representing signal confidence.
+        Falls back to 0.50 (MIN_CONFIDENCE) for unrecognised grades.
     """
-    base = _GRADE_BASE.get(grade, 0.50)
+    base = _GRADE_BASE.get(grade, MIN_CONFIDENCE)
     tf_mult = _TF_MULTIPLIER.get(timeframe, 1.00)
     score = base * tf_mult
     return round(min(max(score, 0.0), 1.0), 4)
@@ -383,7 +394,7 @@ class AILearningEngine:
         report += f"Total P&L: ${total_pnl:+,.2f}\n"
         report += "\nGrade Performance:\n"
 
-        for grade in ["A+", "A", "A-"]:
+        for grade in ["A+", "A", "A-", "B+", "B", "B-", "C+", "C", "C-"]:
             if grade in self.data["pattern_performance"]:
                 perf     = self.data["pattern_performance"][grade]
                 grade_wr = (perf["wins"] / perf["count"]) * 100 if perf["count"] > 0 else 0
