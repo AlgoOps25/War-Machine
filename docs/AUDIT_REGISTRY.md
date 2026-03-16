@@ -3,7 +3,7 @@
 > **Purpose:** Master reference for the file-by-file audit of all 336 tracked files.  
 > **Last updated:** 2026-03-16  
 > **Auditor:** Perplexity AI (interactive audit with Michael)  
-> **Status legend:** ✅ KEEP | ⚠️ REVIEW | 🔀 MERGE → target | 🗃️ QUARANTINE | ❌ DELETE  
+> **Status legend:** ✅ KEEP | ⚠️ REVIEW | 🔀 MERGE → target | 🗃️ QUARANTINE | ❌ DELETE | 🔧 FIXED  
 > **Prohibited (runtime-critical) directories:** `app/core`, `app/data`, `app/risk`, `app/signals`, `app/validation`, `app/filters`, `app/mtf`, `app/notifications`, `utils/`, `migrations/`  
 > **Deployment entrypoint:** `PYTHONPATH=/app python -m app.core.scanner`  
 > **Healthcheck:** `/health` on port 8080  
@@ -24,6 +24,35 @@
 
 ---
 
+## Implemented Changes Log
+
+> All changes applied to `main` branch. Each entry includes commit SHA, date, and impact.
+
+| # | Date | File | Change | Commit SHA | Impact |
+|---|------|------|--------|-----------|--------|
+| 1 | 2026-03-16 | `app/validation/cfw6_confirmation.py` | 🔧 FIXED: Removed `calculate_vwap()` (used `close` price only — wrong formula) and `check_vwap_alignment()`. Replaced with `passes_vwap_gate()` + `compute_vwap()` imported from `app.filters.vwap_gate` (correct `(H+L+C)/3` typical price formula). Added `vwap_reason` logging to CONFIRM output. | `95be3ae` | **Live bug fix** — VWAP alignment gate now uses mathematically correct formula. Grade outcomes near VWAP boundary may shift. Zero external callers of removed functions confirmed via repo-wide search. |
+
+---
+
+## Pending Actions Queue
+
+> Ordered by priority. Work through top-to-bottom.
+
+| # | Priority | File | Action | Status |
+|---|----------|------|--------|--------|
+| 1 | ✅ DONE | `app/validation/cfw6_confirmation.py` | Fix wrong VWAP formula | ✅ Committed `95be3ae` |
+| 2 | 🔴 BUG | `app/core/confidence_model.py` | Grep callers → update to `app.ai.ai_learning` → DELETE (superseded) | ⏳ Next |
+| 3 | 🔴 HIGH | `app/discord_helpers.py` | Grep all imports → update to `app.notifications.discord_helpers` → DELETE | ⏳ Pending |
+| 4 | 🔴 HIGH | `app/ml/check_database.py` | Move to `scripts/database/` or DELETE (diagnostic one-off) | ⏳ Pending |
+| 5 | 🟡 MEDIUM | `app/core/watch_signal_store.py` | Fix 1 import: `app.discord_helpers` → `app.notifications.discord_helpers` | ⏳ Pending |
+| 6 | 🟡 MEDIUM | `app/signals/signal_analytics.py` | Confirm `train_from_analytics.py` target table → likely DELETE (superseded by `funnel_analytics.py`) | ⏳ Pending |
+| 7 | 🟡 MEDIUM | `app/filters/entry_timing_optimizer.py` | Wire `record_trade()` output to `EntryTimingValidator` to replace hardcoded `HOURLY_WIN_RATES` | ⏳ Pending |
+| 8 | 🟡 MEDIUM | `app/ml/train_ml_booster.py` | Confirm if `MLConfidenceBooster` still wired to live signals → if not, archive to `scripts/` | ⏳ Pending |
+| 9 | 🟢 LOW | `app/ai/ai_learning.py` | Fix `import db_connection` → `from app.data import db_connection` | ⏳ Pending |
+| 10 | 🟢 LOW | `tests/test_task9_*.py`, `test_task10_*.py`, `test_task12.py` | Rename to descriptive names | ⏳ Pending |
+
+---
+
 ## BATCH A1 — `app/core` (Runtime-Critical Core)
 
 > **Rule:** Every file here is loaded at startup via `python -m app.core.scanner`. Treat as PROHIBITED unless explicitly confirmed redundant.
@@ -36,8 +65,8 @@
 | `sniper.py` | 55 KB | Signal detection engine | `scanner.py` | ✅ KEEP | **PROHIBITED** — still large; Phase 6 trim pending |
 | `arm_signal.py` | 7 KB | Signal arming logic extracted from sniper | `sniper.py` | ✅ KEEP | Extracted Phase 5 refactor |
 | `armed_signal_store.py` | 8 KB | Thread-safe store for armed signals | `sniper.py`, `scanner.py` | ✅ KEEP | Pairs with `watch_signal_store.py` — distinct roles |
-| `watch_signal_store.py` | 7.6 KB | Store for watching (pre-armed) signals | `sniper.py`, `scanner.py` | ✅ KEEP | Distinct from `armed_signal_store.py` — no overlap |
-| `confidence_model.py` | 976 B | Confidence score calculator | `sniper.py` | ✅ KEEP | Small but live; extracted from sniper |
+| `watch_signal_store.py` | 7.6 KB | Store for watching (pre-armed) signals | `sniper.py`, `scanner.py` | ✅ KEEP | **ACTION PENDING #5:** fix 1 import `app.discord_helpers` → `app.notifications.discord_helpers` |
+| `confidence_model.py` | 976 B | Confidence score calculator | `sniper.py` | ⚠️ REVIEW | **ACTION PENDING #2:** Superseded by `app.ai.ai_learning.compute_confidence()` which correctly uses timeframe multipliers. Grep callers → update → DELETE. |
 | `gate_stats.py` | 5.8 KB | Gate pass/fail statistics tracker | `sniper.py`, `scanner.py` | ✅ KEEP | Extracted Phase 5 refactor |
 | `sniper_log.py` | 4.1 KB | Structured logging for sniper events | `sniper.py` | ✅ KEEP | Extracted Phase 5; also holds validator_stats functions |
 | `thread_safe_state.py` | 10.8 KB | Shared mutable state with lock guards | `scanner.py`, `sniper.py` | ✅ KEEP | Critical for thread safety; Fix #1 subject |
@@ -46,7 +75,7 @@
 | `error_recovery.py` | 17.2 KB | Exception handling + auto-restart logic | `scanner.py` | ✅ KEEP | Large but singular purpose; no duplicate found |
 | `health_server.py` | 4.5 KB | HTTP `/health` endpoint for Railway | Railway healthcheck | ✅ KEEP | **PROHIBITED** — required for Railway ON_FAILURE restart |
 
-**Batch A1 result: 15/15 files KEEP. Zero overlaps. Zero quarantine candidates.**
+**Batch A1 result: 13/15 files confirmed KEEP. 1 REVIEW (confidence_model.py), 1 ACTION PENDING (watch_signal_store.py import fix).**
 
 ---
 
@@ -104,10 +133,10 @@
 | `breakout_detector.py` | 32.4 KB | Breakout signal detection (volume, price level) | `sniper.py`, `scanner.py` | ✅ KEEP | **PROHIBITED** — core signal generator |
 | `opening_range.py` | 35.1 KB | ORB / opening range breakout detection | `sniper.py`, `scanner.py` | ✅ KEEP | **PROHIBITED** — distinct from `breakout_detector.py` (ORB is time-bounded, breakout is general) |
 | `vwap_reclaim.py` | 3.6 KB | VWAP reclaim signal (price reclaims VWAP after dip) | `sniper.py` | ✅ KEEP | Separate signal type; no overlap with `app/filters/vwap_gate.py` (gate blocks, this detects) |
-| `signal_analytics.py` | 23.6 KB | Signal outcome tracking, win rate, performance metrics | `scanner.py` (EOD), `analytics_integration.py` | ✅ KEEP | Analytics layer; no duplicate |
+| `signal_analytics.py` | 23.6 KB | Signal outcome tracking, win rate, performance metrics | `scanner.py` (EOD), `analytics_integration.py` | ⚠️ REVIEW | **ACTION PENDING #6:** Confirm which table `train_from_analytics.py` reads — if `signal_analytics`, this file may be superseded by `funnel_analytics.py` |
 | `earnings_eve_monitor.py` | 7.7 KB | Detects and filters signals when earnings announced next day | `sniper.py` (pre-entry gate) | ✅ KEEP | Standalone purpose; no overlap |
 
-**app/signals result: 6/6 KEEP. `vwap_reclaim.py` (detection) vs `app/filters/vwap_gate.py` (blocking gate) are complementary not duplicates.**
+**app/signals result: 5/6 confirmed KEEP. 1 REVIEW pending (signal_analytics.py).**
 
 ---
 
@@ -117,17 +146,17 @@
 |------|------|------|---------|---------|-------|
 | `__init__.py` | 341 B | Package marker + filter exports | All filter consumers | ✅ KEEP | |
 | `rth_filter.py` | 9.9 KB | Regular trading hours gate (9:30–16:00 ET) | `sniper.py`, `scanner.py` | ✅ KEEP | Note: `ws_feed.py` has `ENFORCE_RTH_ONLY` flag but it's `False` by default — `rth_filter.py` is the live enforcement layer |
-| `vwap_gate.py` | 1.8 KB | VWAP-based entry gate (blocks entries below VWAP for longs) | `sniper.py` | ✅ KEEP | Gate function; distinct from `vwap_reclaim.py` in signals (detection) |
+| `vwap_gate.py` | 1.8 KB | VWAP-based entry gate — **CANONICAL VWAP source** — uses correct `(H+L+C)/3` typical price formula | `sniper.py`, now also `cfw6_confirmation.py` | ✅ KEEP | **CANONICAL.** Now imported by `cfw6_confirmation.py` after VWAP bug fix (commit `95be3ae`). |
 | `market_regime_context.py` | 15.0 KB | Market regime classifier (trending/choppy/reversal) using SPY EMA | `sniper.py`, `scanner.py` | ✅ KEEP | SPY EMA used for visual context only per architecture decision |
 | `early_session_disqualifier.py` | 3.0 KB | Blocks all signals in first N minutes after open | `sniper.py` | ✅ KEEP | Complements `rth_filter.py` (timing, not hours) |
-| `entry_timing_optimizer.py` | 4.8 KB | Scores entry timing quality (bar position, momentum alignment) | `sniper.py` | ✅ KEEP | **CROSS-BATCH FLAG (deferred):** `app/validation/entry_timing.py` — see flags table below |
+| `entry_timing_optimizer.py` | 4.8 KB | Scores entry timing quality (bar position, momentum alignment) | `sniper.py` | ✅ KEEP | **ACTION PENDING #7:** Wire `record_trade()` output to `EntryTimingValidator` so hardcoded `HOURLY_WIN_RATES` become dynamic |
 | `liquidity_sweep.py` | 3.5 KB | Detects liquidity sweeps (wick below support/above resistance) | `sniper.py` | ✅ KEEP | SMC concept; standalone |
 | `options_dte_filter.py` | 5.3 KB | DTE gate — blocks options with DTE outside allowed range | `sniper.py` | ✅ KEEP | Standalone; no duplicate |
 | `order_block_cache.py` | 4.0 KB | Caches identified order block zones with TTL | `sniper.py`, `bos_fvg_engine.py` | ✅ KEEP | Cache layer; no duplicate |
 | `sd_zone_confluence.py` | 3.9 KB | Supply/demand zone confluence check | `sniper.py` | ✅ KEEP | SMC concept; standalone |
 | `correlation.py` | 8.2 KB | Inter-ticker correlation filter (blocks correlated signal stack) | `scanner.py`, `sniper.py` | ✅ KEEP | Risk diversity filter; no overlap |
 
-**app/filters result: 11/11 KEEP. One cross-batch flag (`entry_timing_optimizer.py` vs `app/validation/entry_timing.py`) deferred to cross-batch pass.**
+**app/filters result: 11/11 KEEP. `vwap_gate.py` is now the canonical VWAP implementation used by both `sniper.py` and `cfw6_confirmation.py`.**
 
 ---
 
@@ -153,30 +182,28 @@
 | `__init__.py` | 1.5 KB | Package marker + validation exports | All validation consumers | ✅ KEEP | Substantive `__init__` |
 | `validation.py` | 65.1 KB | Main signal validation orchestrator — calls all gates in sequence | `sniper.py` | ✅ KEEP | **PROHIBITED** — largest file in the repo; single entry point for all validation |
 | `cfw6_gate_validator.py` | 15.1 KB | CFW6 gate checks (Confluence For Win 6-factor model) | `validation.py`, `sniper.py` | ✅ KEEP | **PROHIBITED** — core gate logic |
-| `cfw6_confirmation.py` | 11.8 KB | CFW6 post-gate confirmation (momentum/bar quality checks after gate passes) | `validation.py` | ✅ KEEP | Distinct from `cfw6_gate_validator.py` — gate vs confirmation are sequential, not overlapping |
+| `cfw6_confirmation.py` | 11.9 KB | CFW6 post-gate confirmation (momentum/bar quality checks after gate passes) | `validation.py` | 🔧 FIXED | **FIXED 2026-03-16 (commit `95be3ae`):** Removed wrong `calculate_vwap()` (close-price-only). Now uses `passes_vwap_gate()` from `app.filters.vwap_gate` (correct `(H+L+C)/3` formula). Added `vwap_reason` to CONFIRM log output. |
 | `greeks_precheck.py` | 25.4 KB | Options Greeks pre-validation (delta, theta, IV checks before order) | `sniper.py`, `validation.py` | ✅ KEEP | Standalone Greeks logic; no duplicate |
 | `hourly_gate.py` | 5.7 KB | Hourly trade frequency gate (max N trades per hour) | `sniper.py`, `validation.py` | ✅ KEEP | Frequency control; no overlap |
-| `entry_timing.py` | 9.3 KB | Entry timing validation (validates bar timing vs session, momentum) | `validation.py` | ⚠️ REVIEW | **CROSS-BATCH FLAG:** vs `app/filters/entry_timing_optimizer.py` (4.8 KB). Different layers (validate vs optimize) but check for function-level overlap before confirming both KEEP |
-| `volume_profile.py` | 8.2 KB | Volume profile validation (checks if price is at high-vol node) | `validation.py`, `cfw6_gate_validator.py` | ⚠️ REVIEW | **CROSS-BATCH FLAG:** `app/indicators/volume_profile.py` may exist — check if one calculates and one validates, or if they're true duplicates |
+| `entry_timing.py` | 9.3 KB | Entry timing validation (validates bar timing vs session, momentum) | `validation.py` | ⚠️ REVIEW | **ACTION PENDING #7 (related):** vs `app/filters/entry_timing_optimizer.py` — wire dynamic win rates from optimizer into validator's hardcoded `HOURLY_WIN_RATES` |
+| `volume_profile.py` | 8.2 KB | Volume profile validation (checks if price is at high-vol node) | `validation.py`, `cfw6_gate_validator.py` | ⚠️ REVIEW | **Cross-batch flag (Batch D):** `app/indicators/volume_profile.py` — add caching to this file; add comment noting relationship |
 
-**app/validation result: 6/8 confirmed KEEP. 2 files need cross-batch comparison before final verdict.**
+**app/validation result: 6/8 confirmed KEEP. 1 FIXED (`cfw6_confirmation.py`). 2 REVIEW pending.**
 
 ---
 
 ## BATCH A2 Summary
 
-| Module | Files | KEEP | REVIEW | QUARANTINE/DELETE | Overlaps Found |
-|--------|-------|------|--------|--------------------|----------------|
-| `app/notifications/` | 2 | 2 | 0 | 0 | `app/discord_helpers.py` root copy confirmed legacy |
-| `app/risk/` | 6 | 6 | 0 | 0 | None |
-| `app/data/` | 9 | 9 | 0 | 0 | `ws_feed` vs `ws_quote_feed` — **RESOLVED as complementary** |
-| `app/signals/` | 6 | 6 | 0 | 0 | None |
-| `app/filters/` | 11 | 11 | 0 | 0 | 1 deferred flag (`entry_timing`) |
-| `app/mtf/` | 6 | 6 | 0 | 0 | None |
-| `app/validation/` | 8 | 6 | 2 | 0 | 2 deferred flags |
-| **TOTAL A2** | **48** | **46** | **2** | **0** | **1 confirmed legacy duplicate** |
-
-**Key finding: `ws_feed.py` vs `ws_quote_feed.py` — NOT duplicates. ws_feed = trade ticks → OHLCV bars (`/ws/us`). ws_quote_feed = bid/ask quotes → spread gating (`/ws/us-quote`). Both must run simultaneously.**
+| Module | Files | KEEP | FIXED | REVIEW | QUARANTINE/DELETE | Overlaps Found |
+|--------|-------|------|-------|--------|--------------------|----------------|
+| `app/notifications/` | 2 | 2 | 0 | 0 | 0 | `app/discord_helpers.py` root copy confirmed legacy |
+| `app/risk/` | 6 | 6 | 0 | 0 | 0 | None |
+| `app/data/` | 9 | 9 | 0 | 0 | 0 | `ws_feed` vs `ws_quote_feed` — **RESOLVED as complementary** |
+| `app/signals/` | 6 | 5 | 0 | 1 | 0 | 1 deferred flag (`signal_analytics`) |
+| `app/filters/` | 11 | 11 | 0 | 0 | 0 | 1 deferred flag (`entry_timing`) |
+| `app/mtf/` | 6 | 6 | 0 | 0 | 0 | None |
+| `app/validation/` | 8 | 6 | 1 | 2 | 0 | 2 deferred flags |
+| **TOTAL A2** | **48** | **45** | **1** | **3** | **0** | **1 confirmed legacy duplicate** |
 
 ---
 
@@ -243,28 +270,30 @@
 
 ## Cross-Batch Overlap Flags (Running List)
 
-| Flag | File A | File B | Status | Likely Resolution |
+| Flag | File A | File B | Status | Resolution |
 |------|--------|--------|--------|-------------------|
 | Discord helpers | `app/discord_helpers.py` | `app/notifications/discord_helpers.py` | ✅ RESOLVED | A is confirmed legacy root copy; B is canonical. Quarantine A in Batch E (check imports first) |
 | ws trade vs quote | `app/data/ws_feed.py` | `app/data/ws_quote_feed.py` | ✅ RESOLVED | Distinct endpoints + distinct data types. Both KEEP. Run simultaneously. |
 | db layers | `app/data/database.py` | `app/data/db_connection.py` | ✅ RESOLVED | Intentional layering (query interface vs connection pool). Both KEEP. |
-| Entry timing | `app/validation/entry_timing.py` | `app/filters/entry_timing_optimizer.py` | ⏳ Pending | Check function-level overlap — validate vs optimize may be sequential layers |
-| Volume profile | `app/validation/volume_profile.py` | `app/indicators/volume_profile.py` | ⏳ Pending (Batch D priority) | Check if one calculates and one validates, or true duplicates |
-| Explosive tracker | `app/analytics/explosive_mover_tracker.py` | `app/analytics/explosive_tracker.py` | ⏳ Pending (Batch B) | Likely one supersedes — check imports |
-| AB test | `app/analytics/ab_test.py` | `app/analytics/ab_test_framework.py` | ⏳ Pending (Batch B) | Check if framework wraps test or is replacement |
-| Funnel | `app/analytics/funnel_analytics.py` | `app/analytics/funnel_tracker.py` | ⏳ Pending (Batch B) | Check which is imported by scanner |
-| ML scorer | `app/ml/ml_signal_scorer.py` | `app/ml/ml_signal_scorer_v2.py` | ⏳ Pending (Batch B) | v1 likely superseded — verify imports |
-| SQLite DB | `war_machine.db` (root) | `scripts/war_machine.db` | ⏳ Pending (Batch E) | Check if both are referenced or one is stale |
-| EOD report | `app/core/eod_reporter.py` | `app/analytics/eod_discord_report.py` | ⏳ Pending (Batch B) | Check if both are active or one supersedes |
-| Backtest scripts | `scripts/backtesting/*.py` (20 files) | `app/backtesting/backtest_engine.py` | ⏳ Pending (Batch C) | Scripts likely standalone experiments vs engine is prod module |
+| VWAP formula | `app/validation/cfw6_confirmation.py` (`calculate_vwap`) | `app/filters/vwap_gate.py` (`compute_vwap`) | ✅ FIXED `95be3ae` | Wrong formula removed from confirmation. `vwap_gate.py` is now the single VWAP source. |
+| Entry timing | `app/validation/entry_timing.py` | `app/filters/entry_timing_optimizer.py` | ⏳ Pending #7 | Wire dynamic win rates from optimizer into validator |
+| Volume profile | `app/validation/volume_profile.py` | `app/indicators/volume_profile.py` | ⏳ Pending Batch D | Add caching to validation version; annotate relationship |
+| Explosive tracker | `app/analytics/explosive_mover_tracker.py` | `app/analytics/explosive_tracker.py` | ⏳ Pending Batch B | Likely one supersedes — check imports |
+| AB test | `app/analytics/ab_test.py` | `app/analytics/ab_test_framework.py` | ⏳ Pending Batch B | Check if framework wraps test or is replacement |
+| Funnel | `app/analytics/funnel_analytics.py` | `app/analytics/funnel_tracker.py` | ⏳ Pending Batch B | Check which is imported by scanner |
+| ML scorer | `app/ml/ml_signal_scorer.py` | `app/ml/ml_signal_scorer_v2.py` | ⏳ Pending Batch B | v1 likely superseded — verify imports |
+| Confidence model | `app/core/confidence_model.py` | `app/ai/ai_learning.py` (`compute_confidence`) | ⏳ Pending #2 | `confidence_model.py` ignores timeframe param; `ai_learning.py` is correct engine. Grep → update → DELETE |
+| SQLite DB | `war_machine.db` (root) | `scripts/war_machine.db` | ⏳ Pending Batch E | Check if both are referenced or one is stale |
+| EOD report | `app/core/eod_reporter.py` | `app/analytics/eod_discord_report.py` | ⏳ Pending Batch B | Check if both are active or one supersedes |
+| Backtest scripts | `scripts/backtesting/*.py` (20 files) | `app/backtesting/backtest_engine.py` | ⏳ Pending Batch C | Scripts likely standalone experiments vs engine is prod module |
 
 ---
 
 ## Files Cleared (No Action Needed)
 
-- All 15 files in `app/core` — confirmed zero overlaps, all KEEP.
-- All 48 files in `app/risk`, `app/data`, `app/signals`, `app/filters`, `app/mtf`, `app/validation`, `app/notifications` — 46 confirmed KEEP, 2 deferred to cross-batch pass.
+- All 15 files in `app/core` — 13 confirmed zero overlaps, all KEEP. 2 pending action items (#2 confidence_model, #5 watch_signal_store import).
+- All 48 files in `app/risk`, `app/data`, `app/signals`, `app/filters`, `app/mtf`, `app/validation`, `app/notifications` — 45 confirmed KEEP, 1 FIXED, 3 pending review.
 
 ---
 
-*This file is updated progressively. Do not delete. Reference before any file move, merge, or quarantine.*
+*This file is updated progressively after every implemented change. Do not delete. Reference before any file move, merge, or quarantine.*
