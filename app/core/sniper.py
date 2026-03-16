@@ -398,7 +398,9 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
             print(f"[{ticker}] Volume profile validation error (non-fatal): {vp_err}")
 
     if skip_cfw6_confirmation:
-        entry_price = bars_session[-1]["open"]
+        # FIX #3 (MAR 15, 2026): use close of last confirmed bar, not open.
+        # The bar's open is already stale by the time the signal fires.
+        entry_price = bars_session[-1]["close"]
         base_grade  = bos_confirmation if bos_confirmation in ("A+", "A", "A-", "B+", "B") else "A-"
         confirm_idx = len(bars_session) - 1
         confirm_type = bos_candle_type or "BOS+FVG"
