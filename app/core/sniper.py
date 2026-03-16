@@ -54,10 +54,15 @@
 #   - Removed app.ml.ml_signal_scorer_v2 import + ML_SCORER_ENABLED flag (module deleted,
 #     ml_signal_scorer.py was OFFLINE; scorer was never active in production).
 #   - ml_boost stays hardcoded to 0.0 in confidence formula — no behavior change.
+#
+# IMPORT FIXES (Mar 16 2026):
+#   - app.core.confidence_model -> app.ai.ai_learning (confidence_model.py is now a shim,
+#     canonical compute_confidence lives in ai_learning with full 9-grade support).
+#   - app.discord_helpers -> app.notifications.discord_helpers (root-level copy is legacy).
 import traceback
 from datetime import datetime, time, timedelta
 from utils.time_helpers import _now_et, _bar_time, _strip_tz
-from app.discord_helpers import send_simple_message
+from app.notifications.discord_helpers import send_simple_message
 from app.validation.validation import get_validator, get_regime_filter
 from app.validation.cfw6_confirmation import wait_for_confirmation, grade_signal_with_confirmations
 from app.risk.trade_calculator import compute_stop_and_targets, get_adaptive_fvg_threshold
@@ -78,7 +83,7 @@ from app.core.armed_signal_store import (
 from app.core.eod_reporter import run_eod_reports
 from app.filters.vwap_gate import compute_vwap, passes_vwap_gate
 from app.core.gate_stats import _track_gate_result
-from app.core.confidence_model import compute_confidence
+from app.ai.ai_learning import compute_confidence
 from app.core.arm_signal import arm_ticker
 from app.core.sniper_log import _track_validation_call
 # ── FIX #15: DB-persisted signal cooldown (survives Railway restarts) ─────────
@@ -214,7 +219,7 @@ except ImportError as e:
     print(f"[SNIPER] ⚠️  Analytics trackers not available: {e}")
 
 print("[SNIPER] ✅ VWAP directional gate enabled (app.filters.vwap_gate)")
-print("[SNIPER] ✅ Confidence model loaded (app.core.confidence_model)")
+print("[SNIPER] ✅ Confidence model loaded (app.ai.ai_learning)")
 print("[SNIPER] ✅ Gate stats tracker loaded (app.core.gate_stats)")
 print("[SNIPER] ✅ arm_ticker loaded (app.core.arm_signal)")
 
