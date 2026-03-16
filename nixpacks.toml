@@ -1,5 +1,5 @@
-﻿[phases.setup]
-nixPkgs = ["python310", "python310Packages.pip", "postgresql"]
+[phases.setup]
+nixPkgs = ["python310", "python310Packages.pip", "postgresql", "stdenv.cc.cc.lib"]
 
 [phases.install]
 cmds = ["pip install -r requirements.txt --break-system-packages"]
