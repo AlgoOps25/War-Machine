@@ -14,11 +14,17 @@ M10 FIX (Mar 10 2026):
   A webhook outage or high latency can no longer stall the scan loop.
   Errors are caught and logged inside the thread; the caller always
   returns immediately.
+
+PHASE 1.29 (Mar 16 2026):
+- send_premarket_watchlist() now posts to DISCORD_WATCHLIST_WEBHOOK_URL
+  (separate #watchlist channel) with a rich embed per stage showing
+  rank, score, RVOL, gap, catalyst, and price for each ticker.
+- Falls back to DISCORD_SIGNALS_WEBHOOK_URL if watchlist URL not set.
 """
 import requests
 import functools
 import threading
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 from datetime import datetime
 from utils import config
 
@@ -441,33 +447,84 @@ def send_exit_alert(
     _send_to_discord({"embeds": [embed]})
 
 
-def send_premarket_watchlist(tickers: list, scores: Optional[Dict] = None):
-    """Send the pre-market watchlist to Discord before market open."""
-    ticker_lines = []
-    for t in tickers:
-        score = scores.get(t, {}) if scores else {}
-        pmis = score.get("pmis", "—")
-        gap = score.get("gap_pct", None)
-        line = f"**{t}**"
-        if gap is not None:
-            line += f"  {gap:+.1f}%"
-        if pmis != "—":
-            line += f"  PMIS: {pmis}"
-        ticker_lines.append(line)
-    
-    chunk_size = 20
-    chunks = [ticker_lines[i:i + chunk_size] for i in range(0, len(ticker_lines), chunk_size)]
-    
+def send_premarket_watchlist(
+    tickers: List[str],
+    scored_tickers: Optional[List[Dict]] = None,
+    stage: str = "wide"
+):
+    """
+    PHASE 1.29: Send watchlist to the dedicated #watchlist Discord channel.
+
+    Posts a rich embed with rank, score, RVOL, gap, catalyst, and price
+    for each ticker in the current funnel stage.
+
+    Falls back to DISCORD_SIGNALS_WEBHOOK_URL if DISCORD_WATCHLIST_WEBHOOK_URL
+    is not configured.
+
+    Args:
+        tickers:        Ordered list of ticker symbols.
+        scored_tickers: Full scored_tickers list from WatchlistFunnel
+                        (contains score, rvol, gap_data, catalyst_data, price).
+        stage:          Funnel stage label (wide / narrow / final / live).
+    """
+    if not tickers:
+        return
+
+    stage_labels = {
+        "wide":   ("\ud83d\udd0d Wide Scan",    0x1E90FF),   # blue
+        "narrow": ("\ud83c\udfaf Narrow",       0xFFA500),   # orange
+        "final":  ("\ud83d\ude80 Final Top 3",  0xFF4500),   # red-orange
+        "live":   ("\ud83d\udfe2 Live Session", 0x00C853),   # green
+    }
+    stage_label, color = stage_labels.get(stage, (f"Stage: {stage}", 0x888888))
+
+    # Build a lookup from the scored_tickers list for fast access
+    score_map: Dict[str, Dict] = {}
+    if scored_tickers:
+        for t in scored_tickers:
+            score_map[t.get("ticker", "")] = t
+
+    lines = []
+    for i, ticker in enumerate(tickers, 1):
+        data = score_map.get(ticker, {})
+        score = data.get("composite_score", 0)
+        rvol  = data.get("rvol", 0)
+        price = data.get("price", 0)
+
+        gap_data      = data.get("gap_data") or {}
+        gap_pct       = gap_data.get("size_pct", None)
+        catalyst_data = data.get("catalyst_data") or {}
+        catalyst_type = catalyst_data.get("type", None)
+
+        gap_str      = f"{gap_pct:+.1f}%" if gap_pct is not None else "—"
+        catalyst_str = catalyst_type if catalyst_type else "—"
+        rvol_str     = f"{rvol:.2f}x" if rvol else "—"
+        price_str    = f"${price:.2f}" if price else "—"
+        score_str    = f"{score:.1f}" if score else "—"
+
+        lines.append(
+            f"`#{i:>2}` **{ticker}**  │  Score: `{score_str}`  RVOL: `{rvol_str}`  "
+            f"Gap: `{gap_str}`  Cat: `{catalyst_str}`  @ {price_str}"
+        )
+
+    # Discord embed description has a 4096-char limit; chunk if needed
+    chunk_size = 15
+    chunks = [lines[i:i + chunk_size] for i in range(0, len(lines), chunk_size)]
+
     for idx, chunk in enumerate(chunks):
+        part_suffix = f" — Part {idx + 1}/{len(chunks)}" if len(chunks) > 1 else ""
         embed = {
-            "title": f"📋 Pre-Market Watchlist ({len(tickers)} tickers)" + (f" — Part {idx+1}" if len(chunks) > 1 else ""),
-            "color": 0x1E90FF,
+            "title": f"📋 Watchlist — {stage_label}  ({len(tickers)} tickers){part_suffix}",
+            "color": color,
             "description": "\n".join(chunk),
             "footer": {
-                "text": f"War Machine Pre-Market  |  {datetime.now().strftime('%Y-%m-%d %H:%M:%S EST')}"
-            }
+                "text": (
+                    f"War Machine  |  "
+                    f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S ET')}"
+                )
+            },
         }
-        _send_to_discord({"embeds": [embed]})
+        _send_to_discord_watchlist({"embeds": [embed]})
 
 
 def send_daily_summary(stats: Dict):
@@ -501,6 +558,35 @@ def send_daily_summary(stats: Dict):
 def send_simple_message(message: str):
     """Send a plain text message to Discord."""
     _send_to_discord({"content": message})
+
+
+def _send_to_discord_watchlist(payload: Dict):
+    """
+    PHASE 1.29: Send to the dedicated watchlist channel.
+    Falls back to DISCORD_SIGNALS_WEBHOOK_URL if watchlist URL not configured.
+    Dispatched on a daemon thread (non-blocking).
+    """
+    watchlist_url = (config.DISCORD_WATCHLIST_WEBHOOK_URL or "").strip().rstrip("\n").rstrip("\r")
+    fallback_url  = (config.DISCORD_SIGNALS_WEBHOOK_URL  or "").strip().rstrip("\n").rstrip("\r")
+    webhook_url   = watchlist_url or fallback_url
+
+    if not webhook_url:
+        print("[DISCORD] ❌ No watchlist webhook URL configured.")
+        return
+
+    if not watchlist_url:
+        print("[DISCORD] ⚠️  DISCORD_WATCHLIST_WEBHOOK_URL not set — falling back to signals channel")
+
+    def _post():
+        try:
+            response = requests.post(webhook_url, json=payload, timeout=10)
+            if response.status_code not in (200, 204):
+                print(f"[DISCORD] ⚠️  Watchlist HTTP {response.status_code}: {response.text[:200]}")
+        except Exception as e:
+            print(f"[DISCORD] ⚠️  Watchlist send error (non-blocking): {e}")
+
+    t = threading.Thread(target=_post, daemon=True)
+    t.start()
 
 
 def _send_to_discord(payload: Dict):

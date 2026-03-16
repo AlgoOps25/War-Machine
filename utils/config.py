@@ -137,6 +137,8 @@ DISCORD_SIGNALS_WEBHOOK_URL = os.getenv('DISCORD_SIGNALS_WEBHOOK_URL', '')
 
 DISCORD_NEWS_WEBHOOK_URL = os.getenv('DISCORD_NEWS_WEBHOOK_URL', '')
 
+DISCORD_WATCHLIST_WEBHOOK_URL = os.getenv('DISCORD_WATCHLIST_WEBHOOK_URL', '')
+
 # ========================================
 # BASELINE SCANNER CONFIGURATION
 # ========================================
@@ -269,9 +271,10 @@ _REQUIRED_VARS = [
 
 # Soft-required: missing = WARNING in logs, system continues degraded
 _OPTIONAL_VARS = [
-    ("DISCORD_REGIME_WEBHOOK_URL", "SPY+QQQ regime visual channel"),
-    ("TRADIER_API_KEY",            "Options data (Greeks / chain)"),
-    ("UNUSUAL_WHALES_API_KEY",     "Dark pool / UOA flow data"),
+    ("DISCORD_REGIME_WEBHOOK_URL",    "SPY+QQQ regime visual channel"),
+    ("DISCORD_WATCHLIST_WEBHOOK_URL", "Pre-market watchlist channel"),
+    ("TRADIER_API_KEY",               "Options data (Greeks / chain)"),
+    ("UNUSUAL_WHALES_API_KEY",        "Dark pool / UOA flow data"),
 ]
 
 
