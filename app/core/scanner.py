@@ -53,6 +53,14 @@ PHASE 1.28 (MAR 16, 2026):
     Hard-fails on missing EODHD_API_KEY / DATABASE_URL / DISCORD_WEBHOOK_URL
     before any blocking DB/WS work begins. Surfaces config errors immediately
     in Railway logs with a clear table instead of a cryptic mid-boot crash.
+
+PHASE 1.29 (MAR 16, 2026):
+  - FIX #9: Eliminate redundant get_session_status() / get_loss_streak() DB
+    checkouts in the main scan cycle.
+    * get_session_status() called ONCE per cycle, result cached as `session`
+    * loss_streak derived from session["daily_stats"] (no extra DB call)
+    * monitor_open_positions() accepts optional pre-fetched session kwarg
+    Net: 3 DB checkouts per cycle -> 1, preventing pool exhaustion at OR open.
 """
 from app.core.health_server import start_health_server, health_heartbeat
 
@@ -401,9 +409,15 @@ def build_watchlist(force_refresh: bool = False) -> list:
     return list(EMERGENCY_FALLBACK)
 
 
-def monitor_open_positions():
+def monitor_open_positions(session: dict = None):
+    """
+    FIX #9 (PHASE 1.29): Accept optional pre-fetched session dict.
+    When the caller already holds a session snapshot from this cycle,
+    we skip the redundant get_session_status() DB checkout entirely.
+    """
     from app.data.ws_feed import get_current_bar_with_fallback
-    session        = get_session_status()
+    if session is None:
+        session = get_session_status()
     open_positions = session["open_positions"]
     if not open_positions:
         return
@@ -449,9 +463,6 @@ def subscribe_and_prefetch_tickers(new_tickers: list):
 
 def start_scanner_loop():
     # ── PHASE 1.28: Validate required env vars before any blocking work ──────────
-    # Hard-fails (sys.exit 1) if EODHD_API_KEY / DATABASE_URL /
-    # DISCORD_WEBHOOK_URL are missing. Surfaces config errors in Railway
-    # logs immediately instead of a cryptic crash deep in the boot sequence.
     validate_required_env_vars()
 
     try:
@@ -472,7 +483,7 @@ def start_scanner_loop():
 
     # ── STARTUP BANNER ────────────────────────────────────────────────────────────────
     print("=" * 60, flush=True)
-    print("WAR MACHINE CFW6 SCANNER v1.28 - STARTUP", flush=True)
+    print("WAR MACHINE CFW6 SCANNER v1.29 - STARTUP", flush=True)
     print("=" * 60, flush=True)
     print("✓ REGIME-FILTER  VIX/SPY regime detection active", flush=True)
     print("=" * 60, flush=True)
@@ -545,6 +556,7 @@ def start_scanner_loop():
     print(f"Regime WS Feed:  ✅ FIXED   (SPY+QQQ always subscribed for regime bars — Phase 1.26)", flush=True)
     print("Health Boot Fix: ✅ FIXED   (start_health_server at module load — Phase 1.27)", flush=True)
     print("Env Var Guard:   ✅ ENABLED (validate_required_env_vars — Phase 1.28)", flush=True)
+    print("DB Checkout Fix: ✅ FIXED   (single get_session_status per cycle — Phase 1.29)", flush=True)
     print("=" * 60 + "\n", flush=True)
 
     _booting_into_market_hours = is_market_hours()
@@ -568,8 +580,8 @@ def start_scanner_loop():
 
     try:
         send_simple_message(
-            f"⚔️ WAR MACHINE ONLINE — CFW6 v1.28 | "
-            f"{'Resuming intraday' if _booting_into_market_hours else 'OR window active'} | Phase 1.28"
+            f"⚔️ WAR MACHINE ONLINE — CFW6 v1.29 | "
+            f"{'Resuming intraday' if _booting_into_market_hours else 'OR window active'} | Phase 1.29"
         )
     except Exception as e:
         logger.warning(f"[SCANNER] Discord unavailable: {e}")
@@ -723,7 +735,21 @@ def start_scanner_loop():
                         )
                         _or_window_logged = True
 
-                if get_loss_streak():
+                # ── FIX #9 (PHASE 1.29): Single get_session_status() per cycle ──
+                # Previously: get_loss_streak() + monitor_open_positions() +
+                # get_session_status() = 3 DB checkouts every 5s OR cycle.
+                # Now: one call, result passed to all consumers below.
+                session     = get_session_status()
+                daily_stats = session["daily_stats"]
+
+                # Derive loss streak from cached session data — no extra DB call
+                _has_loss_streak = (
+                    daily_stats.get("losses", 0) >= 3
+                    and daily_stats.get("wins", 0) == 0
+                    or _pm.has_loss_streak(max_consecutive_losses=3)
+                )
+
+                if _has_loss_streak:
                     if not loss_streak_alerted:
                         try:
                             send_simple_message(
@@ -734,7 +760,8 @@ def start_scanner_loop():
                             pass
                         loss_streak_alerted = True
                         logger.warning("[RISK] Daily loss streak reached — halting new scans.")
-                    monitor_open_positions()
+                    # Pass pre-fetched session — zero extra DB calls
+                    monitor_open_positions(session=session)
                     time.sleep(60)
                     continue
 
@@ -779,10 +806,9 @@ def start_scanner_loop():
                     except Exception as e:
                         logger.error(f"[ANALYTICS] Monitor error: {e}")
 
-                monitor_open_positions()
+                # Pass pre-fetched session — skips second get_session_status() call
+                monitor_open_positions(session=session)
 
-                session     = get_session_status()
-                daily_stats = session["daily_stats"]
                 logger.info(
                     f"[TODAY] Trades: {daily_stats['trades']} "
                     f"W/L: {daily_stats['wins']}/{daily_stats['losses']} "
