@@ -263,18 +263,18 @@ COOLDOWN_OPPOSITE_DIRECTION = 15
 
 # Hard-required: missing any of these = immediate sys.exit(1) before market open
 _REQUIRED_VARS = [
-    ("EODHD_API_KEY",      "Market data feed (EODHD WebSocket + REST)"),
-    ("DATABASE_URL",       "PostgreSQL analytics DB"),
-    ("DISCORD_WEBHOOK_URL","Primary Discord alerts channel"),
+    ("EODHD_API_KEY",              "Market data feed (EODHD WebSocket + REST)"),
+    ("DATABASE_URL",               "PostgreSQL analytics DB"),
+    ("DISCORD_WEBHOOK_URL",        "Primary signals Discord channel"),
+    ("DISCORD_ALERTS_WEBHOOK_URL", "Performance alerts Discord channel"),
+    ("DISCORD_EXIT_WEBHOOK_URL",   "Position exit alerts Discord channel"),
 ]
 
-# Soft-required: missing = WARNING in logs, system continues
+# Soft-required: missing = WARNING in logs, system continues degraded
 _OPTIONAL_VARS = [
-    ("DISCORD_ALERTS_WEBHOOK_URL", "Performance alerts channel"),
-    ("DISCORD_EXIT_WEBHOOK_URL",   "Position exit alerts channel"),
-    ("REGIME_WEBHOOK_URL",         "SPY+QQQ regime visual channel"),
-    ("TRADIER_API_KEY",            "Options data (Greeks / chain)"),
-    ("UNUSUAL_WHALES_API_KEY",     "Dark pool / UOA flow data"),
+    ("REGIME_WEBHOOK_URL",     "SPY+QQQ regime visual channel"),
+    ("TRADIER_API_KEY",        "Options data (Greeks / chain)"),
+    ("UNUSUAL_WHALES_API_KEY", "Dark pool / UOA flow data"),
 ]
 
 
