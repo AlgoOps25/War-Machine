@@ -34,6 +34,16 @@ FIX #7 (MAR 16, 2026): RAILWAY POSTGRES LIMIT ALIGNMENT
 - POOL_MIN reduced 10 → 3 (faster startup, less idle waste)
 - Pool exhaustion was crashing scanner at 9:30 open (backfill + monitor + scan burst)
 
+FIX #8 (MAR 16, 2026): DOUBLE SEMAPHORE RELEASE ON POOL EXHAUSTION
+- When all POOL_RETRY_ATTEMPTS failed, the retry-exhaustion path released the
+  semaphore then raised RuntimeError. The raise caused the outer except block
+  to fire with semaphore_acquired still True, releasing the semaphore a second
+  time and inflating its internal counter above DB_SEMAPHORE_LIMIT.
+- Over time the gate stopped enforcing the cap, allowing >12 concurrent holders
+  to pile up — causing the 30s timeout crash in monitor_open_positions().
+- Fix: set semaphore_acquired = False immediately after release in the
+  retry-exhaustion path so the outer except skips the redundant release.
+
 NOTE: Railway provides DATABASE_URL as postgres:// — psycopg2 requires
 postgresql:// — we normalize it automatically here.
 """
@@ -131,6 +141,11 @@ def get_conn(sqlite_path: str = "war_machine.db"):
     thundering-herd exhaustion during startup when many threads hit the DB
     simultaneously (scanner backfill burst).
 
+    FIX #8: semaphore_acquired is set to False immediately after any release
+    inside the retry loop or retry-exhaustion path, so the outer except block
+    never performs a double-release that would inflate the semaphore counter
+    above DB_SEMAPHORE_LIMIT.
+
     IMPORTANT: Caller must close the connection when done!
     Better to use `with get_connection() as conn:` context manager.
     """
@@ -191,11 +206,13 @@ def get_conn(sqlite_path: str = "war_machine.db"):
                     print(f"[DB] Connection checkout failed after {attempt + 1} attempts: {e}")
                     if semaphore_acquired:
                         _db_semaphore.release()
-                        semaphore_acquired = False
+                        semaphore_acquired = False  # FIX #8: prevent double-release in outer except
                     raise
 
+            # FIX #8: clear flag before raise so outer except skips the redundant release
             if semaphore_acquired:
                 _db_semaphore.release()
+                semaphore_acquired = False
             raise RuntimeError(
                 f"Connection pool exhausted after {POOL_RETRY_ATTEMPTS} retries: {last_error}"
             )
