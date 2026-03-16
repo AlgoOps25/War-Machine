@@ -133,12 +133,9 @@ ENABLE_WEBSOCKET_FEED = True
 # DISCORD ALERTS
 # ========================================
 
-DISCORD_WEBHOOK_URL = os.getenv('DISCORD_WEBHOOK_URL', '')
+DISCORD_SIGNALS_WEBHOOK_URL = os.getenv('DISCORD_SIGNALS_WEBHOOK_URL', '')
 
-DISCORD_NEWS_WEBHOOK_URL = os.getenv(
-    'DISCORD_NEWS_WEBHOOK_URL',
-    'https://discord.com/api/webhooks/1481012609158479992/3a0xzUeNK4hbWQPW3i_6uRrFeOb_nsOR3HoIOMFhoHwq4yRruEIEQ40aULSoRKPQvIhQ'
-)
+DISCORD_NEWS_WEBHOOK_URL = os.getenv('DISCORD_NEWS_WEBHOOK_URL', '')
 
 # ========================================
 # BASELINE SCANNER CONFIGURATION
@@ -263,18 +260,18 @@ COOLDOWN_OPPOSITE_DIRECTION = 15
 
 # Hard-required: missing any of these = immediate sys.exit(1) before market open
 _REQUIRED_VARS = [
-    ("EODHD_API_KEY",              "Market data feed (EODHD WebSocket + REST)"),
-    ("DATABASE_URL",               "PostgreSQL analytics DB"),
-    ("DISCORD_WEBHOOK_URL",        "Primary signals Discord channel"),
-    ("DISCORD_ALERTS_WEBHOOK_URL", "Performance alerts Discord channel"),
-    ("DISCORD_EXIT_WEBHOOK_URL",   "Position exit alerts Discord channel"),
+    ("EODHD_API_KEY",                  "Market data feed (EODHD WebSocket + REST)"),
+    ("DATABASE_URL",                   "PostgreSQL analytics DB"),
+    ("DISCORD_SIGNALS_WEBHOOK_URL",    "Primary signals Discord channel"),
+    ("DISCORD_PERFORMANCE_WEBHOOK_URL","Performance alerts Discord channel"),
+    ("DISCORD_EXIT_WEBHOOK_URL",       "Position exit alerts Discord channel"),
 ]
 
 # Soft-required: missing = WARNING in logs, system continues degraded
 _OPTIONAL_VARS = [
-    ("REGIME_WEBHOOK_URL",     "SPY+QQQ regime visual channel"),
-    ("TRADIER_API_KEY",        "Options data (Greeks / chain)"),
-    ("UNUSUAL_WHALES_API_KEY", "Dark pool / UOA flow data"),
+    ("DISCORD_REGIME_WEBHOOK_URL", "SPY+QQQ regime visual channel"),
+    ("TRADIER_API_KEY",            "Options data (Greeks / chain)"),
+    ("UNUSUAL_WHALES_API_KEY",     "Dark pool / UOA flow data"),
 ]
 
 
@@ -299,18 +296,18 @@ def validate_required_env_vars() -> None:
         value = os.getenv(var, "").strip()
         if value:
             masked = value[:6] + "..." if len(value) > 6 else "***"
-            print(f"  ✅ {var:<36} {masked}", flush=True)
+            print(f"  ✅ {var:<40} {masked}", flush=True)
         else:
-            print(f"  ❌ {var:<36} MISSING  ← {description}", flush=True)
+            print(f"  ❌ {var:<40} MISSING  ← {description}", flush=True)
             missing_required.append(var)
 
     for var, description in _OPTIONAL_VARS:
         value = os.getenv(var, "").strip()
         if value:
             masked = value[:6] + "..." if len(value) > 6 else "***"
-            print(f"  ✅ {var:<36} {masked}", flush=True)
+            print(f"  ✅ {var:<40} {masked}", flush=True)
         else:
-            print(f"  ⚠️  {var:<35} not set  ({description})", flush=True)
+            print(f"  ⚠️  {var:<39} not set  ({description})", flush=True)
 
     print("=" * 62, flush=True)
 

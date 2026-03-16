@@ -511,7 +511,7 @@ def _send_to_discord(payload: Dict):
     or outage never blocks the scan loop. The caller always returns
     immediately. Errors are caught and logged inside the thread.
     """
-    webhook_url = (config.DISCORD_WEBHOOK_URL or "").strip().rstrip("\n").rstrip("\r")
+    webhook_url = (config.DISCORD_SIGNALS_WEBHOOK_URL or "").strip().rstrip("\n").rstrip("\r")
 
     if not webhook_url:
         print("[DISCORD] ❌ No webhook URL configured.")
@@ -535,9 +535,9 @@ def _send_to_discord(payload: Dict):
 
 def test_webhook():
     """Call once at startup to verify Discord is working."""
-    webhook_url = (config.DISCORD_WEBHOOK_URL or "").strip()
+    webhook_url = (config.DISCORD_SIGNALS_WEBHOOK_URL or "").strip()
     if not webhook_url:
-        print("[DISCORD] ❌ DISCORD_WEBHOOK_URL is empty!")
+        print("[DISCORD] ❌ DISCORD_SIGNALS_WEBHOOK_URL is empty!")
         return False
     
     print(f"[DISCORD] URL length: {len(webhook_url)} chars")

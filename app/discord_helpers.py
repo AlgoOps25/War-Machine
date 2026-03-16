@@ -1,6 +1,6 @@
 # app/discord_helpers.py
 # Centralized Discord messaging helpers for War Machine.
-# Reads DISCORD_WEBHOOK_URL (and optional channel-specific overrides) from env.
+# Reads DISCORD_SIGNALS_WEBHOOK_URL (and optional channel-specific overrides) from env.
 # All functions are fire-and-forget: errors are logged but never raised,
 # so a Discord outage never crashes the trading system.
 
@@ -11,9 +11,9 @@ import requests
 logger = logging.getLogger(__name__)
 
 # ── Webhook URLs ──────────────────────────────────────────────────────────────
-_DEFAULT_WEBHOOK = os.environ.get("DISCORD_WEBHOOK_URL", "")
-_ALERTS_WEBHOOK  = os.environ.get("DISCORD_ALERTS_WEBHOOK_URL", _DEFAULT_WEBHOOK)
-_EXIT_WEBHOOK    = os.environ.get("DISCORD_EXIT_WEBHOOK_URL",   _DEFAULT_WEBHOOK)
+_DEFAULT_WEBHOOK = os.environ.get("DISCORD_SIGNALS_WEBHOOK_URL", "")
+_ALERTS_WEBHOOK  = os.environ.get("DISCORD_PERFORMANCE_WEBHOOK_URL", _DEFAULT_WEBHOOK)
+_EXIT_WEBHOOK    = os.environ.get("DISCORD_EXIT_WEBHOOK_URL",        _DEFAULT_WEBHOOK)
 
 _TIMEOUT = 5  # seconds
 
@@ -42,7 +42,7 @@ def send_simple_message(message: str, webhook_url: str = None) -> bool:
 
     Args:
         message:     The text to send.
-        webhook_url: Override webhook. Falls back to DISCORD_WEBHOOK_URL env var.
+        webhook_url: Override webhook. Falls back to DISCORD_SIGNALS_WEBHOOK_URL env var.
 
     Returns:
         True if the message was delivered successfully.
@@ -53,7 +53,7 @@ def send_simple_message(message: str, webhook_url: str = None) -> bool:
 
 def send_alert(message: str, webhook_url: str = None) -> bool:
     """
-    Send an alert message (uses DISCORD_ALERTS_WEBHOOK_URL if set).
+    Send an alert message (uses DISCORD_PERFORMANCE_WEBHOOK_URL if set).
     """
     url = webhook_url or _ALERTS_WEBHOOK
     return _post(url, {"content": str(message)})
