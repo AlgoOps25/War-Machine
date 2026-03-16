@@ -63,6 +63,11 @@ FIX #9 (MAR 15, 2026) — check_exits T1/T2 RACE VIA STALE CACHE:
     on the same position in the same loop iteration.
     Fix: after _scale_out() call, re-fetch t1_hit live from DB before checking
     the T2 condition, ensuring mutual exclusivity between T1 scale and T2 close.
+
+FIX #10 (MAR 16, 2026) — UNICODE SURROGATE PAIRS:
+  - \ud83d\udd04 (rotate/🔄) and \ud83d\udea8 (siren/🚨) were stored as broken
+    surrogate pairs, causing UnicodeEncodeError on Railway stdout.
+    Replaced with correct 4-byte codepoints \U0001f504 and \U0001f6a8.
 """
 from utils import config
 from datetime import datetime, timedelta
@@ -252,7 +257,7 @@ class PositionManager:
             ]
             if self.positions:
                 tickers = ", ".join(p["ticker"] for p in self.positions)
-                print(f"[RISK] \ud83d\udd04 Reloaded {len(self.positions)} open position(s) "
+                print(f"[RISK] \U0001f504 Reloaded {len(self.positions)} open position(s) "
                       f"from DB after restart: {tickers}")
             else:
                 print("[RISK] \u2705 No open positions to reload \u2014 clean session start")
@@ -965,12 +970,10 @@ class PositionManager:
                 print(f"[POSITION] Discord exit alert failed: {e}")
 
             # FIX #8: use real session P&L from DB (cache already busted above)
-            # — previously passed only this trade's final_pnl which could show
-            # a false positive on a day with prior losses.
             session_stats = self.get_daily_stats()
             breached, reason = self.check_circuit_breaker(stats=session_stats)
             if breached:
-                print(f"\n[RISK] \ud83d\udea8 {reason}")
+                print(f"\n[RISK] \U0001f6a8 {reason}")
                 print("[RISK] No new positions will be opened until next session\n")
         finally:
             if conn:
@@ -989,7 +992,7 @@ class PositionManager:
         self.consecutive_wins = 0
         self.consecutive_losses = 0
         self.performance_multiplier = 1.0
-        print("[POSITION] \ud83d\udd04 EOD streak reset \u2014 performance_multiplier \u2192 1.0x for next session")
+        print("[POSITION] \U0001f504 EOD streak reset \u2014 performance_multiplier \u2192 1.0x for next session")
         # ─────────────────────────────────────────────────────────────────────
 
 
@@ -1190,7 +1193,7 @@ class PositionManager:
 
         # FIX #7: pre-compute label — backslashes inside f-string expressions
         # are a SyntaxError on Python 3.10 (Railway runtime).
-        cb_label = "\ud83d\udea8 TRIGGERED" if circuit_breached else "\u2705 OK"
+        cb_label = "\U0001f6a8 TRIGGERED" if circuit_breached else "\u2705 OK"
 
         summary = "\n" + "="*60 + "\n"
         summary += "RISK MANAGEMENT SUMMARY\n"
