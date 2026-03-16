@@ -51,6 +51,14 @@ PHASE 1.28 (Mar 14, 2026) — Bug Fix:
     Changed: from app.analytics import technical_indicators as ti
          To: from app.indicators import technical_indicators as ti
 
+PHASE 1.29 (Mar 16, 2026) — Bug Fix:
+  - Fix P1: validate_signal_for_options() now accepts explosive_mover=False kwarg.
+    sniper.py passes explosive_mover=True for explosive mover tickers, but the
+    method signature didn't include it — raising TypeError (unexpected keyword
+    argument 'explosive_mover') on every explosive mover scan cycle (e.g. AXTI).
+    The param is accepted and ignored for now; future logic can leverage it to
+    relax IV/theta thresholds for high-RVOL tickers.
+
 VALIDATION CONFIGURATION:
   • Minimum Final Confidence: 50% (configurable via min_final_confidence)
   • Minimum ADX: 15.0 (VIX-aware dynamic threshold, was 25.0)
@@ -766,8 +774,21 @@ class OptionsFilter:
         return best_option
 
     def validate_signal_for_options(self, ticker, direction, entry_price,
-                                    target_price, stop_price=0.0) -> Tuple[bool, Optional[Dict], str]:
-        """Validate signal for options trading."""
+                                    target_price, stop_price=0.0,
+                                    explosive_mover=False) -> Tuple[bool, Optional[Dict], str]:
+        """
+        Validate signal for options trading.
+
+        Args:
+            ticker: Ticker symbol
+            direction: 'bull' or 'bear'
+            entry_price: Signal entry price
+            target_price: Signal target price
+            stop_price: Signal stop price (optional)
+            explosive_mover: True when called from explosive mover path (RVOL >= 3x).
+                             Currently accepted and ignored; reserved for future use
+                             to relax IV/theta thresholds on high-RVOL tickers.
+        """
         best_strike = self.find_best_strike(ticker, direction, entry_price, target_price, stop_price=stop_price)
         if not best_strike:
             return False, None, "No suitable options found"
