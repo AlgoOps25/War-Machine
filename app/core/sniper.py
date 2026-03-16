@@ -811,13 +811,6 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         mtf_result=mtf_result, metadata=_meta
     )
 
-    # ── FIX #15: Register cooldown in DB after signal is armed ───────────────
-    # Persisted to signal_cooldowns table so restarts cannot re-fire the same signal.
-    try:
-        set_cooldown(ticker, direction, signal_type)
-    except Exception as _cd_set_err:
-        print(f"[{ticker}] [COOLDOWN] Set error (non-fatal): {_cd_set_err}")
-
     return True
 
 def _get_or_threshold(spy_regime) -> float:

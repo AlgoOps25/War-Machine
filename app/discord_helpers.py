@@ -351,7 +351,7 @@ def send_options_signal_alert(
         max_entry = options_data.get("max_entry", ask or 0)
         
         fields.append({
-            "name": "Recommended Contract",
+            "name": "Recommended Contract [est — pre-confirmation]",
             "value": (
                 f"**{option_side}** @ **${strike}**\n"
                 f"{dte} DTE  •  Δ **{delta:.2f}**  •  IV **{iv*100:.0f}%**"
