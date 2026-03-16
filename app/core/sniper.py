@@ -49,6 +49,11 @@
 #     across Railway restarts (cooldown persisted to signal_cooldowns DB table).
 #   - set_cooldown(ticker, direction, signal_type) called after arm_ticker() succeeds
 #     so the 30-min same-direction / 15-min reversal window is registered in DB.
+#
+# CLEANUP (Mar 16 2026):
+#   - Removed app.ml.ml_signal_scorer_v2 import + ML_SCORER_ENABLED flag (module deleted,
+#     ml_signal_scorer.py was OFFLINE; scorer was never active in production).
+#   - ml_boost stays hardcoded to 0.0 in confidence formula — no behavior change.
 import traceback
 from datetime import datetime, time, timedelta
 from utils.time_helpers import _now_et, _bar_time, _strip_tz
@@ -184,17 +189,6 @@ except ImportError as e:
     print(f"[SNIPER] ⚠️  SPY EMA context disabled: {e}")
     def get_market_regime(force_refresh=False): return {"label": "UNKNOWN", "score_adj": 0}
     def print_market_regime(r, ticker=""): pass
-
-
-# ── ML Signal Scorer V2 ───────────────────────────────────────────────────────
-try:
-    from app.ml.ml_signal_scorer_v2 import get_scorer_v2
-    ML_SCORER_ENABLED = True
-    print("[SNIPER] ✅ ML Signal Scorer V2 enabled")
-except ImportError as e:
-    ML_SCORER_ENABLED = False
-    print(f"[SNIPER] ⚠️  ML scorer disabled: {e}")
-    def get_scorer_v2(): return None
 
 # ══════════════════════════════════════════════════════════════════════════════
 # FIX #1: THREAD-SAFE STATE MANAGEMENT
@@ -608,37 +602,6 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
 
     ml_boost = 0.0
     _meta = get_ticker_screener_metadata(ticker)
-
-    if ML_SCORER_ENABLED:
-        try:
-            scorer = get_scorer_v2()
-            if scorer:
-                _meta = get_ticker_screener_metadata(ticker)
-                ml_signal_data = {
-                    'confidence':            base_confidence,
-                    'rvol':                  _meta.get('rvol', 1.0),
-                    'score':                 _meta.get('score', 50),
-                    'mtf_convergence':       mtf_result.get('convergence', False),
-                    'mtf_convergence_count': len(mtf_result.get('timeframes', [])),
-                    'direction':             direction,
-                    'signal_type':           signal_type,
-                    'entry_price':           entry_price,
-                    'bars':                  bars_session,
-                    'ticker_win_rate':       _TICKER_WIN_CACHE.get(ticker, 0.40),
-                    'spy_regime':            float(spy_regime.get('score_adj', 0)) / 100.0 if spy_regime else 0.0,
-                }
-                ml_prob = scorer.score_signal(ml_signal_data)
-                threshold = scorer.threshold
-                ml_emoji = "✅" if ml_prob >= threshold else ("⏭️" if ml_prob < 0 else "❌")
-                print(f"[{ticker}] {ml_emoji} ML SCORE: {ml_prob:.3f} (threshold={threshold:.3f})")
-                if ml_prob >= 0 and ml_prob < threshold:
-                    print(f"[{ticker}] 🚫 ML GATE: signal dropped (prob={ml_prob:.3f} < {threshold:.3f})")
-                    return False
-                if ml_prob >= threshold:
-                    ml_boost = (ml_prob - 0.50) * 0.10
-                    print(f"[{ticker}] ML CONF BOOST: {ml_boost:+.3f} → {base_confidence + ml_boost:.3f}")
-        except Exception as ml_err:
-            print(f"[{ticker}] ML scorer error (non-fatal): {ml_err}")
 
     options_rec = _pre_options_data
     if _pre_options_data and _pre_options_data.get("gex_data"):
