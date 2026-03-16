@@ -125,15 +125,12 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeou
 from datetime import datetime, time as dtime
 from zoneinfo import ZoneInfo
 from utils import config
-
+# Scanner optimizer caches (moved from scanner_optimizer.py)
+_last_logged_interval = None
+_last_logged_watchlist_size = None
 from app.data.data_manager import data_manager
 from app.data.ws_feed import start_ws_feed, subscribe_tickers, set_backfill_complete
 from app.data.ws_quote_feed import start_quote_feed, subscribe_quote_tickers
-from app.core.scanner_optimizer import (
-    get_adaptive_scan_interval,
-    should_scan_now,
-    calculate_optimal_watchlist_size
-)
 from app.screening.watchlist_funnel import (
     get_current_watchlist,
     get_watchlist_with_metadata,
@@ -413,6 +410,92 @@ def is_market_hours():
         return False
     return config.MARKET_OPEN <= now.time() <= config.MARKET_CLOSE
 
+def get_adaptive_scan_interval() -> int:
+    """
+    CFW6 OPTIMIZATION: Scan more frequently during high-activity periods.
+
+    OR Formation    (9:30-9:40):   5 seconds — capture every bar, no sleep during BOS build
+    Post-OR Active  (9:40-11:00):  45 seconds
+    Midday Chop     (11:00-14:00): 180 seconds
+    Afternoon Setup (14:00-15:30): 60 seconds
+    Power Hour      (15:30-16:00): 45 seconds
+    Outside market:                300 seconds
+    """
+    global _last_logged_interval
+
+    # Use local ET time (scanner.py already has ZoneInfo + datetime imports)
+    now = datetime.now(ZoneInfo("America/New_York")).time()
+
+    if dtime(9, 30) <= now < dtime(9, 40):
+        interval = 5
+        label = "OR Formation (BOS build)"
+    elif dtime(9, 40) <= now < dtime(11, 0):
+        interval = 45
+        label = "Post-OR Morning"
+    elif dtime(11, 0) <= now < dtime(14, 0):
+        interval = 180
+        label = "Midday Chop"
+    elif dtime(14, 0) <= now < dtime(15, 30):
+        interval = 60
+        label = "Afternoon Activity"
+    elif dtime(15, 30) <= now < dtime(16, 0):
+        interval = 45
+        label = "Power Hour"
+    else:
+        interval = 300
+        label = "Outside Market Hours"
+
+    if interval != _last_logged_interval:
+        print(f"[SCANNER] {label} -> Scanning every {interval}s")
+        _last_logged_interval = interval
+
+    return interval
+
+
+def should_scan_now() -> bool:
+    """
+    CFW6 RULE: Scan during 9:30-9:40 ET at high frequency so BOS+FVG can be
+    built from OR bars in real time.
+
+    Returns True during 9:30-16:00 ET on weekdays.
+    """
+    now = datetime.now(ZoneInfo("America/New_York"))
+    if now.weekday() >= 5:
+        return False
+    t = now.time()
+    return dtime(9, 30) <= t <= dtime(16, 0)
+
+
+def calculate_optimal_watchlist_size() -> int:
+    """
+    Adjust watchlist size by time of day.
+
+    OR window     (9:30-9:40):  30 tickers
+    Early morning (9:40-10:30): 30 tickers
+    Mid-session   (10:30-15:00): 50 tickers
+    Late day      (15:00-16:00): 35 tickers
+    Default:                     40 tickers
+    """
+    global _last_logged_watchlist_size
+
+    now = datetime.now(ZoneInfo("America/New_York")).time()
+
+    if dtime(9, 30) <= now < dtime(9, 40):
+        size = 30
+    elif dtime(9, 40) <= now < dtime(10, 30):
+        size = 30
+    elif dtime(10, 30) <= now < dtime(15, 0):
+        size = 50
+    elif dtime(15, 0) <= now <= dtime(16, 0):
+        size = 35
+    else:
+        size = 40
+
+    if size != _last_logged_watchlist_size:
+        print(f"[SCANNER] Watchlist size adjusted to {size} tickers")
+        _last_logged_watchlist_size = size
+
+    return size
 
 def _is_or_window():
     """True during 9:30-9:39:59 ET — OR formation / BOS+FVG build window."""
