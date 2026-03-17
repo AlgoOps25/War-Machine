@@ -66,6 +66,11 @@ PHASE 1.30 (MAR 16, 2026):
   - FIX: Remove dead sniper_stubs fallback. sniper_stubs was deprecated;
     the try/except was masking the real numpy/libstdc++ ImportError with
     a confusing ModuleNotFoundError. Hard raise now surfaces real error.
+
+PHASE 1.31 (MAR 17, 2026):
+  - FIX: Correct discord_helpers import path.
+    Was: from app.discord_helpers import send_simple_message
+    Now: from app.notifications.discord_helpers import send_simple_message
 """
 from app.core.health_server import start_health_server, health_heartbeat
 
@@ -474,7 +479,8 @@ def start_scanner_loop():
     from app.core.sniper import process_ticker, clear_armed_signals, clear_watching_signals, _orb_classifications
     logger.info("[SCANNER] ✅ process_ticker loaded from sniper.py (CFW6 engine active)")
 
-    from app.discord_helpers import send_simple_message
+    # ── PHASE 1.31: Correct import path for send_simple_message ─────────────────
+    from app.notifications.discord_helpers import send_simple_message
 
     try:
         from app.ai.ai_learning import learning_engine
@@ -485,7 +491,7 @@ def start_scanner_loop():
 
     # ── STARTUP BANNER ────────────────────────────────────────────────────────────────
     print("=" * 60, flush=True)
-    print("WAR MACHINE CFW6 SCANNER v1.30 - STARTUP", flush=True)
+    print("WAR MACHINE CFW6 SCANNER v1.31 - STARTUP", flush=True)
     print("=" * 60, flush=True)
     print("✓ REGIME-FILTER  VIX/SPY regime detection active", flush=True)
     print("=" * 60, flush=True)
@@ -560,6 +566,7 @@ def start_scanner_loop():
     print("Env Var Guard:   ✅ ENABLED (validate_required_env_vars — Phase 1.28)", flush=True)
     print("DB Checkout Fix: ✅ FIXED   (single get_session_status per cycle — Phase 1.29)", flush=True)
     print("Sniper Import:   ✅ FIXED   (hard import, no dead stubs fallback — Phase 1.30)", flush=True)
+    print("Discord Import:  ✅ FIXED   (app.notifications.discord_helpers — Phase 1.31)", flush=True)
     print("=" * 60 + "\n", flush=True)
 
     _booting_into_market_hours = is_market_hours()
@@ -583,8 +590,8 @@ def start_scanner_loop():
 
     try:
         send_simple_message(
-            f"⚔️ WAR MACHINE ONLINE — CFW6 v1.30 | "
-            f"{'Resuming intraday' if _booting_into_market_hours else 'OR window active'} | Phase 1.30"
+            f"⚔️ WAR MACHINE ONLINE — CFW6 v1.31 | "
+            f"{'Resuming intraday' if _booting_into_market_hours else 'OR window active'} | Phase 1.31"
         )
     except Exception as e:
         logger.warning(f"[SCANNER] Discord unavailable: {e}")
