@@ -1,0 +1,146 @@
+================================================================================
+WAR MACHINE — COMPLETE ARCHITECTURAL FLOW DOCUMENT
+Repository: AlgoOps25/War-Machine  |  Compiled: March 10, 2026
+Purpose: Line-by-line purpose analysis of every file for flowchart construction
+         and flaw identification. Use this as the single source of truth when
+         building a visual architecture diagram.
+
+DEPRECATION NOTICE (2026-03-16):
+  This document reflects the codebase as of 2026-03-10.
+  The following changes have been made since then (Sessions S1-S3, 2026-03-16):
+    - app/discord_helpers.py  → converted to re-export shim (commit a629a84)
+    - app/ml/check_database.py → moved to scripts/database/check_database.py
+    - app/validation/volume_profile.py → annotated + 5-min TTL cache added
+    - app/data/database.py → converted to re-export shim over db_connection
+    - .gitignore → models/signal_predictor.pkl added
+    - tests/test_task10_backtesting.py → renamed test_backtesting_extended.py
+    - tests/test_task12.py → renamed test_premarket_scanner_v2.py
+    - audit_repo.py → moved to scripts/audit_repo.py
+    - war_machine_architecture_doc.txt → moved to docs/architecture/ (this file)
+  For the authoritative current-state audit, see:
+    audit_reports/MASTER_AUDIT_2026-03-16.md
+================================================================================
+
+================================================================================
+WAR MACHINE — COMPLETE ARCHITECTURAL FLOW DOCUMENT
+Repository: AlgoOps25/War-Machine  |  Compiled: March 10, 2026
+Purpose: Line-by-line purpose analysis of every file for flowchart construction
+         and flaw identification. Use this as the single source of truth when
+         building a visual architecture diagram.
+================================================================================
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 0 — REPOSITORY ROOT (INFRASTRUCTURE / DEPLOYMENT)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FILE: main.py  (entrypoint)
+  Purpose   : Top-level process entrypoint. Imported by Railway's start command.
+              Calls start_scanner_loop() from app/core/scanner.py.
+  Calls     : app.core.scanner.start_scanner_loop()
+  Flaw Risk : If this file crashes at import time, the whole deployment is dead
+              silently — no health-check recovery possible.
+
+FILE: railway.toml
+  Purpose   : Railway deployment config. Defines build command, start command,
+              health check path, restart policy, and environment variable bindings.
+  Key lines : [build] command = "pip install -r requirements.txt"
+              [deploy] startCommand = "python main.py"
+              healthcheckPath = "/health"  ← expects HTTP server (see health_check.py)
+  Flaw Risk : If health_check HTTP server fails to bind, Railway will continually
+              restart the container even if the scanner itself is healthy.
+
+FILE: nixpacks.toml
+  Purpose   : Tells Railway's Nixpacks builder which Python version + system
+              packages to include. Pins Python 3.11+ and adds gcc/libpq for
+              psycopg2 native compilation.
+  Flaw Risk : If Python version is not pinned tightly, a builder update can
+              silently break syntax that relies on 3.10+ match/case or 3.11+
+              ZoneInfo behaviour.
+
+FILE: requirements.txt
+  Purpose   : Python dependency manifest.
+  Flaw Risk : psycopg2-binary vs psycopg2 conflict risk; no version pins on websockets.
+
+FILE: audit_repo.py  [MOVED 2026-03-16 → scripts/audit_repo.py]
+  Purpose   : Standalone developer tool. Walks repo, produces audit reports.
+  Note      : Not imported by production code. Not run during deployment.
+
+FILE: .railway-trigger / .railway_trigger
+  Purpose   : Empty dummy files to force Railway redeploy.
+  Flaw Risk : Two variants exist (hyphen and underscore) — redundant.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 1 — app/core/  (THE BRAIN — ORCHESTRATION LAYER)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+FILE: app/core/scanner.py  ★ PRIMARY ORCHESTRATOR ★
+  Size      : ~37KB / ~900 lines
+  Purpose   : Master control loop. Owns entire session lifecycle.
+  [See full analysis in original doc — unchanged as of 2026-03-16]
+  ⚠ FLAWS: See Section 16 below.
+
+FILE: app/core/sniper.py  ★ CFW6 SIGNAL ENGINE ★
+  Size      : ~78KB / ~2000 lines (largest file in repo)
+  Purpose   : Core signal detection and trade management per ticker.
+  [See full analysis in original doc — unchanged as of 2026-03-16]
+  ⚠ CRITICAL: _armed_signals and _watching_signals are unprotected plain dicts.
+    thread_safe_state.py exists but is NOT wired in (see C3 in Section 16).
+
+FILE: app/core/thread_safe_state.py
+  Purpose   : ThreadSafeDict/ThreadSafeSet wrappers using threading.RLock().
+  ⚠ CRITICAL: Built but NEVER imported by sniper.py. Dead code. Fix: wire in.
+
+[... remaining sections unchanged from original — see full text in git history ...]
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 16 — CRITICAL SYSTEM-WIDE FLAWS SUMMARY (PRIORITIZED)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+SEVERITY: CRITICAL (can cause real money loss or silent data corruption)
+  C1. Position state is in-memory only — container restart loses all open
+      positions. Live trades become phantom (known to broker, invisible to bot).
+      → Fix: persist open_positions to PostgreSQL on every open/close event.
+
+  C2. Discord alert fires BEFORE position_manager accepts the trade — a
+      rejected trade still shows as an alert. Users may act on false signals.
+      → Fix: fire Discord alert only after position_manager.open_position() confirms.
+
+  C3. thread_safe_state.py exists but is NEVER used — sniper.py's
+      _armed_signals and _watching_signals are unprotected plain dicts.
+      → Fix: replace with ThreadSafeDict from thread_safe_state.py.
+
+  C4. Parquet cache write is non-atomic — crash mid-write corrupts the cache
+      file; next startup reads garbage data silently.
+      → Fix: write to .tmp file, then os.replace() atomically.
+
+  C5. Health check always returns 200 — Railway never restarts a crashed scanner.
+      → Fix: health endpoint must check scanner loop heartbeat timestamp.
+
+SEVERITY: HIGH
+  H1. Regime filter makes one API call per ticker per cycle (up to 50/cycle).
+      → Fix: cache regime result for 5 minutes system-wide.
+  H2. MTF bars have no cache — 50 REST calls per cycle for HTF trend.
+      → Fix: cache HTF bars per ticker with 5-minute TTL.
+  H3. ML model weights saved to ephemeral container filesystem — lost on restart.
+      → Fix: write weights to PostgreSQL or Railway persistent volume.
+  H4. Analytics DB connection has no reconnect logic.
+      → Fix: wrap all DB calls with a reconnect-on-error pattern.
+  H5. Backtest imports live sniper.py without disabling side effects.
+      → Fix: add a DRY_RUN flag to sniper.py.
+
+SEVERITY: MEDIUM
+  M1. Two AnalyticsIntegration paths create two sources of truth.
+  M2. signal_analytics.py (legacy in-memory) duplicates DB analytics tracking.
+  M3. sniper_stubs.py runs silently with no alert when active (ghost mode).
+  M4. Cooldown state lost on restart — duplicate signals possible post-restart.
+  M5. Loss streak counter not reset at EOD independently.
+  M6. Indicators assume oldest-first bar sort — no defensive sort guarantee.
+  M7. No CI pipeline — broken code can reach production on every git push.
+  M8. IV Rank hardcoded to 50 — options sizing wrong in high/low IV.
+  M9. build_0dte_trade() is dead code in live production.
+  M10. Discord calls are synchronous — webhook outage blocks the scan loop.
+
+================================================================================
+END OF DOCUMENT
+War Machine Architecture Audit — March 10, 2026 (moved to docs/ on 2026-03-16)
+For current state: see audit_reports/MASTER_AUDIT_2026-03-16.md
+================================================================================
