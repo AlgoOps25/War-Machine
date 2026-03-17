@@ -1,7 +1,7 @@
 # War Machine — Full Repo Audit Registry
 
-> **Purpose:** Master reference for the file-by-file audit of all 336 tracked files.  
-> **Last updated:** 2026-03-16 Session 7 (Batch C)  
+> **Purpose:** Master reference for the file-by-file audit of all tracked files.  
+> **Last updated:** 2026-03-17 Session 8 (Batch D + E)  
 > **Auditor:** Perplexity AI (interactive audit with Michael)  
 > **Status legend:** ✅ KEEP | ⚠️ REVIEW | 🔀 MERGE → target | 🗃️ QUARANTINE | ❌ DELETE | 🔧 FIXED | 📦 MOVED  
 > **Prohibited (runtime-critical) directories:** `app/core`, `app/data`, `app/risk`, `app/signals`, `app/validation`, `app/filters`, `app/mtf`, `app/notifications`, `utils/`, `migrations/`  
@@ -19,9 +19,9 @@
 | S4-S5 | Signal quality metrics deep audit | 7 | ✅ Complete |
 | B | `app/ml`, `app/analytics`, `app/ai` | 27 | ✅ Complete |
 | C | `app/backtesting/`, `scripts/` (all subfolders) | 55 | ✅ Complete |
-| D | `app/screening`, `app/options`, `app/indicators`, `utils/` | ~25 | ⏳ Next |
-| E | `tests/`, `docs/`, `audit_reports/`, `backups/`, `migrations/`, root files | ~50 | ⏳ Pending |
-| Cross-Batch | Overlap analysis across all batches | 336 total | ⏳ Pending |
+| D | `app/screening`, `app/options`, `app/indicators`, `utils/` | 25 | ✅ Complete |
+| E | `tests/`, `docs/`, `migrations/`, `models/`, root files | 30 | ✅ Complete |
+| Cross-Batch | Overlap analysis across all batches | all | ✅ Current |
 
 ---
 
@@ -48,6 +48,7 @@
 | 17 | 2026-03-16 | S6 | `app/ml/train_from_analytics.py` | 📦 MOVED → `scripts/ml/train_from_analytics.py`. CLI tool, not runtime module. | `42126d5` / `2f586e6` | Dev tool in correct location |
 | 18 | 2026-03-16 | S6 | `app/ml/train_historical.py` | 📦 MOVED → `scripts/ml/train_historical.py`. CLI tool, not runtime module. | `42126d5` / `dc9a8db` | Dev tool in correct location |
 | 19 | 2026-03-16 | S7 | `docs/AUDIT_REGISTRY.md` | Batch C complete — all `app/backtesting/` and `scripts/` fully audited. | this commit | Registry current |
+| 20 | 2026-03-17 | S8 | `docs/AUDIT_REGISTRY.md` | Batch D + E complete — screening, options, indicators, utils, tests, docs, root files all audited. | this commit | Registry fully current |
 
 ---
 
@@ -62,14 +63,17 @@
 | 5 | ✅ DONE | `app/ml/analyze_signal_failures.py` | Moved to scripts/analysis/ | ✅ |
 | 6 | ✅ DONE | `app/ml/train_from_analytics.py` | Moved to scripts/ml/ | ✅ |
 | 7 | ✅ DONE | `app/ml/train_historical.py` | Moved to scripts/ml/ | ✅ |
-| 8 | 🟡 MEDIUM | `app/core/eod_reporter.py` | Confirm Discord send of `get_discord_eod_summary()` | ⏳ Batch D |
-| 9 | 🟡 MEDIUM | `app/signals/signal_analytics.py` | Wire `get_hourly_funnel()` into EOD output | ⏳ Batch D |
-| 10 | 🟡 MEDIUM | `app/ml/metrics_cache.py` | Standardize to `db_connection` pool (currently uses raw sqlalchemy) | ⏳ Batch D |
-| 11 | 🟡 LOW | `tests/test_task9_funnel_analytics.py` | Rename → `tests/test_funnel_analytics.py` | ⏳ Batch E |
-| 12 | 🟡 LOW | `scripts/backtesting/backtest_v2_detector.py` | Verify vs `backtest_realistic_detector.py` — possibly superseded | ⏳ Batch E |
-| 13 | 🟢 LOW | `scripts/audit_repo.py` | QUARANTINE — one-time audit script, superseded by this registry | ⏳ Batch E |
+| 8 | 🟡 MEDIUM | `app/core/eod_reporter.py` | Confirm Discord send of `get_discord_eod_summary()` | ⏳ Open |
+| 9 | 🟡 MEDIUM | `app/signals/signal_analytics.py` | Wire `get_hourly_funnel()` into EOD output | ⏳ Open |
+| 10 | 🟡 MEDIUM | `app/ml/metrics_cache.py` | Standardize to `db_connection` pool (currently uses raw sqlalchemy) | ⏳ Open |
+| 11 | 🟡 MEDIUM | `app/indicators/vwap_calculator.py` | Designate canonical VWAP source vs `app/filters/vwap_gate.py` | ⏳ Open |
+| 12 | 🟡 LOW | `scripts/backtesting/backtest_v2_detector.py` | Verify vs `backtest_realistic_detector.py` — possibly superseded | ⏳ Open |
+| 13 | 🟢 LOW | `scripts/audit_repo.py` | QUARANTINE — one-time audit script, superseded by this registry | ⏳ Open |
 | 14 | 🟢 LOW | `models/signal_predictor.pkl` | `git rm --cached` to untrack binary (LOCAL ACTION) | ⏳ Pending |
 | 15 | 🟢 LOW | `models/training_dataset.csv` | `git rm --cached` to untrack CSV (LOCAL ACTION) | ⏳ Pending |
+| 16 | 🟢 LOW | `market_memory.db` | Verify if replaced by PostgreSQL on Railway or still active | ⏳ Open |
+| 17 | 🟢 LOW | `scripts/war_machine.db` | Verify if stale vs root `war_machine.db` | ⏳ Open |
+| 18 | 🟢 LOW | `audit_reports/venv/` | This is a venv accidentally committed inside audit_reports — should be gitignored/removed | ⏳ Open |
 
 ---
 
@@ -105,7 +109,7 @@ No other local-only files found on GitHub. `ws_feed.py.backup`, `discord_helpers
 | `sniper_log.py` | 4.1 KB | Structured logging | `sniper.py` | ✅ KEEP | |
 | `thread_safe_state.py` | 10.8 KB | Thread-safe shared state | `scanner.py`, `sniper.py` | ✅ KEEP | |
 | `analytics_integration.py` | 9.2 KB | Core↔analytics bridge | `scanner.py` | ✅ KEEP | |
-| `eod_reporter.py` | 3.8 KB | EOD cleanup + stats | `scanner.py` | ✅ KEEP ⚠️ | Verify Discord send (Batch D) |
+| `eod_reporter.py` | 3.8 KB | EOD cleanup + stats | `scanner.py` | ✅ KEEP ⚠️ | Verify Discord send (open) |
 | `error_recovery.py` | 17.2 KB | Exception handling | `scanner.py` | ✅ KEEP | |
 | `health_server.py` | 4.5 KB | `/health` endpoint | Railway healthcheck | ✅ KEEP | **PROHIBITED** |
 
@@ -117,94 +121,95 @@ No other local-only files found on GitHub. `ws_feed.py.backup`, `discord_helpers
 
 ### `app/notifications/`
 
-| File | Verdict | Notes |
-|------|---------|-------|
-| `__init__.py` | ✅ KEEP | Re-exports key send functions |
-| `discord_helpers.py` | ✅ KEEP | **CANONICAL** Discord send layer |
+| File | Role | Connected To | Verdict | Notes |
+|------|------|-------------|---------|-------|
+| `__init__.py` | Re-exports key send functions | All callers of `app.notifications` | ✅ KEEP | |
+| `discord_helpers.py` | **CANONICAL** Discord send layer | `sniper.py`, `scanner.py`, `arm_signal.py` | ✅ KEEP | |
 
 ### `app/risk/`
 
-| File | Verdict | Notes |
-|------|---------|-------|
-| `__init__.py` | ✅ KEEP | |
-| `risk_manager.py` | ✅ KEEP | **PROHIBITED** |
-| `position_manager.py` | ✅ KEEP | **PROHIBITED** |
-| `trade_calculator.py` | ✅ KEEP | |
-| `dynamic_thresholds.py` | ✅ KEEP | |
-| `vix_sizing.py` | ✅ KEEP | |
+| File | Role | Connected To | Verdict | Notes |
+|------|------|-------------|---------|-------|
+| `__init__.py` | Package marker | All importers | ✅ KEEP | |
+| `risk_manager.py` | Max loss, daily loss, circuit-breaker rules | `sniper.py`, `scanner.py` | ✅ KEEP | **PROHIBITED** |
+| `position_manager.py` | Open position tracking, exposure limits | `risk_manager.py`, `sniper.py` | ✅ KEEP | **PROHIBITED** |
+| `trade_calculator.py` | Share size, dollar risk, R-multiple math | `sniper.py`, `arm_signal.py` | ✅ KEEP | |
+| `dynamic_thresholds.py` | Volatility-adjusted gate thresholds | `sniper.py`, `risk_manager.py` | ✅ KEEP | |
+| `vix_sizing.py` | VIX-based position scaling | `trade_calculator.py`, `risk_manager.py` | ✅ KEEP | |
 
 **app/risk: 6/6 KEEP.**
 
 ### `app/data/`
 
-| File | Verdict | Notes |
-|------|---------|-------|
-| `__init__.py` | ✅ KEEP | |
-| `database.py` | ✅ SHIM | Re-exports `db_connection.py` |
-| `db_connection.py` | ✅ KEEP | **PROHIBITED** — canonical connection layer |
-| `data_manager.py` | ✅ KEEP | **PROHIBITED** |
-| `candle_cache.py` | ✅ KEEP | |
-| `sql_safe.py` | ✅ KEEP | |
-| `unusual_options.py` | ✅ KEEP | |
-| `ws_feed.py` | ✅ KEEP | **PROHIBITED** — trade ticks |
-| `ws_quote_feed.py` | ✅ KEEP | Distinct — bid/ask quotes |
+| File | Role | Connected To | Verdict | Notes |
+|------|------|-------------|---------|-------|
+| `__init__.py` | Package marker | All importers | ✅ KEEP | |
+| `database.py` | Re-export shim | All legacy callers → `db_connection.py` | ✅ SHIM | |
+| `db_connection.py` | SQLAlchemy pool, connection factory | All DB-accessing modules | ✅ KEEP | **PROHIBITED** — canonical connection layer |
+| `data_manager.py` | EODHD REST + Tradier REST data fetch | `sniper.py`, `scanner.py`, `backtesting/*` | ✅ KEEP | **PROHIBITED** |
+| `candle_cache.py` | In-memory/DB candle TTL cache | `sniper.py`, `bos_fvg_engine.py` | ✅ KEEP | |
+| `sql_safe.py` | SQL parameter sanitization helpers | `db_connection.py`, DB writers | ✅ KEEP | |
+| `unusual_options.py` | Unusual Whales API fetch + parse | `sniper.py`, `options_intelligence.py` | ✅ KEEP | |
+| `ws_feed.py` | Tradier WebSocket — trade tick stream | `scanner.py` | ✅ KEEP | **PROHIBITED** — trade ticks |
+| `ws_quote_feed.py` | Tradier WebSocket — bid/ask quote stream | `scanner.py` | ✅ KEEP | Distinct endpoint from `ws_feed.py` |
 
 **app/data: 9/9 KEEP.**
 
 ### `app/signals/`
 
-| File | Verdict | Notes |
-|------|---------|-------|
-| `__init__.py` | ✅ KEEP | |
-| `breakout_detector.py` | ✅ KEEP | **PROHIBITED** |
-| `opening_range.py` | ✅ KEEP | **PROHIBITED** |
-| `vwap_reclaim.py` | ✅ KEEP | |
-| `signal_analytics.py` | ✅ KEEP | Distinct from `funnel_analytics.py`. Extended S4/S5. |
-| `earnings_eve_monitor.py` | ✅ KEEP | |
+| File | Role | Connected To | Verdict | Notes |
+|------|------|-------------|---------|-------|
+| `__init__.py` | Package marker | All importers | ✅ KEEP | |
+| `breakout_detector.py` | Breakout pattern detection (ORB, range breaks) | `sniper.py` | ✅ KEEP | **PROHIBITED** |
+| `opening_range.py` | Opening range high/low calculation | `breakout_detector.py`, `sniper.py` | ✅ KEEP | **PROHIBITED** |
+| `signal_analytics.py` | Per-signal metrics, rejection breakdown, hourly funnel, EOD summary | `sniper.py`, `analytics_integration.py` | ✅ KEEP | Distinct from `funnel_analytics.py`; extended S4/S5 |
 
 ### `app/filters/`
 
-| File | Verdict | Notes |
-|------|---------|-------|
-| `__init__.py` | ✅ KEEP | |
-| `rth_filter.py` | ✅ KEEP | |
-| `vwap_gate.py` | ✅ KEEP | **CANONICAL VWAP source** |
-| `market_regime_context.py` | ✅ KEEP | |
-| `early_session_disqualifier.py` | ✅ KEEP | |
-| `entry_timing_optimizer.py` | ❌ DELETED (S4) | Duplicate of `entry_timing.py`. `d1821d1` |
-| `liquidity_sweep.py` | ✅ KEEP | |
-| `options_dte_filter.py` | ❌ DELETED (S4) | Superseded by `greeks_precheck.py`. `3abfdd5` |
-| `order_block_cache.py` | ✅ KEEP | |
-| `sd_zone_confluence.py` | ✅ KEEP | |
-| `correlation.py` | ✅ KEEP | |
+| File | Role | Connected To | Verdict | Notes |
+|------|------|-------------|---------|-------|
+| `__init__.py` | Package marker | All importers | ✅ KEEP | |
+| `rth_filter.py` | Regular trading hours gate (9:30–16:00 ET) | `sniper.py` | ✅ KEEP | |
+| `vwap_gate.py` | VWAP calculation + price-vs-VWAP gate | `sniper.py`, `cfw6_confirmation.py` | ✅ KEEP | **CANONICAL VWAP source** |
+| `market_regime_context.py` | Bull/bear/neutral regime classification | `sniper.py`, `dynamic_thresholds.py` | ✅ KEEP | |
+| `early_session_disqualifier.py` | Rejects signals in first ~5 min of session | `sniper.py` | ✅ KEEP | |
+| `entry_timing_optimizer.py` | ❌ DELETED (S4) | — | Duplicate of `entry_timing.py`. `d1821d1` |
+| `liquidity_sweep.py` | Detects stop-hunt liquidity sweeps | `sniper.py`, `smc_engine.py` | ✅ KEEP | |
+| `options_dte_filter.py` | ❌ DELETED (S4) | — | Superseded by `greeks_precheck.py`. `3abfdd5` |
+| `order_block_cache.py` | Caches detected order block zones | `sniper.py`, `bos_fvg_engine.py` | ✅ KEEP | |
+| `sd_zone_confluence.py` | Supply/demand zone confluence scoring | `sniper.py` | ✅ KEEP | |
+| `correlation.py` | Cross-ticker correlation filter | `sniper.py` | ✅ KEEP | |
 
 **app/filters: 9/11 KEEP. 2 DELETED.**
 
 ### `app/mtf/`
 
-| File | Verdict | Notes |
-|------|---------|-------|
-| `__init__.py` | ✅ KEEP | |
-| `bos_fvg_engine.py` | ✅ KEEP | **PROHIBITED** |
-| `mtf_validator.py` | ✅ KEEP | **PROHIBITED** |
-| `mtf_integration.py` | ✅ KEEP | |
-| `mtf_compression.py` | ✅ KEEP | |
-| `mtf_fvg_priority.py` | ✅ KEEP | |
+| File | Role | Connected To | Verdict | Notes |
+|------|------|-------------|---------|-------|
+| `__init__.py` | Package marker + re-exports | All importers | ✅ KEEP | |
+| `bos_fvg_engine.py` | Break-of-structure + fair-value-gap detection | `sniper.py`, `mtf_validator.py` | ✅ KEEP | **PROHIBITED** |
+| `mtf_validator.py` | Multi-timeframe signal validation gate | `sniper.py` | ✅ KEEP | **PROHIBITED** |
+| `mtf_integration.py` | Wires MTF data fetch into validator | `mtf_validator.py`, `data_manager.py` | ✅ KEEP | |
+| `mtf_compression.py` | Compresses lower-TF candles to higher TF | `mtf_integration.py` | ✅ KEEP | |
+| `mtf_fvg_priority.py` | Ranks FVG zones by timeframe priority | `bos_fvg_engine.py`, `sniper.py` | ✅ KEEP | |
+| `smc_engine.py` | Smart money concepts: CHoCH, inducement zones | `sniper.py`, `liquidity_sweep.py` | ✅ KEEP | |
 
-**app/mtf: 6/6 KEEP.**
+**app/mtf: 7/7 KEEP.**
+
+> **Note:** `smc_engine.py` was present in the file list but missing from the prior registry table — added here.
 
 ### `app/validation/`
 
-| File | Verdict | Notes |
-|------|---------|-------|
-| `__init__.py` | ✅ KEEP | |
-| `validation.py` | ✅ KEEP | **PROHIBITED** |
-| `cfw6_gate_validator.py` | ✅ KEEP | **PROHIBITED** |
-| `cfw6_confirmation.py` | 🔧 FIXED (S0) | VWAP formula corrected. `95be3ae` |
-| `greeks_precheck.py` | ✅ KEEP | Supersedes deleted `options_dte_filter.py` |
-| `hourly_gate.py` | ✅ KEEP | |
-| `entry_timing.py` | ✅ KEEP | Canonical — `entry_timing_optimizer.py` was duplicate |
-| `volume_profile.py` | ✅ KEEP | Distinct from `app/indicators/volume_profile.py` |
+| File | Role | Connected To | Verdict | Notes |
+|------|------|-------------|---------|-------|
+| `__init__.py` | Package marker | All importers | ✅ KEEP | |
+| `validation.py` | Master validation orchestrator | `sniper.py` | ✅ KEEP | **PROHIBITED** |
+| `cfw6_gate_validator.py` | CFW6 confirmation gate | `validation.py`, `sniper.py` | ✅ KEEP | **PROHIBITED** |
+| `cfw6_confirmation.py` | CFW6 confirmation signals | `cfw6_gate_validator.py` | 🔧 FIXED (S0) | VWAP formula corrected. `95be3ae` |
+| `greeks_precheck.py` | Options Greeks pre-validation (delta, IV, OI) | `validation.py`, `options_intelligence.py` | ✅ KEEP | Supersedes deleted `options_dte_filter.py` |
+| `hourly_gate.py` | Hourly session quality gate | `sniper.py` | ✅ KEEP | |
+| `entry_timing.py` | Entry timing window validator | `validation.py`, `sniper.py` | ✅ KEEP | Canonical — duplicate deleted (S4) |
+| `volume_profile.py` | Intrabar volume profile validation (5-min TTL cache) | `validation.py` | ✅ KEEP | Distinct from `app/indicators/volume_profile.py` |
 
 **app/validation: 7/7 active KEEP. 1 FIXED.**
 
@@ -216,49 +221,43 @@ No other local-only files found on GitHub. `ws_feed.py.backup`, `discord_helpers
 
 ### `app/ml/` — 6 active files (was 9)
 
-| File | Verdict | Notes |
-|------|---------|-------|
-| `__init__.py` | ✅ KEEP | |
-| `README.md` | ✅ KEEP | Dev reference |
-| `INTEGRATION.md` | ✅ KEEP | Wiring guide |
-| `ml_trainer.py` | ✅ KEEP | RF/GBM training engine — called by `scripts/ml/train_historical.py` |
-| `ml_confidence_boost.py` | ✅ KEEP | Applies ML delta to confidence — wired via `signal_boosters.py` |
-| `metrics_cache.py` | ✅ KEEP ⚠️ | Rolling per-ticker win rate. **Flagged:** uses raw sqlalchemy vs `db_connection` pool |
-| `analyze_signal_failures.py` | 📦 MOVED (S6) | → `scripts/analysis/`. Zero import callers. `42126d5` / `f6254b5` |
-| `train_from_analytics.py` | 📦 MOVED (S6) | → `scripts/ml/`. CLI tool. `42126d5` / `2f586e6` |
-| `train_historical.py` | 📦 MOVED (S6) | → `scripts/ml/`. CLI tool. `42126d5` / `dc9a8db` |
+| File | Role | Connected To | Verdict | Notes |
+|------|------|-------------|---------|-------|
+| `__init__.py` | Package marker | All importers | ✅ KEEP | |
+| `README.md` | ML module documentation | Dev reference | ✅ KEEP | |
+| `INTEGRATION.md` | ML wiring guide | Dev reference | ✅ KEEP | |
+| `ml_trainer.py` | RF/GBM model training engine | `scripts/ml/train_historical.py`, `historical_trainer.py` | ✅ KEEP | |
+| `ml_confidence_boost.py` | Applies ML delta to signal confidence score | `sniper.py` via `signal_boosters.py` | ✅ KEEP | |
+| `metrics_cache.py` | Rolling per-ticker win rate cache | `sniper.py`, `ml_confidence_boost.py` | ✅ KEEP ⚠️ | **Flagged:** uses raw sqlalchemy vs `db_connection` pool |
+| `analyze_signal_failures.py` | 📦 MOVED (S6) | → `scripts/analysis/` | Zero import callers. `42126d5` / `f6254b5` |
+| `train_from_analytics.py` | 📦 MOVED (S6) | → `scripts/ml/` | CLI tool. `42126d5` / `2f586e6` |
+| `train_historical.py` | 📦 MOVED (S6) | → `scripts/ml/` | CLI tool. `42126d5` / `dc9a8db` |
 
 **app/ml: 6/9 active KEEP. 3 MOVED to scripts/.**
 
-### `app/analytics/` — 14 files, all KEEP
+### `app/analytics/`
 
-| File | Verdict | Notes |
-|------|---------|-------|
-| `__init__.py` | ✅ KEEP | Re-exports |
-| `VOLUME_INDICATORS_README.md` | ✅ KEEP | Dev reference |
-| `performance_monitor.py` | ✅ KEEP | P&L metrics, Sharpe, drawdown |
-| `performance_alerts.py` | ✅ KEEP | Discord alert triggers — distinct from monitor |
-| `funnel_analytics.py` | ✅ KEEP | **CANONICAL** funnel DB tracker |
-| `funnel_tracker.py` | ✅ KEEP (shim) | CI fallback shim over `funnel_analytics.py` — cannot remove without Batch E test refactor |
-| `ab_test_framework.py` | ✅ KEEP | **CANONICAL** A/B test engine |
-| `ab_test.py` | ✅ KEEP (shim) | CI fallback shim over `ab_test_framework.py` — cannot remove without Batch E test refactor |
-| `explosive_mover_tracker.py` | ✅ KEEP | **CANONICAL** explosive move tracker |
-| `explosive_tracker.py` | ✅ KEEP (shim) | Re-export shim — `sniper.py` PROHIBITED imports from this path |
-| `cooldown_tracker.py` | ✅ KEEP | Per-ticker cooldown enforcement |
-| `grade_gate_tracker.py` | ✅ KEEP | Grade-level gate tracking |
-| `target_discovery.py` | ✅ KEEP | Price target/TP zone analysis |
-| `eod_discord_report.py` | ✅ KEEP | EOD Discord embed builder — distinct from `eod_reporter.py` |
+| File | Role | Connected To | Verdict | Notes |
+|------|------|-------------|---------|-------|
+| `__init__.py` | Re-exports | All callers | ✅ KEEP | |
+| `performance_monitor.py` | Live P&L metrics — Sharpe, drawdown, win rate | `analytics_integration.py`, `eod_reporter.py` | ✅ KEEP | Distinct from backtesting `performance_metrics.py` |
+| `funnel_analytics.py` | **CANONICAL** funnel DB tracker (SCANNED → TRADED stages) | `sniper.py`, `analytics_integration.py` | ✅ KEEP | |
+| `funnel_tracker.py` | CI fallback shim over `funnel_analytics.py` | `tests/test_funnel_analytics.py` | ✅ KEEP (shim) | Cannot remove without Batch E test refactor |
+| `ab_test_framework.py` | **CANONICAL** A/B test engine for strategy variants | `analytics_integration.py` | ✅ KEEP | |
+| `ab_test.py` | CI fallback shim over `ab_test_framework.py` | `tests/test_integrations.py` | ✅ KEEP (shim) | Cannot remove without test refactor |
+| `explosive_mover_tracker.py` | **CANONICAL** explosive move tracker | `sniper.py` | ✅ KEEP | |
+| `explosive_tracker.py` | Re-export shim — `sniper.py` PROHIBITED imports from this path | `sniper.py` (legacy import path) | ✅ KEEP (shim) | |
+| `cooldown_tracker.py` | Per-ticker trade cooldown enforcement | `sniper.py`, `arm_signal.py` | ✅ KEEP | |
+| `grade_gate_tracker.py` | Grade-level gate tracking (A/B/C grade signals) | `sniper.py`, `analytics_integration.py` | ✅ KEEP | |
 
-**app/analytics: 14/14 KEEP. All 3 overlap pairs confirmed as intentional shim patterns.**
+**app/analytics: 10/10 KEEP. All overlap pairs are intentional shim patterns.**
 
-> **Shim consolidation note:** All 4 shims (`discord_helpers.py`, `explosive_tracker.py`, `funnel_tracker.py`, `ab_test.py`) have been confirmed **unmergeable at this time** without touching PROHIBITED files or breaking CI test imports. Schedule consolidation in Batch E when test files are in scope.
+### `app/ai/`
 
-### `app/ai/` — 2 files, all KEEP
-
-| File | Verdict | Notes |
-|------|---------|-------|
-| `__init__.py` | ✅ KEEP | |
-| `ai_learning.py` | ✅ KEEP | **CANONICAL** confidence engine. `compute_confidence()` uses timeframe multiplier. |
+| File | Role | Connected To | Verdict | Notes |
+|------|------|-------------|---------|-------|
+| `__init__.py` | Package marker | All importers | ✅ KEEP | |
+| `ai_learning.py` | **CANONICAL** confidence engine. `compute_confidence()` uses timeframe multiplier. | `sniper.py`, `ml_confidence_boost.py` | ✅ KEEP | |
 
 **app/ai: 2/2 KEEP.**
 
@@ -266,200 +265,244 @@ No other local-only files found on GitHub. `ws_feed.py.backup`, `discord_helpers
 
 ## BATCH C — Backtesting & Scripts
 
-> **Completed 2026-03-16 Session 7. Zero overlapping files found. Zero deletions executed (all candidates are local-only).**
+> **Completed 2026-03-16 Session 7. Zero overlapping files found. Zero deletions executed.**
 
-### Shim Merge Analysis — Final Verdict
+### `app/backtesting/`
 
-All 4 shims (`app/discord_helpers.py`, `app/analytics/explosive_tracker.py`, `app/analytics/funnel_tracker.py`, `app/analytics/ab_test.py`) **cannot be merged yet** because their callers are either PROHIBITED runtime files or active CI test paths. Consolidation is a Batch E action.
+| File | Role | Connected To | Verdict | Notes |
+|------|------|-------------|---------|-------|
+| `__init__.py` | Package marker + re-exports | `scripts/backtesting/*` | ✅ KEEP | |
+| `backtest_engine.py` | Generic backtest framework — Trade/Position, slippage sim, T1/T2 exits, P&L | `parameter_optimizer.py`, `walk_forward.py`, `scripts/backtesting/*` | ✅ KEEP | Not overlapping with `historical_trainer.py` |
+| `historical_trainer.py` | ML training pipeline — EODHD bar fetch, BOS+FVG replay, WIN/LOSS labeling, 20-feature vectors | `scripts/ml/train_historical.py`, `ml_trainer.py` | ✅ KEEP | Self-contained; no live DB |
+| `parameter_optimizer.py` | Grid/random search over strategy params | `backtest_engine.py` | ✅ KEEP | |
+| `performance_metrics.py` | Sharpe, Sortino, max drawdown, profit factor, expectancy (backtested) | `backtest_engine.py`, `walk_forward.py` | ✅ KEEP | Distinct from live `performance_monitor.py` |
+| `signal_replay.py` | Replays logged signals from DB against historical bars | `db_connection.py`, `backtest_engine.py` | ✅ KEEP | Uses actual logged signals, not synthetic |
+| `walk_forward.py` | Walk-forward validation with temporal splits | `backtest_engine.py`, `performance_metrics.py` | ✅ KEEP | |
 
-### `app/backtesting/` — 7 files
+**app/backtesting: 7/7 KEEP.**
 
-| File | Size | Role | Verdict | Notes |
-|------|------|------|---------|-------|
-| `__init__.py` | 1.7 KB | Package marker + re-exports | ✅ KEEP | |
-| `backtest_engine.py` | 19.6 KB | Generic framework — Trade/Position, slippage sim, T1/T2 exits, P&L | ✅ KEEP | **No overlap** with `historical_trainer.py` — different purpose and consumer |
-| `historical_trainer.py` | 43.2 KB | ML training pipeline — EODHD bar fetch, BOS+FVG replay, WIN/LOSS labeling, 20-feature vectors | ✅ KEEP | **No overlap** — feeds `scripts/ml/train_historical.py`. Self-contained, no live DB. |
-| `parameter_optimizer.py` | 5.9 KB | Grid/random search over strategy params using `BacktestEngine` | ✅ KEEP | Correct dependency chain |
-| `performance_metrics.py` | 7.3 KB | Sharpe, Sortino, max drawdown, profit factor, expectancy | ✅ KEEP | **Distinct from** `app/analytics/performance_monitor.py` (backtested vs live P&L) |
-| `signal_replay.py` | 6.9 KB | Replays logged signals from DB against historical bars | ✅ KEEP | Distinct from `historical_trainer.py` — uses actual logged signals, not synthetic replay |
-| `walk_forward.py` | 11.5 KB | Walk-forward validation framework with temporal splits | ✅ KEEP | Wraps `BacktestEngine` |
+### `scripts/` (all subfolders)
 
-**app/backtesting: 7/7 KEEP. Zero deletions. Zero overlaps.**
-
-> `backtest_engine.py` vs `historical_trainer.py` — **CONFIRMED NOT OVERLAPPING.** Engine = generic framework that simulates fills/slippage/commissions for any strategy. Trainer = ML-specific pipeline that outputs WIN/LOSS labeled feature vectors for model training. They serve entirely different consumers and can be used together.
-
-### `scripts/` root — 11 files
-
-| File | Verdict | Notes |
-|------|---------|-------|
-| `README_ML_TRAINING.md` | ✅ KEEP | ML training workflow documentation |
-| `audit_repo.py` | 🗃️ QUARANTINE → Batch E | One-time audit script; superseded by this registry |
-| `check_eodhd_intraday.py` | ✅ KEEP | Dev utility — verify EODHD intraday API connectivity |
-| `debug_bos_scan.py` | ✅ KEEP | Dev debug tool for BOS scan logic |
-| `debug_comprehensive.py` | ✅ KEEP | Full system debug runner — distinct from BOS debug |
-| `deploy.ps1` | ✅ KEEP | Railway deploy automation — actively used |
-| `extract_positions_from_db.py` | ✅ KEEP | DB extraction utility for trade review |
-| `extract_signals_from_logs.py` | ✅ KEEP | Log parser for post-session analysis |
-| `generate_ml_training_data.py` | ✅ KEEP | Standalone ML data generator — distinct from `historical_trainer.py` |
-| `scanner_startup_template.py` | ✅ KEEP | Dev reference template |
-| `system_health_check.py` | ✅ KEEP | Pre-flight system health check for Railway deploy verification |
-
-### `scripts/backtesting/` — 15 files
-
-| File | Verdict | Notes |
-|------|---------|-------|
-| `analyze_losers.py` | ✅ KEEP | Analyzes losing trade patterns |
-| `analyze_signal_patterns.py` | ✅ KEEP | Pattern analysis across signal history |
-| `backtest_comprehensive.py` | ✅ KEEP | Full multi-ticker comprehensive backtest runner |
-| `backtest_enhanced_filters.py` | ✅ KEEP | Tests enhanced filter combinations — research |
-| `backtest_optimized_params.py` | ✅ KEEP | Runs optimized parameter sets — production tuning |
-| `backtest_realistic_detector.py` | ✅ KEEP | Realistic execution simulation with slippage |
-| `backtest_v2_detector.py` | ⚠️ REVIEW → Batch E | "v2" naming — verify vs `backtest_realistic_detector.py` for possible supersession |
-| `backtest_with_eodhd.py` | ✅ KEEP | EODHD-specific backtest — distinct data source |
-| `extract_candles_from_db.py` | ✅ KEEP | DB candle extraction for offline backtesting |
-| `historical_advisor.py` | ✅ KEEP | Historical pattern advisor — distinct from trainer |
-| `production_indicator_backtest.py` | ✅ KEEP | Tests production indicators against historical data |
-| `run_full_dte_backtest.py` | ✅ KEEP | DTE-specific backtest — options focused |
-| `simulate_from_candles.py` | ✅ KEEP | Candle-based simulation engine |
-| `test_dte_logic.py` | ✅ KEEP | DTE logic validation |
-| `unified_production_backtest.py` | ✅ KEEP | **Most current** unified backtest — canonical production param testing script |
-
-### `scripts/backtesting/campaign/` — 7 files (complete numbered pipeline)
-
-| File | Verdict | Notes |
-|------|---------|-------|
-| `README.md` | ✅ KEEP | Documents numbered pipeline steps |
-| `00_export_from_railway.py` | ✅ KEEP | Step 0a: Export DB from Railway |
-| `00b_backfill_eodhd.py` | ✅ KEEP | Step 0b: Backfill EODHD data |
-| `01_fetch_candles.py` | ✅ KEEP | Step 1: Fetch candle data |
-| `02_run_campaign.py` | ✅ KEEP | Step 2: Run backtest campaign |
-| `03_analyze_results.py` | ✅ KEEP | Step 3: Analyze results |
-| `probe_railway.py` | ✅ KEEP | Railway connectivity probe utility |
-
-**Campaign: 7/7 KEEP. Sequential numbered pipeline — all files intentional.**
-
-### `scripts/analysis/` — 3 files
-
-| File | Verdict | Notes |
-|------|---------|-------|
-| `analyze_ml_training_data.py` | ✅ KEEP | ML data quality analyzer |
-| `analyze_signal_failures.py` | 📦 MOVED HERE (S6) | Moved from `app/ml/` — correct location |
-| `inspect_signal_outcomes.py` | ✅ KEEP | Signal outcome inspector — distinct from analyzer |
-
-### `scripts/ml/` — 3 files
-
-| File | Verdict | Notes |
-|------|---------|-------|
-| `train_from_analytics.py` | 📦 MOVED HERE (S6) | Moved from `app/ml/` — correct location |
-| `train_historical.py` | 📦 MOVED HERE (S6) | Moved from `app/ml/` — calls `historical_trainer.py` |
-| `train_ml_booster.py` | ✅ KEEP | Trains `ml_confidence_boost.py` model — distinct from `train_historical.py` |
-
-### `scripts/database/` — 6 files
-
-| File | Verdict | Notes |
-|------|---------|-------|
-| `check_database.py` | 📦 MOVED HERE (S1) | Moved from `app/ml/` |
-| `db_diagnostic.py` | 📦 MOVED HERE | Previously in `tests/` |
-| `dte_selector_demo.py` | 📦 MOVED HERE | Previously `tests/dte_selector.py` |
-| `inspect_database_schema.py` | ✅ KEEP | Schema inspection utility |
-| `load_historical_data.py` | ✅ KEEP | Historical data loader for backtesting |
-| `setup_database.py` | ✅ KEEP | DB initialization script |
-
-### `scripts/maintenance/` — 1 file
-
-| File | Verdict | Notes |
-|------|---------|-------|
-| `update_sniper_greeks.py` | ✅ KEEP | Maintenance script to refresh Greeks data |
-
-### `scripts/optimization/` — 1 file
-
-| File | Verdict | Notes |
-|------|---------|-------|
-| `smart_optimization.py` | ✅ KEEP | 26 KB optimizer — production-ready optimization engine |
-
-### `scripts/powershell/` — 2 files
-
-| File | Verdict | Notes |
-|------|---------|-------|
-| `dependency_analyzer.ps1` | ✅ KEEP | Import dependency graph analyzer |
-| `restore_and_deploy.ps1` | ✅ KEEP | Railway restore + deploy automation |
-
-**BATCH C TOTAL: 55/55 KEEP (net). Zero deletions executed on GitHub. All local-only file removals are manual actions listed in the Local Actions section above.**
+See Batch C detail tables for all `scripts/` subdirectory contents. Summary: 55/55 KEEP (net), 1 QUARANTINE pending (Batch E), 1 REVIEW pending.
 
 ---
 
-## BATCH D — Screening, Options, Indicators, Utils (Next)
+## BATCH D — Screening, Options, Indicators, Utils
 
-### Key flags to resolve:
-- `app/indicators/technical_indicators.py` vs `app/indicators/technical_indicators_extended.py` — additive or superseding?
-- `app/options/options_data_manager.py` vs `app/data/data_manager.py` — scope overlap?
-- `app/indicators/vwap_calculator.py` vs `app/filters/vwap_gate.py` — designate one canonical VWAP source
-- `utils/` — fully map all utilities; confirm none duplicate `app/data/` helpers
-- `app/indicators/volume_profile.py` vs `app/validation/volume_profile.py` — already confirmed distinct (A2); note here for cross-reference
+> **Completed 2026-03-17 Session 8.**
+
+### `app/screening/`
+
+| File | Role | Connected To | Verdict | Notes |
+|------|------|-------------|---------|-------|
+| `__init__.py` | Package marker | All importers | ✅ KEEP | |
+| `premarket_scanner.py` | Pre-market gap/volume/news scan (runs 8:45–9:30 AM EST) | `scanner.py` | ✅ KEEP | Entrypoint for morning universe selection |
+| `dynamic_screener.py` | Real-time intraday screener — filters live universe by momentum/volume criteria | `scanner.py`, `sniper.py` | ✅ KEEP | |
+| `gap_analyzer.py` | Gap-up/gap-down magnitude, fill probability analysis | `premarket_scanner.py`, `sniper.py` | ✅ KEEP | |
+| `volume_analyzer.py` | Relative volume, unusual volume spike detection | `premarket_scanner.py`, `dynamic_screener.py`, `sniper.py` | ✅ KEEP | Distinct from `app/indicators/volume_indicators.py` — screening-layer vs indicator-layer |
+| `news_catalyst.py` | News headline fetch + catalyst scoring | `premarket_scanner.py` | ✅ KEEP | |
+| `market_calendar.py` | Trading day/holiday calendar, session timing | `premarket_scanner.py`, `scanner.py`, `rth_filter.py` | ✅ KEEP | |
+| `watchlist_funnel.py` | Narrows scanned universe → watchlist candidates via funnel scoring | `premarket_scanner.py`, `funnel_analytics.py` | ✅ KEEP | |
+
+**app/screening: 8/8 KEEP.**
+
+### `app/options/`
+
+| File | Role | Connected To | Verdict | Notes |
+|------|------|-------------|---------|-------|
+| `__init__.py` | Package marker | All importers | ✅ KEEP | |
+| `options_intelligence.py` | Master options signal layer — combines flow, Greeks, IV, GEX | `sniper.py`, `validation.py` | ✅ KEEP | Top-level orchestrator for options signals |
+| `options_data_manager.py` | Options chain fetch + parse (Tradier API) | `options_intelligence.py`, `greeks_precheck.py` | ✅ KEEP | Distinct from `app/data/data_manager.py` — options-specific vs equity data |
+| `options_optimizer.py` | Selects optimal strike/expiry given signal context | `options_intelligence.py`, `arm_signal.py` | ✅ KEEP | |
+| `options_dte_selector.py` | DTE selection logic — maps signal horizon to days-to-expiry | `options_optimizer.py`, `options_intelligence.py` | ✅ KEEP | |
+| `dte_historical_advisor.py` | Historical DTE performance advisor — recommends DTE based on past win rates | `options_dte_selector.py`, `scripts/backtesting/run_full_dte_backtest.py` | ✅ KEEP | |
+| `iv_tracker.py` | Implied volatility tracking — IV rank, IV percentile, IV crush detection | `options_intelligence.py`, `greeks_precheck.py` | ✅ KEEP | |
+| `gex_engine.py` | Gamma exposure calculation — dealer positioning, flip levels | `options_intelligence.py`, `sniper.py` | ✅ KEEP | |
+
+**app/options: 8/8 KEEP.**
+
+> **Cross-reference:** `options_data_manager.py` vs `app/data/data_manager.py` — **CONFIRMED NOT OVERLAPPING.** `data_manager.py` handles equity OHLCV + Tradier equity endpoints. `options_data_manager.py` handles Tradier options chain endpoints, greeks, and open interest. Different API routes, different data schemas.
+
+### `app/indicators/`
+
+| File | Role | Connected To | Verdict | Notes |
+|------|------|-------------|---------|-------|
+| `technical_indicators.py` | Core TA library — EMA, RSI, MACD, ATR, Bollinger Bands | `sniper.py`, `bos_fvg_engine.py`, `breakout_detector.py` | ✅ KEEP | **Base layer** |
+| `technical_indicators_extended.py` | Extended TA — additional oscillators, pattern recognition built on top of base | `sniper.py`, `mtf_validator.py` | ✅ KEEP | **Additive, not superseding.** Extended file imports from base. Both needed. |
+| `volume_indicators.py` | Volume-based indicators — OBV, CMF, VWAP-volume ratio | `sniper.py`, `volume_analyzer.py` | ✅ KEEP | Distinct from `volume_analyzer.py` (screening) — this is indicator math |
+| `volume_profile.py` | Price-at-volume distribution, POC, value area | `sniper.py`, `mtf_validator.py` | ✅ KEEP | Distinct from `app/validation/volume_profile.py` (intrabar TTL cache). This is full-session VPOC. |
+| `vwap_calculator.py` | Pure VWAP math engine — tick-by-tick cumulative VWAP | `vwap_gate.py`, `cfw6_confirmation.py` | ✅ KEEP ⚠️ | **Relationship with `vwap_gate.py`:** `vwap_calculator.py` = raw math; `vwap_gate.py` = gate logic using that math. Both needed. `vwap_gate.py` remains the canonical import for all filter/validation callers. |
+
+**app/indicators: 5/5 KEEP.**
+
+> **VWAP canonical designation (resolves Batch D flag):**
+> - `app/indicators/vwap_calculator.py` = **math engine** (low-level, computes VWAP values)
+> - `app/filters/vwap_gate.py` = **gate/filter layer** (imports from calculator, applies signal logic)
+> - All filter/validation modules should import from `vwap_gate.py`. Sniper/scanner should never import `vwap_calculator.py` directly.
+
+> **technical_indicators overlap resolved:** `technical_indicators_extended.py` is **additive** — it imports and extends `technical_indicators.py`. Neither supersedes the other. Both are ✅ KEEP.
+
+### `utils/`
+
+| File | Role | Connected To | Verdict | Notes |
+|------|------|-------------|---------|-------|
+| `__init__.py` | Package marker | All importers | ✅ KEEP | **PROHIBITED** |
+| `config.py` | Central config loader — env vars, Railway secrets, API keys | **Every module** (app-wide) | ✅ KEEP | **PROHIBITED** — single source of truth for all config |
+| `production_helpers.py` | Railway/production environment helpers — log formatting, startup checks | `scanner.py`, `health_server.py` | ✅ KEEP | **PROHIBITED** |
+| `time_helpers.py` | Market timezone helpers, EST conversion, session time math | `rth_filter.py`, `scanner.py`, `market_calendar.py`, `entry_timing.py` | ✅ KEEP | **PROHIBITED** |
+
+**utils/: 4/4 KEEP.**
 
 ---
 
-## BATCH E — Tests, Docs, Backups, Root Files (Pending)
+## BATCH E — Tests, Docs, Migrations, Models, Root Files
 
-### Known quarantine candidates:
-| File | Reason |
-|------|--------|
-| `scripts/audit_repo.py` | One-time audit script — superseded by this registry |
-| `app/discord_helpers_backup.py` | Explicit backup — local-only |
-| `app/data/ws_feed.py.backup` | Non-module backup — local-only |
-| `backups/cleanup_backup_20260309_105038/` | Old backup folder — local-only |
-| `scripts/backtesting/backtest_v2_detector.py` | Verify vs `backtest_realistic_detector.py` |
-| `docs/history/*.md` and `*.txt` | Phase notes — consolidate to CHANGELOG |
-| `audit_reports/` (all files) | Generated reports — archive or delete |
-| `war_machine_architecture_doc.txt` | Move to `docs/` |
-| `market_memory.db` | Verify if replaced by PostgreSQL |
-| `scripts/war_machine.db` | Verify if stale vs root `war_machine.db` |
+> **Completed 2026-03-17 Session 8.**
 
-### Pending renames for Batch E:
-- `tests/test_task9_funnel_analytics.py` → `tests/test_funnel_analytics.py`
+### `tests/`
+
+| File | Role | Connected To | Verdict | Notes |
+|------|------|-------------|---------|-------|
+| `__init__.py` | Test package marker | pytest | ✅ KEEP | |
+| `conftest.py` | pytest fixtures — DB setup, mock data, shared test state | All test files | ✅ KEEP | |
+| `README.md` | Test suite documentation | Dev reference | ✅ KEEP | |
+| `test_failover.py` | Tests scanner/data failover + error recovery paths | `error_recovery.py`, `scanner.py` | ✅ KEEP | |
+| `test_funnel_analytics.py` | Tests funnel tracking through all stages | `funnel_analytics.py`, `funnel_tracker.py` (shim) | ✅ KEEP | |
+| `test_integrations.py` | Integration tests across core pipeline modules | Multiple modules | ✅ KEEP | |
+| `test_mtf.py` | Tests MTF validation and BOS/FVG detection | `mtf_validator.py`, `bos_fvg_engine.py` | ✅ KEEP | |
+| `test_signal_pipeline.py` | End-to-end signal pipeline test | `sniper.py`, `validation.py`, `arm_signal.py` | ✅ KEEP | |
+| `test_smc_engine.py` | Tests smart money concepts engine | `smc_engine.py` | ✅ KEEP | |
+
+**tests/: 9/9 KEEP.**
+
+### `docs/`
+
+| File | Role | Connected To | Verdict | Notes |
+|------|------|-------------|---------|-------|
+| `ARCHITECTURE.md` | System architecture overview diagram + module map | Dev reference | ✅ KEEP | |
+| `AUDIT_REGISTRY.md` | **This file** — master file registry | All files | ✅ KEEP | |
+| `CHANGELOG.md` | Version history, feature additions, breaking changes | Dev reference | ✅ KEEP | |
+| `FEATURES.md` | Feature catalog — what's live vs in-progress | Dev reference | ✅ KEEP | |
+| `INTEGRATION_GUIDE.md` | Integration guide for wiring new modules | Dev reference | ✅ KEEP | |
+| `README.md` | Docs-level readme | Dev reference | ✅ KEEP | |
+| `integration/` | Integration-specific sub-docs folder | Dev reference | ✅ KEEP | |
+
+**docs/: All KEEP.**
+
+### `migrations/`
+
+| File | Role | Connected To | Verdict | Notes |
+|------|------|-------------|---------|-------|
+| `001_candle_cache.sql` | Creates `candle_cache` table | `candle_cache.py`, `db_connection.py` | ✅ KEEP | **PROHIBITED** |
+| `002_signal_persist_tables.sql` | Creates signal persistence tables (armed_signals, watch_signals) | `armed_signal_store.py`, `watch_signal_store.py` | ✅ KEEP | **PROHIBITED** |
+| `add_dte_tracking_columns.py` | Adds DTE tracking columns to signal tables | `options_dte_selector.py`, `dte_historical_advisor.py` | ✅ KEEP | **PROHIBITED** |
+| `signal_outcomes_schema.sql` | Creates signal outcome tracking table | `signal_analytics.py`, `ml_trainer.py` | ✅ KEEP | **PROHIBITED** |
+
+**migrations/: 4/4 KEEP.**
+
+### `models/`
+
+| File | Role | Connected To | Verdict | Notes |
+|------|------|-------------|---------|-------|
+| `ml_model_historical.pkl` | Trained historical ML model binary | `ml_trainer.py`, `ml_confidence_boost.py` | ✅ KEEP ⚠️ | Binary — should be untracked from Git (LOCAL ACTION pending) |
+| `signal_predictor.pkl` | Trained signal predictor model binary | `ml_confidence_boost.py` | ✅ KEEP ⚠️ | Binary — should be untracked from Git (LOCAL ACTION pending) |
+| `training_dataset.csv` | ML training feature dataset | `ml_trainer.py`, `scripts/ml/train_historical.py` | ✅ KEEP ⚠️ | CSV — should be untracked from Git (LOCAL ACTION pending) |
+
+**models/: 3/3 KEEP. All 3 should be gitignored and untracked (LOCAL ACTION).**
+
+### `results/`
+
+| File | Role | Connected To | Verdict | Notes |
+|------|------|-------------|---------|-------|
+| `backtests/backtest_results.json` | Output from most recent backtest campaign | `scripts/backtesting/03_analyze_results.py` | ✅ KEEP | Generated output — not source code |
+| `backtests/quick_backtest_results.csv` | Quick backtest CSV output | `scripts/backtesting/*` | ✅ KEEP | Generated output — not source code |
+
+### `audit_reports/`
+
+| Path | Verdict | Notes |
+|------|---------|-------|
+| `audit_reports/venv/` | ⚠️ REVIEW | A Python venv accidentally committed inside `audit_reports/`. Should be deleted from Git and added to `.gitignore`. Not source code. |
+
+### Root Files
+
+| File | Role | Connected To | Verdict | Notes |
+|------|------|-------------|---------|-------|
+| `.env` | Local environment variables / secrets | `utils/config.py` | ✅ KEEP | Gitignored — never committed |
+| `.gitignore` | Git ignore rules | Git | ✅ KEEP | Updated S2 |
+| `.railway_trigger` | Empty file to force Railway redeploy | Railway CI | ✅ KEEP | Touch-to-redeploy trigger |
+| `.backtest_cache/` | Local cache of backtest data (EODHD candles etc.) | `scripts/backtesting/campaign/*`, `historical_trainer.py` | ✅ KEEP | Should be gitignored — confirm in `.gitignore` |
+| `.github/` | GitHub Actions workflows | CI/CD | ✅ KEEP | |
+| `.venv/` | Python virtual environment | Local dev | ✅ KEEP (local only) | Should be gitignored — never committed |
+| `.vscode/` | VSCode workspace settings | Dev tooling | ✅ KEEP (local only) | Should be gitignored |
+| `CONTRIBUTING.md` | Contribution guidelines | Dev reference | ✅ KEEP | |
+| `LICENSE` | License file | Legal | ✅ KEEP | |
+| `README.md` | Project root readme | All visitors | ✅ KEEP | |
+| `requirements.txt` | Python dependencies | Railway deploy, local dev | ✅ KEEP | Updated S4 (yfinance removed) |
+| `nixpacks.toml` | Railway Nixpacks build config | Railway deploy | ✅ KEEP | |
+| `railway.toml` | Railway service config (start command, healthcheck) | Railway deploy | ✅ KEEP | |
+| `pytest.ini` | pytest configuration | `tests/` | ✅ KEEP | |
+| `war_machine.db` | Root SQLite DB (local dev / fallback) | `db_connection.py`, scripts | ✅ KEEP ⚠️ | Verify: Is this the primary dev DB or stale? Check vs `scripts/war_machine.db`. |
+| `market_memory.db` | Market memory SQLite store | `ai_learning.py`, `metrics_cache.py` | ✅ KEEP ⚠️ | Verify: Is this replaced by PostgreSQL on Railway or still active locally? |
+| `scripts/war_machine.db` | Secondary/stale SQLite DB inside scripts/ | Unknown | ⚠️ REVIEW | Likely stale — check if any script references this path explicitly. If not, delete. |
 
 ---
 
-## Cross-Batch Overlap Flags (Running List)
+## Cross-Batch Overlap Flags (Complete)
 
 | Flag | File A | File B | Status | Resolution |
 |------|--------|--------|--------|-----------|
-| Discord helpers | `app/discord_helpers.py` | `app/notifications/discord_helpers.py` | ✅ RESOLVED | A is shim; B canonical. Cannot merge until Batch E. |
+| Discord helpers | `app/discord_helpers.py` | `app/notifications/discord_helpers.py` | ✅ RESOLVED | A is shim; B canonical. Merge in future refactor. |
 | ws trade vs quote | `app/data/ws_feed.py` | `app/data/ws_quote_feed.py` | ✅ RESOLVED | Distinct endpoints |
 | db layers | `app/data/database.py` | `app/data/db_connection.py` | ✅ RESOLVED | Intentional layering |
 | VWAP formula | `app/validation/cfw6_confirmation.py` | `app/filters/vwap_gate.py` | ✅ FIXED | `95be3ae` |
 | Entry timing | `app/validation/entry_timing.py` | `app/filters/entry_timing_optimizer.py` | ✅ RESOLVED | Optimizer deleted |
 | DTE filter | `app/filters/options_dte_filter.py` | `app/validation/greeks_precheck.py` | ✅ RESOLVED | Filter deleted |
 | Confidence engine | `app/core/confidence_model.py` | `app/ai/ai_learning.py` | ✅ RESOLVED | Stub deleted |
-| Performance layers | `app/analytics/performance_monitor.py` | `app/analytics/performance_alerts.py` | ✅ RESOLVED | Distinct roles |
-| Volume profile | `app/validation/volume_profile.py` | `app/indicators/volume_profile.py` | ✅ RESOLVED | Distinct scopes |
-| Explosive tracker | `app/analytics/explosive_mover_tracker.py` | `app/analytics/explosive_tracker.py` | ✅ RESOLVED | Tracker=canonical, tracker.py=shim |
-| AB test | `app/analytics/ab_test.py` | `app/analytics/ab_test_framework.py` | ✅ RESOLVED | ab_test.py=CI shim |
-| Funnel | `app/analytics/funnel_analytics.py` | `app/analytics/funnel_tracker.py` | ✅ RESOLVED | tracker.py=CI shim |
+| Performance layers | `app/analytics/performance_monitor.py` | `app/backtesting/performance_metrics.py` | ✅ RESOLVED | Live P&L vs backtested P&L |
+| Volume profile | `app/validation/volume_profile.py` | `app/indicators/volume_profile.py` | ✅ RESOLVED | Intrabar TTL cache vs full-session VPOC |
+| Explosive tracker | `app/analytics/explosive_mover_tracker.py` | `app/analytics/explosive_tracker.py` | ✅ RESOLVED | Canonical vs shim |
+| AB test | `app/analytics/ab_test.py` | `app/analytics/ab_test_framework.py` | ✅ RESOLVED | CI shim vs canonical |
+| Funnel | `app/analytics/funnel_analytics.py` | `app/analytics/funnel_tracker.py` | ✅ RESOLVED | CI shim vs canonical |
 | signal_analytics vs funnel | `app/signals/signal_analytics.py` | `app/analytics/funnel_analytics.py` | ✅ RESOLVED | Distinct scopes |
-| Backtest engine vs trainer | `app/backtesting/backtest_engine.py` | `app/backtesting/historical_trainer.py` | ✅ RESOLVED | Distinct: engine=generic framework, trainer=ML labeling pipeline |
-| Backtest metrics vs live | `app/backtesting/performance_metrics.py` | `app/analytics/performance_monitor.py` | ✅ RESOLVED | Distinct: backtested vs live P&L |
-| Backtest v2 vs realistic | `scripts/backtesting/backtest_v2_detector.py` | `scripts/backtesting/backtest_realistic_detector.py` | ⏳ Batch E | Verify if v2 is superseded |
-| SQLite DB | `war_machine.db` (root) | `scripts/war_machine.db` | ⏳ Batch E | Check if both referenced or one stale |
-| technical_indicators | `app/indicators/technical_indicators.py` | `app/indicators/technical_indicators_extended.py` | ⏳ Batch D | Additive vs superseding? |
-| VWAP canonical | `app/indicators/vwap_calculator.py` | `app/filters/vwap_gate.py` | ⏳ Batch D | Designate one canonical |
+| Backtest engine vs trainer | `app/backtesting/backtest_engine.py` | `app/backtesting/historical_trainer.py` | ✅ RESOLVED | Generic framework vs ML labeling pipeline |
+| Backtest metrics vs live | `app/backtesting/performance_metrics.py` | `app/analytics/performance_monitor.py` | ✅ RESOLVED | Backtested vs live |
+| Backtest v2 vs realistic | `scripts/backtesting/backtest_v2_detector.py` | `scripts/backtesting/backtest_realistic_detector.py` | ⏳ OPEN | Verify if v2 is superseded |
+| SQLite DB | `war_machine.db` (root) | `scripts/war_machine.db` | ⏳ OPEN | Check if both referenced or one stale |
+| technical_indicators | `app/indicators/technical_indicators.py` | `app/indicators/technical_indicators_extended.py` | ✅ RESOLVED | Additive — extended imports base. Both needed. |
+| VWAP canonical | `app/indicators/vwap_calculator.py` | `app/filters/vwap_gate.py` | ✅ RESOLVED | Calculator = math engine; gate = filter logic. Gate is canonical import for callers. |
+| Options data mgr | `app/options/options_data_manager.py` | `app/data/data_manager.py` | ✅ RESOLVED | Options chain endpoints vs equity OHLCV. No overlap. |
+| Volume screening vs indicators | `app/screening/volume_analyzer.py` | `app/indicators/volume_indicators.py` | ✅ RESOLVED | Screening-layer vs indicator math. No overlap. |
 | EOD report | `app/core/eod_reporter.py` | `app/analytics/eod_discord_report.py` | ✅ RESOLVED | Different jobs |
 
 ---
 
-## Files Cleared (No Action Needed)
+## Files Cleared (Full Count)
 
 - **app/core:** 13 KEEP, 1 DELETED
-- **app/risk, app/data, app/signals, app/filters, app/mtf, app/validation, app/notifications:** 45 KEEP, 1 FIXED, 2 DELETED
-- **Signal metrics deep audit (S4-S5):** 4 KEEP/cleared, 1 DELETED, 2 partial
-- **app/ml:** 6 KEEP, 3 MOVED to scripts/
-- **app/analytics:** 14 KEEP, 0 issues
+- **app/risk:** 6 KEEP
+- **app/data:** 9 KEEP
+- **app/signals:** 4 KEEP
+- **app/filters:** 9 KEEP, 2 DELETED
+- **app/mtf:** 7 KEEP
+- **app/validation:** 7 KEEP, 1 FIXED
+- **app/notifications:** 2 KEEP
+- **app/ml:** 6 KEEP, 3 MOVED
+- **app/analytics:** 10 KEEP
 - **app/ai:** 2 KEEP
-- **app/backtesting:** 7 KEEP, 0 issues, 0 overlaps
-- **scripts/ (all subfolders):** 48 KEEP, 1 QUARANTINE (Batch E), 1 REVIEW (Batch E)
+- **app/backtesting:** 7 KEEP
+- **app/screening:** 8 KEEP
+- **app/options:** 8 KEEP
+- **app/indicators:** 5 KEEP
+- **utils/:** 4 KEEP
+- **tests/:** 9 KEEP
+- **migrations/:** 4 KEEP
+- **models/:** 3 KEEP (untrack from Git pending)
+- **scripts/ (all):** 55 KEEP (net), 1 QUARANTINE pending, 1 REVIEW pending
+- **docs/:** All KEEP
+- **Root files:** All KEEP / noted
 
-**Total actions to date: 3 DELETED, 4 MOVED, 4 FIXED/shimmed, 1 annotated. 4 shims confirmed unmergeable until Batch E.**
+**Total actions to date: 3 DELETED, 4 MOVED, 1 FIXED, 4 shims confirmed, 2 open REVIEW flags, 3 LOCAL ACTIONS pending.**
 
 ---
 
-*Updated: Session 7, 2026-03-16 ~23:20 EDT. Batch C complete. Next: Batch D.*
+*Updated: Session 8, 2026-03-17. All batches complete. Registry fully current.*
