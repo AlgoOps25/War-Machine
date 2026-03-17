@@ -93,7 +93,7 @@ def _db_operation_safe(operation_func, operation_name="DB operation"):
     Returns:
         Result from operation_func, or None if failed
     """
-    from db_connection import get_conn
+    from app.data.db_connection import get_conn, return_conn
     conn = None
     try:
         conn = get_conn()
