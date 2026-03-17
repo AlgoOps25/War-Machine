@@ -77,6 +77,11 @@ PHASE 1.32 (MAR 17, 2026):
     Removes 30-line inline Discord builder; all EOD Discord logic
     now lives in app/core/eod_reporter.py (single responsibility).
     signal_tracker.get_discord_eod_summary() is now sent every EOD.
+
+PHASE 1.33 (MAR 17, 2026):
+  - Remove dead _get_eod_summary_metrics() helper.
+    Was only used by the old inline EOD block removed in Phase 1.32.
+    No callers remain in the codebase.
 """
 from app.core.health_server import start_health_server, health_heartbeat
 
@@ -306,34 +311,6 @@ def _extract_premarket_metrics(watchlist_data: dict) -> dict:
         return None
 
 
-def _get_eod_summary_metrics() -> dict:
-    try:
-        session     = get_session_status()
-        daily_stats = session["daily_stats"]
-        if not daily_stats or daily_stats.get("trades", 0) == 0:
-            return None
-        top_performers = get_eod_report()
-        try:
-            watchlist_data  = get_watchlist_with_metadata(force_refresh=False)
-            all_tickers     = watchlist_data.get('all_tickers_with_scores', [])
-            avg_rvol        = sum(t.get('rvol', 0) for t in all_tickers) / len(all_tickers) if all_tickers else 0
-            explosive_count = sum(
-                1 for t in all_tickers
-                if t.get('score', 0) >= 80 and t.get('rvol', 0) >= 4.0
-            )
-        except Exception:
-            avg_rvol        = 0
-            explosive_count = 0
-        return {
-            'top_performers':  top_performers,
-            'avg_rvol':        avg_rvol,
-            'explosive_count': explosive_count,
-        }
-    except Exception as e:
-        logger.error(f"[METRICS] EOD extraction error: {e}")
-        return None
-
-
 data_update_counter    = 0
 data_update_symbols    = set()
 last_data_summary_time = time.time()
@@ -497,7 +474,7 @@ def start_scanner_loop():
 
     # ── STARTUP BANNER ────────────────────────────────────────────────────────────────────
     print("=" * 60, flush=True)
-    print("WAR MACHINE CFW6 SCANNER v1.32 - STARTUP", flush=True)
+    print("WAR MACHINE CFW6 SCANNER v1.33 - STARTUP", flush=True)
     print("=" * 60, flush=True)
     print("✓ REGIME-FILTER  VIX/SPY regime detection active", flush=True)
     print("=" * 60, flush=True)
@@ -574,6 +551,7 @@ def start_scanner_loop():
     print("Sniper Import:   ✅ FIXED   (hard import, no dead stubs fallback — Phase 1.30)", flush=True)
     print("Discord Import:  ✅ FIXED   (app.notifications.discord_helpers — Phase 1.31)", flush=True)
     print("EOD Reporter:    ✅ ENABLED (eod_reporter.run_eod_report() — Phase 1.32)", flush=True)
+    print("Dead Code:       ✅ REMOVED (_get_eod_summary_metrics deleted — Phase 1.33)", flush=True)
     print("=" * 60 + "\n", flush=True)
 
     _booting_into_market_hours = is_market_hours()
@@ -597,8 +575,8 @@ def start_scanner_loop():
 
     try:
         send_simple_message(
-            f"⚔️ WAR MACHINE ONLINE — CFW6 v1.32 | "
-            f"{'Resuming intraday' if _booting_into_market_hours else 'OR window active'} | Phase 1.32"
+            f"⚔️ WAR MACHINE ONLINE — CFW6 v1.33 | "
+            f"{'Resuming intraday' if _booting_into_market_hours else 'OR window active'} | Phase 1.33"
         )
     except Exception as e:
         logger.warning(f"[SCANNER] Discord unavailable: {e}")
