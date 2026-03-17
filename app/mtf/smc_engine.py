@@ -1,734 +1,625 @@
 #!/usr/bin/env python3
 """
-SMC Engine  —  app.mtf.smc_engine
-===================================
-Implements the 5 SMC principles previously missing or partial in War Machine:
+SMC Engine — app.mtf.smc_engine
+=================================
+Implements the 5 missing/partial Smart Money Concepts:
 
-  1. CHoCH (Change of Character)  — first opposing BOS = reversal signal
-  2. Inducement detection         — liquidity sweep trap before real move
-  3. Order Block detection        — last opposing candle before impulse move
-  4. Order Block retest entry     — price returning to OB zone
-  5. Trend Phase classification   — accumulation / markup / distribution / markdown
+  1. CHoCH Detection       — distinguishes trend reversal from continuation BOS
+  2. Inducement Detection  — identifies liquidity grabs before real moves
+  3. Order Block Detection — last opposing candle before impulsive move
+  4. OB Retest Entry       — price returning to OB for institutional entry
+  5. Trend Phase Class.    — Accumulation / Markup / Distribution / Markdown
 
-Design principles:
-  - Non-breaking: every function returns None or a safe default on failure
-  - Integrated into bos_fvg_engine.scan_bos_fvg() via enrich_signal_with_smc()
-  - Standalone: can be called independently for analysis / Discord alerts
-  - Zero new dependencies beyond stdlib + existing app.data path
+Design:
+  - ADDITIVE ONLY. Never blocks signals — enriches signal_data with SMC context.
+  - sniper.py calls enrich_signal_with_smc(ticker, bars, signal_data) after
+    BOS+FVG fires. Confidence boosts are applied here; no hard rejections.
+  - All DB persistence is non-fatal (wrapped in try/except).
 
-Output dict injected into signal by enrich_signal_with_smc():
-  {
-    'choch':         CHoCH dict or None,
-    'inducement':    Inducement dict or None,
-    'order_block':   OrderBlock dict or None,
-    'trend_phase':   str ('ACCUMULATION'|'MARKUP'|'DISTRIBUTION'|'MARKDOWN'|'UNKNOWN'),
-    'smc_score':     float  0.0 – 1.0  (confidence bonus)
-    'smc_filter':    bool   True = signal passes SMC filter
-    'smc_notes':     list[str]
-  }
+Public API:
+    enrich_signal_with_smc(ticker, bars, signal_data) -> signal_data
 """
 
 from __future__ import annotations
-from typing import Dict, List, Optional, Tuple
-from datetime import datetime
-from zoneinfo import ZoneInfo
+from datetime  import datetime
+from zoneinfo  import ZoneInfo
+from typing    import Dict, List, Optional, Tuple
 
 _ET = ZoneInfo("America/New_York")
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
 # CONSTANTS
-# ─────────────────────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
 
-# Minimum body-to-range ratio for an "impulsive" candle (used in OB detection)
-_IMPULSE_BODY_RATIO   = 0.55
-
-# Inducement: a swing break is a trap if price reverses within this many bars
-_INDUCEMENT_REVERSAL_BARS = 5
-
-# Minimum % move to qualify an inducement sweep as meaningful
-_INDUCEMENT_MIN_PCT   = 0.001   # 0.1%
-
-# OB zone: last N candles before impulse to search for the order block
-_OB_LOOKBACK          = 5
-
-# SMC score weights
-_W_CHOCH      = 0.30
-_W_INDUCEMENT = 0.15
-_W_OB         = 0.30
-_W_PHASE      = 0.25
+# Inducement: how far beyond a swing high/low qualifies as a sweep (not a BOS)
+INDUCEMENT_MAX_PCT   = 0.003   # ≤ 0.3% beyond swing = probable sweep
+# Order Block: minimum body size as % of range to qualify
+OB_MIN_BODY_PCT      = 0.30
+# Order Block: max candles to look back for origin candle
+OB_LOOKBACK          = 20
+# CHoCH: confidence boost when a CHoCH reversal is detected
+CHOCH_BOOST          = 0.04
+# OB Retest: confidence boost when price returns to a valid OB zone
+OB_RETEST_BOOST      = 0.03
+# Trend Phase alignment boost
+PHASE_ALIGN_BOOST    = 0.02
+# Inducement penalty (signal fired into a sweep — reduce confidence)
+INDUCEMENT_PENALTY   = -0.03
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# HELPERS
-# ─────────────────────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# 1. TREND PHASE CLASSIFICATION
+# ══════════════════════════════════════════════════════════════════════════════
 
-def _swing_high(bars: List[Dict], lookback: int = 10) -> Tuple[Optional[float], Optional[int]]:
-    """Return (price, index) of the most recent swing high."""
-    if len(bars) < lookback * 2:
-        return None, None
-    recent = bars[-(lookback * 3):]
-    best_price, best_idx = None, None
-    half = lookback // 2
-    for i in range(half, len(recent) - half):
-        window = recent[i - half: i + half + 1]
-        if recent[i]['high'] == max(b['high'] for b in window):
-            if best_price is None or recent[i]['high'] > best_price:
-                best_price = recent[i]['high']
-                best_idx   = i
-    return best_price, best_idx
-
-
-def _swing_low(bars: List[Dict], lookback: int = 10) -> Tuple[Optional[float], Optional[int]]:
-    """Return (price, index) of the most recent swing low."""
-    if len(bars) < lookback * 2:
-        return None, None
-    recent = bars[-(lookback * 3):]
-    best_price, best_idx = None, None
-    half = lookback // 2
-    for i in range(half, len(recent) - half):
-        window = recent[i - half: i + half + 1]
-        if recent[i]['low'] == min(b['low'] for b in window):
-            if best_price is None or recent[i]['low'] < best_price:
-                best_price = recent[i]['low']
-                best_idx   = i
-    return best_price, best_idx
-
-
-def _is_impulsive(bar: Dict) -> bool:
-    """True if candle has a strong body (institutional participation)."""
-    bar_range = bar['high'] - bar['low']
-    if bar_range == 0:
-        return False
-    body = abs(bar['close'] - bar['open'])
-    return (body / bar_range) >= _IMPULSE_BODY_RATIO
-
-
-def _bar_direction(bar: Dict) -> str:
-    """'bull' if green candle, 'bear' if red."""
-    return 'bull' if bar['close'] >= bar['open'] else 'bear'
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 1. CHoCH — CHANGE OF CHARACTER
-# ─────────────────────────────────────────────────────────────────────────────
-
-def detect_choch(bars: List[Dict], signal_direction: str) -> Optional[Dict]:
+def classify_trend_phase(bars: List[Dict]) -> Dict:
     """
-    Detect Change of Character (CHoCH).
+    Classify the current market phase using Higher High / Higher Low
+    (HH/HL) and Lower High / Lower Low (LH/LL) structure.
 
-    CHoCH = the FIRST break of structure in the OPPOSITE direction to the
-    prevailing trend. It signals a potential trend reversal BEFORE it is
-    fully confirmed, providing earlier and higher-probability entries.
+    Phases:
+        ACCUMULATION  — sideways after downtrend; no clear HH or LL pattern
+        MARKUP        — series of HH + HL = uptrend in progress
+        DISTRIBUTION  — sideways after uptrend; HH failing, HL failing
+        MARKDOWN      — series of LH + LL = downtrend in progress
+
+    Uses last 30 bars (or all available). Needs at least 10 bars.
+    Returns:
+        {
+            'phase':        'MARKUP' | 'MARKDOWN' | 'ACCUMULATION' | 'DISTRIBUTION' | 'UNKNOWN',
+            'hh_count':     int,
+            'hl_count':     int,
+            'lh_count':     int,
+            'll_count':     int,
+            'trend_bias':   'bull' | 'bear' | 'neutral',
+            'description':  str
+        }
+    """
+    if len(bars) < 10:
+        return {
+            'phase': 'UNKNOWN', 'hh_count': 0, 'hl_count': 0,
+            'lh_count': 0, 'll_count': 0,
+            'trend_bias': 'neutral', 'description': 'Insufficient bars'
+        }
+
+    sample = bars[-30:] if len(bars) >= 30 else bars
+
+    # Extract pivot highs and lows using simple 3-bar pivots
+    pivot_highs = []
+    pivot_lows  = []
+    for i in range(1, len(sample) - 1):
+        if sample[i]['high'] >= sample[i-1]['high'] and sample[i]['high'] >= sample[i+1]['high']:
+            pivot_highs.append(sample[i]['high'])
+        if sample[i]['low'] <= sample[i-1]['low'] and sample[i]['low'] <= sample[i+1]['low']:
+            pivot_lows.append(sample[i]['low'])
+
+    hh_count = lh_count = hl_count = ll_count = 0
+
+    for i in range(1, len(pivot_highs)):
+        if pivot_highs[i] > pivot_highs[i-1]:
+            hh_count += 1
+        else:
+            lh_count += 1
+
+    for i in range(1, len(pivot_lows)):
+        if pivot_lows[i] > pivot_lows[i-1]:
+            hl_count += 1
+        else:
+            ll_count += 1
+
+    bull_score = hh_count + hl_count
+    bear_score = lh_count + ll_count
+    total      = bull_score + bear_score
+
+    if total == 0:
+        phase      = 'UNKNOWN'
+        trend_bias = 'neutral'
+    elif bull_score > bear_score * 1.5:
+        phase      = 'MARKUP'
+        trend_bias = 'bull'
+    elif bear_score > bull_score * 1.5:
+        phase      = 'MARKDOWN'
+        trend_bias = 'bear'
+    elif bull_score > 0 and bear_score > 0:
+        # Determine if accumulation (recovering from markdown) or distribution (topping out)
+        last_bias = 'bull' if (pivot_highs and pivot_lows and
+                                pivot_highs[-1] > pivot_highs[0]) else 'bear'
+        phase      = 'DISTRIBUTION' if last_bias == 'bull' else 'ACCUMULATION'
+        trend_bias = 'neutral'
+    else:
+        phase      = 'UNKNOWN'
+        trend_bias = 'neutral'
+
+    descriptions = {
+        'MARKUP':        f'Uptrend: {hh_count} HH + {hl_count} HL',
+        'MARKDOWN':      f'Downtrend: {lh_count} LH + {ll_count} LL',
+        'ACCUMULATION':  f'Sideways base: mixed structure (HH={hh_count} HL={hl_count} LH={lh_count} LL={ll_count})',
+        'DISTRIBUTION':  f'Topping structure: failing highs (HH={hh_count} LH={lh_count})',
+        'UNKNOWN':       'Insufficient pivot data',
+    }
+
+    return {
+        'phase':      phase,
+        'hh_count':   hh_count,
+        'hl_count':   hl_count,
+        'lh_count':   lh_count,
+        'll_count':   ll_count,
+        'trend_bias': trend_bias,
+        'description': descriptions[phase]
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 2. CHoCH DETECTION
+# ══════════════════════════════════════════════════════════════════════════════
+
+def detect_choch(bars: List[Dict], bos_direction: str) -> Dict:
+    """
+    Detect whether the current BOS is a Change of Character (CHoCH)
+    — the first BOS against the prevailing trend — vs a continuation BOS.
 
     Logic:
-      - For a BULL signal: prior trend must have been bearish (series of
-        lower highs). A CHoCH occurs when close breaks ABOVE the most recent
-        swing high in a downtrend → first sign of reversal.
-      - For a BEAR signal: prior trend bullish (series of higher lows).
-        CHoCH when close breaks BELOW the most recent swing low in an uptrend.
+        1. Classify the trend phase using the bars BEFORE the BOS bar.
+        2. If the BOS direction OPPOSES the current phase trend_bias
+           → this is a CHoCH (reversal signal — highest probability)
+        3. If the BOS direction MATCHES the phase trend_bias
+           → this is a continuation BOS (lower probability, trend already extended)
+        4. If phase is ACCUMULATION/DISTRIBUTION/UNKNOWN
+           → treat as CHoCH (breakout from range = character change)
 
-    Distinction from BOS:
-      - BOS = structure break in the direction of the existing trend (continuation)
-      - CHoCH = structure break AGAINST the trend (reversal)
-      A bull signal preceded by a CHoCH is much higher probability than one
-      that is simply a BOS continuation.
-
-    Returns CHoCH dict or None.
+    Returns:
+        {
+            'is_choch':     bool,
+            'choch_type':   'REVERSAL' | 'CONTINUATION' | 'BREAKOUT',
+            'phase':        phase dict,
+            'confidence_delta': float  (+CHOCH_BOOST or 0)
+        }
     """
-    if len(bars) < 30:
-        return None
+    if len(bars) < 15:
+        return {
+            'is_choch': False, 'choch_type': 'UNKNOWN',
+            'phase': {}, 'confidence_delta': 0.0
+        }
 
-    try:
-        # Determine prior trend using last 20 bars (excluding most recent 5)
-        lookback_bars = bars[-25:-5]
-        if len(lookback_bars) < 15:
-            return None
+    # Use all bars except the last 2 (the BOS bar and confirmation bar)
+    phase = classify_trend_phase(bars[:-2])
+    trend_bias = phase['trend_bias']
 
-        highs  = [b['high']  for b in lookback_bars]
-        lows   = [b['low']   for b in lookback_bars]
-        closes = [b['close'] for b in lookback_bars]
+    if trend_bias == 'neutral' or phase['phase'] in ('ACCUMULATION', 'DISTRIBUTION', 'UNKNOWN'):
+        # BOS out of a range = CHoCH (breakout of character)
+        return {
+            'is_choch':         True,
+            'choch_type':       'BREAKOUT',
+            'phase':            phase,
+            'confidence_delta': CHOCH_BOOST
+        }
 
-        # Simple trend: compare first half vs second half of lookback
-        mid = len(closes) // 2
-        first_half_avg  = sum(closes[:mid]) / mid
-        second_half_avg = sum(closes[mid:]) / (len(closes) - mid)
+    if (bos_direction == 'bull' and trend_bias == 'bear') or \
+       (bos_direction == 'bear' and trend_bias == 'bull'):
+        # BOS opposes prevailing trend = first reversal signal
+        return {
+            'is_choch':         True,
+            'choch_type':       'REVERSAL',
+            'phase':            phase,
+            'confidence_delta': CHOCH_BOOST
+        }
 
-        prior_trend_bull = second_half_avg > first_half_avg
-        prior_trend_bear = second_half_avg < first_half_avg
-
-        latest_bar = bars[-1]
-        prev_bars  = bars[:-1]
-
-        swing_h, _ = _swing_high(prev_bars)
-        swing_l, _ = _swing_low(prev_bars)
-
-        if signal_direction == 'bull' and prior_trend_bear:
-            # Bullish CHoCH: first break of swing high in a downtrend
-            if swing_h and latest_bar['close'] > swing_h:
-                strength = (latest_bar['close'] - swing_h) / swing_h
-                return {
-                    'type':          'CHoCH',
-                    'direction':     'bull',
-                    'prior_trend':   'bear',
-                    'break_level':   swing_h,
-                    'break_price':   latest_bar['close'],
-                    'strength':      round(strength * 100, 3),
-                    'is_reversal':   True,
-                    'quality':       'HIGH',   # reversal CHoCH = high quality
-                }
-
-        elif signal_direction == 'bear' and prior_trend_bull:
-            # Bearish CHoCH: first break of swing low in an uptrend
-            if swing_l and latest_bar['close'] < swing_l:
-                strength = (swing_l - latest_bar['close']) / swing_l
-                return {
-                    'type':          'CHoCH',
-                    'direction':     'bear',
-                    'prior_trend':   'bull',
-                    'break_level':   swing_l,
-                    'break_price':   latest_bar['close'],
-                    'strength':      round(strength * 100, 3),
-                    'is_reversal':   True,
-                    'quality':       'HIGH',
-                }
-
-        # BOS in direction of trend (continuation, not CHoCH)
-        # Still return a record so caller knows it's a BOS, not CHoCH
-        if signal_direction == 'bull' and prior_trend_bull and swing_h:
-            if latest_bar['close'] > swing_h:
-                return {
-                    'type':        'BOS',
-                    'direction':   'bull',
-                    'prior_trend': 'bull',
-                    'break_level': swing_h,
-                    'break_price': latest_bar['close'],
-                    'strength':    round((latest_bar['close'] - swing_h) / swing_h * 100, 3),
-                    'is_reversal': False,
-                    'quality':     'MEDIUM',  # continuation BOS
-                }
-
-        if signal_direction == 'bear' and prior_trend_bear and swing_l:
-            if latest_bar['close'] < swing_l:
-                return {
-                    'type':        'BOS',
-                    'direction':   'bear',
-                    'prior_trend': 'bear',
-                    'break_level': swing_l,
-                    'break_price': latest_bar['close'],
-                    'strength':    round((swing_l - latest_bar['close']) / swing_l * 100, 3),
-                    'is_reversal': False,
-                    'quality':     'MEDIUM',
-                }
-
-    except Exception as e:
-        print(f"[SMC-ENGINE] CHoCH error (non-fatal): {e}")
-
-    return None
+    # BOS aligns with existing trend = continuation (already extended)
+    return {
+        'is_choch':         False,
+        'choch_type':       'CONTINUATION',
+        'phase':            phase,
+        'confidence_delta': 0.0
+    }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 2. INDUCEMENT DETECTION
-# ─────────────────────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# 3. INDUCEMENT DETECTION
+# ══════════════════════════════════════════════════════════════════════════════
 
-def detect_inducement(bars: List[Dict], signal_direction: str) -> Optional[Dict]:
+def detect_inducement(bars: List[Dict], bos_direction: str,
+                      swing_level: float) -> Dict:
     """
-    Detect Inducement (liquidity sweep / stop hunt before real move).
+    Detect if the BOS bar is an inducement (liquidity sweep) rather than
+    a genuine structural break.
 
-    Inducement = price briefly breaks a swing level (clearing retail stop
-    orders / triggering breakout traders) then immediately reverses.
-    Institutions use this to build positions at better prices.
+    An inducement is characterized by:
+        - Close breaks beyond the swing level by ≤ INDUCEMENT_MAX_PCT
+        - The bar's wick extends beyond but the close barely clears the level
+        - i.e., the move is a stop-hunt, not a conviction break
 
-    Logic:
-      For a BULL signal:
-        1. Find a recent swing LOW.
-        2. Did price wick BELOW it (inducement sweep)?
-        3. Did price then CLOSE BACK ABOVE it within N bars?
-        → Classic bear trap / stop hunt before the real bull move.
+    A genuine BOS breaks cleanly beyond the swing level with conviction.
 
-      For a BEAR signal:
-        1. Find a recent swing HIGH.
-        2. Did price wick ABOVE it?
-        3. Did price then close BACK BELOW it?
-        → Classic bull trap / stop hunt before the real bear move.
-
-    If inducement is detected immediately BEFORE the current BOS signal,
-    the signal is significantly higher probability (institutions cleared
-    the liquidity and are now running price in their direction).
-
-    Returns inducement dict or None.
+    Returns:
+        {
+            'is_inducement':    bool,
+            'sweep_pct':        float  (how far beyond swing the close went)
+            'confidence_delta': float  (0 or INDUCEMENT_PENALTY)
+            'description':      str
+        }
     """
-    if len(bars) < 20:
-        return None
+    if not bars or swing_level <= 0:
+        return {'is_inducement': False, 'sweep_pct': 0.0,
+                'confidence_delta': 0.0, 'description': 'No swing level'}
 
-    try:
-        # Scan the last 15 bars (excluding most recent)
-        scan_window = bars[-16:-1]
-        if len(scan_window) < 10:
-            return None
+    bos_bar   = bars[-1]
+    bos_close = bos_bar['close']
+    bos_high  = bos_bar['high']
+    bos_low   = bos_bar['low']
 
-        swing_h, _ = _swing_high(scan_window)
-        swing_l, _ = _swing_low(scan_window)
+    if bos_direction == 'bull':
+        # How far did the CLOSE break above swing high?
+        sweep_pct = (bos_close - swing_level) / swing_level
+        # Wick extended far but close barely cleared = inducement
+        wick_extension = (bos_high - swing_level) / swing_level
+        is_inducement  = (
+            0 < sweep_pct <= INDUCEMENT_MAX_PCT and
+            wick_extension > sweep_pct * 2  # wick >> close extension
+        )
+    else:  # bear
+        sweep_pct = (swing_level - bos_close) / swing_level
+        wick_extension = (swing_level - bos_low) / swing_level
+        is_inducement  = (
+            0 < sweep_pct <= INDUCEMENT_MAX_PCT and
+            wick_extension > sweep_pct * 2
+        )
 
-        if signal_direction == 'bull' and swing_l:
-            # Look for a wick below swing_low followed by close above it
-            for i in range(len(scan_window) - 1):
-                bar      = scan_window[i]
-                next_bar = scan_window[i + 1]
-                sweep_depth = swing_l - bar['low']
-                if (bar['low'] < swing_l
-                        and sweep_depth / swing_l >= _INDUCEMENT_MIN_PCT
-                        and next_bar['close'] > swing_l):
-                    return {
-                        'type':          'INDUCEMENT',
-                        'direction':     'bull',
-                        'sweep_level':   swing_l,
-                        'sweep_low':     bar['low'],
-                        'recovery_bar':  i + 1,
-                        'sweep_depth':   round(sweep_depth, 4),
-                        'sweep_pct':     round(sweep_depth / swing_l * 100, 3),
-                        'confirmed':     True,
-                        'note':          'Bear trap: price swept below swing low then recovered — bulls in control',
-                    }
+    if is_inducement:
+        desc = (
+            f"⚠️ Inducement sweep detected: close broke {sweep_pct*100:.3f}% beyond "
+            f"swing — wick extension {wick_extension*100:.3f}% suggests stop-hunt"
+        )
+    else:
+        desc = f"Clean BOS: {sweep_pct*100:.3f}% beyond swing level"
 
-        if signal_direction == 'bear' and swing_h:
-            # Look for a wick above swing_high followed by close below it
-            for i in range(len(scan_window) - 1):
-                bar      = scan_window[i]
-                next_bar = scan_window[i + 1]
-                sweep_height = bar['high'] - swing_h
-                if (bar['high'] > swing_h
-                        and sweep_height / swing_h >= _INDUCEMENT_MIN_PCT
-                        and next_bar['close'] < swing_h):
-                    return {
-                        'type':          'INDUCEMENT',
-                        'direction':     'bear',
-                        'sweep_level':   swing_h,
-                        'sweep_high':    bar['high'],
-                        'recovery_bar':  i + 1,
-                        'sweep_height':  round(sweep_height, 4),
-                        'sweep_pct':     round(sweep_height / swing_h * 100, 3),
-                        'confirmed':     True,
-                        'note':          'Bull trap: price swept above swing high then rejected — bears in control',
-                    }
-
-    except Exception as e:
-        print(f"[SMC-ENGINE] Inducement error (non-fatal): {e}")
-
-    return None
+    return {
+        'is_inducement':    is_inducement,
+        'sweep_pct':        round(sweep_pct * 100, 4),
+        'wick_extension':   round(wick_extension * 100, 4),
+        'confidence_delta': INDUCEMENT_PENALTY if is_inducement else 0.0,
+        'description':      desc
+    }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 3. ORDER BLOCK DETECTION
-# ─────────────────────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# 4. ORDER BLOCK DETECTION
+# ══════════════════════════════════════════════════════════════════════════════
 
-def detect_order_block(bars: List[Dict], signal_direction: str) -> Optional[Dict]:
+def find_order_block(bars: List[Dict], bos_direction: str,
+                     bos_idx: int) -> Optional[Dict]:
     """
-    Detect the most recent Order Block (OB) relevant to the signal direction.
+    Find the Order Block — the last opposing candle before the impulsive
+    move that caused the BOS.
 
-    Order Block = the LAST opposing candle before a strong impulsive move.
-    Institutions accumulate/distribute in this candle. Price frequently
-    returns to the OB zone for liquidity before continuing the move.
+    SMC definition:
+        BULL OB: last BEARISH (red) candle before the impulsive upward move
+                 that created the BOS. Price is expected to return to this zone.
+        BEAR OB: last BULLISH (green) candle before the impulsive downward move.
 
-    Logic:
-      For a BULL signal:
-        - Find the most recent strong BULLISH impulse (series of green candles
-          or single large green candle with impulse body ratio).
-        - The OB is the last RED (bearish) candle BEFORE that impulse started.
-        - OB zone = that candle's high (top) to low (bottom).
-
-      For a BEAR signal:
-        - Find the most recent strong BEARISH impulse.
-        - The OB is the last GREEN (bullish) candle before that impulse.
-        - OB zone = that candle's high to low.
-
-    The OB is a high-probability entry zone when price returns to it after
-    the initial impulse (retrace to OB = institutional reloading).
+    The OB zone = [OB candle low, OB candle high] (full candle body + wicks).
+    A mitigated OB (price has already traded back through it) is marked stale.
 
     Returns OB dict or None.
     """
-    if len(bars) < 15:
+    if bos_idx is None or bos_idx < 3:
         return None
 
-    try:
-        # Scan last 20 bars (excluding latest) for impulse origin
-        scan_bars = bars[-21:-1]
-        if len(scan_bars) < 10:
-            return None
+    # Search backward from BOS candle for the last opposing candle
+    lookback_start = max(0, bos_idx - OB_LOOKBACK)
+    search_bars    = bars[lookback_start:bos_idx]
 
-        if signal_direction == 'bull':
-            # Find the most recent bullish impulse candle
-            for i in range(len(scan_bars) - 1, 0, -1):
-                bar = scan_bars[i]
-                if _bar_direction(bar) == 'bull' and _is_impulsive(bar):
-                    # Found impulse candle. Look back for last opposing (bear) candle
-                    for j in range(i - 1, max(i - _OB_LOOKBACK - 1, -1), -1):
-                        candidate = scan_bars[j]
-                        if _bar_direction(candidate) == 'bear':
-                            ob_zone_high = candidate['high']
-                            ob_zone_low  = candidate['low']
-                            ob_size      = ob_zone_high - ob_zone_low
-                            ob_mid       = (ob_zone_high + ob_zone_low) / 2
-                            return {
-                                'type':        'ORDER_BLOCK',
-                                'direction':   'bull',
-                                'ob_high':     round(ob_zone_high, 4),
-                                'ob_low':      round(ob_zone_low,  4),
-                                'ob_mid':      round(ob_mid,       4),
-                                'ob_size':     round(ob_size,      4),
-                                'impulse_idx': i,
-                                'ob_idx':      j,
-                                'valid':       True,
-                                'note':        'Last bearish candle before bullish impulse — institutional demand zone',
-                            }
+    ob_bar     = None
+    ob_bar_idx = None
 
-        elif signal_direction == 'bear':
-            # Find the most recent bearish impulse candle
-            for i in range(len(scan_bars) - 1, 0, -1):
-                bar = scan_bars[i]
-                if _bar_direction(bar) == 'bear' and _is_impulsive(bar):
-                    # Found impulse candle. Look back for last opposing (bull) candle
-                    for j in range(i - 1, max(i - _OB_LOOKBACK - 1, -1), -1):
-                        candidate = scan_bars[j]
-                        if _bar_direction(candidate) == 'bull':
-                            ob_zone_high = candidate['high']
-                            ob_zone_low  = candidate['low']
-                            ob_size      = ob_zone_high - ob_zone_low
-                            ob_mid       = (ob_zone_high + ob_zone_low) / 2
-                            return {
-                                'type':        'ORDER_BLOCK',
-                                'direction':   'bear',
-                                'ob_high':     round(ob_zone_high, 4),
-                                'ob_low':      round(ob_zone_low,  4),
-                                'ob_mid':      round(ob_mid,       4),
-                                'ob_size':     round(ob_size,      4),
-                                'impulse_idx': i,
-                                'ob_idx':      j,
-                                'valid':       True,
-                                'note':        'Last bullish candle before bearish impulse — institutional supply zone',
-                            }
+    for i in range(len(search_bars) - 1, -1, -1):
+        bar        = search_bars[i]
+        body       = abs(bar['close'] - bar['open'])
+        bar_range  = bar['high'] - bar['low']
 
-    except Exception as e:
-        print(f"[SMC-ENGINE] OrderBlock error (non-fatal): {e}")
+        if bar_range == 0:
+            continue
 
-    return None
+        body_pct = body / bar_range
 
+        # Must have meaningful body (not a doji)
+        if body_pct < OB_MIN_BODY_PCT:
+            continue
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 4. ORDER BLOCK RETEST CHECK
-# ─────────────────────────────────────────────────────────────────────────────
+        is_bearish = bar['close'] < bar['open']
+        is_bullish = bar['close'] > bar['open']
 
-def check_ob_retest(bars: List[Dict], order_block: Optional[Dict]) -> Optional[Dict]:
-    """
-    Check if current price is retesting the Order Block zone.
+        if bos_direction == 'bull' and is_bearish:
+            ob_bar     = bar
+            ob_bar_idx = lookback_start + i
+            break  # Last bearish candle before bull impulse
 
-    A retest of the OB zone is the HIGHEST probability entry in SMC:
-    - Price moved away from the OB (impulse confirmed institutions were there)
-    - Price pulled back INTO the OB zone (institutions reloading)
-    - Entry: on touch of OB zone with confirmation candle
-    - Stop: just beyond the far side of OB
+        if bos_direction == 'bear' and is_bullish:
+            ob_bar     = bar
+            ob_bar_idx = lookback_start + i
+            break  # Last bullish candle before bear impulse
 
-    For a bull OB: current price retesting the OB = low of current bar
-    touches between ob_low and ob_high.
-    For a bear OB: current high touches between ob_low and ob_high.
-
-    Returns retest dict (with entry zone) or None.
-    """
-    if order_block is None or len(bars) < 2:
+    if ob_bar is None:
         return None
 
-    try:
-        current_bar = bars[-1]
-        ob_high = order_block['ob_high']
-        ob_low  = order_block['ob_low']
-        ob_mid  = order_block['ob_mid']
-        direction = order_block['direction']
+    # Check if OB has already been mitigated (price traded back through it)
+    ob_high = ob_bar['high']
+    ob_low  = ob_bar['low']
+    ob_mid  = (ob_high + ob_low) / 2
 
-        if direction == 'bull':
-            # Price low touching OB zone and closing above mid (confirming demand)
-            if current_bar['low'] <= ob_high and current_bar['close'] >= ob_mid:
-                return {
-                    'retest':        True,
-                    'retest_type':   'OB_DEMAND_ZONE',
-                    'entry_zone_hi': ob_high,
-                    'entry_zone_lo': ob_low,
-                    'stop_below':    round(ob_low * 0.998, 4),  # 0.2% below OB low
-                    'quality':       'HIGH' if current_bar['close'] > ob_mid else 'MEDIUM',
-                    'note':          'Price retesting demand OB — institutional buy zone active',
-                }
+    mitigated = False
+    if ob_bar_idx is not None:
+        post_ob_bars = bars[ob_bar_idx + 1:]
+        for b in post_ob_bars:
+            if bos_direction == 'bull' and b['low'] < ob_mid:
+                mitigated = True
+                break
+            if bos_direction == 'bear' and b['high'] > ob_mid:
+                mitigated = True
+                break
 
-        elif direction == 'bear':
-            # Price high touching OB zone and closing below mid (confirming supply)
-            if current_bar['high'] >= ob_low and current_bar['close'] <= ob_mid:
-                return {
-                    'retest':        True,
-                    'retest_type':   'OB_SUPPLY_ZONE',
-                    'entry_zone_hi': ob_high,
-                    'entry_zone_lo': ob_low,
-                    'stop_above':    round(ob_high * 1.002, 4),  # 0.2% above OB high
-                    'quality':       'HIGH' if current_bar['close'] < ob_mid else 'MEDIUM',
-                    'note':          'Price retesting supply OB — institutional sell zone active',
-                }
+    body_high = max(ob_bar['open'], ob_bar['close'])
+    body_low  = min(ob_bar['open'], ob_bar['close'])
 
-    except Exception as e:
-        print(f"[SMC-ENGINE] OB retest error (non-fatal): {e}")
-
-    return None
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 5. TREND PHASE CLASSIFICATION
-# ─────────────────────────────────────────────────────────────────────────────
-
-def classify_trend_phase(bars: List[Dict]) -> str:
-    """
-    Classify the current market structure phase:
-
-      ACCUMULATION  — sideways range after a downtrend (smart money building longs)
-      MARKUP        — active uptrend: higher highs + higher lows
-      DISTRIBUTION  — sideways range after an uptrend (smart money distributing)
-      MARKDOWN      — active downtrend: lower highs + lower lows
-      UNKNOWN       — insufficient data or no clear pattern
-
-    Method: Wyckoff-inspired swing structure on last 30 bars.
-      - Extract swing highs and lows
-      - Determine HH/HL (markup) or LH/LL (markdown) pattern
-      - Range-bound after trend = distribution/accumulation
-    """
-    if len(bars) < 30:
-        return 'UNKNOWN'
-
-    try:
-        window = bars[-30:]
-        closes = [b['close'] for b in window]
-        highs  = [b['high']  for b in window]
-        lows   = [b['low']   for b in window]
-
-        # Split into 3 thirds: early, mid, late
-        third = len(closes) // 3
-        early_hi  = max(highs[:third])
-        early_lo  = min(lows[:third])
-        mid_hi    = max(highs[third:2*third])
-        mid_lo    = min(lows[third:2*third])
-        late_hi   = max(highs[2*third:])
-        late_lo   = min(lows[2*third:])
-
-        # MARKUP: each third makes higher highs AND higher lows
-        if late_hi > mid_hi > early_hi and late_lo > mid_lo > early_lo:
-            return 'MARKUP'
-
-        # MARKDOWN: each third makes lower highs AND lower lows
-        if late_hi < mid_hi < early_hi and late_lo < mid_lo < early_lo:
-            return 'MARKDOWN'
-
-        # Range-bound detection: price oscillates within a band
-        total_range = max(highs) - min(lows)
-        if total_range == 0:
-            return 'UNKNOWN'
-
-        # Measure price displacement from start to end vs total range
-        net_move  = abs(closes[-1] - closes[0])
-        range_use = net_move / total_range
-
-        if range_use < 0.35:  # Less than 35% net displacement = range-bound
-            # Prior trend determines if it’s accumulation or distribution
-            early_avg = sum(closes[:third]) / third
-            late_avg  = sum(closes[2*third:]) / (len(closes) - 2*third)
-            if early_avg < late_avg:
-                return 'DISTRIBUTION'  # Range after uptrend
-            else:
-                return 'ACCUMULATION'  # Range after downtrend
-
-        # Mixed: HH but not HL, etc.
-        if late_hi > early_hi and late_lo > early_lo:
-            return 'MARKUP'
-        if late_hi < early_hi and late_lo < early_lo:
-            return 'MARKDOWN'
-
-    except Exception as e:
-        print(f"[SMC-ENGINE] TrendPhase error (non-fatal): {e}")
-
-    return 'UNKNOWN'
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# SCORING & FILTER
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _compute_smc_score(
-    choch:       Optional[Dict],
-    inducement:  Optional[Dict],
-    order_block: Optional[Dict],
-    ob_retest:   Optional[Dict],
-    trend_phase: str,
-    direction:   str,
-) -> Tuple[float, bool, List[str]]:
-    """
-    Compute a composite SMC score (0.0 – 1.0) and filter decision.
-
-    Score components:
-      CHoCH:       +0.30 if CHoCH (reversal), +0.15 if BOS (continuation)
-      Inducement:  +0.15 if confirmed
-      Order Block: +0.25 if detected, +0.05 bonus if retest confirmed
-      Trend Phase: +0.25 if phase aligns with signal direction
-                   +0.10 if accumulation/distribution (neutral)
-                    0.00 if directly opposing phase
-
-    smc_filter: True = signal passes (safe to trade)
-      - HARD BLOCK: BOS in direction of current trend DURING DISTRIBUTION
-        (bull signal in distribution = almost certainly inducement/trap)
-      - HARD BLOCK: bear signal during ACCUMULATION
-      - WARNING: signal during UNKNOWN phase (score penalized, not blocked)
-    """
-    score = 0.0
-    notes = []
-    smc_filter = True
-
-    # CHoCH / BOS quality
-    if choch:
-        if choch.get('is_reversal') and choch.get('type') == 'CHoCH':
-            score += _W_CHOCH
-            notes.append(f"CHoCH reversal detected (prior_trend={choch['prior_trend']}) +{_W_CHOCH:.0%}")
-        elif choch.get('type') == 'BOS':
-            score += _W_CHOCH * 0.5
-            notes.append(f"BOS continuation (trend-aligned) +{_W_CHOCH*0.5:.0%}")
-    else:
-        notes.append('No CHoCH/BOS context — neutral')
-
-    # Inducement
-    if inducement and inducement.get('confirmed'):
-        score += _W_INDUCEMENT
-        notes.append(f"Inducement sweep confirmed +{_W_INDUCEMENT:.0%}")
-    else:
-        notes.append('No inducement sweep detected')
-
-    # Order Block
-    if order_block and order_block.get('valid'):
-        score += _W_OB * 0.85
-        notes.append(f"Order Block identified ({order_block['direction'].upper()}) +{_W_OB*0.85:.0%}")
-        if ob_retest and ob_retest.get('retest'):
-            score += _W_OB * 0.15
-            notes.append(f"OB retest active ({ob_retest['retest_type']}) +{_W_OB*0.15:.0%}")
-    else:
-        notes.append('No Order Block found')
-
-    # Trend Phase alignment
-    phase_aligned = {
-        'bull': ['MARKUP', 'ACCUMULATION'],
-        'bear': ['MARKDOWN', 'DISTRIBUTION'],
-    }
-    phase_opposing = {
-        'bull': ['DISTRIBUTION', 'MARKDOWN'],
-        'bear': ['ACCUMULATION', 'MARKUP'],
+    return {
+        'ob_high':        ob_high,
+        'ob_low':         ob_low,
+        'ob_mid':         round(ob_mid, 4),
+        'body_high':      body_high,
+        'body_low':       body_low,
+        'ob_bar_idx':     ob_bar_idx,
+        'ob_direction':   bos_direction,
+        'mitigated':      mitigated,
+        'ob_datetime':    ob_bar.get('datetime'),
+        'description':    (
+            f"{'🟢 BULL' if bos_direction == 'bull' else '🔴 BEAR'} OB "
+            f"@ {ob_low:.2f}–{ob_high:.2f} "
+            f"{'[MITIGATED]' if mitigated else '[FRESH]'}"
+        )
     }
 
-    if trend_phase in phase_aligned.get(direction, []):
-        score += _W_PHASE
-        notes.append(f"Trend phase aligned ({trend_phase}) +{_W_PHASE:.0%}")
-    elif trend_phase in ['UNKNOWN']:
-        score += _W_PHASE * 0.4
-        notes.append(f"Trend phase unknown — partial credit +{_W_PHASE*0.4:.0%}")
-    else:  # Opposing phase
-        score += 0.0
-        notes.append(f"Trend phase OPPOSING ({trend_phase}) — no credit")
 
-        # Hard blocks: signal directly opposing institutional phase
-        if trend_phase == 'DISTRIBUTION' and direction == 'bull':
-            smc_filter = False
-            notes.append('SMC FILTER BLOCK: bull signal during DISTRIBUTION — likely inducement trap')
-        elif trend_phase == 'ACCUMULATION' and direction == 'bear':
-            smc_filter = False
-            notes.append('SMC FILTER BLOCK: bear signal during ACCUMULATION — likely inducement trap')
+def check_ob_retest(bars: List[Dict], ob: Dict) -> Dict:
+    """
+    Check if the current bar (bars[-1]) is retesting the Order Block.
 
-    score = round(min(score, 1.0), 4)
-    return score, smc_filter, notes
+    A valid OB retest:
+        - Price's low (bull) or high (bear) touches the OB zone
+        - Close stays within or above/below the OB zone (not blown through)
+        - OB must be fresh (not mitigated)
+
+    Returns:
+        {
+            'is_retest':        bool,
+            'retest_quality':   'BODY' | 'WICK' | 'NONE',
+            'confidence_delta': float
+        }
+    """
+    if not ob or ob.get('mitigated', True) or len(bars) < 2:
+        return {'is_retest': False, 'retest_quality': 'NONE', 'confidence_delta': 0.0}
+
+    current = bars[-1]
+    ob_high = ob['ob_high']
+    ob_low  = ob['ob_low']
+    direction = ob['ob_direction']
+
+    if direction == 'bull':
+        touched = current['low'] <= ob_high and current['low'] >= ob_low * 0.995
+        if not touched:
+            return {'is_retest': False, 'retest_quality': 'NONE', 'confidence_delta': 0.0}
+        # Body retest (open or close within OB) = higher quality
+        body_in_ob = (min(current['open'], current['close']) >= ob_low and
+                      min(current['open'], current['close']) <= ob_high)
+        quality = 'BODY' if body_in_ob else 'WICK'
+
+    else:  # bear
+        touched = current['high'] >= ob_low and current['high'] <= ob_high * 1.005
+        if not touched:
+            return {'is_retest': False, 'retest_quality': 'NONE', 'confidence_delta': 0.0}
+        body_in_ob = (max(current['open'], current['close']) >= ob_low and
+                      max(current['open'], current['close']) <= ob_high)
+        quality = 'BODY' if body_in_ob else 'WICK'
+
+    boost = OB_RETEST_BOOST if quality == 'BODY' else OB_RETEST_BOOST * 0.5
+    return {
+        'is_retest':        True,
+        'retest_quality':   quality,
+        'confidence_delta': boost,
+        'description':      f"{quality} retest of {ob['description']}"
+    }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# DB PERSISTENCE
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _ensure_smc_table():
+    try:
+        from app.data.db_connection import get_conn, serial_pk, return_conn
+        conn = get_conn()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(f"""
+                CREATE TABLE IF NOT EXISTS smc_signal_context (
+                    id {serial_pk()},
+                    ticker          TEXT NOT NULL,
+                    signal_type     TEXT NOT NULL,
+                    direction       TEXT NOT NULL,
+                    is_choch        BOOLEAN DEFAULT FALSE,
+                    choch_type      TEXT,
+                    trend_phase     TEXT,
+                    trend_bias      TEXT,
+                    is_inducement   BOOLEAN DEFAULT FALSE,
+                    inducement_pct  REAL,
+                    ob_zone_low     REAL,
+                    ob_zone_high    REAL,
+                    ob_mitigated    BOOLEAN,
+                    ob_retest       BOOLEAN DEFAULT FALSE,
+                    ob_retest_qual  TEXT,
+                    confidence_delta REAL DEFAULT 0.0,
+                    session_date    DATE,
+                    ts              TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            conn.commit()
+        finally:
+            return_conn(conn)
+    except Exception as e:
+        print(f"[SMC-ENGINE] DB init error (non-fatal): {e}")
+
+
+_ensure_smc_table()
+
+
+def _persist_smc_context(ticker: str, smc: Dict):
+    try:
+        from app.data.db_connection import get_conn, ph as _ph, return_conn
+        conn = get_conn()
+        now  = datetime.now(_ET)
+        ob   = smc.get('order_block') or {}
+        obr  = smc.get('ob_retest')   or {}
+        choch = smc.get('choch')      or {}
+        ind   = smc.get('inducement') or {}
+        phase = choch.get('phase')    or {}
+        try:
+            cursor = conn.cursor()
+            p = _ph()
+            cursor.execute(
+                f"INSERT INTO smc_signal_context "
+                f"(ticker, signal_type, direction, is_choch, choch_type, "
+                f" trend_phase, trend_bias, is_inducement, inducement_pct, "
+                f" ob_zone_low, ob_zone_high, ob_mitigated, ob_retest, "
+                f" ob_retest_qual, confidence_delta, session_date, ts) "
+                f"VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p})",
+                (
+                    ticker,
+                    smc.get('signal_type', 'BOS+FVG'),
+                    smc.get('direction', ''),
+                    choch.get('is_choch', False),
+                    choch.get('choch_type'),
+                    phase.get('phase'),
+                    phase.get('trend_bias'),
+                    ind.get('is_inducement', False),
+                    ind.get('sweep_pct'),
+                    ob.get('ob_low'),
+                    ob.get('ob_high'),
+                    ob.get('mitigated'),
+                    obr.get('is_retest', False),
+                    obr.get('retest_quality'),
+                    smc.get('total_confidence_delta', 0.0),
+                    now.date(),
+                    now,
+                )
+            )
+            conn.commit()
+        finally:
+            return_conn(conn)
+    except Exception as e:
+        print(f"[SMC-ENGINE] Persist error (non-fatal): {e}")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # PUBLIC API — enrich_signal_with_smc()
-# ─────────────────────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
 
 def enrich_signal_with_smc(
-    ticker:    str,
-    direction: str,
-    bars:      List[Dict],
-    signal:    Dict,
+    ticker:      str,
+    bars:        List[Dict],
+    signal_data: Dict,
 ) -> Dict:
     """
-    Main entry point. Called from bos_fvg_engine.scan_bos_fvg() after
-    a signal is produced, and from mtf_integration.enhance_signal_with_mtf().
+    Main entry point. Called from sniper.py after BOS+FVG fires.
 
-    Runs all 5 SMC detection functions and injects results into signal dict.
-    Never raises — all errors are caught internally.
-
-    Returns the enriched signal dict.
-    """
-    try:
-        # 1. CHoCH
-        choch = detect_choch(bars, direction)
-
-        # 2. Inducement
-        inducement = detect_inducement(bars, direction)
-
-        # 3. Order Block
-        order_block = detect_order_block(bars, direction)
-
-        # 4. OB Retest
-        ob_retest = check_ob_retest(bars, order_block)
-
-        # 5. Trend Phase
-        trend_phase = classify_trend_phase(bars)
-
-        # Score + filter
-        smc_score, smc_filter, smc_notes = _compute_smc_score(
-            choch, inducement, order_block, ob_retest, trend_phase, direction
-        )
-
-        # Inject into signal
-        signal['smc'] = {
-            'choch':       choch,
-            'inducement':  inducement,
-            'order_block': order_block,
-            'ob_retest':   ob_retest,
-            'trend_phase': trend_phase,
-            'smc_score':   smc_score,
-            'smc_filter':  smc_filter,
-            'smc_notes':   smc_notes,
+    Enriches signal_data with SMC context and adjusts confidence:
+        signal_data['smc'] = {
+            'choch':              {...},
+            'inducement':         {...},
+            'order_block':        {...} | None,
+            'ob_retest':          {...},
+            'trend_phase':        {...},
+            'total_confidence_delta': float,
+            'smc_summary':        str
         }
 
-        # Log summary
-        choch_label = (
-            f"✅ {choch['type']} ({choch['prior_trend']}→{choch['direction']})" if choch
-            else '—'
-        )
-        ind_label = (
-            f"✅ {inducement['sweep_pct']:.2f}% sweep" if inducement
-            else '—'
-        )
-        ob_label = (
-            f"✅ {order_block['ob_low']:.2f}–{order_block['ob_high']:.2f}"
-            + (f" RETEST" if ob_retest else "")
-            if order_block else '—'
-        )
-        filter_label = '✅ PASS' if smc_filter else '❌ BLOCK'
+    NEVER raises. All failures are non-fatal.
+    Returns signal_data unchanged on any error.
+    """
+    try:
+        direction = signal_data.get('direction', 'bull')
+        bos_idx   = signal_data.get('bos_idx')
+        bos_price = signal_data.get('bos_price', 0.0)
 
-        print(
-            f"[SMC] {ticker} {direction.upper()} | "
-            f"CHoCH:{choch_label} | Inducement:{ind_label} | "
-            f"OB:{ob_label} | Phase:{trend_phase} | "
-            f"Score:{smc_score:.2f} | Filter:{filter_label}"
+        # ── 1. Trend Phase ───────────────────────────────────────────
+        phase = classify_trend_phase(bars)
+
+        # ── 2. CHoCH ─────────────────────────────────────────────────
+        choch = detect_choch(bars, direction)
+
+        # ── 3. Inducement ─────────────────────────────────────────────
+        inducement = detect_inducement(bars, direction, bos_price)
+
+        # ── 4. Order Block ────────────────────────────────────────────
+        ob = find_order_block(bars, direction, bos_idx)
+
+        # ── 5. OB Retest ──────────────────────────────────────────────
+        ob_retest = check_ob_retest(bars, ob) if ob else \
+            {'is_retest': False, 'retest_quality': 'NONE', 'confidence_delta': 0.0}
+
+        # ── Phase alignment boost ─────────────────────────────────────
+        phase_delta = 0.0
+        if (direction == 'bull' and phase.get('trend_bias') == 'bull') or \
+           (direction == 'bear' and phase.get('trend_bias') == 'bear'):
+            phase_delta = PHASE_ALIGN_BOOST
+
+        # ── Total delta (cap at +0.10 / floor at -0.05) ───────────────
+        total_delta = (
+            choch.get('confidence_delta', 0.0) +
+            inducement.get('confidence_delta', 0.0) +
+            ob_retest.get('confidence_delta', 0.0) +
+            phase_delta
         )
-        for note in smc_notes:
-            print(f"  └ {note}")
+        total_delta = max(-0.05, min(0.10, total_delta))
+
+        # ── Summary string for logs / Discord ─────────────────────────
+        smc_tags = []
+        if choch.get('is_choch'):
+            smc_tags.append(f"CHoCH:{choch['choch_type']}")
+        if inducement.get('is_inducement'):
+            smc_tags.append("⚠️INDUCEMENT")
+        if ob and not ob.get('mitigated'):
+            smc_tags.append(f"OB@{ob['ob_low']:.2f}-{ob['ob_high']:.2f}")
+        if ob_retest.get('is_retest'):
+            smc_tags.append(f"OB_RETEST:{ob_retest['retest_quality']}")
+        smc_tags.append(f"PHASE:{phase['phase']}")
+
+        smc_summary = ' | '.join(smc_tags) if smc_tags else 'SMC:NO_CONTEXT'
+
+        smc_context = {
+            'choch':                 choch,
+            'inducement':            inducement,
+            'order_block':           ob,
+            'ob_retest':             ob_retest,
+            'trend_phase':           phase,
+            'total_confidence_delta': total_delta,
+            'smc_summary':           smc_summary,
+            'direction':             direction,
+            'signal_type':           signal_data.get('entry_type', 'BOS+FVG'),
+        }
+
+        signal_data['smc'] = smc_context
+
+        # Log
+        delta_str = f"+{total_delta*100:.1f}%" if total_delta >= 0 else f"{total_delta*100:.1f}%"
+        print(
+            f"[SMC] {ticker} {direction.upper()} | {smc_summary} | "
+            f"conf_delta={delta_str}"
+        )
+
+        # Persist (non-fatal)
+        _persist_smc_context(ticker, smc_context)
 
     except Exception as e:
-        print(f"[SMC-ENGINE] enrich_signal_with_smc error (non-fatal): {e}")
-        signal.setdefault('smc', {
-            'choch': None, 'inducement': None, 'order_block': None,
-            'ob_retest': None, 'trend_phase': 'UNKNOWN',
-            'smc_score': 0.0, 'smc_filter': True, 'smc_notes': ['SMC error — filter bypassed'],
-        })
+        print(f"[SMC-ENGINE] enrich error for {ticker} (non-fatal): {e}")
 
-    return signal
+    return signal_data
 
 
-print("[SMC-ENGINE] ✅ Loaded — CHoCH + Inducement + OrderBlock + TrendPhase active")
+print("[SMC-ENGINE] ✅ SMC engine initialized — CHoCH, Inducement, OB, Phase active")
