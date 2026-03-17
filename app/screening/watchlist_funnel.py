@@ -75,6 +75,15 @@ TUNE v3.7 (MAR 16, 2026) - Stage threshold tuning + catalyst bypass:
   - _apply_catalyst_bypass() added: tickers with catalyst_score > 0 skip the
     min_score gate at wide and narrow stages unconditionally. Earnings / mergers /
     FDA events are highest-probability options setups regardless of RVOL score.
+
+FIX v3.8 (MAR 17, 2026) - WS coverage filter before lock:
+  - _build_live_watchlist() now drops tickers with zero session bars before
+    the watchlist is locked. Tickers subscribed to the EODHD WebSocket but
+    receiving no data (e.g. CFLT) were firing ⚠️ No session bars every scan
+    cycle for the entire session. The filter runs once at lock time (9:30 ET)
+    so there is zero overhead during the live session.
+  - Falls back to the full unfiltered list only if every ticker fails the
+    check (safety net — should never happen in practice).
 """
 import sys
 from pathlib import Path
@@ -109,6 +118,49 @@ def _get_discord_helpers():
 def _normalise(watchlist: List[str]) -> List[str]:
     """Force all ticker symbols to uppercase. Single canonical normalisation point."""
     return [t.upper() for t in watchlist if t]
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# FIX v3.8: WS COVERAGE FILTER
+# Drop tickers that have zero session bars at lock time. These are tickers
+# subscribed to EODHD WebSocket but for which EODHD sends no data.
+# ════════════════════════════════════════════════════════════════════════════════
+
+def _filter_ws_covered(watchlist: List[str]) -> List[str]:
+    """
+    FIX v3.8: Remove tickers with zero today session bars before lock.
+
+    Tickers can pass scoring but have no WS coverage from EODHD (e.g. CFLT).
+    Locking them causes ⚠️ No session bars every scan cycle all session.
+    This check runs once at 9:30 ET — zero runtime cost during live session.
+
+    Falls back to the full list if every ticker fails (safety net).
+    """
+    try:
+        from app.data.data_manager import data_manager
+        covered = []
+        dropped = []
+        for ticker in watchlist:
+            bars = data_manager.get_today_session_bars(ticker)
+            if bars:
+                covered.append(ticker)
+            else:
+                dropped.append(ticker)
+
+        if dropped:
+            print(f"[FUNNEL] 🚫 WS coverage filter dropped {len(dropped)} ticker(s) "
+                  f"with no session bars: {dropped}")
+
+        if not covered:
+            print("[FUNNEL] ⚠️  All tickers failed WS coverage check — keeping full list (safety net)")
+            return watchlist
+
+        print(f"[FUNNEL] ✅ WS coverage filter: {len(covered)}/{len(watchlist)} tickers verified")
+        return covered
+
+    except Exception as e:
+        print(f"[FUNNEL] ⚠️  WS coverage filter error (non-blocking): {e}")
+        return watchlist
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -503,6 +555,7 @@ class WatchlistFunnel:
         """
         PHASE 1.18: Only runs ONCE at 9:30 ET.
         PHASE 1.19: Applies relative strength/weakness outlier boost before lock.
+        FIX v3.8:   WS coverage filter drops zero-bar tickers before lock.
         """
         stage_config = self.stages["live"]
         screener_results = dynamic_screener.get_scored_tickers(
@@ -542,6 +595,11 @@ class WatchlistFunnel:
         watchlist = _get_momentum_screener().get_top_n_movers(
             self.scored_tickers, stage_config["max_tickers"]
         )
+
+        # FIX v3.8: Drop tickers with no session bars before lock.
+        # Tickers subscribed to EODHD WS but receiving no data would fire
+        # ⚠️ No session bars every scan cycle for the entire session.
+        watchlist = _filter_ws_covered(watchlist)
 
         _get_momentum_screener().lock_scanner_cache()
         self._locked_watchlist = None  # finalised after normalise in build_watchlist
