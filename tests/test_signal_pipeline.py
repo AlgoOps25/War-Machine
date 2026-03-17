@@ -483,25 +483,29 @@ class TestPositionManagerRejection:
     so no DB or network calls are made.
     """
 
-    def test_rejection_returns_negative_one(self, monkeypatch):
+    def test_rejection_returns_negative_one(self):
         import unittest.mock as _mock
 
         _stub = MagicMock()
         _stubs = {
             "utils":                      _stub,
-            "utils.config":               MagicMock(
+            "utils.config": MagicMock(
                 ACCOUNT_SIZE=25_000,
                 MAX_DAILY_LOSS_PCT=3.0,
                 MAX_OPEN_POSITIONS=5,
                 MAX_SECTOR_EXPOSURE_PCT=40.0,
                 MIN_RISK_REWARD_RATIO=1.5,
                 MAX_CONTRACTS=10,
+                MAX_INTRADAY_DRAWDOWN_PCT=5.0,
+                MARKET_OPEN=__import__('datetime').time(9, 30),
+                MARKET_CLOSE=__import__('datetime').time(16, 0),
                 POSITION_RISK={
                     "A+_high_confidence": 0.02,
                     "A_high_confidence":  0.015,
                     "standard":           0.01,
                     "conservative":       0.005,
                 },
+                EODHD_API_KEY="",
             ),
             "app.data":                   _stub,
             "app.data.db_connection":     _stub,
@@ -536,9 +540,13 @@ class TestPositionManagerRejection:
             pm._open_positions_cache = None
             pm._open_positions_ts = 0.0
 
-            monkeypatch.setattr(pm, '_check_risk_limits',
-                                lambda *a, **kw: (False, "max positions reached"),
-                                raising=False)
+            pm.validate_risk_reward = lambda *a, **kw: (True, 2.0)
+            pm.calculate_position_size = lambda *a, **kw: {
+                "contracts": 1, "risk_dollars": 250.0,
+                "risk_percentage": 1.0, "allocation_type": "1.0% risk",
+                "performance_adj": 1.0, "vix_mult": 1.0
+            }
+            pm._check_risk_limits = lambda *a, **kw: (False, "max positions reached")
 
             result = pm.open_position(
                 ticker='FAKE', direction='bull',
