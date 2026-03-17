@@ -29,6 +29,7 @@
 # VOLUME PROFILE (Step 6.6): Price must be near POC or high-volume nodes for valid entries
 # ENTRY TIMING (Step 6.7): Time-based WR adjustment + session quality filtering
 # MTF TREND (Step 8.5): Multi-timeframe trend alignment boost (1m/5m/15m/30m)
+# SMC ENRICHMENT (Step 8.6): CHoCH / Inducement / Order Block / Trend Phase context + conf delta
 # GATE DISTRIBUTION (Issue #23): EOD grade/signal-type/histogram report for gate analytics
 # FUNNEL ANALYTICS: Upstream pre-detection funnel (SCREENED→BOS→FVG→ARMED) via log_bos/log_fvg
 #
@@ -68,7 +69,7 @@
 #
 # FUNNEL ANALYTICS FIX (Mar 17 2026):
 #   - Corrected import path: app.analytics.funnel_analytics (was app.signals.funnel_analytics
-#     which does not exist — caused ImportError + FUNNEL_ANALYTICS_ENABLED = False every boot).
+#     which does not exist — caused ImportError + FUNNEL_ANALYTICS_ENABLED = False every boot)
 #   - Replaced log_bos(ticker, direction, price, signal_type=...) calls with thin wrappers
 #     _log_bos_event() / _log_fvg_event() that map to funnel_tracker.record_stage() directly.
 #     The old convenience functions only accept (ticker, passed, reason=None) — wrong sig.
@@ -78,6 +79,12 @@
 #   - app.screening.screener_integration: module deleted — wrapped in try/except stub.
 #   - app.core.gate_stats: module deleted — wrapped in try/except stub.
 #   - app.core.sniper_log: module deleted — wrapped in try/except stub.
+#
+# SMC ENRICHMENT (Mar 17 2026):
+#   - Step 8.6: enrich_signal_with_smc() wired into _run_signal_pipeline after run_mtf_trend_step.
+#   - Detects CHoCH, Inducement, Order Blocks, OB Retests, Trend Phase.
+#   - Applies confidence_delta from smc_context['total_confidence_delta'] before gate check.
+#   - Non-fatal: ImportError falls back to no-op stub; all internal errors are caught.
 import traceback
 from datetime import datetime, time, timedelta
 from utils.time_helpers import _now_et, _bar_time, _strip_tz
@@ -204,6 +211,18 @@ except ImportError:
     print("[SNIPER] ⚠️  MTF trend validator disabled")
     def run_mtf_trend_step(ticker, direction, entry_price, confidence, signal_data):
         return confidence, signal_data
+
+# ── Step 8.6: SMC Enrichment — CHoCH / Inducement / OB / Trend Phase ─────────
+try:
+    from app.mtf.smc_engine import enrich_signal_with_smc
+    SMC_ENRICHMENT_ENABLED = True
+    print("[SNIPER] ✅ SMC enrichment enabled (Step 8.6 — CHoCH/Inducement/OB/Phase)")
+except ImportError:
+    SMC_ENRICHMENT_ENABLED = False
+    print("[SNIPER] ⚠️  SMC enrichment disabled")
+    def enrich_signal_with_smc(ticker, bars, signal_data):
+        return signal_data
+
 try:
     from app.filters.sd_zone_confluence import (
         cache_sd_zones, apply_sd_confluence_boost, clear_sd_cache
@@ -553,6 +572,23 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
     )
     _mtf_trend_boost = _mtf_trend_signal_data.get('mtf_trend', {}).get('boost', 0.0)
 
+    # ── Step 8.6: SMC Enrichment ──────────────────────────────────────────────
+    # Enrich signal with CHoCH / Inducement / Order Block / Trend Phase context.
+    # Applies a capped confidence delta (+/- up to 0.10 / -0.05).
+    # ADDITIVE ONLY — never blocks signals.
+    _smc_signal_data = dict(_mtf_trend_signal_data)
+    _smc_signal_data.update({
+        'direction':  direction,
+        'bos_idx':    breakout_idx,
+        'bos_price':  zone_low if direction == 'bull' else zone_high,
+        'entry_type': signal_type,
+    })
+    _smc_signal_data = enrich_signal_with_smc(ticker, bars_session, _smc_signal_data)
+    _smc_delta = _smc_signal_data.get('smc', {}).get('total_confidence_delta', 0.0)
+    _smc_summary = _smc_signal_data.get('smc', {}).get('smc_summary', '')
+    if _smc_summary:
+        print(f"[{ticker}] 🔬 SMC: {_smc_summary} | conf_delta={_smc_delta:+.3f}")
+
     mtf_result = enhance_signal_with_mtf(
         ticker=ticker,
         direction=direction,
@@ -717,7 +753,12 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
     uoa_adj    = mult_to_adjustment(uoa_multiplier, base_confidence)
     gex_adj    = mult_to_adjustment(gex_multiplier, base_confidence)
 
-    final_confidence = base_confidence + ticker_adj + mode_adj + ivr_adj + uoa_adj + gex_adj + mtf_boost + ml_boost + vp_boost
+    final_confidence = (
+        base_confidence
+        + ticker_adj + mode_adj + ivr_adj + uoa_adj + gex_adj
+        + mtf_boost + ml_boost + vp_boost
+        + _smc_delta  # Step 8.6 SMC delta (capped at +0.10 / -0.05 inside smc_engine)
+    )
     final_confidence = max(0.40, min(final_confidence, 0.95))
 
     if SPY_EMA_CONTEXT_ENABLED and spy_regime:
@@ -766,6 +807,7 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
     print(
         f"[CONFIDENCE-v2] Base:{base_confidence:.2f} "
         f"+ MTF-Trend:{_mtf_trend_boost:+.3f} "
+        f"+ SMC:{_smc_delta:+.3f} "
         f"+ Ticker:{ticker_adj:+.3f}({ticker_multiplier:.2f}) "
         f"+ Mode:{mode_adj:+.3f}({mode_decay:.2f}) "
         f"+ IVR:{ivr_adj:+.3f}[{ivr_label}] "
