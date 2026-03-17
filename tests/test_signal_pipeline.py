@@ -483,74 +483,74 @@ class TestPositionManagerRejection:
     so no DB or network calls are made.
     """
 
-def test_rejection_returns_negative_one(self, monkeypatch):
-    import unittest.mock as _mock
+    def test_rejection_returns_negative_one(self, monkeypatch):
+        import unittest.mock as _mock
 
-    _stub = MagicMock()
-    _stubs = {
-        "utils":                      _stub,
-        "utils.config":               MagicMock(
-            ACCOUNT_SIZE=25_000,
-            MAX_DAILY_LOSS_PCT=3.0,
-            MAX_OPEN_POSITIONS=5,
-            MAX_SECTOR_EXPOSURE_PCT=40.0,
-            MIN_RISK_REWARD_RATIO=1.5,
-            MAX_CONTRACTS=10,
-            POSITION_RISK={
-                "A+_high_confidence": 0.02,
-                "A_high_confidence":  0.015,
-                "standard":           0.01,
-                "conservative":       0.005,
-            },
-        ),
-        "app.data":                   _stub,
-        "app.data.db_connection":     _stub,
-        "app.risk.vix_sizing":        MagicMock(get_vix_multiplier=MagicMock(return_value=1.0)),
-        "app.analytics":              _stub,
-        "app.analytics.rth_filter":   MagicMock(is_rth_now=MagicMock(return_value=True)),
-        "app.signals":                _stub,
-        "app.signals.signal_analytics": _stub,
-    }
+        _stub = MagicMock()
+        _stubs = {
+            "utils":                      _stub,
+            "utils.config":               MagicMock(
+                ACCOUNT_SIZE=25_000,
+                MAX_DAILY_LOSS_PCT=3.0,
+                MAX_OPEN_POSITIONS=5,
+                MAX_SECTOR_EXPOSURE_PCT=40.0,
+                MIN_RISK_REWARD_RATIO=1.5,
+                MAX_CONTRACTS=10,
+                POSITION_RISK={
+                    "A+_high_confidence": 0.02,
+                    "A_high_confidence":  0.015,
+                    "standard":           0.01,
+                    "conservative":       0.005,
+                },
+            ),
+            "app.data":                   _stub,
+            "app.data.db_connection":     _stub,
+            "app.risk.vix_sizing":        MagicMock(get_vix_multiplier=MagicMock(return_value=1.0)),
+            "app.analytics":              _stub,
+            "app.analytics.rth_filter":   MagicMock(is_rth_now=MagicMock(return_value=True)),
+            "app.signals":                _stub,
+            "app.signals.signal_analytics": _stub,
+        }
 
-    for key in list(sys.modules.keys()):
-        if "position_manager" in key:
-            del sys.modules[key]
+        for key in list(sys.modules.keys()):
+            if "position_manager" in key:
+                del sys.modules[key]
 
-    with _mock.patch.dict("sys.modules", _stubs):
-        from app.risk import position_manager as pm_mod
+        with _mock.patch.dict("sys.modules", _stubs):
+            from app.risk import position_manager as pm_mod
 
-        pm = pm_mod.PositionManager.__new__(pm_mod.PositionManager)
-        pm.positions = []
-        pm.account_size = 25_000
-        pm.intraday_high_water_mark = 25_000
-        pm.session_starting_balance = 25_000
-        pm.max_daily_loss_pct = 3.0
-        pm.max_open_positions = 5
-        pm.max_sector_exposure_pct = 40.0
-        pm.min_risk_reward_ratio = 1.5
-        pm.consecutive_wins = 0
-        pm.consecutive_losses = 0
-        pm.performance_multiplier = 1.0
-        pm._daily_stats_cache = None
-        pm._daily_stats_ts = 0.0
-        pm._open_positions_cache = None
-        pm._open_positions_ts = 0.0
+            pm = pm_mod.PositionManager.__new__(pm_mod.PositionManager)
+            pm.positions = []
+            pm.account_size = 25_000
+            pm.intraday_high_water_mark = 25_000
+            pm.session_starting_balance = 25_000
+            pm.max_daily_loss_pct = 3.0
+            pm.max_open_positions = 5
+            pm.max_sector_exposure_pct = 40.0
+            pm.min_risk_reward_ratio = 1.5
+            pm.consecutive_wins = 0
+            pm.consecutive_losses = 0
+            pm.performance_multiplier = 1.0
+            pm._daily_stats_cache = None
+            pm._daily_stats_ts = 0.0
+            pm._open_positions_cache = None
+            pm._open_positions_ts = 0.0
 
-        monkeypatch.setattr(pm, '_check_risk_limits',
-                            lambda *a, **kw: (False, "max positions reached"),
-                            raising=False)
+            monkeypatch.setattr(pm, '_check_risk_limits',
+                                lambda *a, **kw: (False, "max positions reached"),
+                                raising=False)
 
-        result = pm.open_position(
-            ticker='FAKE', direction='bull',
-            zone_low=99.0, zone_high=101.0,
-            or_low=98.0,  or_high=102.0,
-            entry_price=100.0, stop_price=99.0,
-            t1=102.0, t2=104.0,
-            confidence=0.85, grade='A',
-            options_rec=None
-        )
+            result = pm.open_position(
+                ticker='FAKE', direction='bull',
+                zone_low=99.0, zone_high=101.0,
+                or_low=98.0,  or_high=102.0,
+                entry_price=100.0, stop_price=99.0,
+                t1=102.0, t2=104.0,
+                confidence=0.85, grade='A',
+                options_rec=None
+            )
 
-    assert result == -1, f"Expected -1 on risk rejection, got {result!r}"
+        assert result == -1, f"Expected -1 on risk rejection, got {result!r}"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 5. TICKER TIMEOUT WATCHDOG
