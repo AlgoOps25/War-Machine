@@ -888,7 +888,7 @@ def start_scanner_loop():
 
                     clear_armed_signals()
                     clear_watching_signals()
-
+                    from app.core.sniper import _bos_watch_alerted; _bos_watch_alerted.clear()
                     try:
                         data_manager.clear_prev_day_cache()
                     except Exception as e:
