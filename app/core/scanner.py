@@ -675,29 +675,6 @@ def start_scanner_loop():
 
                         logger.info(f"[WS] Subscribed premarket watchlist ({len(premarket_watchlist)} tickers)")
 
-                        stage_emoji = {'wide': '📡', 'narrow': '🎯', 'final': '🔥', 'live': '⚡'}
-                        emoji       = stage_emoji.get(metadata['stage'], '📊')
-                        pm_metrics  = _extract_premarket_metrics(watchlist_data)
-
-                        ellipsis = '...' if len(premarket_watchlist) > 20 else ''
-                        msg = (
-                            f"{emoji} **{metadata['stage_description']}**\n"
-                            f"✅ Watchlist: {len(premarket_watchlist)} tickers\n"
-                            f"{', '.join(premarket_watchlist[:20])}{ellipsis}\n"
-                        )
-                        if pm_metrics:
-                            msg += (
-                                f"\n**Screener Insights:**\n"
-                                f"🔥 Explosive: {pm_metrics['explosive_count']} "
-                                f"(RVOL ≥{pm_metrics['explosive_rvol_threshold']}x)\n"
-                                f"📊 Avg RVOL: {pm_metrics['avg_rvol']:.1f}x | "
-                                f"Avg Score: {pm_metrics['avg_score']:.0f}\n"
-                                f"🎯 Top 3: {pm_metrics['top_3_summary']}"
-                            )
-                        if volume_signals:
-                            msg += f"\n\n⚠️ {len(volume_signals)} volume signals active"
-                        send_simple_message(msg)
-
                     except Exception as e:
                         logger.error(f"[PRE-MARKET] Funnel error: {e}")
                         import traceback
