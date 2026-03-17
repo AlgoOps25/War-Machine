@@ -182,7 +182,7 @@ def _maybe_load_watches():
 def send_bos_watch_alert(ticker, direction, bos_price, struct_high, struct_low,
                           signal_type="CFW6_INTRADAY"):
     """Send Discord alert when BOS is detected and we enter watch mode."""
-    from app.discord_helpers import send_simple_message
+    from app.notifications.discord_helpers import send_simple_message
     arrow = "🟢" if direction == "bull" else "🔴"
     level = f"${struct_high:.2f}" if direction == "bull" else f"${struct_low:.2f}"
     mode_tag = "[OR]" if signal_type == "CFW6_OR" else "[INTRADAY]"
