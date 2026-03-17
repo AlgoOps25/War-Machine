@@ -1,11 +1,12 @@
 """
-War Machine — Critical Path Test Suite  (P0-4)
+War Machine — Critical Path Test Suite  (P0-6)
 ================================================
-Covers the 5 highest-risk business-logic units:
+Covers the highest-risk business-logic units:
 
-  1. Confidence gate  (sniper._run_signal_pipeline threshold logic)
+  1. Confidence gate  (grade ranges, bucket boundaries, MIN floor, grade assignment, clamping)
   2. VWAP directional gate
-  3. thread_safe_state  (armed / watching dicts, no race-condition regression)
+  3. thread_safe_state  (armed / watching dicts, validator stats, call tracker,
+                         monitoring timing, race condition — no race-condition regression)
   4. position_manager.open_position  (risk rejection returns -1)
   5. Ticker timeout watchdog  (_run_ticker_with_timeout)
 
@@ -14,60 +15,160 @@ Run with:
 """
 import threading
 import time
+from datetime import datetime
 import pytest
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 1. CONFIDENCE GATE — grade range lookup
+# 1. CONFIDENCE GATE — grade ranges, bucket boundaries, floor, assignment, clamping
 # ─────────────────────────────────────────────────────────────────────────────
+GRADE_RANGES = {
+    "A+": (0.88, 0.92),
+    "A":  (0.83, 0.87),
+    "A-": (0.78, 0.82),
+    "B+": (0.72, 0.76),
+    "B":  (0.66, 0.70),
+    "B-": (0.60, 0.64),
+    "C+": (0.55, 0.60),
+    "C":  (0.50, 0.55),
+    "C-": (0.45, 0.50),
+}
+
+MIN_CONFIDENCE = 0.55  # signals below this floor are rejected
+
+
+def _assign_grade(confidence: float) -> str:
+    """Mirror the grade-assignment logic from sniper.py."""
+    for grade, (lo, hi) in sorted(
+        GRADE_RANGES.items(), key=lambda x: x[1][0], reverse=True
+    ):
+        if confidence >= lo:
+            return grade
+    return "F"
+
+
+def _get_confidence_bucket(c: float) -> str:
+    """Mirror _get_confidence_bucket() from sniper.py."""
+    if c < 0.50: return '0.40-0.50'
+    if c < 0.60: return '0.50-0.60'
+    if c < 0.70: return '0.60-0.70'
+    if c < 0.80: return '0.70-0.80'
+    if c < 0.90: return '0.80-0.90'
+    return '0.90-0.95'
+
+
+def _passes_confidence_gate(confidence: float) -> bool:
+    return confidence >= MIN_CONFIDENCE
+
+
+def _clamp_confidence(c: float) -> float:
+    return max(0.0, min(0.99, c))
+
+
 class TestConfidenceGate:
-    GRADE_RANGES = {
-        "A+": (0.88, 0.92),
-        "A":  (0.83, 0.87),
-        "A-": (0.78, 0.82),
-        "B+": (0.72, 0.76),
-        "B":  (0.66, 0.70),
-        "B-": (0.60, 0.64),
-        "C+": (0.55, 0.60),
-        "C":  (0.50, 0.55),
-        "C-": (0.45, 0.50),
-    }
+    """Grade table structure and bucket boundaries."""
 
     def test_all_grades_present(self):
         expected = {"A+", "A", "A-", "B+", "B", "B-", "C+", "C", "C-"}
-        assert set(self.GRADE_RANGES.keys()) == expected
+        assert set(GRADE_RANGES.keys()) == expected
+
+    def test_each_grade_lo_less_than_hi(self):
+        for grade, (lo, hi) in GRADE_RANGES.items():
+            assert lo < hi, f"{grade}: lo ({lo}) must be < hi ({hi})"
 
     def test_grade_ranges_ascending(self):
         grades_ordered = ["C-", "C", "C+", "B-", "B", "B+", "A-", "A", "A+"]
         prev_max = 0.0
         for grade in grades_ordered:
-            lo, hi = self.GRADE_RANGES[grade]
+            lo, hi = GRADE_RANGES[grade]
             assert lo < hi, f"{grade}: lo >= hi"
             assert lo >= prev_max - 0.01, f"{grade}: range does not ascend"
             prev_max = hi
 
     def test_aplus_is_highest(self):
-        aplus_min, _ = self.GRADE_RANGES["A+"]
-        for grade, (lo, hi) in self.GRADE_RANGES.items():
+        aplus_min, _ = GRADE_RANGES["A+"]
+        for grade, (lo, hi) in GRADE_RANGES.items():
             if grade != "A+":
                 assert hi <= aplus_min + 0.01, f"{grade} overlaps A+ floor"
 
-    def test_confidence_bucket_boundaries(self):
-        """Mirror the _get_confidence_bucket logic from sniper.py."""
-        def bucket(c):
-            if c < 0.50: return '0.40-0.50'
-            if c < 0.60: return '0.50-0.60'
-            if c < 0.70: return '0.60-0.70'
-            if c < 0.80: return '0.70-0.80'
-            if c < 0.90: return '0.80-0.90'
-            return '0.90-0.95'
+    def test_no_grade_exceeds_1(self):
+        for grade, (lo, hi) in GRADE_RANGES.items():
+            assert hi <= 1.0, f"{grade} hi={hi} exceeds 1.0"
 
-        assert bucket(0.49) == '0.40-0.50'
-        assert bucket(0.50) == '0.50-0.60'
-        assert bucket(0.75) == '0.70-0.80'
-        assert bucket(0.90) == '0.90-0.95'
-        assert bucket(0.95) == '0.90-0.95'
+    def test_no_grade_below_zero(self):
+        for grade, (lo, hi) in GRADE_RANGES.items():
+            assert lo >= 0.0, f"{grade} lo={lo} is negative"
+
+    @pytest.mark.parametrize("conf, expected", [
+        (0.40, '0.40-0.50'), (0.49, '0.40-0.50'),
+        (0.50, '0.50-0.60'), (0.599, '0.50-0.60'),
+        (0.60, '0.60-0.70'), (0.699, '0.60-0.70'),
+        (0.70, '0.70-0.80'), (0.799, '0.70-0.80'),
+        (0.80, '0.80-0.90'), (0.899, '0.80-0.90'),
+        (0.90, '0.90-0.95'), (0.95, '0.90-0.95'), (0.99, '0.90-0.95'),
+    ])
+    def test_confidence_bucket_boundary(self, conf, expected):
+        assert _get_confidence_bucket(conf) == expected
+
+
+class TestConfidenceGateThreshold:
+    """MIN_CONFIDENCE floor — signals below 0.55 are rejected."""
+
+    def test_above_floor_passes(self):
+        assert _passes_confidence_gate(0.60) is True
+        assert _passes_confidence_gate(0.55) is True
+        assert _passes_confidence_gate(0.90) is True
+
+    def test_below_floor_rejected(self):
+        assert _passes_confidence_gate(0.54) is False
+        assert _passes_confidence_gate(0.00) is False
+
+    def test_exact_floor_passes(self):
+        assert _passes_confidence_gate(MIN_CONFIDENCE) is True
+
+    def test_just_below_floor_rejected(self):
+        assert _passes_confidence_gate(MIN_CONFIDENCE - 0.001) is False
+
+
+class TestGradeAssignment:
+    """Grade correctly assigned from raw confidence score."""
+
+    @pytest.mark.parametrize("confidence, expected_grade", [
+        (0.91, "A+"),
+        (0.85, "A"),
+        (0.80, "A-"),
+        (0.74, "B+"),
+        (0.68, "B"),
+        (0.62, "B-"),
+        (0.57, "C+"),
+        (0.52, "C"),
+        (0.47, "C-"),
+        (0.30, "F"),
+        (0.00, "F"),
+    ])
+    def test_grade_from_confidence(self, confidence, expected_grade):
+        assert _assign_grade(confidence) == expected_grade, (
+            f"confidence={confidence} → expected {expected_grade}, "
+            f"got {_assign_grade(confidence)}"
+        )
+
+
+class TestConfidenceClamping:
+    """Confidence never exceeds 0.99 and never goes below 0.0."""
+
+    def test_above_max_clamped_to_099(self):
+        assert _clamp_confidence(1.00) == 0.99
+        assert _clamp_confidence(1.50) == 0.99
+        assert _clamp_confidence(999)  == 0.99
+
+    def test_below_zero_clamped_to_0(self):
+        assert _clamp_confidence(-0.01) == 0.0
+        assert _clamp_confidence(-100)  == 0.0
+
+    def test_valid_range_unchanged(self):
+        for val in [0.0, 0.55, 0.75, 0.90, 0.99]:
+            assert _clamp_confidence(val) == val
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -127,21 +228,31 @@ class TestVwapGate:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 3. THREAD-SAFE STATE — no data races under concurrent access
+# 3. THREAD-SAFE STATE
 # ─────────────────────────────────────────────────────────────────────────────
 class TestThreadSafeState:
     """
-    Exercises ThreadSafeState with 50 concurrent writers + 50 readers.
-    If the state is NOT thread-safe the test will either deadlock,
-    raise a RuntimeError, or produce an incorrect count.
+    Full thread-safety regression suite for ThreadSafeState.
+    Covers armed signals, watching signals, validator stats, validation call
+    tracker, monitoring timing, and realistic set/get/remove race conditions.
     """
 
     def _make_fresh_state(self):
         from app.core.thread_safe_state import ThreadSafeState
         ThreadSafeState._instance = None
-        state = ThreadSafeState()
-        return state
+        return ThreadSafeState()
 
+    def _get_shared_state(self):
+        """Return the shared singleton (for tests that use get_state())."""
+        from app.core.thread_safe_state import get_state
+        return get_state()
+
+    # ── Singleton ─────────────────────────────────────────────────────────────
+    def test_singleton_pattern(self):
+        from app.core.thread_safe_state import get_state
+        assert get_state() is get_state(), "get_state() must return same instance"
+
+    # ── Armed signals ─────────────────────────────────────────────────────────
     def test_concurrent_armed_writes_are_safe(self):
         state = self._make_fresh_state()
         errors = []
@@ -158,16 +269,72 @@ class TestThreadSafeState:
             except Exception as exc:
                 errors.append(exc)
 
-        threads = [threading.Thread(target=writer, args=(i,)) for i in range(50)]
+        threads  = [threading.Thread(target=writer, args=(i,)) for i in range(50)]
         threads += [threading.Thread(target=reader, args=(i,)) for i in range(50)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=5)
+        for t in threads: t.start()
+        for t in threads: t.join(timeout=5)
 
         assert not errors, f"Thread safety errors: {errors}"
         assert len(state.get_all_armed_signals()) == 50
 
+    def test_armed_signals_set_get_remove(self):
+        state = self._get_shared_state()
+        state.clear_armed_signals()
+        errors = []
+
+        def worker(thread_id):
+            try:
+                for i in range(100):
+                    ticker = f"TICKER{thread_id}_{i}"
+                    data   = {"position_id": i, "direction": "bull", "entry_price": 100.0}
+                    state.set_armed_signal(ticker, data)
+                    retrieved = state.get_armed_signal(ticker)
+                    assert retrieved is not None, f"Failed to retrieve {ticker}"
+                    assert retrieved["position_id"] == i
+                    state.remove_armed_signal(ticker)
+            except Exception as e:
+                errors.append(f"Thread {thread_id}: {e}")
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(10)]
+        for t in threads: t.start()
+        for t in threads: t.join()
+        assert not errors, f"Armed signals errors: {errors}"
+
+    # ── Watching signals ──────────────────────────────────────────────────────
+    def test_watching_signal_lifecycle(self):
+        state = self._make_fresh_state()
+        assert not state.ticker_is_watching('AAPL')
+        state.set_watching_signal('AAPL', {'direction': 'bull', 'or_high': 200.0})
+        assert state.ticker_is_watching('AAPL')
+        state.update_watching_signal_field('AAPL', 'breakout_idx', 5)
+        assert state.get_watching_signal('AAPL')['breakout_idx'] == 5
+        state.remove_watching_signal('AAPL')
+        assert not state.ticker_is_watching('AAPL')
+
+    def test_watching_signals_concurrent(self):
+        state = self._get_shared_state()
+        state.clear_watching_signals()
+        errors = []
+
+        def worker(thread_id):
+            try:
+                for i in range(100):
+                    ticker = f"WATCH{thread_id}_{i}"
+                    data   = {"direction": "bear", "breakout_idx": i, "or_high": 150.0}
+                    state.set_watching_signal(ticker, data)
+                    retrieved = state.get_watching_signal(ticker)
+                    assert retrieved is not None
+                    assert retrieved["breakout_idx"] == i
+                    state.remove_watching_signal(ticker)
+            except Exception as e:
+                errors.append(f"Thread {thread_id}: {e}")
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(10)]
+        for t in threads: t.start()
+        for t in threads: t.join()
+        assert not errors, f"Watching signals errors: {errors}"
+
+    # ── Validator stats ───────────────────────────────────────────────────────
     def test_validator_stat_increment_concurrent(self):
         state = self._make_fresh_state()
         errors = []
@@ -180,23 +347,124 @@ class TestThreadSafeState:
                 errors.append(exc)
 
         threads = [threading.Thread(target=bump) for _ in range(10)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=5)
+        for t in threads: t.start()
+        for t in threads: t.join(timeout=5)
 
         assert not errors
         assert state.get_validator_stats()['tested'] == 1000
 
-    def test_watching_signal_lifecycle(self):
-        state = self._make_fresh_state()
-        assert not state.ticker_is_watching('AAPL')
-        state.set_watching_signal('AAPL', {'direction': 'bull', 'or_high': 200.0})
-        assert state.ticker_is_watching('AAPL')
-        state.update_watching_signal_field('AAPL', 'breakout_idx', 5)
-        assert state.get_watching_signal('AAPL')['breakout_idx'] == 5
-        state.remove_watching_signal('AAPL')
-        assert not state.ticker_is_watching('AAPL')
+    def test_validator_stats_passed_filtered_counts(self):
+        state = self._get_shared_state()
+        state.reset_validator_stats()
+        errors = []
+
+        def worker(thread_id):
+            try:
+                for i in range(100):
+                    state.increment_validator_stat('tested')
+                    if i % 2 == 0:
+                        state.increment_validator_stat('passed')
+                    else:
+                        state.increment_validator_stat('filtered')
+            except Exception as e:
+                errors.append(f"Thread {thread_id}: {e}")
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(10)]
+        for t in threads: t.start()
+        for t in threads: t.join()
+        assert not errors
+        stats = state.get_validator_stats()
+        assert stats['tested'] == 1000, f"Expected 1000, got {stats['tested']}"
+
+    # ── Validation call tracker ───────────────────────────────────────────────
+    def test_validation_call_tracker_concurrent(self):
+        state = self._get_shared_state()
+        state.clear_validation_call_tracker()
+        errors = []
+        signal_id = "TEST_AAPL_bull_150.00_20260317"
+
+        def worker(thread_id):
+            try:
+                for _ in range(10):
+                    state.track_validation_call(signal_id)
+            except Exception as e:
+                errors.append(f"Thread {thread_id}: {e}")
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(10)]
+        for t in threads: t.start()
+        for t in threads: t.join()
+        assert not errors
+        tracker = state.get_validation_call_tracker()
+        assert tracker.get(signal_id) == 100, (
+            f"Expected 100, got {tracker.get(signal_id)}"
+        )
+
+    # ── Monitoring timing ─────────────────────────────────────────────────────
+    def test_monitoring_timing_concurrent(self):
+        state = self._get_shared_state()
+        errors = []
+
+        def worker(thread_id):
+            try:
+                for _ in range(50):
+                    now = datetime.now()
+                    if thread_id % 2 == 0:
+                        state.update_last_dashboard_check(now)
+                        state.get_last_dashboard_check()
+                    else:
+                        state.update_last_alert_check(now)
+                        state.get_last_alert_check()
+            except Exception as e:
+                errors.append(f"Thread {thread_id}: {e}")
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(10)]
+        for t in threads: t.start()
+        for t in threads: t.join()
+        assert not errors, f"Monitoring timing errors: {errors}"
+
+    # ── Race condition: simultaneous set/get/remove ───────────────────────────
+    def test_race_condition_set_get_remove(self):
+        state = self._get_shared_state()
+        state.clear_armed_signals()
+        ticker = "TSLA"
+        errors = []
+
+        def set_worker():
+            try:
+                for i in range(100):
+                    state.set_armed_signal(ticker, {"position_id": i, "entry_price": 200.0 + i})
+                    time.sleep(0.001)
+            except Exception as e:
+                errors.append(f"Set: {e}")
+
+        def get_worker():
+            try:
+                for _ in range(100):
+                    result = state.get_armed_signal(ticker)
+                    if result is not None:
+                        assert isinstance(result, dict)
+                    time.sleep(0.001)
+            except Exception as e:
+                errors.append(f"Get: {e}")
+
+        def remove_worker():
+            try:
+                for _ in range(50):
+                    state.remove_armed_signal(ticker)
+                    time.sleep(0.002)
+            except Exception as e:
+                errors.append(f"Remove: {e}")
+
+        threads = [
+            threading.Thread(target=set_worker),
+            threading.Thread(target=set_worker),
+            threading.Thread(target=get_worker),
+            threading.Thread(target=get_worker),
+            threading.Thread(target=remove_worker),
+        ]
+        for t in threads: t.start()
+        for t in threads: t.join()
+        assert not errors, f"Race condition errors: {errors}"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -206,10 +474,6 @@ class TestPositionManagerRejection:
     """
     Validates that open_position() returns -1 when the risk manager
     blocks the trade rather than raising an exception.
-
-    Uses a fully-initialized PositionManager singleton so __init__
-    sets all required attributes (min_risk_reward_ratio, etc.) before
-    open_position() is called.
     """
 
     def test_rejection_returns_negative_one(self, monkeypatch):
@@ -218,14 +482,11 @@ class TestPositionManagerRejection:
         except ImportError:
             pytest.skip("position_manager not importable in this environment")
 
-        # Use the real singleton so __init__ fires and all attrs are set.
-        # If singleton is already initialised this is a no-op.
         try:
             pm = PositionManager()
         except Exception:
             pytest.skip("PositionManager() failed to initialise in test environment")
 
-        # Patch the internal risk gate on this instance to always reject.
         monkeypatch.setattr(
             pm, '_check_risk_limits',
             lambda *args, **kwargs: (False, "max positions reached"),
@@ -247,7 +508,7 @@ class TestPositionManagerRejection:
 
         assert result == -1, (
             f"Expected -1 on risk rejection, got {result!r}. "
-            f"Check that open_position() returns -1 when _check_risk_limits returns False."
+            f"Check open_position() returns -1 when _check_risk_limits returns False."
         )
 
 
@@ -255,11 +516,7 @@ class TestPositionManagerRejection:
 # 5. TICKER TIMEOUT WATCHDOG
 # ─────────────────────────────────────────────────────────────────────────────
 def _watchdog(fn, ticker, timeout_seconds):
-    """
-    Isolated watchdog helper for tests — uses a fresh executor each call
-    so test runs don't share the production module-level executor whose
-    single worker thread may still be occupied by a previous hung task.
-    """
+    """Isolated watchdog — fresh executor per call to avoid executor contention."""
     with ThreadPoolExecutor(max_workers=1) as ex:
         future = ex.submit(fn, ticker)
         try:
@@ -273,59 +530,40 @@ def _watchdog(fn, ticker, timeout_seconds):
 
 
 class TestTickerWatchdog:
-    """
-    Validates the _run_ticker_with_timeout wrapper introduced in Phase 1.21.
-    Tests 1-3 use the production function directly.
-    Test 4 uses the isolated _watchdog() helper to avoid executor contention.
-    """
-
     def test_fast_ticker_returns_true(self):
         from app.core.scanner import _run_ticker_with_timeout
-
-        def fast(_ticker):
-            time.sleep(0.01)
-
+        def fast(_ticker): time.sleep(0.01)
         assert _run_ticker_with_timeout(fast, 'SPY') is True
 
     def test_slow_ticker_returns_false(self):
         import app.core.scanner as scanner_mod
         from app.core.scanner import _run_ticker_with_timeout
-
-        def hung(_ticker):
-            time.sleep(120)
-
+        def hung(_ticker): time.sleep(120)
         original = scanner_mod.TICKER_TIMEOUT_SECONDS
         scanner_mod.TICKER_TIMEOUT_SECONDS = 1
         try:
             result = _run_ticker_with_timeout(hung, 'HUNG')
         finally:
             scanner_mod.TICKER_TIMEOUT_SECONDS = original
-
         assert result is False
 
     def test_exception_in_ticker_returns_false(self):
         from app.core.scanner import _run_ticker_with_timeout
-
-        def explodes(_ticker):
-            raise RuntimeError("simulated crash")
-
+        def explodes(_ticker): raise RuntimeError("simulated crash")
         assert _run_ticker_with_timeout(explodes, 'BOOM') is False
 
     def test_scan_loop_continues_after_hung_ticker(self):
         """
         Prove the loop processes subsequent tickers even if one hangs.
-        Uses a fresh executor per call (_watchdog) so the hung HUNG task
+        Uses a fresh executor per call (_watchdog) so the hung task
         does not block the single production worker thread.
-        Uses a 2s timeout so this test completes well under pytest-timeout=60.
         """
         processed = []
-        TIMEOUT = 2  # seconds — short enough to finish, long enough to be reliable
+        TIMEOUT = 2
         _stop = threading.Event()
 
         def process(ticker):
             if ticker == 'HUNG':
-                # Simulate a hung ticker using an interruptible wait
-                # so the thread exits cleanly when the test is done.
                 _stop.wait(timeout=30)
             else:
                 processed.append(ticker)
@@ -333,10 +571,9 @@ class TestTickerWatchdog:
         watchlist = ['GOOD1', 'HUNG', 'GOOD2', 'GOOD3']
         for t in watchlist:
             _watchdog(process, t, TIMEOUT)
-
-        _stop.set()  # unblock any lingering hung thread
+        _stop.set()
 
         assert 'GOOD1' in processed
-        assert 'HUNG' not in processed
+        assert 'HUNG'  not in processed
         assert 'GOOD2' in processed
         assert 'GOOD3' in processed
