@@ -71,10 +71,16 @@ PHASE 1.31 (MAR 17, 2026):
   - FIX: Correct discord_helpers import path.
     Was: from app.discord_helpers import send_simple_message
     Now: from app.notifications.discord_helpers import send_simple_message
+
+PHASE 1.32 (MAR 17, 2026):
+  - EOD block refactored to call eod_reporter.run_eod_report().
+    Removes 30-line inline Discord builder; all EOD Discord logic
+    now lives in app/core/eod_reporter.py (single responsibility).
+    signal_tracker.get_discord_eod_summary() is now sent every EOD.
 """
 from app.core.health_server import start_health_server, health_heartbeat
 
-# ── PHASE 1.27: Start health server immediately at module load ───────────────
+# ── PHASE 1.27: Start health server immediately at module load ─────────────────────
 start_health_server()
 
 import os
@@ -466,13 +472,13 @@ def subscribe_and_prefetch_tickers(new_tickers: list):
         )
         logger.info(f"[PREFETCH] 🔄 Background backfill started for {len(combined)} tickers")
     except Exception as e:
-        logger.error(f"[WS-SUBSCRIBE] ⚠️ Error subscribing tickers: {e}")
+        logger.error(f"[WS-SUBSCRIBE] ⚠ Error subscribing tickers: {e}")
         import traceback
         traceback.print_exc()
 
 
 def start_scanner_loop():
-    # ── PHASE 1.28: Validate required env vars before any blocking work ──────────
+    # ── PHASE 1.28: Validate required env vars before any blocking work ────────────
     validate_required_env_vars()
 
     # ── PHASE 1.30: Hard import — no stubs fallback (sniper_stubs deprecated) ───
@@ -489,9 +495,9 @@ def start_scanner_loop():
         learning_engine = None
         HAS_AI_LEARNING = False
 
-    # ── STARTUP BANNER ────────────────────────────────────────────────────────────────
+    # ── STARTUP BANNER ────────────────────────────────────────────────────────────────────
     print("=" * 60, flush=True)
-    print("WAR MACHINE CFW6 SCANNER v1.31 - STARTUP", flush=True)
+    print("WAR MACHINE CFW6 SCANNER v1.32 - STARTUP", flush=True)
     print("=" * 60, flush=True)
     print("✓ REGIME-FILTER  VIX/SPY regime detection active", flush=True)
     print("=" * 60, flush=True)
@@ -567,6 +573,7 @@ def start_scanner_loop():
     print("DB Checkout Fix: ✅ FIXED   (single get_session_status per cycle — Phase 1.29)", flush=True)
     print("Sniper Import:   ✅ FIXED   (hard import, no dead stubs fallback — Phase 1.30)", flush=True)
     print("Discord Import:  ✅ FIXED   (app.notifications.discord_helpers — Phase 1.31)", flush=True)
+    print("EOD Reporter:    ✅ ENABLED (eod_reporter.run_eod_report() — Phase 1.32)", flush=True)
     print("=" * 60 + "\n", flush=True)
 
     _booting_into_market_hours = is_market_hours()
@@ -590,8 +597,8 @@ def start_scanner_loop():
 
     try:
         send_simple_message(
-            f"⚔️ WAR MACHINE ONLINE — CFW6 v1.31 | "
-            f"{'Resuming intraday' if _booting_into_market_hours else 'OR window active'} | Phase 1.31"
+            f"⚔️ WAR MACHINE ONLINE — CFW6 v1.32 | "
+            f"{'Resuming intraday' if _booting_into_market_hours else 'OR window active'} | Phase 1.32"
         )
     except Exception as e:
         logger.warning(f"[SCANNER] Discord unavailable: {e}")
@@ -819,43 +826,14 @@ def start_scanner_loop():
                     if open_positions:
                         logger.info(f"[EOD] {len(open_positions)} positions still open")
 
-                    if LEGACY_ANALYTICS_ENABLED and signal_tracker:
-                        try:
-                            summary      = signal_tracker.get_daily_summary()
-                            print(summary)
-                            funnel_stats = signal_tracker.get_funnel_stats()
-                            mult_stats   = signal_tracker.get_multiplier_impact()
-                            print("\n" + "="*80)
-                            print("SIGNAL FUNNEL ANALYSIS")
-                            print("="*80)
-                            print(f"Generated: {funnel_stats['generated']}")
-                            print(f"Validated: {funnel_stats['validated']} ({funnel_stats['validation_rate']}%)")
-                            print(f"Armed:     {funnel_stats['armed']} ({funnel_stats['arming_rate']}%)")
-                            print(f"Traded:    {funnel_stats['traded']} ({funnel_stats['execution_rate']}%)")
-                        except Exception as e:
-                            logger.error(f"[ANALYTICS] Error generating report: {e}")
-                            import traceback
-                            traceback.print_exc()
-
+                    # ── PHASE 1.32: Unified EOD reporting via eod_reporter ─────────────────
                     try:
-                        daily_stats  = session["daily_stats"]
-                        eod_metadata = _get_eod_summary_metrics()
-                        eod_report = (
-                            f"📊 **EOD Report {current_day}**\n"
-                            f"Trades: {daily_stats['trades']} | "
-                            f"WR: {daily_stats['win_rate']:.1f}% | "
-                            f"P&L: ${daily_stats['total_pnl']:+.2f}\n"
-                        )
-                        if eod_metadata:
-                            eod_report += (
-                                f"\n**Top Performers:**\n{eod_metadata.get('top_performers', 'N/A')}\n"
-                                f"\n**Screener Stats:**\n"
-                                f"Avg RVOL: {eod_metadata.get('avg_rvol', 0):.1f}x | "
-                                f"Explosive Movers: {eod_metadata.get('explosive_count', 0)}"
-                            )
-                        send_simple_message(eod_report)
+                        from app.core.eod_reporter import run_eod_report
+                        run_eod_report(current_day)
                     except Exception as e:
-                        logger.error(f"[EOD] EOD report error: {e}")
+                        logger.error(f"[EOD] eod_reporter failed: {e}")
+                        import traceback
+                        traceback.print_exc()
 
                     if HAS_AI_LEARNING:
                         try:
