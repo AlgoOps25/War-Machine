@@ -280,6 +280,9 @@ def _log_fvg_event(ticker: str, direction: str, fvg_low: float, fvg_high: float,
 from app.ml.metrics_cache import get_ticker_win_rates
 _TICKER_WIN_CACHE = get_ticker_win_rates(days=30)
 _orb_classifications = {}  # ticker -> OR classification dict, populated at 9:40
+# BOS watch alert dedup — prevents repeat Discord pings for the same BOS
+# across scanner cycles. Cleared at EOD alongside watching_signals.
+_bos_watch_alerted: set = set()
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SPY EMA CONTEXT — 5m EMA 9/21/50 regime filter
@@ -1112,11 +1115,16 @@ def process_ticker(ticker: str):
                         }
                         _state.set_watching_signal(ticker, w_entry)
                         _persist_watch(ticker, w_entry)
-                        send_bos_watch_alert(
-                            ticker, direction,
-                            bars_session[breakout_idx]["close"],
-                            or_high, or_low, "CFW6_OR"
-                        )
+                        _bos_key = f"{ticker}:{direction}:{bars_session[breakout_idx]['datetime']}"
+                        if _bos_key not in _bos_watch_alerted:
+                            _bos_watch_alerted.add(_bos_key)
+                            send_bos_watch_alert(
+                                ticker, direction,
+                                bars_session[breakout_idx]["close"],
+                                or_high, or_low, "CFW6_OR"
+                            )
+                        else:
+                            print(f"[{ticker}] 🔕 BOS watch alert suppressed (already sent)")
                         return
                 else:
                     print(f"[{ticker}] No ORB")
@@ -1158,11 +1166,16 @@ def process_ticker(ticker: str):
                                 }
                                 _state.set_watching_signal(ticker, w_entry)
                                 _persist_watch(ticker, w_entry)
-                                send_bos_watch_alert(
-                                    ticker, sr_direction,
-                                    bars_session[sr_idx]["close"],
-                                    sr["sr_high"], sr["sr_low"], "CFW6_OR"
-                                )
+                                _bos_key = f"{ticker}:{sr_direction}:{bars_session[sr_idx]['datetime']}"
+                                if _bos_key not in _bos_watch_alerted:
+                                    _bos_watch_alerted.add(_bos_key)
+                                    send_bos_watch_alert(
+                                        ticker, sr_direction,
+                                        bars_session[sr_idx]["close"],
+                                        sr["sr_high"], sr["sr_low"], "CFW6_OR"
+                                    )
+                                else:
+                                    print(f"[{ticker}] 🔕 BOS watch alert suppressed (already sent)")
                                 return
 
         else:
