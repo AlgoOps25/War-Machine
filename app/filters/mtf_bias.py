@@ -6,9 +6,12 @@ Layers:
   1. 1H Bias Gate     — BOS direction on 1H must match signal direction
   2. 15m Structure    — BOS direction on 15m must match signal direction
   3. Confidence Adj   — fully aligned = +0.08, 15m only = no boost, conflicted = REJECT
+
+Phase 1.35: Stats tracking — every evaluate() result recorded to mtf_bias_stats table.
 """
 
 from typing import Optional
+from datetime import datetime
 
 MTF_BIAS_ENABLED = True
 MIN_BARS_1H      = 5
@@ -46,7 +49,78 @@ class MTFBiasEngine:
 
     def __init__(self, enabled: bool = MTF_BIAS_ENABLED):
         self.enabled = enabled
+        self._db_ready = False
+        self._init_stats_db()
 
+    # ── Phase 1.35: Stats DB ─────────────────────────────────────────────────
+    def _init_stats_db(self):
+        """Create mtf_bias_stats table if it doesn't exist."""
+        try:
+            from app.data.db_connection import get_conn, return_conn
+            conn = get_conn()
+            try:
+                cur = conn.cursor()
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS mtf_bias_stats (
+                        id          SERIAL PRIMARY KEY,
+                        ts          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        ticker      TEXT      NOT NULL,
+                        direction   TEXT      NOT NULL,
+                        passed      BOOLEAN   NOT NULL,
+                        bias_1h     TEXT,
+                        bias_15m    TEXT,
+                        vwap_1h     REAL,
+                        conf_adj    REAL      NOT NULL,
+                        reason      TEXT
+                    )
+                """)
+                cur.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_mtf_bias_stats_ticker
+                    ON mtf_bias_stats(ticker, ts DESC)
+                """)
+                conn.commit()
+                self._db_ready = True
+            finally:
+                return_conn(conn)
+        except Exception as e:
+            print(f"[MTF-BIAS] Stats DB init failed (non-fatal): {e}")
+            self._db_ready = False
+
+    def record_stat(self, ticker: str, direction: str, result: dict):
+        """
+        Persist one evaluate() result to mtf_bias_stats.
+        Call this from sniper.py after evaluate() returns.
+        Non-fatal — never blocks signal flow.
+        """
+        if not self._db_ready:
+            return
+        try:
+            from app.data.db_connection import get_conn, return_conn, ph
+            p = ph()
+            conn = get_conn()
+            try:
+                cur = conn.cursor()
+                cur.execute(f"""
+                    INSERT INTO mtf_bias_stats
+                        (ticker, direction, passed, bias_1h, bias_15m, vwap_1h, conf_adj, reason)
+                    VALUES ({p},{p},{p},{p},{p},{p},{p},{p})
+                """, (
+                    ticker,
+                    direction,
+                    result["pass"],
+                    result.get("bias_1h"),
+                    result.get("bias_15m"),
+                    result.get("vwap_1h", 0.0),
+                    result.get("confidence_adj", 0.0),
+                    result.get("reason", ""),
+                ))
+                conn.commit()
+            finally:
+                return_conn(conn)
+        except Exception as e:
+            print(f"[MTF-BIAS] record_stat error (non-fatal): {e}")
+
+    # ── Core evaluate ────────────────────────────────────────────────────────
     def evaluate(
         self,
         direction:     str,
@@ -76,17 +150,14 @@ class MTFBiasEngine:
         aligned_1h  = (bias_1h  == direction) if bias_1h  else None
         aligned_15m = (bias_15m == direction) if bias_15m else None
 
-        # Hard reject — 15m clearly opposes signal
         if aligned_15m is False:
             return self._fail(bias_1h, bias_15m, vwap_1h,
                 f"15m BOS={bias_15m} conflicts with {direction} signal")
 
-        # Hard reject — 1H clearly opposes signal
         if aligned_1h is False:
             return self._fail(bias_1h, bias_15m, vwap_1h,
                 f"1H BOS={bias_1h} conflicts with {direction} signal")
 
-        # 1H VWAP cross-check
         if has_1h and vwap_1h and current_price:
             above = current_price > vwap_1h
             if direction == "bull" and not above:
@@ -96,7 +167,6 @@ class MTFBiasEngine:
                 return self._fail(bias_1h, bias_15m, vwap_1h,
                     f"BEAR but price ${current_price:.2f} > 1H VWAP ${vwap_1h:.2f}")
 
-        # Confidence adjustment
         if aligned_1h and aligned_15m:
             return self._ok(bias_1h, bias_15m, vwap_1h, CONF_BOOST_FULL,
                 f"MTF ALIGNED: 1H={bias_1h} 15m={bias_15m} -> +{CONF_BOOST_FULL:.0%}")
@@ -108,12 +178,12 @@ class MTFBiasEngine:
 
     @staticmethod
     def _ok(bias_1h, bias_15m, vwap_1h, adj, reason):
-        return {"pass": True,  "confidence_adj": adj,         "bias_1h": bias_1h,
+        return {"pass": True,  "confidence_adj": adj,          "bias_1h": bias_1h,
                 "bias_15m": bias_15m, "vwap_1h": vwap_1h or 0.0, "reason": reason}
 
     @staticmethod
     def _fail(bias_1h, bias_15m, vwap_1h, reason):
-        return {"pass": False, "confidence_adj": CONF_PENALTY, "bias_1h": bias_1h,
+        return {"pass": False, "confidence_adj": CONF_PENALTY,  "bias_1h": bias_1h,
                 "bias_15m": bias_15m, "vwap_1h": vwap_1h or 0.0, "reason": reason}
 
 

@@ -605,15 +605,17 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
             )
             _mtf_emoji = "✅" if _mtf["pass"] else "🚫"
             print(f"[{ticker}] {_mtf_emoji} MTF BIAS: {_mtf['reason']}")
+            mtf_bias_engine.record_stat(ticker, direction, _mtf)  # Phase 1.35
             if not _mtf["pass"]:
                 return False
             _mtf_bias_adj = _mtf["confidence_adj"]
+
         except Exception as _mtf_err:
             print(f"[{ticker}] MTF bias check skipped (non-fatal): {_mtf_err}")
             _mtf_bias_adj = 0.0
     else:
         _mtf_bias_adj = 0.0
-        
+
     # ─────────────────────────────────────────────────────────────────────────
 
     conf_result = grade_signal_with_confirmations(
