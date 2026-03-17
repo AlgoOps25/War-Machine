@@ -65,7 +65,7 @@ FIX #9 (MAR 15, 2026) — check_exits T1/T2 RACE VIA STALE CACHE:
     the T2 condition, ensuring mutual exclusivity between T1 scale and T2 close.
 
 FIX #10 (MAR 16, 2026) — UNICODE SURROGATE PAIRS:
-  - \ud83d\udd04 (rotate/🔄) and \ud83d\udea8 (siren/🚨) were stored as broken
+  - rotate (🔄) and siren (🚨) were stored as broken
     surrogate pairs, causing UnicodeEncodeError on Railway stdout.
     Replaced with correct 4-byte codepoints \U0001f504 and \U0001f6a8.
 """
