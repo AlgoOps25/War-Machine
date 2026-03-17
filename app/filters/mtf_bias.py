@@ -20,18 +20,19 @@ CONF_BOOST_FULL  = +0.08
 CONF_PENALTY     = -0.10
 
 
+BOS_LOOKBACK = 8  # Backtest-optimized (Phase 1.35 sweep: lb=8 → WR=91% avgR=0.50)
+
 def _detect_bos(bars: list) -> Optional[str]:
-    """Bull BOS = last close breaks prior high. Bear BOS = last close breaks prior low."""
-    if not bars or len(bars) < 4:
+    """Bull BOS = last close breaks prior 8-bar high. Bear BOS = breaks prior 8-bar low."""
+    if not bars or len(bars) < BOS_LOOKBACK + 1:
         return None
-    lookback   = bars[:-1]
+    lookback   = bars[-(BOS_LOOKBACK + 1):-1]  # last 8 bars before the current
     last_close = bars[-1]["close"]
     if last_close > max(b["high"] for b in lookback):
         return "bull"
-    if last_close < min(b["low"] for b in lookback):
+    if last_close < min(b["low"]  for b in lookback):
         return "bear"
     return None
-
 
 def _compute_vwap(bars: list) -> float:
     if not bars or len(bars) < 3:
