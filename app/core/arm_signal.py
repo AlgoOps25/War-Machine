@@ -8,6 +8,9 @@ Provides:
                     persists armed signal state, sets cooldown.
 
 All heavy imports are deferred inside the function to avoid circular imports.
+
+FIXED (Mar 16 2026): Wire record_trade_executed() after position_id > 0 so the
+  TRADED stage is recorded in signal_events and get_funnel_stats() shows real counts.
 """
 
 
@@ -23,7 +26,8 @@ def arm_ticker(
       2. Open position via position_manager (risk-gated).
       3. Fire Discord alert only if position_id > 0.
       4. Persist to armed_signals_persist DB table.
-      5. Set per-ticker cooldown.
+      5. Record TRADED stage in signal_analytics (FIX Mar 16 2026).
+      6. Set per-ticker cooldown.
     """
     from app.risk.position_manager import position_manager
     from app.core.thread_safe_state import get_state
@@ -65,6 +69,15 @@ def arm_ticker(
     if position_id == -1:
         print(f"[ARM] ❌ {ticker} position rejected by risk manager — Discord alert suppressed")
         return
+
+    # ── FIX (Mar 16 2026): Record TRADED stage in signal_analytics ───────────
+    # Without this call get_funnel_stats()['traded'] was always 0.
+    try:
+        from app.signals.signal_analytics import signal_tracker
+        signal_tracker.record_trade_executed(ticker, position_id)
+        print(f"[ANALYTICS] 📊 {ticker} TRADED stage recorded (position_id={position_id})")
+    except Exception as _analytics_err:
+        print(f"[ANALYTICS] record_trade_executed error (non-fatal): {_analytics_err}")
 
     # ── Discord alert (production helper path) ───────────────────────────────
     try:

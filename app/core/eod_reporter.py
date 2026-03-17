@@ -2,6 +2,10 @@
 eod_reporter.py — End-of-day report dispatcher
 Extracted from sniper.py process_ticker() EOD block.
 Call run_eod_reports() when is_force_close_time() is True.
+
+FIXED (Mar 16 2026): Send signal funnel summary + rejection breakdown to Discord
+  at EOD via send_simple_message(). Previously only printed to Railway logs —
+  now fires to Discord so visibility exists on mobile even without watching logs.
 """
 
 
@@ -22,7 +26,7 @@ def run_eod_reports(
     regime_filter_enabled=False,
     order_block_enabled=False,
 ):
-    """Fire all EOD reports and caches clears. Call once per ticker at force-close time."""
+    """Fire all EOD reports and cache clears. Call once per ticker at force-close time."""
     from app.risk.position_manager import position_manager
     from app.core.sniper_log import print_validation_stats, print_validation_call_stats
     from app.core.gate_stats import print_gate_distribution_stats
@@ -78,7 +82,26 @@ def run_eod_reports(
     if phase_4_enabled:
         try:
             if signal_tracker:
-                print(signal_tracker.get_daily_summary())
+                daily_summary = signal_tracker.get_daily_summary()
+                print(daily_summary)
+
+                # ── FIX (Mar 16 2026): Send compact funnel to Discord ─────────
+                # Previously only in Railway logs. Now sent to Discord so you
+                # have visibility on mobile without watching the log stream.
+                try:
+                    from app.notifications.discord_helpers import send_simple_message
+                    discord_summary = signal_tracker.get_discord_eod_summary()
+                    send_simple_message(discord_summary)
+                    print("[EOD] 📲 Signal funnel summary sent to Discord")
+                except Exception as _discord_err:
+                    print(f"[EOD] Discord funnel send error (non-fatal): {_discord_err}")
+                    # Fallback: try root-level discord_helpers
+                    try:
+                        from app.discord_helpers import send_simple_message as _fallback_send
+                        _fallback_send(signal_tracker.get_discord_eod_summary())
+                    except Exception:
+                        pass
+
             if performance_monitor:
                 print(performance_monitor.get_daily_performance_report())
         except Exception as e:
