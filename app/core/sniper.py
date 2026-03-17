@@ -30,6 +30,7 @@
 # ENTRY TIMING (Step 6.7): Time-based WR adjustment + session quality filtering
 # MTF TREND (Step 8.5): Multi-timeframe trend alignment boost (1m/5m/15m/30m)
 # GATE DISTRIBUTION (Issue #23): EOD grade/signal-type/histogram report for gate analytics
+# FUNNEL ANALYTICS: Upstream pre-detection funnel (SCREENED→BOS→FVG→ARMED) via log_bos/log_fvg
 #
 # RESTORE (Mar 10 2026): Full file recovered from commit 6a235067 after accidental truncation
 # FIXED IMPORTS: signal_analytics, dynamic_thresholds, hourly_gate, production_helpers
@@ -59,6 +60,11 @@
 #   - app.core.confidence_model -> app.ai.ai_learning (confidence_model.py is now a shim,
 #     canonical compute_confidence lives in ai_learning with full 9-grade support).
 #   - app.discord_helpers -> app.notifications.discord_helpers (root-level copy is legacy).
+#
+# FUNNEL ANALYTICS WIRE-IN (Mar 16 2026):
+#   - app.signals.funnel_analytics: log_bos + log_fvg wired into process_ticker.
+#   - log_bos() called after detect_breakout_after_or() on OR and secondary range paths.
+#   - log_fvg() called after scan_bos_fvg() on INTRADAY_BOS path.
 import traceback
 from datetime import datetime, time, timedelta
 from utils.time_helpers import _now_et, _bar_time, _strip_tz
@@ -175,6 +181,17 @@ except ImportError:
     def cache_sd_zones(ticker, bars): pass
     def apply_sd_confluence_boost(ticker, entry_price, direction, confidence): return confidence, None
     def clear_sd_cache(ticker=None): pass
+
+# ── FUNNEL ANALYTICS: upstream pre-detection funnel visibility ────────────────
+try:
+    from app.signals.funnel_analytics import log_bos, log_fvg
+    FUNNEL_ANALYTICS_ENABLED = True
+    print("[SNIPER] ✅ Funnel analytics enabled (log_bos + log_fvg)")
+except ImportError:
+    FUNNEL_ANALYTICS_ENABLED = False
+    print("[SNIPER] ⚠️  Funnel analytics disabled")
+    def log_bos(ticker, direction, bos_price, signal_type="unknown"): pass
+    def log_fvg(ticker, direction, fvg_low, fvg_high, signal_type="unknown"): pass
 
 from app.ml.metrics_cache import get_ticker_win_rates
 _TICKER_WIN_CACHE = get_ticker_win_rates(days=30)
@@ -962,10 +979,27 @@ def process_ticker(ticker: str):
                 direction, breakout_idx = detect_breakout_after_or(bars_session, or_high, or_low)
 
                 if direction:
+                    # ── FUNNEL ANALYTICS: log BOS detection on OR path ────────
+                    if FUNNEL_ANALYTICS_ENABLED:
+                        try:
+                            log_bos(ticker, direction,
+                                    bars_session[breakout_idx]["close"],
+                                    signal_type="CFW6_OR")
+                        except Exception as _fa_err:
+                            print(f"[FUNNEL] log_bos error (non-fatal): {_fa_err}")
+
                     zone_low, zone_high = detect_fvg_after_break(
                         bars_session, breakout_idx, direction
                     )
                     if zone_low is not None:
+                        # ── FUNNEL ANALYTICS: log FVG found on OR path ────────
+                        if FUNNEL_ANALYTICS_ENABLED:
+                            try:
+                                log_fvg(ticker, direction, zone_low, zone_high,
+                                        signal_type="CFW6_OR")
+                            except Exception as _fa_err:
+                                print(f"[FUNNEL] log_fvg error (non-fatal): {_fa_err}")
+
                         scan_mode = "OR_ANCHORED"
                         or_high_ref, or_low_ref = or_high, or_low
                     else:
@@ -996,10 +1030,27 @@ def process_ticker(ticker: str):
                             bars_session, sr["sr_high"], sr["sr_low"]
                         )
                         if sr_direction:
+                            # ── FUNNEL ANALYTICS: log BOS on secondary range path ──
+                            if FUNNEL_ANALYTICS_ENABLED:
+                                try:
+                                    log_bos(ticker, sr_direction,
+                                            bars_session[sr_idx]["close"],
+                                            signal_type="CFW6_OR")
+                                except Exception as _fa_err:
+                                    print(f"[FUNNEL] log_bos (SR) error (non-fatal): {_fa_err}")
+
                             zone_low, zone_high = detect_fvg_after_break(
                                 bars_session, sr_idx, sr_direction
                             )
                             if zone_low is not None:
+                                # ── FUNNEL ANALYTICS: log FVG on secondary range path ──
+                                if FUNNEL_ANALYTICS_ENABLED:
+                                    try:
+                                        log_fvg(ticker, sr_direction, zone_low, zone_high,
+                                                signal_type="CFW6_OR")
+                                    except Exception as _fa_err:
+                                        print(f"[FUNNEL] log_fvg (SR) error (non-fatal): {_fa_err}")
+
                                 scan_mode    = "OR_ANCHORED"
                                 or_high_ref  = sr["sr_high"]
                                 or_low_ref   = sr["sr_low"]
@@ -1040,6 +1091,18 @@ def process_ticker(ticker: str):
             breakout_idx = bos_signal["bos_idx"]
             bos_confirmation = bos_signal.get("confirmation")
             bos_candle_type = bos_signal.get("candle_type")
+
+            # ── FUNNEL ANALYTICS: log BOS + FVG on INTRADAY_BOS path ─────────
+            if FUNNEL_ANALYTICS_ENABLED:
+                try:
+                    log_bos(ticker, direction,
+                            bos_signal.get("bos_price", bars_session[breakout_idx]["close"]),
+                            signal_type="CFW6_INTRADAY")
+                    log_fvg(ticker, direction,
+                            bos_signal["fvg_low"], bos_signal["fvg_high"],
+                            signal_type="CFW6_INTRADAY")
+                except Exception as _fa_err:
+                    print(f"[FUNNEL] log_bos/fvg (intraday) error (non-fatal): {_fa_err}")
 
             if MTF_PRIORITY_ENABLED:
                 try:
