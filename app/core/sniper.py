@@ -65,6 +65,13 @@
 #   - app.signals.funnel_analytics: log_bos + log_fvg wired into process_ticker.
 #   - log_bos() called after detect_breakout_after_or() on OR and secondary range paths.
 #   - log_fvg() called after scan_bos_fvg() on INTRADAY_BOS path.
+#
+# FUNNEL ANALYTICS FIX (Mar 17 2026):
+#   - Corrected import path: app.analytics.funnel_analytics (was app.signals.funnel_analytics
+#     which does not exist — caused ImportError + FUNNEL_ANALYTICS_ENABLED = False every boot).
+#   - Replaced log_bos(ticker, direction, price, signal_type=...) calls with thin wrappers
+#     _log_bos_event() / _log_fvg_event() that map to funnel_tracker.record_stage() directly.
+#     The old convenience functions only accept (ticker, passed, reason=None) — wrong sig.
 import traceback
 from datetime import datetime, time, timedelta
 from utils.time_helpers import _now_et, _bar_time, _strip_tz
@@ -183,15 +190,45 @@ except ImportError:
     def clear_sd_cache(ticker=None): pass
 
 # ── FUNNEL ANALYTICS: upstream pre-detection funnel visibility ────────────────
+# FIX (Mar 17 2026): correct import path is app.analytics.funnel_analytics.
+# app.signals.funnel_analytics does not exist — was causing ImportError every boot.
+# Also: convenience log_bos/log_fvg only accept (ticker, passed, reason) — wrong
+# for sniper call sites. Use thin wrappers below instead.
 try:
-    from app.signals.funnel_analytics import log_bos, log_fvg
+    from app.analytics.funnel_analytics import funnel_tracker as _funnel_tracker
     FUNNEL_ANALYTICS_ENABLED = True
     print("[SNIPER] ✅ Funnel analytics enabled (log_bos + log_fvg)")
 except ImportError:
+    _funnel_tracker = None
     FUNNEL_ANALYTICS_ENABLED = False
     print("[SNIPER] ⚠️  Funnel analytics disabled")
-    def log_bos(ticker, direction, bos_price, signal_type="unknown"): pass
-    def log_fvg(ticker, direction, fvg_low, fvg_high, signal_type="unknown"): pass
+
+
+def _log_bos_event(ticker: str, direction: str, bos_price: float, signal_type: str):
+    """Thin wrapper: translate sniper BOS detection args → funnel_tracker.record_stage()."""
+    if not FUNNEL_ANALYTICS_ENABLED or _funnel_tracker is None:
+        return
+    try:
+        _funnel_tracker.record_stage(
+            ticker, 'BOS', passed=True,
+            reason=f"{direction.upper()} {signal_type} @ ${bos_price:.2f}"
+        )
+    except Exception as _e:
+        print(f"[FUNNEL] _log_bos_event error (non-fatal): {_e}")
+
+
+def _log_fvg_event(ticker: str, direction: str, fvg_low: float, fvg_high: float, signal_type: str):
+    """Thin wrapper: translate sniper FVG detection args → funnel_tracker.record_stage()."""
+    if not FUNNEL_ANALYTICS_ENABLED or _funnel_tracker is None:
+        return
+    try:
+        _funnel_tracker.record_stage(
+            ticker, 'FVG', passed=True,
+            reason=f"{direction.upper()} {signal_type} zone=${fvg_low:.2f}-{fvg_high:.2f}"
+        )
+    except Exception as _e:
+        print(f"[FUNNEL] _log_fvg_event error (non-fatal): {_e}")
+
 
 from app.ml.metrics_cache import get_ticker_win_rates
 _TICKER_WIN_CACHE = get_ticker_win_rates(days=30)
@@ -980,25 +1017,17 @@ def process_ticker(ticker: str):
 
                 if direction:
                     # ── FUNNEL ANALYTICS: log BOS detection on OR path ────────
-                    if FUNNEL_ANALYTICS_ENABLED:
-                        try:
-                            log_bos(ticker, direction,
-                                    bars_session[breakout_idx]["close"],
-                                    signal_type="CFW6_OR")
-                        except Exception as _fa_err:
-                            print(f"[FUNNEL] log_bos error (non-fatal): {_fa_err}")
+                    _log_bos_event(ticker, direction,
+                                   bars_session[breakout_idx]["close"],
+                                   signal_type="CFW6_OR")
 
                     zone_low, zone_high = detect_fvg_after_break(
                         bars_session, breakout_idx, direction
                     )
                     if zone_low is not None:
                         # ── FUNNEL ANALYTICS: log FVG found on OR path ────────
-                        if FUNNEL_ANALYTICS_ENABLED:
-                            try:
-                                log_fvg(ticker, direction, zone_low, zone_high,
-                                        signal_type="CFW6_OR")
-                            except Exception as _fa_err:
-                                print(f"[FUNNEL] log_fvg error (non-fatal): {_fa_err}")
+                        _log_fvg_event(ticker, direction, zone_low, zone_high,
+                                       signal_type="CFW6_OR")
 
                         scan_mode = "OR_ANCHORED"
                         or_high_ref, or_low_ref = or_high, or_low
@@ -1031,25 +1060,17 @@ def process_ticker(ticker: str):
                         )
                         if sr_direction:
                             # ── FUNNEL ANALYTICS: log BOS on secondary range path ──
-                            if FUNNEL_ANALYTICS_ENABLED:
-                                try:
-                                    log_bos(ticker, sr_direction,
-                                            bars_session[sr_idx]["close"],
-                                            signal_type="CFW6_OR")
-                                except Exception as _fa_err:
-                                    print(f"[FUNNEL] log_bos (SR) error (non-fatal): {_fa_err}")
+                            _log_bos_event(ticker, sr_direction,
+                                           bars_session[sr_idx]["close"],
+                                           signal_type="CFW6_OR")
 
                             zone_low, zone_high = detect_fvg_after_break(
                                 bars_session, sr_idx, sr_direction
                             )
                             if zone_low is not None:
                                 # ── FUNNEL ANALYTICS: log FVG on secondary range path ──
-                                if FUNNEL_ANALYTICS_ENABLED:
-                                    try:
-                                        log_fvg(ticker, sr_direction, zone_low, zone_high,
-                                                signal_type="CFW6_OR")
-                                    except Exception as _fa_err:
-                                        print(f"[FUNNEL] log_fvg (SR) error (non-fatal): {_fa_err}")
+                                _log_fvg_event(ticker, sr_direction, zone_low, zone_high,
+                                               signal_type="CFW6_OR")
 
                                 scan_mode    = "OR_ANCHORED"
                                 or_high_ref  = sr["sr_high"]
@@ -1093,16 +1114,12 @@ def process_ticker(ticker: str):
             bos_candle_type = bos_signal.get("candle_type")
 
             # ── FUNNEL ANALYTICS: log BOS + FVG on INTRADAY_BOS path ─────────
-            if FUNNEL_ANALYTICS_ENABLED:
-                try:
-                    log_bos(ticker, direction,
-                            bos_signal.get("bos_price", bars_session[breakout_idx]["close"]),
-                            signal_type="CFW6_INTRADAY")
-                    log_fvg(ticker, direction,
-                            bos_signal["fvg_low"], bos_signal["fvg_high"],
-                            signal_type="CFW6_INTRADAY")
-                except Exception as _fa_err:
-                    print(f"[FUNNEL] log_bos/fvg (intraday) error (non-fatal): {_fa_err}")
+            _log_bos_event(ticker, direction,
+                           bos_signal.get("bos_price", bars_session[breakout_idx]["close"]),
+                           signal_type="CFW6_INTRADAY")
+            _log_fvg_event(ticker, direction,
+                           bos_signal["fvg_low"], bos_signal["fvg_high"],
+                           signal_type="CFW6_INTRADAY")
 
             if MTF_PRIORITY_ENABLED:
                 try:
