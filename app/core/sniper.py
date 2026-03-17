@@ -72,6 +72,12 @@
 #   - Replaced log_bos(ticker, direction, price, signal_type=...) calls with thin wrappers
 #     _log_bos_event() / _log_fvg_event() that map to funnel_tracker.record_stage() directly.
 #     The old convenience functions only accept (ticker, passed, reason=None) — wrong sig.
+#
+# IMPORT STUBS (Mar 17 2026):
+#   - app.core.eod_reporter: module deleted — wrapped in try/except, stub no-ops on missing.
+#   - app.screening.screener_integration: module deleted — wrapped in try/except stub.
+#   - app.core.gate_stats: module deleted — wrapped in try/except stub.
+#   - app.core.sniper_log: module deleted — wrapped in try/except stub.
 import traceback
 from datetime import datetime, time, timedelta
 from utils.time_helpers import _now_et, _bar_time, _strip_tz
@@ -83,7 +89,13 @@ from app.data.data_manager import data_manager
 from utils import config
 from app.mtf.bos_fvg_engine import scan_bos_fvg, is_force_close_time, find_fvg_after_bos
 from app.filters.early_session_disqualifier import should_skip_cfw6_or_early
-from app.screening.screener_integration import get_ticker_screener_metadata
+try:
+    from app.screening.screener_integration import get_ticker_screener_metadata
+    print("[SNIPER] ✅ screener_integration loaded")
+except ImportError:
+    print("[SNIPER] ⚠️  screener_integration not found — using stub")
+    def get_ticker_screener_metadata(ticker):
+        return {'qualified': False, 'score': 0, 'rvol': 0.0, 'tier': None}
 from app.core.watch_signal_store import (
     _persist_watch, _remove_watch_from_db, _maybe_load_watches,
     send_bos_watch_alert, clear_watching_signals,
@@ -93,12 +105,28 @@ from app.core.armed_signal_store import (
     clear_armed_signals,
 )
 # ── Refactored modules ────────────────────────────────────────────────────────
-from app.core.eod_reporter import run_eod_reports
+try:
+    from app.core.eod_reporter import run_eod_reports
+    print("[SNIPER] ✅ eod_reporter loaded")
+except ImportError:
+    print("[SNIPER] ⚠️  eod_reporter not found — EOD reports disabled")
+    def run_eod_reports(*args, **kwargs):
+        print("[EOD] ⚠️  run_eod_reports stub called — module not installed")
 from app.filters.vwap_gate import compute_vwap, passes_vwap_gate
-from app.core.gate_stats import _track_gate_result
+try:
+    from app.core.gate_stats import _track_gate_result
+    print("[SNIPER] ✅ gate_stats loaded")
+except ImportError:
+    print("[SNIPER] ⚠️  gate_stats not found — using stub")
+    def _track_gate_result(grade, signal_type, confidence, passed): pass
 from app.ai.ai_learning import compute_confidence
 from app.core.arm_signal import arm_ticker
-from app.core.sniper_log import _track_validation_call
+try:
+    from app.core.sniper_log import _track_validation_call
+    print("[SNIPER] ✅ sniper_log loaded")
+except ImportError:
+    print("[SNIPER] ⚠️  sniper_log not found — using stub")
+    def _track_validation_call(ticker, direction, price): return False
 # ── FIX #15: DB-persisted signal cooldown (survives Railway restarts) ─────────
 from app.analytics.cooldown_tracker import is_on_cooldown, set_cooldown
 print("[SNIPER] ✅ Signal cooldown gate loaded (DB-persisted, restart-safe)")
