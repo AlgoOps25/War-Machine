@@ -12,7 +12,7 @@ Covers:
 
   2. Greeks + Discord alert
        - test_greeks_precheck_importable — app.validation.greeks_precheck imports cleanly
-       - test_discord_helpers_importable — app.discord_helpers imports cleanly
+       - test_discord_helpers_importable — app.notifications.discord_helpers imports cleanly
        - test_greeks_aapl_validation     — live AAPL call Greeks via Tradier  [@integration]
        - test_discord_alert_with_greeks  — live Discord alert with Greeks data [@integration]
 
@@ -36,7 +36,7 @@ except ImportError:
     _GREEKS_AVAILABLE = False
 
 try:
-    from app.discord_helpers import send_options_signal_alert
+    from app.notifications.discord_helpers import send_options_signal_alert
     _DISCORD_AVAILABLE = True
 except ImportError:
     _DISCORD_AVAILABLE = False
@@ -113,9 +113,9 @@ def test_greeks_precheck_importable():
 
 
 def test_discord_helpers_importable():
-    """app.discord_helpers must import cleanly."""
+    """app.notifications.discord_helpers must import cleanly."""
     assert _DISCORD_AVAILABLE, (
-        "app.discord_helpers failed to import — "
+        "app.notifications.discord_helpers failed to import — "
         "check for missing deps or syntax errors"
     )
 

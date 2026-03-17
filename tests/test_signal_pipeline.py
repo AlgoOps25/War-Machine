@@ -13,11 +13,13 @@ Covers the highest-risk business-logic units:
 Run with:
     pytest tests/test_signal_pipeline.py -v
 """
+import sys
 import threading
 import time
 from datetime import datetime
 import pytest
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+from unittest.mock import MagicMock
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -469,42 +471,105 @@ class TestThreadSafeState:
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 4. POSITION MANAGER — risk rejection path returns -1
+# Stubbed via sys.modules to prevent position_manager's module-level
+# PositionManager() instantiation from hitting the DB under Python 3.14.
 # ─────────────────────────────────────────────────────────────────────────────
 class TestPositionManagerRejection:
     """
     Validates that open_position() returns -1 when the risk manager
     blocks the trade rather than raising an exception.
+
+    Uses a real PositionManager instance with _check_risk_limits monkeypatched
+    so no DB or network calls are made.
     """
 
     def test_rejection_returns_negative_one(self, monkeypatch):
-        try:
-            from app.risk.position_manager import PositionManager
-        except ImportError:
-            pytest.skip("position_manager not importable in this environment")
+        # Stub all transitive deps before importing position_manager
+        _stubs = {
+            "utils":                         MagicMock(),
+            "utils.config":                  MagicMock(
+                ACCOUNT_SIZE=25_000,
+                MAX_DAILY_LOSS_PCT=3.0,
+                MAX_OPEN_POSITIONS=5,
+                MAX_SECTOR_EXPOSURE_PCT=40.0,
+                MIN_RISK_REWARD_RATIO=1.5,
+                MAX_CONTRACTS=10,
+                POSITION_RISK={
+                    "A+_high_confidence": 0.02,
+                    "A_high_confidence":  0.015,
+                    "standard":           0.01,
+                    "conservative":       0.005,
+                },
+            ),
+            "app.data":                      MagicMock(),
+            "app.data.db_connection":        MagicMock(
+                USE_POSTGRES=False,
+                get_conn=MagicMock(return_value=MagicMock(
+                    cursor=MagicMock(return_value=MagicMock(
+                        execute=MagicMock(),
+                        fetchone=MagicMock(return_value=None),
+                        fetchall=MagicMock(return_value=[]),
+                    )),
+                    commit=MagicMock(),
+                )),
+                return_conn=MagicMock(),
+                ph=MagicMock(return_value="?"),
+                dict_cursor=MagicMock(return_value=MagicMock(
+                    execute=MagicMock(),
+                    fetchone=MagicMock(return_value=None),
+                    fetchall=MagicMock(return_value=[]),
+                )),
+                serial_pk=MagicMock(return_value="INTEGER PRIMARY KEY AUTOINCREMENT"),
+            ),
+            "app.risk.vix_sizing":           MagicMock(get_vix_multiplier=MagicMock(return_value=1.0)),
+            "app.analytics":                 MagicMock(),
+            "app.analytics.rth_filter":      MagicMock(is_rth_now=MagicMock(return_value=True)),
+            "app.signals":                   MagicMock(),
+            "app.signals.signal_analytics":  MagicMock(),
+        }
 
-        try:
-            pm = PositionManager()
-        except Exception:
-            pytest.skip("PositionManager() failed to initialise in test environment")
+        # Evict any cached real module
+        for key in list(sys.modules.keys()):
+            if "position_manager" in key:
+                del sys.modules[key]
 
-        monkeypatch.setattr(
-            pm, '_check_risk_limits',
-            lambda *args, **kwargs: (False, "max positions reached"),
-            raising=False
-        )
+        import unittest.mock as _mock
+        with _mock.patch.dict("sys.modules", _stubs):
+            from app.risk import position_manager as pm_mod
 
-        if not hasattr(pm, 'open_position'):
-            pytest.skip("open_position() not present on this PositionManager")
+            # Build a minimal PositionManager without real __init__ side effects
+            pm = pm_mod.PositionManager.__new__(pm_mod.PositionManager)
+            pm.db_path = ":memory:"
+            pm.positions = []
+            pm.account_size = 25_000
+            pm.intraday_high_water_mark = 25_000
+            pm.session_starting_balance = 25_000
+            pm.max_daily_loss_pct = 3.0
+            pm.max_open_positions = 5
+            pm.max_sector_exposure_pct = 40.0
+            pm.min_risk_reward_ratio = 1.5
+            pm.consecutive_wins = 0
+            pm.consecutive_losses = 0
+            pm.performance_multiplier = 1.0
+            pm._daily_stats_cache = None
+            pm._daily_stats_ts = 0.0
+            pm._open_positions_cache = None
+            pm._open_positions_ts = 0.0
 
-        result = pm.open_position(
-            ticker='FAKE', direction='bull',
-            zone_low=99.0, zone_high=101.0,
-            or_low=98.0, or_high=102.0,
-            entry_price=100.0, stop_price=99.0,
-            t1=102.0, t2=104.0,
-            confidence=0.85, grade='A',
-            options_rec=None
-        )
+            # Monkeypatch risk gate to always reject
+            monkeypatch.setattr(pm, '_check_risk_limits',
+                                lambda *a, **kw: (False, "max positions reached"),
+                                raising=False)
+
+            result = pm.open_position(
+                ticker='FAKE', direction='bull',
+                zone_low=99.0, zone_high=101.0,
+                or_low=98.0,  or_high=102.0,
+                entry_price=100.0, stop_price=99.0,
+                t1=102.0, t2=104.0,
+                confidence=0.85, grade='A',
+                options_rec=None
+            )
 
         assert result == -1, (
             f"Expected -1 on risk rejection, got {result!r}. "
@@ -514,6 +579,8 @@ class TestPositionManagerRejection:
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 5. TICKER TIMEOUT WATCHDOG
+# Stubbed via sys.modules to prevent scanner's module-level imports from
+# pulling in position_manager → DB under Python 3.14.
 # ─────────────────────────────────────────────────────────────────────────────
 def _watchdog(fn, ticker, timeout_seconds):
     """Isolated watchdog — fresh executor per call to avoid executor contention."""
@@ -529,15 +596,67 @@ def _watchdog(fn, ticker, timeout_seconds):
             return False
 
 
+def _get_scanner_with_stubs():
+    """
+    Import app.core.scanner with all DB-touching transitive deps stubbed.
+    Evicts cached modules first so stubs take effect cleanly.
+    """
+    import unittest.mock as _mock
+
+    _stubs = {
+        "utils":                            MagicMock(),
+        "utils.config":                     MagicMock(),
+        "app.data":                         MagicMock(),
+        "app.data.db_connection":           MagicMock(
+            USE_POSTGRES=False,
+            get_conn=MagicMock(return_value=MagicMock(
+                cursor=MagicMock(return_value=MagicMock(
+                    execute=MagicMock(),
+                    fetchone=MagicMock(return_value=None),
+                    fetchall=MagicMock(return_value=[]),
+                )),
+                commit=MagicMock(),
+            )),
+            return_conn=MagicMock(),
+            ph=MagicMock(return_value="?"),
+            dict_cursor=MagicMock(return_value=MagicMock(
+                execute=MagicMock(),
+                fetchone=MagicMock(return_value=None),
+                fetchall=MagicMock(return_value=[]),
+            )),
+            serial_pk=MagicMock(return_value="INTEGER PRIMARY KEY AUTOINCREMENT"),
+        ),
+        "app.risk":                         MagicMock(),
+        "app.risk.position_manager":        MagicMock(),
+        "app.risk.risk_manager":            MagicMock(),
+        "app.risk.vix_sizing":              MagicMock(),
+        "app.signals":                      MagicMock(),
+        "app.signals.signal_analytics":     MagicMock(),
+        "app.analytics":                    MagicMock(),
+        "app.analytics.rth_filter":         MagicMock(),
+        "app.notifications":                MagicMock(),
+        "app.notifications.discord_helpers": MagicMock(),
+    }
+
+    for key in list(sys.modules.keys()):
+        if "scanner" in key and "thread_safe" not in key:
+            del sys.modules[key]
+
+    with _mock.patch.dict("sys.modules", _stubs):
+        import app.core.scanner as scanner_mod
+        return scanner_mod
+
+
 class TestTickerWatchdog:
     def test_fast_ticker_returns_true(self):
-        from app.core.scanner import _run_ticker_with_timeout
+        scanner_mod = _get_scanner_with_stubs()
+        _run_ticker_with_timeout = scanner_mod._run_ticker_with_timeout
         def fast(_ticker): time.sleep(0.01)
         assert _run_ticker_with_timeout(fast, 'SPY') is True
 
     def test_slow_ticker_returns_false(self):
-        import app.core.scanner as scanner_mod
-        from app.core.scanner import _run_ticker_with_timeout
+        scanner_mod = _get_scanner_with_stubs()
+        _run_ticker_with_timeout = scanner_mod._run_ticker_with_timeout
         def hung(_ticker): time.sleep(120)
         original = scanner_mod.TICKER_TIMEOUT_SECONDS
         scanner_mod.TICKER_TIMEOUT_SECONDS = 1
@@ -548,7 +667,8 @@ class TestTickerWatchdog:
         assert result is False
 
     def test_exception_in_ticker_returns_false(self):
-        from app.core.scanner import _run_ticker_with_timeout
+        scanner_mod = _get_scanner_with_stubs()
+        _run_ticker_with_timeout = scanner_mod._run_ticker_with_timeout
         def explodes(_ticker): raise RuntimeError("simulated crash")
         assert _run_ticker_with_timeout(explodes, 'BOOM') is False
 
