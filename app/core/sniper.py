@@ -121,6 +121,14 @@ except ImportError:
         print("[EOD] ⚠️  run_eod_reports stub called — module not installed")
 from app.filters.vwap_gate import compute_vwap, passes_vwap_gate
 try:
+    from app.filters.mtf_bias import mtf_bias_engine
+    MTF_BIAS_ENABLED = True
+    print("[SNIPER] ✅ MTF bias engine enabled (Phase 1.34 — 1H/15m top-down)")
+except ImportError:
+    MTF_BIAS_ENABLED = False
+    print("[SNIPER] ⚠️  MTF bias engine disabled")
+    mtf_bias_engine = None
+try:
     from app.core.gate_stats import _track_gate_result
     print("[SNIPER] ✅ gate_stats loaded")
 except ImportError:
@@ -557,6 +565,56 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         return False
     else:
         print(f"[{ticker}] ✅ VWAP GATE: {vwap_reason}")
+        # ── Phase 1.34: MTF Bias Gate (1H + 15m top-down, Nitro Trades) ──────────
+    # ── Phase 1.34: MTF Bias Gate (1H + 15m top-down, Nitro Trades) ──────────
+    if MTF_BIAS_ENABLED and mtf_bias_engine:
+        try:
+            def _resample_bars(bars_1m: list, minutes: int) -> list:
+                """Aggregate 1m bars into N-minute bars."""
+                from collections import defaultdict
+                buckets = defaultdict(list)
+                for b in bars_1m:
+                    dt = b["datetime"]
+                    floored = dt.replace(
+                        minute=(dt.minute // minutes) * minutes,
+                        second=0, microsecond=0
+                    )
+                    buckets[floored].append(b)
+                result = []
+                for ts in sorted(buckets):
+                    bucket = buckets[ts]
+                    result.append({
+                        "datetime": ts,
+                        "open":     bucket[0]["open"],
+                        "high":     max(b["high"]   for b in bucket),
+                        "low":      min(b["low"]    for b in bucket),
+                        "close":    bucket[-1]["close"],
+                        "volume":   sum(b["volume"] for b in bucket),
+                    })
+                return result
+
+            _bars_1m_raw = data_manager.get_bars_from_memory(ticker, limit=390)
+            _bars_15m = _resample_bars(_bars_1m_raw, 15)
+            _bars_1h  = _resample_bars(_bars_1m_raw, 60)
+
+            _mtf = mtf_bias_engine.evaluate(
+                direction=direction,
+                bars_1h=_bars_1h,
+                bars_15m=_bars_15m,
+                current_price=entry_price,
+            )
+            _mtf_emoji = "✅" if _mtf["pass"] else "🚫"
+            print(f"[{ticker}] {_mtf_emoji} MTF BIAS: {_mtf['reason']}")
+            if not _mtf["pass"]:
+                return False
+            _mtf_bias_adj = _mtf["confidence_adj"]
+        except Exception as _mtf_err:
+            print(f"[{ticker}] MTF bias check skipped (non-fatal): {_mtf_err}")
+            _mtf_bias_adj = 0.0
+    else:
+        _mtf_bias_adj = 0.0
+        
+    # ─────────────────────────────────────────────────────────────────────────
 
     conf_result = grade_signal_with_confirmations(
         ticker=ticker, direction=direction, bars=bars_session,
@@ -760,7 +818,8 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         base_confidence
         + ticker_adj + mode_adj + ivr_adj + uoa_adj + gex_adj
         + mtf_boost + ml_boost + vp_boost
-        + _smc_delta  # Step 8.6 SMC delta (capped at +0.10 / -0.05 inside smc_engine)
+        + _smc_delta
+        + _mtf_bias_adj   # Phase 1.34: 1H+15m alignment boost
     )
     final_confidence = max(0.40, min(final_confidence, 0.95))
 
@@ -811,6 +870,7 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         f"[CONFIDENCE-v2] Base:{base_confidence:.2f} "
         f"+ MTF-Trend:{_mtf_trend_boost:+.3f} "
         f"+ SMC:{_smc_delta:+.3f} "
+        f"+ MTFBias:{_mtf_bias_adj:+.3f} "
         f"+ Ticker:{ticker_adj:+.3f}({ticker_multiplier:.2f}) "
         f"+ Mode:{mode_adj:+.3f}({mode_decay:.2f}) "
         f"+ IVR:{ivr_adj:+.3f}[{ivr_label}] "
