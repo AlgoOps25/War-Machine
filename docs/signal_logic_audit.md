@@ -167,167 +167,55 @@ This document is maintained by the assistant to track the ongoing end-to-end aud
 
 ---
 
-### Batch 3: Core pipeline orchestration — IN PROGRESS
+### Batch 3: Core pipeline orchestration — COMPLETE
 
 **Modules**
-- app/core/sniper.py (65KB — primary orchestrator)
-- app/core/arm_signal.py (position open, Discord, armed state, cooldown)
-- app/core/armed_signal_store.py (DB persistence for armed signals)
-- app/core/watch_signal_store.py (DB persistence for watch signals)
-- app/core/analytics_integration.py (analytics wiring)
-- app/core/thread_safe_state.py (state management)
+- app/core/sniper.py
+- app/core/arm_signal.py
+- app/core/armed_signal_store.py
+- app/core/watch_signal_store.py
+- app/core/analytics_integration.py
+- app/core/thread_safe_state.py
 
-**Objectives**
-- Trace every signal path end-to-end through `process_ticker()` and `_run_signal_pipeline()`.
-- Confirm all gates (cooldown, greeks, VWAP, regime, validator, confidence, hourly) fire in the correct order and cannot be silently bypassed.
-- Confirm `adjust_signal_for_or()` (finding 2.B-1) is actually wired — or confirm it is missing.
-- Confirm arm → position → Discord → analytics sequence is atomic-enough.
-- Confirm watch/armed persistence is correct across Railway restarts.
-- Confirm VWAP reclaim path is gated correctly and does not bypass the standard pipeline.
+**Status: COMPLETE — 18 findings. See sub-sections below.**
 
 ---
 
-### Batch 3.A: `_run_signal_pipeline()` — gate ordering and confidence math
+### Batch 3.A: `_run_signal_pipeline()` — gate ordering and confidence math — CLOSED
 
-**Current gate order (confirmed from code)**
+**Gate order confirmed**: DB cooldown → analytics cooldown → options gate → volume profile → confirmation → entry timing → order block → VWAP → MTF bias → grade → confidence construction → post-3pm decay → dynamic threshold → hourly gate → final confidence gate → arm_ticker().
 
-```
-1. DB cooldown gate          (is_on_cooldown — restart-safe)
-2. Analytics cooldown        (in-memory, non-blocking)
-3. Options pre-gate          (greeks_precheck → validate_signal_greeks → options_filter)
-4. Volume profile validation (get_volume_analyzer().validate_entry)
-5. Confirmation              (wait_for_confirmation OR skip_cfw6_confirmation path)
-6. Entry timing validation   (get_entry_timing_validator)
-7. Order block cache         (identify_order_block → cache_order_block)
-8. VWAP directional gate     (passes_vwap_gate)
-9. MTF Bias gate (1H+15m)    (mtf_bias_engine.evaluate)
-10. Grade confirmation        (grade_signal_with_confirmations)
-11. Confidence construction   (compute_confidence + MTF trend + SMC + multipliers)
-12. Post-3pm decay
-13. Dynamic threshold gate    (get_dynamic_threshold)
-14. Hourly gate modifier      (get_hourly_confidence_multiplier × eff_min)
-15. Final confidence ≥ eff_min gate
-16. arm_ticker()
-```
-
-**Key invariants to validate**
-- Gates must be in the correct order: blocking gates before expensive operations.
-- `adjust_signal_for_or()` must appear somewhere in this chain for OR signals.
-- Confidence must be clamped to [0.40, 0.95] before the gate check.
-- `arm_ticker()` must be called only after all gates pass.
-
-**Findings**
-
-1. **ISSUE — `adjust_signal_for_or()` is CONFIRMED MISSING from `_run_signal_pipeline()` (Critical — closes 2.B-1)**
-   A full search of `_run_signal_pipeline()` and `process_ticker()` finds zero calls to `adjust_signal_for_or()` or `adjust_signal_confidence()`. The OR width classification (`or_detector.classify_or()`) is called *after* `_run_signal_pipeline()` completes (at the very bottom of `process_ticker()`), which means it is purely cosmetic/logging. The WIDE OR 75% minimum confidence and TIGHT OR +5% boost from `opening_range.py` are **never applied** to live signals. This is a silent signal quality failure — wide-OR, low-quality setups pass the confidence gate with no penalty.
-   **Fix**: Call `or_detector.classify_or(ticker)` *before* `_run_signal_pipeline()` in `process_ticker()`, then pass the classification into `_run_signal_pipeline()` as a parameter. Inside the pipeline, apply `or_detector.adjust_signal_confidence(or_data, confidence)` immediately before the dynamic threshold gate (step 13 above). Move `_orb_classifications[ticker] = or_data` to this earlier call point.
-
-2. **ISSUE — Analytics cooldown (step 2) is a hard `return False`, not just a warning (logic error)**
-   The header comment says "in-memory reporting, non-blocking" but the code does `return False` when `is_in_cooldown()`. This means the in-memory analytics cooldown *also blocks* the signal. If the in-memory cooldown and the DB cooldown have different TTLs (they do — analytics cooldown is session-only, not persisted), a signal that is not actually in DB cooldown can be incorrectly dropped after a restart that clears in-memory state but is within the old analytics window. **Fix**: Change the analytics cooldown block to `print(...)` only, matching the stated intent of "non-blocking", or explicitly remove it and rely solely on the DB-persisted cooldown at step 1.
-
-3. **ISSUE — Entry price for greeks pre-gate uses `bars_session[-1]["close"]` which may be stale (minor)**
-   At step 3, `_proxy_entry = bars_session[-1]["close"]` is used as the entry price for greeks validation. This is the last *completed* bar, not the actual confirmation price (which is determined at step 5). If confirmation runs multiple bars later, the greeks check is done against a price that could be 0.3–0.8% away from actual entry. For ATM strikes this can mean validating the wrong strike. **Fix**: Run the greeks check *after* confirmation (step 5) using the confirmed `entry_price`, or accept this as an acceptable approximation (the current tolerance in `validate_signal_greeks()` is ±2 strikes, so it rarely matters in practice).
-
-4. **ISSUE — Volume profile hard-blocks signal but is not gated by VOLUME_PROFILE_ENABLED on the *filter* path, only on the fetch path**
-   If `VOLUME_PROFILE_ENABLED = True` and `get_volume_analyzer()` returns a non-None analyzer, but the ticker has no volume data (empty bars → `validate_entry()` returns `is_valid=False` for the wrong reason), the signal is dropped with `return False`. There is no check for whether the VP failure is a genuine "price outside high-volume zone" vs "insufficient data to build the profile". **Fix**: Add a minimum bar count guard inside `validate_entry()` and/or propagate a `data_insufficient` flag that causes VP to be skipped rather than blocking.
-
-5. **ISSUE — `_mtf_bias_adj` is initialized to `0.0` in the `else` branch but is also `0.0` if `MTF_BIAS_ENABLED` is True and the check raises an exception (silent)**
-   If `mtf_bias_engine.evaluate()` raises an exception, `_mtf_bias_adj = 0.0` and execution continues — *including calling `arm_ticker()`*. This is the intended non-fatal behavior. However, the exception path also skips `mtf_bias_engine.record_stat()`, meaning the MTF bias stat tracker silently under-counts evaluations for any ticker that throws. **Fix**: catch the exception separately and still call `mtf_bias_engine.record_stat(ticker, direction, {'pass': None, 'error': True})` for accurate tracking.
-
-6. **ISSUE — Confidence formula applies `mode_decay = 0.95` for `CFW6_OR` signals but the final `_orb_classifications` OR adjustment is never applied (reinforces finding 3.A-1)**
-   `mode_decay = 0.95` is applied to CFW6_OR signals in `mult_to_adjustment()`. This is the *only* OR-related confidence adjustment actually in the pipeline. It is a flat 5% penalty on all CFW6_OR signals regardless of OR width. WIDE OR signals (which should require 75% confidence) and TIGHT OR signals (which should receive a +5% boost) are both treated identically — both get the same flat 5% mode decay. This is a direct consequence of `adjust_signal_for_or()` never being called.
-
-7. **ISSUE — Confidence is clamped to [0.40, 0.95] but the threshold gate `eff_min` can theoretically also be above 0.95 (edge case)**
-   `eff_min` is computed as `max(min_type, min_grade, CONFIDENCE_ABSOLUTE_FLOOR)`. If hourly gate multiplies `eff_min *= hourly_mult` and `hourly_mult` is high (e.g., 1.3 for a very weak hour), `eff_min` could exceed 0.95. Since `final_confidence` is capped at 0.95, any signal in a weak hour could be permanently ungatable. In practice, `hourly_mult` is unlikely to push `eff_min` above 0.95, but no explicit cap exists. **Fix**: add `eff_min = min(eff_min, 0.92)` after the hourly gate multiplication.
-
-8. **OBSERVATION — `or_high_ref` / `or_low_ref` on the INTRADAY_BOS path are set to `bos_price` / `zone_low` (bull) or `zone_high` / `bos_price` (bear), not to actual OR levels**
-   This is intentional — for INTRADAY_BOS there is no OR to anchor to; the BOS price serves as the reference. `compute_stop_and_targets()` uses these as context references, not as hard price levels. No issue, but worth documenting explicitly.
+**Findings (summary)**
+1. (Critical) `adjust_signal_for_or()` CONFIRMED MISSING — OR quality filter fully bypassed.
+2. (Critical) Analytics cooldown hard-blocks with `return False` — should be print-only.
+3. (Medium) Greeks gate uses pre-confirmation entry price — should run post-confirmation.
+4. (Medium) Volume profile blocks on empty data — needs `data_insufficient` flag to skip.
+5. (Medium) MTF bias exception skips `record_stat()` — catch and record separately.
+6. (High) `mode_decay=0.95` is the only OR adjustment applied — flat and width-unaware.
+7. (High) `eff_min` has no upper cap — can exceed 0.95 causing ungatable threshold.
+8. (Observation) INTRADAY_BOS `or_high_ref`/`or_low_ref` using BOS price is intentional.
 
 ---
 
-### Batch 3.B: `process_ticker()` — scan flow, watch management, VWAP reclaim
+### Batch 3.B: `process_ticker()` — scan flow, watch management, VWAP reclaim — CLOSED
 
-**Current scan flow (confirmed)**
-
-```
-1. Load watches + armed signals from DB
-2. Performance dashboard + alert checks
-3. Regime filter (explosive override if qualified)
-4. Early return if ticker already armed
-5. Fetch bars (production_helper or direct)
-6. SD zone cache
-7. SPY EMA regime context
-8. Force-close time check → EOD reports
-9. Watch resolution (bar index recovery from datetime)
-10. Watch expiry check (MAX_WATCH_BARS = 12)
-11. Watch continuation (FVG search → pipeline if found)
-12. OR range detection (compute_opening_range_from_bars)
-    a. Narrow OR → skip OR path, fall to intraday
-    b. Early session gate (should_skip_cfw6_or_early)
-    c. OR breakout detection (detect_breakout_after_or)
-    d. FVG search → pipeline OR watch entry
-    e. If 10:30+ and no scan: secondary range check
-13. INTRADAY_BOS path (scan_bos_fvg)
-14. _run_signal_pipeline()
-15. ORB classify (cosmetic, AFTER pipeline) ← out of order (see 3.A-1)
-16. VWAP reclaim check (only if scan_mode is None)
-```
-
-**Findings**
-
-9. **ISSUE — VWAP reclaim path fires only when `scan_mode is None` (after the full OR + BOS scan) but uses `skip_cfw6_confirmation=True` without any session time guard (medium)**
-   `detect_vwap_reclaim()` is called only when no scan_mode was set (no OR breakout, no BOS+FVG found). This is correct gating. However, `_run_signal_pipeline()` is called with `skip_cfw6_confirmation=True`, meaning the signal proceeds directly from `bars_session[-1]["close"]` as entry price with no retest confirmation, no FVG zone (the zone is a ±0.15% synthetic band around VWAP), and no session time check. There is no guard preventing VWAP reclaim signals before 9:45 or after 15:30. **Fix**: add time-of-day guards to the VWAP reclaim block (`_now_et().time() >= time(9, 45)` and `< time(15, 30)`).
-
-10. **ISSUE — Watch restoration relies on exact `datetime` match (`_strip_tz(bar["datetime"]) == bar_dt_target`) which fails if bar timestamps are resampled with sub-second differences (medium)**
-    After a Railway restart, the watch entry stores `breakout_bar_dt` from `_strip_tz(bars_session[breakout_idx]["datetime"])`. On reload, `process_ticker()` iterates all bars looking for an exact datetime match. If the bar timestamp is stored with microsecond precision but reloaded as a truncated timestamp (e.g., via SQLite's TEXT serialization which drops microseconds), the match fails and the watch is discarded. **Fix**: truncate both sides to second precision before comparison: `bar_dt.replace(microsecond=0) == bar_dt_target.replace(microsecond=0)`.
-
-11. **ISSUE — `should_skip_cfw6_or_early()` prints a misleading reason string (minor)**
-    The early session gate prints: `"EARLY SESSION GATE: CFW6_OR blocked before 9:45 AM (OR=X.XX% < threshold)"` — but the gate is controlled by `should_skip_cfw6_or_early(or_range_pct, now_et)` which checks time, not whether OR is below the threshold (that check already happened above). The `< or_threshold` in the log message is a copy-paste from the narrow OR message. **Fix**: update the print message to `"OR={or_range_pct:.2%} — time-gated before 9:45"` so it's not confused with the narrow-OR skip.
-
-12. **ISSUE — `_bos_watch_alerted` set is in-memory only and is never persisted or cleared across restarts**
-    The BOS watch dedup set (`_bos_watch_alerted`) prevents sending the same BOS watch alert twice per session. However, it is reset to an empty set on every Railway restart. If the bot restarts mid-session and the same BOS is detected again, a duplicate Discord alert fires. The fix is low-friction because the watch itself IS persisted (via `_persist_watch`) and `_maybe_load_watches()` will reload it — so the watch won't be duplicated. But the Discord alert will fire again. **Fix**: Populate `_bos_watch_alerted` from the loaded watch DB entries at startup inside `_maybe_load_watches()` by reconstructing the key `f"{ticker}:{direction}:{breakout_bar_dt}"`.
-
-13. **OBSERVATION — `_orb_classifications` is populated AFTER `_run_signal_pipeline()` (confirmed redundant)**
-    This was already identified in 3.A-1. The ORB classification is stored to `_orb_classifications[ticker]` purely for logging after the pipeline runs. It is never read back anywhere in `process_ticker()` or `_run_signal_pipeline()`. This confirms the classification is decorative and `adjust_signal_for_or()` is not wired.
+**Findings (summary)**
+9. (Medium) VWAP reclaim path has no time-of-day guard — can fire pre-9:45 or post-15:30.
+10. (Medium) Watch datetime match fails on microsecond precision mismatch after restart.
+11. (Low) Early session gate log message misleadingly says "OR < threshold" — should say "time-gated".
+12. (Medium) `_bos_watch_alerted` not rebuilt from DB on restart — duplicate Discord alerts.
+13. (Observation) `_orb_classifications` populated post-pipeline — purely cosmetic, confirms 3.A-1.
 
 ---
 
-### Batch 3.C: `arm_signal.py` — arming sequence integrity
+### Batch 3.C: `arm_signal.py` — arming sequence integrity — CLOSED
 
-**Current sequence (confirmed)**
-```
-1. Stop tightness guard (< 0.1% of entry → skip)
-2. log_proposed_trade()
-3. get_ticker_screener_metadata()
-4. position_manager.open_position() → position_id
-5. If position_id == -1 → return (no alert)
-6. record_trade_executed() (analytics TRADED stage)
-7. Discord alert (production_helper path or fallback)
-8. _persist_armed_signal() + _state.set_armed_signal()
-9. set_cooldown()
-```
-
-**Key invariants confirmed**
-- Discord alert fires only after `position_id > 0`. ✅ (FIX C2, Mar 10)
-- Cooldown set only after successful position open. ✅
-- Analytics TRADED stage recorded after position open. ✅ (FIX Mar 16)
-
-**Findings**
-
-14. **ISSUE — `log_proposed_trade()` is called before `position_id` is known (step 2 vs step 4)**
-    `log_proposed_trade()` fires before `open_position()`, meaning it logs a trade that may never open (e.g., if the risk manager rejects it). This pollutes the proposed-trade log with false entries. **Fix**: move `log_proposed_trade()` to after step 5 (after confirming `position_id != -1`), matching the same pattern as the Discord alert.
-
-15. **ISSUE — `screener_integration.get_ticker_screener_metadata()` is imported inside `arm_ticker()` via a deferred import, but it also appears in `sniper.py` as a try/except stub**
-    If `screener_integration` is unavailable (which it is — the module was deleted and replaced with a stub in sniper.py), the arm_ticker deferred import `from app.screening.screener_integration import get_ticker_screener_metadata` will raise `ImportError` at runtime during position open. This is a latent crash risk. **Fix**: replace the deferred import in `arm_signal.py` with the same try/except stub pattern used in `sniper.py`, so it falls back to `{'qualified': False, 'score': 0, 'rvol': 0.0, 'tier': None}` gracefully.
-
-16. **ISSUE — `record_trade_executed()` failure is caught and printed but does not block arming (by design) — however the ARMED stage may not have been recorded either**
-    `record_trade_executed()` in `signal_analytics` checks `session_signals[ticker]['stage'] == 'ARMED'` before proceeding. If `record_signal_armed()` was never called (because PHASE_4_ENABLED was False, or a tracking error occurred at that step in `_run_signal_pipeline()`), `record_trade_executed()` prints a warning and returns -1. The TRADED stage is silently lost and the funnel shows a gap. **Fix**: confirm PHASE_4_ENABLED is True in production and add a health-check log at startup that verifies `signal_tracker is not None`.
-
-17. **OBSERVATION — `arm_ticker()` does not call `_state.remove_watching_signal()` or `_remove_watch_from_db()`**
-    Watch cleanup happens in `process_ticker()` *after* `_run_signal_pipeline()` returns `True` from the watch continuation path. The arm function doesn't need to know about watches — this is correct separation of concerns. ✅
-
-18. **OBSERVATION — `sniper_log.log_proposed_trade` is imported with a try/except stub in sniper.py, but in arm_signal.py it is imported as a hard import (no fallback)**
-    Same pattern as finding 3.C-15. Any deleted/missing module imported without a fallback in `arm_signal.py` is a hidden crash risk since arm_signal is called from the hot path. **Recommendation**: all imports inside `arm_signal.py` that were previously wrapped in try/except stubs in sniper.py should be similarly wrapped here.
+**Findings (summary)**
+14. (High) `log_proposed_trade()` called before position open — logs trades that may never execute.
+15. (Critical) `screener_integration` deferred import has no fallback — latent ImportError crash.
+16. (Medium) ARMED stage may be missing when `record_trade_executed()` fires — add health-check.
+17. (Observation) Watch cleanup correctly separated into `process_ticker()` — no issue.
+18. (High) All arm_signal.py deferred imports lack try/except fallbacks present in sniper.py.
 
 ---
 
@@ -335,20 +223,208 @@ This document is maintained by the assistant to track the ongoing end-to-end aud
 
 | Priority | # | Module | Fix |
 |----------|---|--------|-----|
-| 🔴 Critical | 3.A-1 | sniper.py | Wire `adjust_signal_for_or()` into `_run_signal_pipeline()` — CONFIRMED MISSING; OR quality filter is completely bypassed |
-| 🔴 Critical | 3.A-2 | sniper.py | Fix analytics cooldown block — change `return False` to print-only (or remove); rely solely on DB cooldown |
-| 🔴 Critical | 3.C-15 | arm_signal.py | Wrap `screener_integration` import in try/except stub to prevent runtime ImportError during position open |
-| 🟡 High | 3.A-7 | sniper.py | Cap `eff_min = min(eff_min, 0.92)` after hourly gate multiplication to prevent ungatable threshold |
+| 🔴 Critical | 3.A-1 | sniper.py | Wire `adjust_signal_for_or()` into `_run_signal_pipeline()` — CONFIRMED MISSING |
+| 🔴 Critical | 3.A-2 | sniper.py | Fix analytics cooldown block — change `return False` to print-only |
+| 🔴 Critical | 3.C-15 | arm_signal.py | Wrap `screener_integration` import in try/except stub |
+| 🟡 High | 3.A-7 | sniper.py | Cap `eff_min = min(eff_min, 0.92)` after hourly gate multiplication |
 | 🟡 High | 3.B-9 | sniper.py | Add time-of-day guards to VWAP reclaim path (≥ 9:45, < 15:30) |
 | 🟡 High | 3.C-14 | arm_signal.py | Move `log_proposed_trade()` to after `position_id > 0` check |
-| 🟡 High | 3.C-18 | arm_signal.py | Wrap all try/except-stub imports from sniper.py with matching fallbacks in arm_signal.py |
+| 🟡 High | 3.C-18 | arm_signal.py | Wrap all deferred imports in try/except fallbacks |
 | 🟠 Medium | 3.B-10 | sniper.py | Truncate both sides to second precision in watch datetime match |
-| 🟠 Medium | 3.B-12 | sniper.py | Populate `_bos_watch_alerted` from DB-loaded watches at startup to prevent duplicate alerts after restart |
-| 🟠 Medium | 3.A-4 | sniper.py | Run greeks check after confirmation so `entry_price` is the confirmed price, not the last bar close |
-| 🟠 Medium | 3.A-5 | sniper.py | Add `data_insufficient` flag to volume profile `validate_entry()` to skip rather than block on no-data |
-| 🟠 Medium | 3.C-16 | sniper.py | Add startup health-check log confirming `signal_tracker is not None` and `PHASE_4_ENABLED = True` |
+| 🟠 Medium | 3.B-12 | sniper.py | Populate `_bos_watch_alerted` from DB-loaded watches at startup |
+| 🟠 Medium | 3.A-4 | sniper.py | Run greeks check after confirmation using confirmed entry_price |
+| 🟠 Medium | 3.A-5 | sniper.py | Add `data_insufficient` flag to volume profile validate_entry() |
+| 🟠 Medium | 3.C-16 | sniper.py | Startup health-check: confirm signal_tracker not None + PHASE_4_ENABLED=True |
 | 🟢 Low | 3.B-11 | sniper.py | Fix misleading early session gate log message |
-| 🟢 Low | 3.A-5b | sniper.py | Call `mtf_bias_engine.record_stat()` even on exception path for accurate stat tracking |
+| 🟢 Low | 3.A-5b | sniper.py | Call `mtf_bias_engine.record_stat()` even on exception path |
+
+---
+
+### Batch 4: Validation layer — IN PROGRESS
+
+**Modules**
+- app/validation/cfw6_confirmation.py
+- app/validation/cfw6_gate_validator.py
+- app/validation/entry_timing.py
+- app/validation/hourly_gate.py
+- app/validation/volume_profile.py
+- app/validation/validation.py (65KB — main SignalValidator)
+
+**Objectives**
+- Confirm CFW6 candle confirmation logic is mathematically symmetric and covers all candle patterns.
+- Confirm `wait_for_confirmation()` cannot block the pipeline indefinitely.
+- Confirm `cfw6_gate_validator.validate_signal()` is actually called in the live pipeline (or is it dead code?).
+- Confirm `EntryTimingValidator` win rates are based on live data vs hardcoded stubs.
+- Confirm `hourly_gate.build_heatmap_data()` is implemented or confirmed as a permanent neutral stub.
+- Confirm `VolumeProfileAnalyzer` handles empty bar sets without blocking (ties back to 3.A-5).
+- Audit `validation.py` (SignalValidator) — largest file in the layer at 65KB.
+
+---
+
+### Batch 4.A: cfw6_confirmation.py — candle confirmation and grade logic
+
+**Current behaviour (summary)**
+- `analyze_confirmation_candle()` implements 3-tier CFW6 candle type logic (TYPE 1/A+, TYPE 2/A, TYPE 3/A-) for both bull and bear.
+- Zone entry check: bull requires `low` in zone; bear requires `high` in zone.
+- `wait_for_confirmation()` loops up to `max_wait_candles` (default 15 = 75 minutes), re-fetching bars each cycle, sleeping 60s between cycles.
+- `grade_signal_with_confirmations()` applies 3 confirmation layers (VWAP, PDH/PDL, institutional volume) and upgrades/downgrades grade based on 3/3 or 0/3 alignment.
+- VWAP calculation fixed Mar 16 2026 to use correct (H+L+C)/3 formula from `app.filters.vwap_gate`.
+
+**Key invariants**
+- `analyze_confirmation_candle()` must return `("reject", "reject")` if the candle does not touch the zone. ✅
+- `wait_for_confirmation()` must eventually time out after `max_wait_candles` cycles regardless of data availability. ✅
+- `grade_signal_with_confirmations()` must only upgrade/downgrade by exactly one grade level. ✅ (A→A+ for 3/3, A+→A for 0/3)
+
+**Findings**
+
+1. **ISSUE — `analyze_confirmation_candle()` has a dead candle pattern gap between TYPE 2 and TYPE 3 for bull direction (logic gap)**
+   For a bull candle that is GREEN (`close > open`), the code checks:
+   - `wick_ratio < 0.15` → TYPE 1 (A+)
+   - `wick_ratio >= 0.25` → TYPE 2 (A)
+   - But wick_ratio in [0.15, 0.25) → **falls through to `return ("reject", "reject")`** — no pattern matched.
+   This is a dead zone: a green candle with a 15–24% lower wick has a respectable bullish pattern but is classified as a reject. The same gap exists on the bear side for red candles with upper wick in [0.15, 0.25).
+   **Fix**: change the `>= 0.25` TYPE 2 check to `>= 0.15` (i.e., close the gap with TYPE 1), OR add an explicit catch-all: if `close > open` (bull, green) and wick_ratio is in [0.15, 0.25), return TYPE 2 ("flip", "A") as a borderline flip. The current code silently rejects valid confirmation candles in a 10-point wick_ratio window.
+
+2. **ISSUE — `wait_for_confirmation()` always uses the LAST bar after `start_time`, not the LATEST UNTESTED bar (logic error)**
+   The loop iterates all bars and updates `latest_bar` on every bar with `bar_dt > start_time`. This means `latest_bar` is always the newest bar, not the bar that was most recently completed and not yet evaluated. If the pipeline fires on bar N+3 but bar N+1 was the actual confirmation candle, it is silently skipped — only bar N+3 (the latest) is tested each cycle. **Fix**: track the last-evaluated bar index across cycles (e.g., store `last_checked_idx` and only evaluate bars with idx > last_checked_idx). This ensures every new bar gets a chance to be the confirmation candle.
+
+3. **ISSUE — `wait_for_confirmation()` calls `time.sleep(60)` which blocks the main thread for up to 75 minutes (architectural)**
+   The confirmation loop is a blocking synchronous sleep loop. If `sniper.py` calls `wait_for_confirmation()` from the main scan loop (confirmed: it does, via `_run_signal_pipeline()` step 5 when `skip_cfw6_confirmation=False`), the entire bot is frozen for up to 75 minutes per confirmation wait. No other tickers are scanned during this window. This is architecturally acceptable only if War Machine is single-stock-focused; it is a serious problem for multi-ticker scans.
+   **Recommendation**: either (a) confirm that the live pipeline uses `skip_cfw6_confirmation=True` for all multi-ticker scans and `wait_for_confirmation()` is only used in manual/single-ticker mode, or (b) refactor to async/non-blocking confirmation checks (e.g., mark ticker as "pending confirmation" in state, check on the next scan cycle).
+
+4. **ISSUE — `grade_signal_with_confirmations()` never downgrades below "A-" — a 0/3 signal with base grade "A-" gets final_grade = "reject" but the function still returns a dict (not None)**
+   The caller in `sniper.py` receives `result["final_grade"] == "reject"` and must check for this. Searching `_run_signal_pipeline()`: after `grade_signal_with_confirmations()` returns, the code checks `if confirm_result["final_grade"] == "reject": return False`. ✅ Correctly handled. However, if the check is ever removed or the key name changes, the reject will silently propagate as an armed signal with grade="reject". **Recommendation**: add an assertion `assert confirm_result["final_grade"] in VALID_GRADES` after the call.
+
+5. **OBSERVATION — `check_institutional_volume()` uses a hard 3× threshold (avg_volume × 3) with no per-ticker normalization**
+   For high-float mega-caps like AAPL or MSFT, institutional block trades regularly exceed 3× average volume without being directionally meaningful. For low-float small-caps, 3× is a very weak signal. The threshold is not parameterized. No immediate fix required — mark as a calibration improvement for backtesting.
+
+---
+
+### Batch 4.B: cfw6_gate_validator.py — gate validator pipeline
+
+**Current behaviour (summary)**
+- Six sequential gates: time-of-day (hard) → regime/ADX (hard, RVOL bypass at 3.0×) → volume (soft, -5 pts) → greeks (soft, -10 pts) → ML adjustment (±15 pts) → min confidence floor (60%).
+- `validate_signal = None` in scanner.py currently disables this validator — it is **not active** in the live pipeline.
+- `get_validation_stats()` is a permanent stub returning zeroed counters.
+
+**Key invariants**
+- Gates 1 and 2 are hard-exit (early `return`). All others are soft (adjust confidence). ✅
+- ML gate is safe-fail: `is_ready=False` → zero adjustment. ✅
+- `adjusted_confidence` is clamped to [0, 100] after ML adjustment. ✅
+
+**Findings**
+
+6. **ISSUE — `cfw6_gate_validator.validate_signal()` is CONFIRMED DISABLED in scanner.py (dead code in live pipeline)**
+   The docstring explicitly states: `"validate_signal = None" in scanner.py — re-enable by removing that line once the CFW6 gate is ready"`. This means the entire 6-gate validation pipeline (time-of-day hard-reject, regime, volume, greeks, ML, confidence floor) is bypassed. This is a deliberate deferral, not a bug, but it means the `cfw6_gate_validator` module provides zero signal filtering currently.
+   **Decision required**: confirm whether this gate should be enabled in production. If yes, remove the `validate_signal = None` override in scanner.py and wire the result into `_run_signal_pipeline()`.
+
+7. **ISSUE — Gate 1 time-of-day and Gate 3 volume in `cfw6_gate_validator` DUPLICATE checks already in `_run_signal_pipeline()` and `sniper.py` (redundancy)**
+   If this gate is ever re-enabled, it will apply time-of-day and volume checks that overlap with:
+   - `_check_time_of_day()` vs. the lunch/afternoon windows already enforced in `process_ticker()` (via `is_active_session()` and the direct time checks in the scan loop).
+   - `_check_volume()` RVOL floor vs. the RVOL tier already enforced by the screener watchlist funnel.
+   The overlapping gates are not harmful (defense-in-depth) but the hard-reject windows differ: `cfw6_gate_validator` rejects 11:30–13:00 lunch; `sniper.py` does not have this exact window. These need to be reconciled before enabling.
+
+8. **ISSUE — Gate 2 regime uses `adx=None` → passes with "no ADX data" (trivially bypassed)**
+   If the caller doesn't pass `adx`, the regime gate always returns `passed=True`. Since scanner.py calls `validate_signal()` without an `adx` parameter (in the stub), ADX would never be checked. **Fix**: require either `adx` or explicit `regime_filter=False` — never silently pass.
+
+9. **ISSUE — `get_validation_stats()` is a permanent stub — no gate telemetry is ever recorded**
+   Gate pass/fail counts are never persisted. When this validator goes live, there will be zero visibility into which gates fire most often. **Fix**: before enabling in production, implement DB persistence for gate stats (the TODO comment references PostgreSQL).
+
+---
+
+### Batch 4.C: entry_timing.py — hourly win rate validator
+
+**Current behaviour (summary)**
+- `EntryTimingValidator` classifies signal entry times against `HOURLY_WIN_RATES`, a hardcoded dict of `{hour: (win_rate, sample_size)}`.
+- Weak hour (< 50% WR): blocks signal unless grade is A+.
+- Golden hour (≥ 65% WR): always allows.
+- `get_timing_boost()` returns a ±0–5% confidence adjustment based on WR distance from threshold.
+
+**Key invariants**
+- `validate_entry_time()` must always return `(True, ...)` if no hour data exists (fail-open). ✅
+- Timezone coercion to ET must happen before hour extraction. ✅
+
+**Findings**
+
+10. **ISSUE — `HOURLY_WIN_RATES` is HARDCODED with fabricated sample data — not derived from live trade history (critical data integrity)**
+    The values `{9: (0.58, 45), 10: (0.68, 52), 11: (0.62, 38), 12: (0.45, 28), ...}` are static constants embedded in the class definition. They are not loaded from the DB, not updated daily, and the `sample_size` values (45, 52, 38 etc.) are fictional. This means `EntryTimingValidator` applies filtering rules based on made-up win rates. If the bot is in its first 3 months of trading, these rates could be wildly wrong for your actual strategy. The `hourly_gate.py` module has the right design (queries `session_heatmap`) but `entry_timing.py` completely bypasses it.
+    **Fix**: replace `HOURLY_WIN_RATES` with a DB query at initialization time, using the same `build_heatmap_data()` pattern from `hourly_gate.py`. Until sufficient history exists (< `MIN_TRADES_HOUR`), default to neutral (fail-open). The hardcoded values should be removed entirely.
+
+11. **ISSUE — `get_timing_boost()` returns a float in [−0.05, +0.05] but the calling convention in `_run_signal_pipeline()` treats confidence as a 0–1 float**
+    `get_timing_boost()` returns e.g. `0.03` meaning +3%. If the caller adds this to `final_confidence` (which is a 0–1 float like `0.72`), the adjustment is correct. However, `cfw6_gate_validator` uses confidence on a 0–100 scale. If `get_timing_boost()` is ever called from the gate validator context and the result is added directly, it applies a 0.03-point adjustment on a 0–100 scale — effectively zero. **Recommendation**: explicitly document the return scale as a 0–1 fraction, or rename to `get_timing_boost_fraction()` for clarity.
+
+12. **ISSUE — `SESSION_PERIODS` overlap: `market_open` is 9:30–10:30 and `golden_hours` is 10:00–11:30 — 30 minutes of overlap**
+    `_get_session_quality()` iterates the dict and returns the FIRST match. Dict insertion order in Python 3.7+ is guaranteed, so `market_open` always wins for the 10:00–10:30 overlap window. The 10:00–10:30 period is actually classified as `market_open` not `golden_hours`, even though it has the highest win rate. This affects only the session_quality label in `timing_data` (used for logging/Discord) — not the actual gate decision. **Fix**: close the overlap: change `market_open` to end at `time(10, 0)`, making the ranges contiguous.
+
+---
+
+### Batch 4.D: hourly_gate.py — dynamic confidence threshold modifier
+
+**Current behaviour (summary)**
+- `get_hourly_confidence_multiplier()` queries `build_heatmap_data()` once per trading day (cached).
+- Returns 1.10 (weak), 0.95 (strong), or 1.00 (neutral/no data).
+- `build_heatmap_data()` is a **permanent stub** returning `{"hour_totals": {}}` — always neutral.
+
+**Key invariants**
+- Cache must refresh on date change, not on arbitrary TTL. ✅ (checks `_last_update.date() != now.date()`)
+- Outside 9–15 ET must always return 1.0. ✅
+- No data (insufficient history) must return 1.0 (neutral). ✅
+
+**Findings**
+
+13. **ISSUE — `build_heatmap_data()` is a permanent stub — `hourly_gate` always returns 1.0 (neutral) for every signal**
+    The function returns `{"hour_totals": {}}` unconditionally. This means the hourly gate never raises or lowers the confidence threshold. It is a no-op. This is explicitly noted in the docstring ("Hourly gate will run neutral until this is populated") but there is no TODO ticket, no schema for `session_heatmap`, and no timeline to implement it. Combined with finding 4.C-10 (hardcoded win rates in entry_timing.py), the entire time-of-day performance calibration layer is effectively non-functional.
+    **Fix**: implement `build_heatmap_data()` to query `signal_events` grouped by `hour_of_day` and `session_date` (the data already exists from `signal_analytics.py`). This requires no new schema — just a SQL query against existing data.
+
+14. **ISSUE — `_stats['neutral']` counter is incremented both when hour is outside 9–15 AND when hour has insufficient data, making it impossible to distinguish "off-hours" from "data too thin"**
+    Both cases increment `_stats['neutral']` and `print_hourly_gate_stats()` reports them together as a single "Neutral" bucket. **Fix**: add a separate counter `_stats['off_hours']` for the `hour < 9 or hour > 15` early return path.
+
+---
+
+### Batch 4.E: volume_profile.py — entry-gate volume profile validator
+
+**Current behaviour (summary)**
+- `VolumeProfileAnalyzer.validate_entry()` builds a 20-bin session profile and checks if entry is near HVN (block) or LVN (favor), above VAH (bull), or below VAL (bear).
+- Results cached 5 minutes per `(ticker, direction, entry_price)`.
+- Correctly returns `(True, "Volume profile unavailable...", None)` when `len(bars) < 10` — fail-open for insufficient data. ✅ This directly resolves finding 3.A-5 from Batch 3.
+
+**Key invariants**
+- Empty profile must return `(True, ...)` not `(False, ...)`. ✅ (`_empty_profile()` returns total_volume=0 → caught by `validate_entry()`)
+- HVN/LVN checks use relative 1% tolerance (`abs(price - level) / price < 0.01`). ✅
+- POC distance calculation guards against `poc == 0`. ✅
+
+**Findings**
+
+15. **ISSUE — `validate_breakout()` checks LVN *before* HVN — a price near both an HVN and an LVN simultaneously returns True (LVN wins)**
+    If a price bin happens to be both in the top-80th-percentile (HVN) AND bottom-20th-percentile (LVN) volume — which can't happen mathematically since those are mutually exclusive percentiles — this isn't a real issue. However, the LVN list can contain a bin that is *near* an HVN bin (adjacent bins), and the 1% price tolerance could match both. If the entry price is within 1% of an LVN AND within 1% of an HVN, the code returns True (favorable) because LVN is checked first. **Fix**: check HVN first (blocking check), then LVN (confirming check), so HVN always wins if both are nearby.
+
+16. **ISSUE — `analyze_session_profile()` distributes each bar's volume equally across H, L, and C points (volume/3 each) — this under-weights the close price**
+    The standard TPO/volume profile convention is to use the bar's range as a uniform distribution across all price bins within [low, high], not just 3 discrete points. The current approach creates a "jagged" profile with spikes at H, L, and C and gaps between them. For 20 bins this is a minor distortion, but it means the POC can be pinned to a high/low extreme rather than the true highest-volume price range. **Recommendation**: distribute `bar['volume']` proportionally across all bins within `[bar['low'], bar['high']]` using `np.searchsorted` range allocation. This is the 3-line fix that makes the profile mathematically correct.
+
+17. **OBSERVATION — Cache key uses `entry_price:.2f` which may round differently for prices like $99.995**
+    For practical entry prices (2 decimal places from broker), this is fine. No issue.
+
+---
+
+## Batch 4 Priority Fix List
+
+| Priority | # | Module | Fix |
+|----------|---|--------|-----|
+| 🔴 Critical | 4.C-10 | entry_timing | Replace hardcoded `HOURLY_WIN_RATES` with live DB query from `signal_events`; remove fabricated sample data |
+| 🔴 Critical | 4.A-2 | cfw6_confirmation | Fix `wait_for_confirmation()` to scan all new bars per cycle, not just the latest |
+| 🟡 High | 4.A-1 | cfw6_confirmation | Close wick_ratio dead zone [0.15, 0.25) — green bull candles in this range silently rejected |
+| 🟡 High | 4.D-13 | hourly_gate | Implement `build_heatmap_data()` using existing `signal_events` data — hourly gate is permanently neutral until done |
+| 🟡 High | 4.B-6 | cfw6_gate_validator | Decision point: enable or formally defer `validate_signal()` — currently 100% dead code in live pipeline |
+| 🟠 Medium | 4.A-3 | cfw6_confirmation | Architectural: `wait_for_confirmation()` blocks main thread up to 75 min — confirm single-ticker use or refactor to non-blocking |
+| 🟠 Medium | 4.E-15 | volume_profile | Swap LVN/HVN check order in `validate_breakout()` — HVN (blocking) must be checked before LVN (confirming) |
+| 🟠 Medium | 4.E-16 | volume_profile | Distribute bar volume across price range bins (not just H/L/C points) for mathematically correct profile |
+| 🟠 Medium | 4.B-7 | cfw6_gate_validator | Reconcile duplicate time-of-day and volume gates with existing pipeline checks before re-enabling |
+| 🟠 Medium | 4.B-8 | cfw6_gate_validator | Require explicit `adx` or `regime_filter=False` — don't silently pass on missing ADX |
+| 🟠 Medium | 4.D-14 | hourly_gate | Split `_stats['neutral']` into `off_hours` + `no_data` counters |
+| 🟢 Low | 4.C-12 | entry_timing | Close `SESSION_PERIODS` overlap: end `market_open` at 10:00, not 10:30 |
+| 🟢 Low | 4.C-11 | entry_timing | Document `get_timing_boost()` return scale as 0–1 fraction or rename for clarity |
+| 🟢 Low | 4.A-4 | cfw6_confirmation | Add `assert final_grade in VALID_GRADES` after `grade_signal_with_confirmations()` call in sniper.py |
+| 🟢 Low | 4.B-9 | cfw6_gate_validator | Implement `get_validation_stats()` DB persistence before re-enabling gate |
 
 ---
 
