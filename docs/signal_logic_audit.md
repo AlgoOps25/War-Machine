@@ -324,11 +324,6 @@ This document is maintained by the assistant to track the ongoing end-to-end aud
 
 ### Batch 5.A: vwap_gate.py — CLOSED
 
-**Current behaviour**
-- `compute_vwap()` uses correct (H+L+C)/3 typical price formula. ✅
-- `passes_vwap_gate()` hard-rejects bull below VWAP, bear above VWAP.
-- Fails open (`return True`) when `vwap == 0.0` (< 5 bars or zero volume). ✅
-
 **Key invariants confirmed**
 - Correct VWAP formula (H+L+C)/3. ✅
 - `VWAP_GATE_ENABLED` toggle respected. ✅
@@ -336,179 +331,105 @@ This document is maintained by the assistant to track the ongoing end-to-end aud
 
 **Findings**
 
-1. **ISSUE — `passes_vwap_gate()` uses `current_price` as a parameter, but in `_run_signal_pipeline()` it is called with `bars_session[-1]["close"]` (the last closed bar close), not the confirmed entry price**
-   This mirrors finding 3.A-3 (greeks gate uses pre-confirmation price). The VWAP gate fires against the last closed bar price. After confirmation, the entry price may be different. If the confirmed entry price crosses VWAP during the confirmation window, the gate result is stale. **Fix**: after confirmation is complete, re-evaluate `passes_vwap_gate()` using the confirmed entry price before proceeding to the grade step. Or accept this as an approximation — in practice, price rarely crosses VWAP between a BOS signal bar and confirmation.
+1. **ISSUE — `passes_vwap_gate()` called with `bars_session[-1]["close"]` (last closed bar), not the confirmed entry price**
+   After confirmation, the entry price may differ. Gate result is stale if price crosses VWAP during the confirmation window. **Fix**: re-evaluate `passes_vwap_gate()` post-confirmation using confirmed entry price.
 
-2. **ISSUE — `compute_vwap()` has a 5-bar minimum but `passes_vwap_gate()` only gets bars from `bars_session` which may be all intraday bars (hundreds) causing minor performance overhead**
-   `bars_session` passed to `passes_vwap_gate()` from `_run_signal_pipeline()` is the full session bar list. `compute_vwap()` iterates all of them every call. For 390 1-minute bars this is ~1ms — acceptable. However, the 5-bar minimum check (`len(bars) < 5`) is misleadingly low: VWAP on 5 bars of a session is not a meaningful session VWAP. **Recommendation**: raise minimum to 15 bars, or document that session VWAP is intentionally a full-session anchored VWAP.
+2. **ISSUE — `compute_vwap()` 5-bar minimum is misleadingly low**
+   VWAP on 5 session bars is not a meaningful anchored VWAP. **Fix**: raise minimum to 15 bars or document intent.
 
-3. **OBSERVATION — `mtf_bias.py` defines its own `_compute_vwap()` function that duplicates `vwap_gate.compute_vwap()` exactly**
-   Two identical VWAP implementations in the same codebase (same formula, same guard). **Fix**: have `mtf_bias.py` import and call `compute_vwap` from `vwap_gate` instead. One canonical implementation.
+3. **OBSERVATION — `mtf_bias.py` defines an identical `_compute_vwap()` — duplicate implementation**
+   **Fix**: `from app.filters.vwap_gate import compute_vwap` in mtf_bias.py; remove local copy.
 
 ---
 
 ### Batch 5.B: market_regime_context.py — CLOSED
 
-**Current behaviour**
-- SPY + QQQ EMA 9/21/50 on 5m bars; combined conviction label + passive `score_adj` only (no hard blocks).
-- 3-tier bar fallback: WS memory → DB session bars → EODHD REST.
-- 90s TTL cache; Discord posts rate-limited to 5 min.
-
 **Key invariants confirmed**
 - Regime never hard-blocks signals — `score_adj` is a passive confidence nudge only. ✅
 - Exception path returns `UNKNOWN` with `score_adj=0` — fail-open. ✅
-- `_last_discord_post` prevents Discord spam. ✅
 
 **Findings**
 
-4. **ISSUE — `_score_instrument()` has a missing label for `NEUTRAL_BEAR` — the combined label can be `NEUTRAL_BEAR` but the per-instrument `_score_instrument()` never produces it**
-   `_score_instrument()` returns labels: STRONG_BULL, BULL, NEUTRAL_BULL, STRONG_BEAR, BEAR, NEUTRAL, UNKNOWN. There is no `NEUTRAL_BEAR` in the per-instrument output. The `_combine()` function CAN return `NEUTRAL_BEAR` (when avg ≤ -1). If a caller ever tries to reverse-engineer the individual instrument labels from the combined label, they will never see NEUTRAL_BEAR at the instrument level. This is a minor documentation gap, not a logic error — the combined label is what matters. No fix required, but add a docstring note.
+4. **OBSERVATION — `NEUTRAL_BEAR` label exists in `_combine()` output but never in `_score_instrument()` output** — documentation gap only, no logic error.
 
-5. **ISSUE — `_get_slope_bull()` recomputes `_compute_ema(bars[:-1], period)` from scratch every call, doubling the EMA computation cost**
-   `_score_instrument()` calls `_compute_ema(bars, 50)` for the EMA value, then `_get_slope_bull(bars, 50)` which internally calls both `_compute_ema(bars, period)` AND `_compute_ema(bars[:-1], period)`. The first call is therefore computed twice. For 390-bar lists this is O(n·p) duplicated work. **Fix**: compute `ema50_prev = _compute_ema(bars[:-1], 50)` directly in `_score_instrument()` and pass it as a parameter to `_get_slope_bull()`, or inline the slope check.
+5. **ISSUE — `_get_slope_bull()` recomputes EMA twice** — `_score_instrument()` already computed EMA; `_get_slope_bull()` internally recomputes both `ema(bars)` and `ema(bars[:-1])`. **Fix**: compute `ema_prev` in `_score_instrument()` and pass it in.
 
-6. **ISSUE — EODHD REST fallback in `_fetch_eodhd_intraday()` imports `requests` inside the function at call time, which will fail silently if `requests` is not installed**
-   The import `import requests` is inside a try/except block, so an `ImportError` here is caught and returns `[]`. This is safe-fail. However, if `requests` IS installed but the API key is missing (`api_key == ""`), the function returns `[]` before the import — consistent. The only issue is that `requests` is also imported inside `send_regime_discord()` in the same way. Both work fine but the pattern of importing inside try/except is a code smell. **Observation only** — no change required for correctness.
-
-7. **ISSUE — `_combine()` averages SPY and QQQ scores equally, but when one instrument is UNKNOWN, it substitutes 0 for its score**
-   If SPY is STRONG_BULL (+15) and QQQ is UNKNOWN (0 substituted), the combined avg = 7.5, producing label BULL (+8). This is correct behavior — partial data yields a reduced but valid signal. ✅ However, the reason string says `"SPY=STRONG_BULL QQQ=UNKNOWN"` which accurately communicates the partial data situation. No issue.
+6. **OBSERVATION — `import requests` inside try/except in `_fetch_eodhd_intraday()`** — safe-fail, observation only.
 
 ---
 
 ### Batch 5.C: mtf_bias.py — CLOSED
 
-**Current behaviour**
-- 3-layer check: 1H BOS direction match → 15m BOS direction match → 1H VWAP directional alignment.
-- Fully aligned (1H + 15m): +0.08 confidence boost.
-- 15m conflict: hard REJECT with −0.10 penalty.
-- 1H conflict: hard REJECT with −0.10 penalty.
-- 1H VWAP conflict: hard REJECT with −0.10 penalty.
-
 **Key invariants confirmed**
 - Fail-open when disabled or bars insufficient. ✅
-- CONF_PENALTY applied on `_fail()` path only. ✅
-- `_db_ready` guards all DB operations. ✅
+- `CONF_PENALTY` applied on `_fail()` path only. ✅
 
 **Findings**
 
-8. **ISSUE — 15m BOS is checked BEFORE 1H BOS, meaning a 15m conflict rejects before the 1H alignment is even evaluated (asymmetric priority)**
-   The check order is:
-   1. `if aligned_15m is False: return _fail(...)` — 15m conflict hard-rejects first
-   2. `if aligned_1h is False: return _fail(...)` — 1H conflict hard-rejects second
-   The Nitro Trades top-down methodology is 1H → 15m → 5m, meaning 1H should be the primary filter. If 1H is fully aligned but 15m is momentarily conflicted, the signal is rejected regardless of 1H context. This inverts the top-down hierarchy. **Fix**: swap the check order: evaluate 1H alignment first, then 15m.
+7. (Observation) `_detect_bos()` is a rolling momentum proxy, not structural SMC BOS — document as intentional.
 
-9. **ISSUE — `_detect_bos()` uses `bars[-(BOS_LOOKBACK+1):-1]` for the lookback window and `bars[-1]["close"]` as the current bar — this is correct BUT the lookback bars are also closed bars, not a reference to a "break" event**
-   `BOS_LOOKBACK = 8` means: last close > max(high of prior 8 bars) = bull BOS. This is a rolling breakout detection, not a structural BOS (which would require identifying a swing high/low and then a break of that level). For the 1H and 15m timeframes, this is a simplified momentum proxy. The `# Backtest-optimized` comment suggests this was chosen empirically, which is valid. No fix required — document that this is a momentum-based BOS proxy, not a structural SMC BOS.
+8. **ISSUE — 15m BOS checked BEFORE 1H BOS — inverts top-down hierarchy**
+   Per Nitro Trades methodology: 1H → 15m → 5m. If 15m is momentarily conflicted but 1H is aligned, signal is rejected. **Fix**: swap check order — evaluate 1H alignment first.
 
-10. **ISSUE — `evaluate()` receives `current_price=0.0` as default, meaning the 1H VWAP directional check is silently skipped if the caller doesn't pass price**
-    The 1H VWAP check: `if has_1h and vwap_1h and current_price:` — if `current_price=0.0`, the condition is `False` and VWAP alignment is never checked. The caller in `_run_signal_pipeline()` must explicitly pass `current_price`. If it doesn't (or passes 0.0), an entire check layer is silently disabled. **Fix**: use `current_price: float = 0.0` with an explicit `if current_price > 0:` guard AND add an assertion or log warning when called with price=0 to make the skip visible.
+9. (Observation) `BOS_LOOKBACK = 8` — `last close > max(high of prior 8 bars)` — empirically chosen, document as momentum proxy.
 
-11. **ISSUE — `_compute_vwap()` in mtf_bias.py is a direct duplicate of `compute_vwap()` in vwap_gate.py (reinforces finding 5.A-3)**
-    Identical logic. One canonical source. **Fix**: `from app.filters.vwap_gate import compute_vwap` and remove local `_compute_vwap()`.
+10. **ISSUE — `evaluate()` silently skips 1H VWAP check when `current_price=0.0` (default)**
+    An entire check layer is invisibly disabled if caller omits price. **Fix**: add explicit `if current_price <= 0: log warning` guard; make price a required positional argument.
+
+11. **ISSUE — `_compute_vwap()` in mtf_bias.py duplicates `compute_vwap()` in vwap_gate.py** (reinforces 5.A-3).
 
 ---
 
 ### Batch 5.D: rth_filter.py — CLOSED
 
-**Current behaviour**
-- `is_rth()`: simple 9:30–16:00 ET gate, no chop windows.
-- `RTHFilter`: configurable policy with open chop (9:30–9:35), lunch (12:00–13:30), close chop (15:55–16:00).
-- Default singleton: `block_open_chop=True`, `block_lunch=False`, `block_close_chop=True`.
-
 **Key invariants confirmed**
-- Naive `dt` (no tzinfo) gets ET assigned, not rejected. ✅
-- `get_window_label()` covers all time segments without gaps. ✅ (checked: pre_market, open_chop, morning, lunch, afternoon, close_chop, after_hours — all contiguous)
-- Self-test at module bottom covers 8 edge cases. ✅
+- Naive `dt` gets ET assigned, not rejected. ✅
+- `get_window_label()` covers all segments. ✅
 
 **Findings**
 
-12. **ISSUE — `get_window_label()` has a gap: after-hours check (`t >= MARKET_CLOSE`) is placed AFTER `t >= CLOSE_CHOP_START` in the if-chain, but `MARKET_CLOSE` is 16:00 and `CLOSE_CHOP_START` is 15:55 — at exactly 16:00, both conditions are True**
-    At 16:00:00 ET: `t >= CLOSE_CHOP_START` (15:55) is True, so the function returns `'close_chop'` instead of `'after_hours'`. This is a minor labeling bug — at 16:00 the session is closed, not in chop. The gate itself (`passes()`) correctly uses `MARKET_OPEN <= t < MARKET_CLOSE` which excludes 16:00. **Fix**: move the `after_hours` check before the `CLOSE_CHOP_START` check in `get_window_label()`.
+12. **ISSUE — `get_window_label()` labels exactly 16:00:00 as `close_chop` instead of `after_hours`**
+    At 16:00, `t >= CLOSE_CHOP_START` (15:55) fires first. **Fix**: move `after_hours` check before `close_chop` in the if-chain.
 
-13. **OBSERVATION — `is_rth()` and `passes_rth_filter()` exist as separate entry points with different semantics (no chop blocking vs chop blocked) — callers must pick the right one**
-    The hot-path scanner uses `is_rth()` (no chop blocking). If a caller mistakenly uses `is_rth()` when they want chop-blocked behavior, they will allow open chop and close chop signals. **Recommendation**: add a docstring note on `is_rth()` explicitly warning: "Does NOT block open/close chop. Use `passes_rth_filter()` for chop-blocked behavior."
+13. **OBSERVATION — `is_rth()` has no chop blocking; `passes_rth_filter()` does** — callers must pick deliberately. Add docstring warning on `is_rth()`.
 
 ---
 
 ### Batch 5.E: sd_zone_confluence.py — CLOSED
 
-**Current behaviour**
-- `identify_sd_zones()` scans last 50 bars for strong impulse candles preceded by opposing color — keeps top 5 by body strength.
-- `check_sd_confluence()` checks entry price against demand (bull) or supply (bear) zones with ±0.20% buffer.
-- Boost: +3% confidence on match, capped at 0.95. ✅
-
-**Key invariants confirmed**
-- Direction filtering: demand only for bull, supply only for bear. ✅
-- Cache cleared per ticker or globally. ✅
-
 **Findings**
 
-14. **ISSUE — `identify_sd_zones()` requires ONLY the immediately prior bar to be opposing color — no minimum prior move size**
-    A single opposing candle of any size triggers zone identification, even if it's a doji with 0.01% body. The `SD_MOMENTUM_MIN_PCT` threshold applies to the CURRENT (impulse) candle body, not the prior move. This means a tiny red bar followed by a large green bar qualifies as a demand zone, even without a meaningful prior down-move. For a true SMC supply/demand zone, the prior move should be at least equal in magnitude to the impulse candle. **Fix**: add a `prev_body = _candle_body_pct(prev); if prev_body < SD_MOMENTUM_MIN_PCT * 0.5: continue` guard to require a minimum prior bar body before qualifying the zone.
+14. **ISSUE — `identify_sd_zones()` requires only one opposing candle of any size** — a doji qualifies. **Fix**: add `prev_body_pct = _candle_body_pct(prev); if prev_body_pct < SD_MOMENTUM_MIN_PCT * 0.5: continue` guard.
 
-15. **ISSUE — `_SD_CACHE` is in-memory only and never cleared between sessions — stale zones from prior days may persist**
-    The `_SD_CACHE` dict is module-level. It is never cleared automatically. On a Railway restart between sessions, it starts empty (fine). But during a long-running session, zones identified from pre-market bars persist alongside intraday zones. If `cache_sd_zones()` is called repeatedly for the same ticker (every scan cycle), old zones are overwritten (fine). But if a ticker falls off the watchlist mid-session and `clear_sd_cache()` is never called for it, its zones persist until restart. **Fix**: call `clear_sd_cache()` at EOD in the same place as `clear_ob_cache()` and `clear_session_cache()`.
+15. **ISSUE — `_SD_CACHE` never cleared between sessions** — call `clear_sd_cache()` at EOD alongside OB cache.
 
 ---
 
 ### Batch 5.F: order_block_cache.py — CLOSED
 
-**Current behaviour**
-- `identify_order_block()` finds the last opposing candle before a BOS (up to 10 bars back) as the OB.
-- Zone: OB body ±0.15% buffer. Boost: +3% capped at 0.95. ✅
-- `ob["used"] = True` marks OB as consumed to prevent double-boosting. ✅
-- In-memory only; resets on restart. ✅ (consistent with intended session-scoped behavior)
-
-**Key invariants confirmed**
-- OB direction must match signal direction. ✅
-- Minimum body size (0.10%) required. ✅
-- Max 5 OBs per ticker. ✅
-
 **Findings**
 
-16. **ISSUE — `OB_BODY_MIN_PCT` uses `body / bar["close"]` for the size check, but `body` is an absolute dollar amount (not a percentage)**
-    `_candle_body()` returns `abs(close - open)` in dollars. The guard is `body / bar["close"] < OB_BODY_MIN_PCT`. At a price of $100, a $0.10 body = 0.10% — passes the 0.10% threshold exactly. At a price of $10, a $0.01 body = 0.10% — also barely passes. The math is correct (it's actually a relative percentage check). However, the variable name `body` returning dollars and being used as a fraction without an explicit comment makes this code confusing. **Recommendation**: rename to `body_pct = _candle_body(bar) / bar["close"]` for clarity.
+16. **OBSERVATION — `body` variable returns dollars but used as fraction** — rename to `body_pct` for clarity.
 
-17. **ISSUE — `OB_CACHE` is a module-level global dict, but `check_ob_retest()` mutates `ob["used"] = True` in-place on the cached dict object**
-    This is intentional — the `used` flag prevents double-boosting. However, since it mutates in-place, if two coroutines/threads call `check_ob_retest()` for the same ticker simultaneously, both could see `used=False` and both apply the boost. In the current single-threaded scanner design this is safe. **Note**: if multi-threading is ever added, this needs a lock around the `ob["used"]` check-and-set.
+17. **OBSERVATION — `ob["used"] = True` mutation is safe in single-threaded design** — add lock if multi-threading ever added.
 
 ---
 
 ### Batch 5.G: liquidity_sweep.py — CLOSED
 
-**Current behaviour**
-- Scans last 6 bars for a sweep (wick breach + close reclaim) of OR high/low or VWAP.
-- Bull sweep: low breaches level by ≥0.15%, close reclaims to within 0.10% of level.
-- Bear sweep: symmetric.
-- Boost: +4% confidence, capped at 0.95. ✅
-
-**Key invariants confirmed**
-- Fails open (returns None) with < 3 bars. ✅
-- Level filtering: bull sweeps OR_LOW + VWAP only; bear sweeps OR_HIGH + VWAP only. ✅
-
 **Findings**
 
-18. **ISSUE — `_candle_swept_level()` for bull sweep checks `close_reclaim = (bar["close"] - level) / level >= -SWEEP_CLOSE_MAX_PCT` — this allows close BELOW the level by up to 0.10%**
-    The intent of a bull sweep is: price wicks below a level but CLOSES BACK ABOVE it. The `close_reclaim` condition `>= -0.001` means the close can be up to 0.10% BELOW the level and still qualify as a "reclaim". This allows sweep confirmation on bars that never actually reclaimed the level. **Fix**: the bull close_reclaim check should be `bar["close"] >= level` (strict reclaim above level), not `(bar["close"] - level) / level >= -SWEEP_CLOSE_MAX_PCT`.
+18. **ISSUE (Critical) — Bull sweep `close_reclaim` allows close 0.10% BELOW the level**
+    The check `(bar["close"] - level) / level >= -SWEEP_CLOSE_MAX_PCT` means close can still be below the level and qualify as a reclaim. **Fix**: change to strict `bar["close"] >= level`.
 
 ---
 
 ### Batch 5.H: correlation.py — CLOSED
 
-**Current behaviour**
-- `check_spy_correlation()` computes Pearson correlation between ticker and SPY returns over last 20 bars.
-- High (>0.7): -5 adj; Low (<0.3) with divergence: +10 adj; Low without divergence: +5 adj; Moderate: 0.
-- `get_divergence_score()` returns a 0–100 score.
-- **Not actively wired into `_run_signal_pipeline()` — the `confidence_adjustment` is returned but the caller must apply it manually.**
-
-**Key invariants**
-- NaN correlation (flat price) handled → 0.0. ✅
-- Returns neutral dict on all exception paths. ✅
-
 **Findings**
 
-19. **ISSUE — `check_spy_correlation()` returns `confidence_adjustment` on a -10 to +10 integer scale, but `_run_signal_pipeline()` uses confidence as a 0–1 float — scale mismatch if ever wired in (design issue)**
-    The +10/-5/+5 integer adjustments from `correlation.py` are percentage points (0–100 scale). If added directly to `final_confidence` (0.72, etc.), they would shift confidence by 10 full units — far beyond the 0.95 cap. This means `correlation.py` was designed with `cfw6_gate_validator`'s 0–100 confidence scale in mind, not `_run_signal_pipeline()`'s 0–1 scale. **Fix**: before wiring, normalize the adjustments by dividing by 100: `adj_fraction = result["confidence_adjustment"] / 100.0`. Also confirm whether `correlation.py` is currently called anywhere in the live pipeline or is unused.
+19. **ISSUE — `confidence_adjustment` on −10 to +10 integer scale (0–100 basis); pipeline uses 0–1 float**
+    Direct addition would shift confidence by 10 full units. **Fix**: divide by 100 before wiring: `adj = result["confidence_adjustment"] / 100.0`. Confirm whether called live.
 
 ---
 
@@ -516,10 +437,10 @@ This document is maintained by the assistant to track the ongoing end-to-end aud
 
 | Priority | # | Module | Fix |
 |----------|---|--------|-----|
-| 🔴 Critical | 5.G-18 | liquidity_sweep | Fix bull sweep close_reclaim check — must be `close >= level`, not `close >= level −0.10%` |
+| 🔴 Critical | 5.G-18 | liquidity_sweep | Fix bull sweep close_reclaim — must be `close >= level`, not `close >= level −0.10%` |
 | 🟡 High | 5.C-8 | mtf_bias | Swap 15m/1H BOS check order — 1H should be primary per top-down methodology |
 | 🟡 High | 5.C-10 | mtf_bias | Add explicit guard + warning when `evaluate()` called with `current_price=0.0` |
-| 🟡 High | 5.H-19 | correlation | Normalize confidence_adjustment by /100 before wiring into pipeline (scale mismatch); confirm if called live |
+| 🟡 High | 5.H-19 | correlation | Normalize confidence_adjustment by /100 before wiring; confirm if called live |
 | 🟠 Medium | 5.A-1 | vwap_gate | Re-evaluate `passes_vwap_gate()` post-confirmation using confirmed entry price |
 | 🟠 Medium | 5.C-11 | mtf_bias | Replace local `_compute_vwap()` with import from `vwap_gate.compute_vwap` |
 | 🟠 Medium | 5.E-14 | sd_zone_confluence | Require minimum prior bar body before qualifying SD zone |
@@ -529,6 +450,179 @@ This document is maintained by the assistant to track the ongoing end-to-end aud
 | 🟢 Low | 5.A-2 | vwap_gate | Raise `compute_vwap()` minimum bars from 5 to 15 or document intent |
 | 🟢 Low | 5.F-16 | order_block_cache | Rename `body` → `body_pct` in `identify_order_block()` for clarity |
 | 🟢 Low | 5.D-13 | rth_filter | Add docstring warning on `is_rth()` re: no chop blocking |
+
+---
+
+### Batch 6: Indicators layer — COMPLETE
+
+**Modules**
+- app/indicators/technical_indicators.py
+- app/indicators/technical_indicators_extended.py
+- app/indicators/volume_indicators.py
+- app/indicators/volume_profile.py
+- app/indicators/vwap_calculator.py
+
+**Status: COMPLETE — 17 findings across 5 sub-sections.**
+
+---
+
+### Batch 6.A: technical_indicators.py — CLOSED
+
+**Current behaviour**
+- EODHD API-backed indicators: ADX, BB, AVGVOL, CCI, DMI, MACD, SAR, STOCH, RSI, RSI Divergence, EMA.
+- Adaptive TTL cache: 5min pre-market, 2min RTH, 10min after-hours.
+- M6 fix: `_ensure_oldest_first()` defensive sort guard added for `check_rsi_divergence()` and `check_rvol()`.
+
+**Key invariants confirmed**
+- `_ensure_oldest_first()` sort guard correctly handles missing `datetime`/`date` keys — falls back gracefully. ✅
+- TTL cache correctly segments by time-of-day using ET timezone. ✅
+- Cache eviction on read (not deferred) — stale entries removed immediately on `get()`. ✅
+
+**Findings**
+
+1. **ISSUE — `_ensure_oldest_first()` falls back silently when no sortable key is present, returning the list in its original (unknown) order**
+   If a bar dict has neither `datetime` nor `date`, the function returns the list as-is with no log warning. Any downstream index-based arithmetic on an unsorted list will silently produce wrong results. **Fix**: add `print(f"[INDICATORS] WARNING: bars have no sortable key — order not guaranteed")` on the fallback path so the problem is visible in logs.
+
+2. **ISSUE — `IndicatorCache._get_ttl_seconds()` has no guard for DST transitions**
+   The ET boundary checks use `dtime(9, 30)` etc. which are naive time comparisons. During the one-hour DST gap (clocks spring forward at 2:00 AM ET), `datetime.now(ET)` correctly handles the transition, but `dtime` comparisons do not account for the fact that 2:00–3:00 AM ET does not exist. In practice, the system is idle during that window, so there is no functional impact — but it is worth noting.
+   **Recommendation**: observation only — no fix required. Document as a known safe edge case.
+
+3. **ISSUE — `IndicatorCache.get_stats()` recomputes TTL for every entry by calling `_get_ttl_seconds()` once and comparing all entries against that single snapshot**
+   This is correct and efficient — TTL is time-of-day based, not per-entry. ✅ However, `get_stats()` does not expose `expired_entries` count (total minus valid). **Minor**: add `'expired_entries': len(self.cache) - valid` to the returned dict for better observability.
+
+4. **ISSUE — RSI divergence check (`check_rsi_divergence()`) requires a minimum number of bars for meaningful divergence, but the minimum bar guard (if any) is not visible in the truncated file**
+   The M6 fix added `_ensure_oldest_first()` but the minimum bar count before divergence is declared valid is unknown from the visible code. If called with 2–3 bars, a spurious divergence signal could fire. **Action**: confirm that `check_rsi_divergence()` has a `len(bars) >= N` guard (recommend N ≥ 10) and add one if missing.
+
+5. **ISSUE — The RVOL check (`check_rvol()`) compares today's cumulative volume vs the same-time-yesterday cumulative volume using index-based lookups on bars after `_ensure_oldest_first()` sort**
+   If the prior day had a different number of intraday bars (holiday-shortened session, early close, WS reconnect gap), the index alignment is wrong — bar[i] today does not correspond to bar[i] yesterday. **Fix**: compare by matching on the `datetime.time()` component of each bar, not by index position, to guarantee same-time-of-day alignment.
+
+---
+
+### Batch 6.B: technical_indicators_extended.py — CLOSED
+
+**Current behaviour**
+- Wraps `fetch_technical_indicator()` for ATR, StochRSI, SLOPE, STDDEV.
+- Analysis helpers: `get_atr_percentage()`, `calculate_atr_stop()`, `calculate_position_size()`, `validate_breakout_strength()`, `check_stochrsi_signal()`, `check_trend_slope()`, `check_volatility_regime()`, `check_volatility_expansion()`.
+
+**Key invariants confirmed**
+- `calculate_atr_stop()` correctly applies direction (LONG subtracts, SHORT adds). ✅
+- `calculate_position_size()` guards against `stop_distance == 0` (returns 0). ✅
+- `check_stochrsi_signal()` returns `None, None` on data absence — fail-open. ✅
+
+**Findings**
+
+6. **ISSUE — `calculate_position_size()` returns `max(1, shares)` — always returns at least 1 share even when ATR stop distance is enormous relative to account risk**
+   If `risk_amount / stop_distance` computes to 0.001 (e.g., very wide ATR stop on a small account), `int(0.001) = 0` and the function returns 1 share anyway. For a $10 stock with a $50 ATR stop and $100 risk, this function would return 1 share — a position that violates the risk parameter. This is called a "forced entry" bug. **Fix**: instead of `max(1, shares)`, return `shares` and let the caller decide whether to skip the trade entirely when shares == 0.
+
+7. **ISSUE — `validate_breakout_strength()` fetches ATR from EODHD (daily ATR by default) but `move_size` is an intraday dollar move**
+   EODHD ATR (period=14) is a 14-day ATR based on daily bars. An intraday move of $0.50 on a stock with a 14-day daily ATR of $3.00 will always fail the `>= 1.5 ATR` check, making `validate_breakout_strength()` permanently too strict for intraday breakouts. **Fix**: either (a) fetch intraday ATR (e.g., 14-bar ATR from 5m bars computed locally), or (b) scale the threshold: `min_atr_multiple=0.15` for intraday use (roughly 1/10th of daily ATR), or (c) document that this function is daily-timeframe only and should not be called for intraday signals.
+
+8. **ISSUE — `check_volatility_regime()` calls `data_manager.get_bars_from_memory(ticker, limit=1)` inside a try/except that silently returns `None, None` on any exception**
+   If `data_manager` is not yet initialized (startup race), `AttributeError` is swallowed and the regime is unknown. Since the caller in the signal pipeline treats `None` as fail-open (no volatility filter applied), this is safe. But it means volatility filtering is silently bypassed at startup. **Fix**: add `except AttributeError as e: print(f"[INDICATORS] data_manager not ready: {e}")` to distinguish startup from genuine data absence.
+
+9. **ISSUE — `check_volatility_expansion()` computes "average STDDEV over last 10 bars" using `stddev_data[:10]` — oldest 10 bars after EODHD returns newest-first**
+   EODHD API returns data newest-first. If `_ensure_oldest_first()` is NOT called on `stddev_data` before `[:10]`, the slice is the 10 most-recent bars (which may be the correct intent). But `get_latest_value()` uses `stddev_data[-1]` (the last element), which is the OLDEST bar if newest-first. This creates a contradiction: `current_stddev` is the oldest bar's value, `recent_stddevs` is the 10 newest. **Fix**: call `_ensure_oldest_first(stddev_data)` before all slicing in `check_volatility_expansion()`, then use `stddev_data[-1]` for current (newest) and `stddev_data[-11:-1]` for the 10 prior bars.
+
+---
+
+### Batch 6.C: volume_indicators.py — CLOSED
+
+**Current behaviour**
+- Local (non-API) calculations: VWAP, MFI, OBV, confluence scoring, signal validation.
+- All computed from raw OHLCV bars passed in by the caller.
+
+**Key invariants confirmed**
+- `calculate_vwap()` returns `bars[-1]['close']` when `total_volume == 0` — safe fallback. ✅
+- `calculate_mfi()` returns 50.0 (neutral) when insufficient bars. ✅
+- `calculate_obv()` starts cumulative sum at 0. ✅
+
+**Findings**
+
+10. **ISSUE — `calculate_mfi()` computes positive/negative flow over `range(len(typical_prices) - period, len(typical_prices))` but starts the loop at `i=1` only if `i < 1: continue`**
+    The guard `if i < 1: continue` is only relevant when `len(typical_prices) - period == 0`, i.e., exactly `period` bars. In all normal cases (more bars than period), the loop range starts at a value ≥ 1 and the guard never fires. This is harmless but dead code. More importantly: the positive/negative flow calculation does not use the first bar's money flow at all (comparing `typical_prices[i] vs [i-1]` requires `i >= 1`). This is correct RSI-style flow calculation. ✅ Minor: remove the dead `if i < 1: continue` guard.
+
+11. **ISSUE — `calculate_obv_trend()` uses `obv_values[-lookback:]` then compares first-half vs second-half averages with a 5% threshold**
+    The 5% threshold (`change_pct > 5` = bullish, `< -5` = bearish) is applied to the percentage change between OBV halves. OBV is a cumulative sum of volume — its absolute value depends entirely on the session's volume scale. A 5% change in OBV for a high-float stock (millions of shares) is trivially easy to achieve, while for a low-float stock it may be impossible. The threshold is not normalized to share count or average daily volume. **Fix**: normalize by computing the change as a fraction of the most recent OBV's absolute value: `change_pct = (second_half_avg - first_half_avg) / max(abs(first_half_avg), 1) * 100`. Also document that "5% OBV slope" is the criterion.
+
+12. **ISSUE — `check_indicator_confluence()` uses `mfi_bullish = 20 <= mfi <= 80` for BOTH bull AND bear confluence checks**
+    For a bullish confluence check, MFI between 20–80 is interpreted as "not overbought — still room to run." For a bearish confluence check, MFI between 20–80 is interpreted as "not oversold — still room to fall." Both checks use the same MFI neutral zone. This means MFI almost always confirms regardless of direction (MFI is within 20–80 ~90% of the time). The MFI signal adds very little discriminatory power to the confluence score. **Fix**: for bull confluence, MFI should ideally be rising (compare current vs N-bars-ago) or in the 40–70 zone (momentum building, not exhausted). For bear confluence, MFI should be falling or in the 30–60 zone. At minimum, document that the current MFI gate is intentionally lenient.
+
+13. **ISSUE — `validate_signal_with_volume_indicators()` defaults all three `require_*` flags to `False`**
+    With all flags False, this function always returns `(True, details)` regardless of VWAP, MFI, or OBV values. The function is effectively a no-op unless the caller explicitly passes `require_vwap_confirm=True` etc. If the call site in the pipeline uses the default params, volume validation is bypassed entirely. **Fix**: audit all call sites to confirm at least one `require_*` flag is set to `True`, or change the defaults to `True` for the most critical check (recommend `require_vwap_confirm=True` as default since VWAP is the most reliable of the three).
+
+---
+
+### Batch 6.D: volume_profile.py (indicators layer) — CLOSED
+
+**Current behaviour**
+- `VolumeProfile` class: POC, VAH, VAL, HVN, LVN from intraday OHLCV bars.
+- 50 price bins, 70% value area, 1.5× HVN threshold.
+- 5-minute TTL cache keyed by ticker.
+- Note: this is the `app/indicators/volume_profile.py` — distinct from `app/validation/volume_profile.py` audited in Batch 4.E.
+
+**Key invariants confirmed**
+- Cache eviction on read by age comparison. ✅
+- `_find_value_area()` expands toward the higher-volume side at each step. ✅
+- `calculate_profile()` requires ≥ 3 bars. ✅
+- HVN list capped at top 10; LVN list capped at bottom 10. ✅
+
+**Findings**
+
+14. **ISSUE — `_distribute_volume()` distributes bar volume evenly across ALL price levels that fall within the bar's high-low range**
+    This is the same finding as Batch 4.E-16 applied to the `app/indicators` copy. Volume is split equally across price levels within each bar's range. This overstates volume at the extremes (bars that span wide ranges spread volume thinly and uniformly). A more accurate approach weights levels by proximity to the close or uses a triangular distribution peaked at the close. **Note**: both `app/validation/volume_profile.py` and `app/indicators/volume_profile.py` have this same implementation — they are effectively duplicates. **Fix (structural)**: consolidate into one canonical `VolumeProfile` class, imported by both the validation and indicator layers.
+
+15. **ISSUE — `_find_poc()` returns the first maximum when multiple price levels share the same volume**
+    `max(..., key=lambda x: x[1])` on a dict's `.items()` returns the first item with the maximum value in dict insertion order. If two price levels have identical volume (common with small bar counts), the POC is arbitrarily the lower-indexed bin. **Fix**: when ties exist, return the price level closest to the weighted average close price, or log a warning that POC is ambiguous.
+
+16. **ISSUE — `check_poc_breakout()` and `check_value_area_breakout()` are binary (price > POC = True) with no tolerance band**
+    A stock trading at $100.01 above a POC of $100.00 returns True — a 1-cent "breakout." This creates false positives during price consolidation directly at the POC. **Fix**: add a minimum distance parameter: `return price > poc * (1 + min_pct)` where `min_pct` defaults to 0.002 (0.2% minimum breakout distance above POC).
+
+---
+
+### Batch 6.E: vwap_calculator.py — CLOSED
+
+**Current behaviour**
+- `VWAPCalculator`: volume-weighted VWAP + 1σ/2σ/3σ standard deviation bands.
+- Session-level cache keyed by ticker + bar count.
+- Mean reversion signals at 2σ/3σ bands.
+- Global singleton `vwap_calculator` with convenience functions.
+
+**Key invariants confirmed**
+- Volume-weighted variance formula (not simple variance) — correct for VWAP bands. ✅
+- Band keys use integer σ labels (`upper_1sd`, `upper_2sd`, `upper_3sd`). ✅
+- `get_vwap_cached()` invalidates on bar count change — ensures recalc when new bars arrive. ✅
+- Mean reversion signal checks 3σ before 2σ — correct priority order. ✅
+
+**Findings**
+
+17. **ISSUE — `get_mean_reversion_signal()` computes `stop` for the SELL signal as `vwap_data['upper_3sd'] * 1.005` (hardcoded key access) without a `.get()` guard**
+    If `vwap_data` was computed with a non-default `num_std_devs` list that does not include 3.0, `vwap_data['upper_3sd']` raises a `KeyError`. The global singleton is always initialized with `[1.0, 2.0, 3.0]` so in practice this is safe. But if a caller ever creates a `VWAPCalculator([1.0, 2.0])` (no 3σ) and calls `get_mean_reversion_signal()`, it will crash. **Fix**: use `vwap_data.get('upper_3sd', vwap_data.get('upper_2sd', current_price))` as a safe fallback, or assert `3.0 in self.num_std_devs` in `__init__`.
+
+    **Additionally**: `vwap_calculator.py` defines its own VWAP calculation (`calculate_vwap()`) which uses volume-weighted variance for the std dev bands. `volume_indicators.py` defines `calculate_vwap()` which uses simple (H+L+C)/3 × volume sum. `vwap_gate.py` defines `compute_vwap()` with the same formula. **This is the third independent VWAP implementation in the codebase.** All three exist simultaneously and may produce slightly different results depending on which one the caller uses. **Fix**: designate `vwap_calculator.py`'s `VWAPCalculator.calculate_vwap()` as the canonical implementation (it is the most complete — includes std dev bands). Import from it in `vwap_gate.py` and `volume_indicators.py`. Remove the duplicates.
+
+---
+
+## Batch 6 Priority Fix List
+
+| Priority | # | Module | Fix |
+|----------|---|--------|-----|
+| 🔴 Critical | 6.B-9 | technical_indicators_extended | Fix `check_volatility_expansion()` — call `_ensure_oldest_first()` before slicing; `current_stddev` must be newest bar |
+| 🔴 Critical | 6.B-7 | technical_indicators_extended | `validate_breakout_strength()` uses daily ATR vs intraday move — scale threshold or switch to intraday ATR |
+| 🟡 High | 6.A-5 | technical_indicators | Fix `check_rvol()` same-time alignment — match by `datetime.time()` component, not array index |
+| 🟡 High | 6.C-13 | volume_indicators | Audit all `validate_signal_with_volume_indicators()` call sites — confirm at least one `require_*` flag is True |
+| 🟡 High | 6.D-14 | volume_profile (indicators) | Consolidate `app/indicators/volume_profile.py` + `app/validation/volume_profile.py` into one canonical class |
+| 🟡 High | 6.E-17b | vwap_calculator | Consolidate 3 duplicate VWAP implementations — designate `VWAPCalculator.calculate_vwap()` as canonical |
+| 🟠 Medium | 6.B-6 | technical_indicators_extended | Remove `max(1, shares)` forced-entry floor — return 0 and let caller skip trade |
+| 🟠 Medium | 6.C-11 | volume_indicators | Normalize OBV trend threshold — use fraction of absolute OBV, not raw 5% |
+| 🟠 Medium | 6.C-12 | volume_indicators | Tighten MFI confluence gate — directional MFI zone or rising/falling MFI, not static 20–80 band |
+| 🟠 Medium | 6.D-16 | volume_profile (indicators) | Add minimum breakout distance to `check_poc_breakout()` and `check_value_area_breakout()` |
+| 🟠 Medium | 6.A-4 | technical_indicators | Confirm `check_rsi_divergence()` has ≥10 bar minimum guard; add if missing |
+| 🟠 Medium | 6.B-8 | technical_indicators_extended | Distinguish `AttributeError` (data_manager not ready) from genuine data absence in `check_volatility_regime()` |
+| 🟢 Low | 6.A-1 | technical_indicators | Add log warning in `_ensure_oldest_first()` fallback path (no sortable key) |
+| 🟢 Low | 6.A-3 | technical_indicators | Add `'expired_entries'` to `IndicatorCache.get_stats()` return dict |
+| 🟢 Low | 6.C-10 | volume_indicators | Remove dead `if i < 1: continue` guard in `calculate_mfi()` |
+| 🟢 Low | 6.D-15 | volume_profile (indicators) | Break POC ties by proximity to weighted average close, not dict insertion order |
+| 🟢 Low | 6.E-17a | vwap_calculator | Use `.get()` fallback on `upper_3sd`/`lower_3sd` in `get_mean_reversion_signal()` |
 
 ---
 
