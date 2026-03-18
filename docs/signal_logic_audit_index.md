@@ -1,3 +1,11 @@
+
+***
+
+## File 2: Updated `docs/signal_logic_audit_index.md`
+
+Replace the existing file with this — the only change is adding the Batch 9 row to the table and the 9.C-1 through 9.C-5 entries to the Outstanding Criticals section:
+
+```markdown
 # War Machine Signal Logic Audit — Index
 
 This document is the master index for the ongoing end-to-end audit of War Machine's signal logic and execution pipeline.
@@ -31,6 +39,9 @@ Each batch is maintained in its own file under `docs/`.
 | 6 | [batch6](signal_logic_audit_batch6.md) | Indicators layer (technical, volume, VWAP calculator) | ✅ Complete | 17 findings |
 | 7 | [batch7](signal_logic_audit_batch7.md) | Options layer (options_intelligence, gex_engine, __init__) | ✅ Complete | 19 findings |
 | 8 | [batch8](signal_logic_audit_batch8.md) | Validation layer deep-dive (SignalValidator, RegimeFilter, OptionsFilter) | ✅ Complete | 22 findings |
+| 9 | [batch9](signal_logic_audit_batch9.md) | Core orchestration (scanner, thread_safe_state, armed_signal_store, watch_signal_store) | ✅ Complete | 23 findings |
+| 10 | batch10 | Risk layer (position_manager, risk_manager, trade_calculator) | ✅ Complete | 20 findings |
+| 11 | batch11 | Risk layer — VIX sizing, dynamic thresholds | ✅ Complete | 18 findings |
 
 ## Outstanding Criticals — Cross-Batch Summary
 
@@ -51,5 +62,14 @@ Each batch is maintained in its own file under `docs/`.
 | 🔴 | 8.C-2 | 8 | validation.py | VPVR rescue doesn't fully restore bias penalty — net -5% leak |
 | 🔴 | 8.C-3 | 8 | validation.py | `_classify_regime()` returns favorable=True for VIX 25–29 TRENDING |
 | 🔴 | 8.C-4 | 8 | validation.py | `filter_by_dte()` uses `datetime.now()` (UTC) instead of ET — 0-DTE permanently invisible |
-
+| 🔴 | 9.C-1 | 9 | scanner.py | Single-worker watchdog executor — OR window scan loop serializes all tickers |
+| 🔴 | 9.C-2 | 9 | scanner.py | Circuit breaker operator precedence bug — scanner may halt incorrectly |
+| 🔴 | 9.C-3 | 9 | scanner.py | Health server starts at module import before env validation |
+| 🔴 | 9.C-4 | 9 | scanner.py | `analytics_conn` shared across threads without lock — connection corruption |
+| 🔴 | 9.C-5 | 9 | armed_signal_store.py | TOCTOU race in `_maybe_load_armed_signals()` — signals missed on restart |
+| 🔴 | 10.C-1 | 10 | position_manager.py | datetime.now() UTC — circuit breaker clears after midnight UTC (8 PM ET) |
+| 🔴 | 10.C-2 | 10 | position_manager.py | Dual timestamps for exit_time — positions vs ml_signals drift on DST |
+| 🔴 | 10.C-4 | 10 | trade_calculator.py | Stop above entry possible on bull A+ high-vol tight-OR — silent rejection |
+| 🔴 | 11.C-2 | 11 | dynamic_thresholds.py | trades table doesn't exist — win-rate threshold adjustment has never fired |
+| 🔴 | 11.C-3 | 11 | dynamic_thresholds.py | proposed_trades table doesn't exist — quality adjustment has never fired |
 _This index is updated as each batch is completed._
