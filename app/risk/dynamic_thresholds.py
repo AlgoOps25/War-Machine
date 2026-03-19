@@ -82,47 +82,49 @@ def _get_vix_adjustment():
     except Exception as e:
         print(f"[DYNAMIC-THRESH] VIX lookup error: {e}")
         return 0.00
-
-
-def _get_recent_quality_adjustment():
+    
+def _get_winrate_adjustment(signal_type, grade):
     try:
         from app.data.db_connection import get_conn, return_conn, dict_cursor
 
         conn = None
-        rows = []
         try:
             conn = get_conn()
             cursor = dict_cursor(conn)
 
-            two_hours_ago = _now_et() - timedelta(hours=2)
-
             cursor.execute("""
-                SELECT confidence FROM ml_signals
-                WHERE created_at > %s
-                  AND status = 'PENDING'
-                ORDER BY created_at DESC
-                LIMIT 5
-            """, (two_hours_ago,))
+                SELECT pnl FROM positions
+                WHERE grade = %s
+                  AND status = 'CLOSED'
+                ORDER BY id DESC
+                LIMIT 20
+            """, (grade,))
 
             rows = cursor.fetchall()
         finally:
             if conn:
                 return_conn(conn)
 
-        if len(rows) < 3:
+        if len(rows) < 10:
             return 0.00
 
-        low_quality = sum(1 for row in rows if (row["confidence"] or 1.0) < 0.65)
+        wins = sum(1 for row in rows if (row["pnl"] or 0) > 0)
+        total = len(rows)
+        winrate = wins / total if total > 0 else 0.0
 
-        if low_quality <= 1:
+        if winrate > 0.70:
+            return -0.05
+        elif winrate > 0.60:
+            return -0.02
+        elif winrate > 0.50:
             return 0.00
-        elif low_quality <= 3:
-            return +0.02
+        elif winrate > 0.40:
+            return +0.03
         else:
-            return +0.04
+            return +0.07
 
     except Exception as e:
-        print(f"[DYNAMIC-THRESH] Recent quality lookup error: {e}")
+        print(f"[DYNAMIC-THRESH] Win rate lookup error: {e}")
         return 0.00
 
 def _get_recent_quality_adjustment():

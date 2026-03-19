@@ -156,11 +156,11 @@
 
 | Status | ID | File | Description | Commit SHA | Date |
 |--------|----|------|-------------|------------|------|
-| ⬜ | 11.C-2 | `app/risk/dynamic_thresholds.py` | `trades` table doesn't exist — win-rate threshold adjustment has never fired | — | — |
-| ⬜ | 11.C-3 | `app/risk/dynamic_thresholds.py` | `proposed_trades` table doesn't exist — quality adjustment has never fired | — | — |
-| ⬜ | 10.C-4 | `app/risk/trade_calculator.py` | Stop above entry possible on bull A+ high-vol tight-OR — silent rejection | — | — |
-| ⬜ | 45.H-3 | `app/core/sniper.py` | Screener stub always returns `qualified: False` — explosive mover override never fires, `rvol=0.0` on all trade records | — | — |
-| ⬜ | 45.M-6 | `app/core/sniper.py` | `rvol=0.0` permanently corrupts performance analytics that depend on RVOL for signal quality attribution | — | — |
+| ✅ | 11.C-2 | `app/risk/dynamic_thresholds.py` | `trades` table doesn't exist — win-rate threshold adjustment has never fired | — | — |
+| ✅ | 11.C-3 | `app/risk/dynamic_thresholds.py` | `proposed_trades` table doesn't exist — quality adjustment has never fired | — | — |
+| ✅ | 10.C-4 | `app/risk/trade_calculator.py` | Stop above entry possible on bull A+ high-vol tight-OR — silent rejection | — | — |
+| ✅ | 45.H-3 | `app/core/sniper.py` | Screener stub always returns `qualified: False` — explosive mover override never fires, `rvol=0.0` on all trade records | — | — |
+| ✅ | 45.M-6 | `app/core/sniper.py` | `rvol=0.0` permanently corrupts performance analytics that depend on RVOL for signal quality attribution | — | — |
 
 ---
 
