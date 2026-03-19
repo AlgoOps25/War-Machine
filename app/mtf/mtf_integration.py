@@ -228,24 +228,19 @@ def check_mtf_convergence(ticker: str, direction: str, bars_5m: List[dict],
     convergence    = num_timeframes > 1
     boost_map = {1: 0.00, 2: 0.02, 3: 0.03, 4: 0.05}
     boost = boost_map[num_timeframes]
-    with _mtf_stats_lock:
-        _mtf_stats['convergence_found'] += 1
-        _mtf_stats['total_boost'] += boost
-        _mtf_stats['timeframe_breakdown'][key] += 1
-        _mtf_stats['confirmation_grades'][best_confirmation_grade] += 1
-    else:
-        _mtf_stats['timeframe_breakdown']['5m_only'] += 1
 
-    if convergence:
-        _mtf_stats['convergence_found'] += 1
-        _mtf_stats['total_boost'] += boost
-        key = {2: '5m_3m', 3: '5m_3m_2m', 4: '5m_3m_2m_1m'}.get(num_timeframes)
-        if key:
-            _mtf_stats['timeframe_breakdown'][key] += 1
-        if best_confirmation_grade:
-            _mtf_stats['confirmation_grades'][best_confirmation_grade] += 1
-    else:
-        _mtf_stats['timeframe_breakdown']['5m_only'] += 1
+    with _mtf_stats_lock:
+        if convergence:
+            _mtf_stats['convergence_found'] += 1
+            _mtf_stats['total_boost'] += boost
+            key = {2: '5m_3m', 3: '5m_3m_2m', 4: '5m_3m_2m_1m'}.get(num_timeframes)
+            if key:
+                _mtf_stats['timeframe_breakdown'][key] += 1
+            if best_confirmation_grade:
+                _mtf_stats['confirmation_grades'][best_confirmation_grade] += 1
+        else:
+            _mtf_stats['timeframe_breakdown']['5m_only'] += 1
+
     return {
         'convergence': convergence, 'timeframes': confirmed_timeframes,
         'convergence_score': num_timeframes / 4.0, 'boost': boost,
@@ -273,7 +268,8 @@ def enhance_signal_with_mtf(ticker, direction, bars_session, **kwargs) -> Dict:
     propagates into all sub-TF scans.
     """
     _check_cache_rollover()
-    _mtf_stats['analyzed'] += 1
+    with _mtf_stats_lock:
+        _mtf_stats['analyzed'] += 1
 
     # FIX 40.H-4: include bar count in key to invalidate stale entries
     cache_key = f"{ticker}_{direction}_{len(bars_session) if bars_session else 0}"
@@ -328,8 +324,6 @@ def reset_daily_stats():
         'confirmation_grades': {'A+': 0, 'A': 0, 'A-': 0},
         'total_boost': 0.0
     }
-
-    _mtf_stats_lock = __import__('threading').Lock()
 
 # ── Step 8.5: MTF Trend Validator ────────────────────────────────────────────────
 
