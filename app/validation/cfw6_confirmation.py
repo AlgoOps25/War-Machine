@@ -165,43 +165,44 @@ def wait_for_confirmation(
             candles_waited += 1
             continue
 
-        latest_bar = None
-        latest_idx = -1
-
+        new_bars = []
         for i, bar in enumerate(bars):
             bar_dt = _parse_bar_datetime(bar)
             if bar_dt is None:
                 continue
-            # Make both timezone-naive for comparison if needed
             cmp_start = start_time.replace(tzinfo=None) if start_time.tzinfo else start_time
             cmp_bar   = bar_dt.replace(tzinfo=None) if bar_dt.tzinfo else bar_dt
             if cmp_bar > cmp_start:
-                latest_bar = bar
-                latest_idx = i
+                new_bars.append((i, bar))
 
-        if not latest_bar:
+        if not new_bars:
             print(f"[CFW6] No new bars yet, waiting... (cycle {candles_waited+1}/{max_wait_candles})")
             time.sleep(60)
             candles_waited += 1
             continue
 
-        if direction == "bull":
-            touches_zone = latest_bar["low"] <= zone_high and latest_bar["low"] >= zone_low
-        else:
-            touches_zone = latest_bar["high"] >= zone_low and latest_bar["high"] <= zone_high
+        # Scan ALL new bars — catches multi-bar confirmation patterns
+        confirmed = False
+        for bar_idx, bar in new_bars:
+            if direction == "bull":
+                touches_zone = bar["low"] <= zone_high and bar["low"] >= zone_low
+            else:
+                touches_zone = bar["high"] >= zone_low and bar["high"] <= zone_high
 
-        if touches_zone:
-            confirmation_type, grade = analyze_confirmation_candle(
-                latest_bar, direction, zone_low, zone_high
-            )
+            if touches_zone:
+                confirmation_type, grade = analyze_confirmation_candle(
+                    bar, direction, zone_low, zone_high
+                )
+                if grade != "reject":
+                    entry_price = bar["close"]
+                    candle_time = bar.get("datetime", "N/A")
+                    print(f"[CFW6] CONFIRMED: {grade} setup at ${entry_price:.2f} "
+                        f"(candle {candles_waited}, {candle_time})")
+                    return True, entry_price, grade, bar_idx, confirmation_type
 
-            if grade != "reject":
-                entry_price = latest_bar["close"]
-                candle_time = latest_bar.get("datetime", "N/A")
-                print(f"[CFW6] CONFIRMED: {grade} setup at ${entry_price:.2f} "
-                      f"(candle {candles_waited}, {candle_time})")
-                return True, entry_price, grade, latest_idx, confirmation_type
-
+    if not confirmed:
+        pass  # fall through to sleep below
+    
         time.sleep(60)
         candles_waited += 1
 

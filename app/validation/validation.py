@@ -478,10 +478,12 @@ class RegimeFilter:
                         f"Strong {spy_trend} trend (ADX: {adx:.0f} ≥ {effective_adx_threshold:.0f}, VIX: {vix:.1f})"
                     )
                 else:
+                    favorable = spy_trend != "NEUTRAL"
                     return (
-                        "TRENDING", True,
-                        f"{spy_trend} trend with elevated VIX (ADX: {adx:.0f} ≥ {effective_adx_threshold:.0f}, VIX: {vix:.1f})"
+                        "TRENDING", favorable,
+                        f"{spy_trend} trend with elevated VIX (ADX: {adx:.0f} >= {effective_adx_threshold:.0f}, VIX: {vix:.1f})"
                     )
+
             else:
                 return (
                     "CHOPPY", False,
@@ -597,7 +599,12 @@ class OptionsFilter:
 
     def filter_by_dte(self, expiration_date: str) -> Tuple[bool, int]:
         try:
-            dte = (datetime.strptime(expiration_date, "%Y-%m-%d") - datetime.now()).days
+            from zoneinfo import ZoneInfo
+            now_et = datetime.now(ZoneInfo("America/New_York")).replace(
+                hour=0, minute=0, second=0, microsecond=0, tzinfo=None
+            )
+            dte = (datetime.strptime(expiration_date, "%Y-%m-%d") - now_et).days
+
             return (config.MIN_DTE <= dte <= config.MAX_DTE), dte
         except Exception:
             return False, 0
@@ -1204,7 +1211,7 @@ class SignalValidator:
                         
                         # VPVR Rescue Logic
                         if needs_vpvr_rescue and entry_score >= 0.85:
-                            rescue_boost = abs(counter_trend_penalty) * 0.80
+                            rescue_boost = abs(counter_trend_penalty)
                             confidence_adjustment += rescue_boost
                             passed_checks.append('VPVR_RESCUE')
                             failed_checks.remove('BIAS_COUNTER_TREND_STRONG')

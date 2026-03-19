@@ -66,11 +66,11 @@
 
 | Status | ID | File | Description | Commit SHA | Date |
 |--------|----|------|-------------|------------|------|
-| ⬜ | 39.C-1 | `app/core/sniper.py` | TOCTOU race: `ticker_is_watching()` checked twice with DB index resolve loop between — concurrent state change causes fall-through to OR scan. Fix: cache `is_watching` before resolve | — | — |
-| ⬜ | 9.C-5 | `app/data/armed_signal_store.py` | TOCTOU in `_maybe_load_armed_signals()` — signals missed on restart | — | — |
-| ⬜ | 9.C-4 | `app/core/scanner.py` | `analytics_conn` shared across threads without lock — connection corruption | — | — |
-| ⬜ | 40.M-12 | `app/mtf/mtf_integration.py` | `_mtf_stats` module-level dict incremented from multiple threads without lock | — | — |
-| ⬜ | 42.M-11 | `app/filters/mtf_bias.py` | `record_stat()` modifies module-level dict without lock | — | — |
+| ✅ | 39.C-1 | `app/core/sniper.py` | TOCTOU race: `ticker_is_watching()` checked twice with DB index resolve loop between — concurrent state change causes fall-through to OR scan. Fix: cache `is_watching` before resolve | — | — |
+| ✅ | 9.C-5 | `app/data/armed_signal_store.py` | TOCTOU in `_maybe_load_armed_signals()` — signals missed on restart | — | — |
+| ✅ | 9.C-4 | `app/core/scanner.py` | `analytics_conn` shared across threads without lock — connection corruption | — | — |
+| ✅ | 40.M-12 | `app/mtf/mtf_integration.py` | `_mtf_stats` module-level dict incremented from multiple threads without lock | — | — |
+| ✅ | 42.M-11 | `app/filters/mtf_bias.py` | `record_stat()` modifies module-level dict without lock | — | — |
 
 ---
 
