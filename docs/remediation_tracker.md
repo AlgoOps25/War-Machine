@@ -184,11 +184,11 @@
 | Status | ID | File | Description | Commit SHA | Date |
 |--------|----|------|-------------|------------|------|
 | ✅ | 45.H-1 | `app/notifications/discord_helpers.py` | Synchronous HTTP POST in scan loop blocks ticker processing 100–500ms per send. Fix: fire-and-forget thread | — | — |
-| ⬜ | 45.H-2 | `app/notifications/discord_helpers.py` | Webhook URL read on every call — raises TypeError if unset. Fix: cache at module load | — | — |
-| ⬜ | 45.M-4 | `app/notifications/discord_helpers.py` | No rate limiting — 10 simultaneous signals → HTTP 429 from Discord | — | — |
-| ⬜ | 45.M-5 | `app/notifications/discord_helpers.py` | No request timeout — can block indefinitely. Fix: `timeout=5` | — | — |
-| ⬜ | 45.M-7 | `app/notifications/discord_helpers.py` | Messages over 2000 chars silently rejected (HTTP 400). Fix: truncate at 1900 chars | — | — |
-| ⬜ | 45.M-10 | `app/notifications/discord_helpers.py` | Trade fires but Discord alert silently dropped on webhook failure — no fallback logging | — | — |
+| ✅ | 45.H-2 | `app/notifications/discord_helpers.py` | Webhook URL read on every call — raises TypeError if unset. Fix: cache at module load | — | — |
+| ✅ | 45.M-4 | `app/notifications/discord_helpers.py` | No rate limiting — 10 simultaneous signals → HTTP 429 from Discord | — | — |
+| ✅ | 45.M-5 | `app/notifications/discord_helpers.py` | No request timeout — can block indefinitely. Fix: `timeout=5` | — | — |
+| ✅ | 45.M-7 | `app/notifications/discord_helpers.py` | Messages over 2000 chars silently rejected (HTTP 400). Fix: truncate at 1900 chars | — | — |
+| ✅ | 45.M-10 | `app/notifications/discord_helpers.py` | Trade fires but Discord alert silently dropped on webhook failure — no fallback logging | — | — |
 
 ---
 
@@ -197,8 +197,8 @@
 
 | Status | ID | File | Description | Commit SHA | Date |
 |--------|----|------|-------------|------------|------|
-| ⬜ | 45.M-8 | `app/screening/` | Entire screening layer dark — no dynamic watchlist, static ticker list only | — | — |
-| ⬜ | 45.M-11 | `app/screening/` | No RVOL/gap%/float filtering — War Machine scans same tickers regardless of which are moving | — | — |
+| ✅ | 45.M-8 | `app/screening/` | Entire screening layer dark — no dynamic watchlist, static ticker list only | — | — |
+| ✅ | 45.M-11 | `app/screening/` | No RVOL/gap%/float filtering — War Machine scans same tickers regardless of which are moving | — | — |
 
 ---
 

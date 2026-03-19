@@ -182,8 +182,6 @@ def _on_tick(ticker: str, price: float, volume: int, epoch_ms: int, msg: dict = 
         # Gate 3: Trade condition filter
         condition = msg.get("c", 0)
         if isinstance(condition, list):
-            condition = condition[0] if condition else 0
-        if isinstance(condition, list):
             if any(c in INVALID_TRADE_CONDITIONS for c in condition):
                 return
             condition = condition[0] if condition else 0

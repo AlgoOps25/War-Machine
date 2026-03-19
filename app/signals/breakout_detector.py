@@ -187,31 +187,6 @@ class BreakoutDetector:
         resistance = intraday_resistance
         support    = intraday_support
 
-        # Step 2: session anchoring via OR detector
-        try:
-            from app.signals.opening_range import get_session_levels
-            session = get_session_levels(ticker)
-            if session:
-                session_high = session['session_high']
-                session_low  = session['session_low']
-
-                # Use session high as resistance if it is the true day high
-                # (i.e. higher than what the rolling window sees) OR if price
-                # is approaching it (within 0.5%).
-                current_price = bars[-1]['close']
-                near_session_high = (abs(current_price - session_high) / session_high) < 0.005
-                if session_high >= intraday_resistance or near_session_high:
-                    resistance = session_high
-
-                # Use session low as support similarly
-                near_session_low = (abs(current_price - session_low) / session_low) < 0.005
-                if session_low <= intraday_support or near_session_low:
-                    support = session_low
-
-        except Exception as e:
-            # Non-fatal: fall back to rolling levels only
-            pass
-
         # Step 3: PDH/PDL confluence (unchanged from Phase 1.8)
         pdh, pdl = self.get_pdh_pdl(ticker)
         if pdh is not None:
@@ -221,7 +196,38 @@ class BreakoutDetector:
             if abs(pdl - support) / support < 0.02:
                 support = pdl
 
-        return support, resistance
+                resistance_source = "rolling"
+        support_source    = "rolling"
+
+        try:
+            from app.signals.opening_range import get_session_levels
+            session = get_session_levels(ticker)
+            if session:
+                session_high = session['session_high']
+                session_low  = session['session_low']
+                current_price = bars[-1]['close']
+                near_session_high = (abs(current_price - session_high) / session_high) < 0.005
+                if session_high >= intraday_resistance or near_session_high:
+                    resistance        = session_high
+                    resistance_source = "session"
+                near_session_low = (abs(current_price - session_low) / session_low) < 0.005
+                if session_low <= intraday_support or near_session_low:
+                    support        = session_low
+                    support_source = "session"
+        except Exception:
+            pass
+
+        pdh, pdl = self.get_pdh_pdl(ticker)
+        if pdh is not None:
+            if abs(pdh - resistance) / resistance < 0.02:
+                resistance        = pdh
+                resistance_source = "pdh"
+        if pdl is not None:
+            if abs(pdl - support) / support < 0.02:
+                support        = pdl
+                support_source = "pdl"
+
+        return support, resistance, support_source, resistance_source
 
     # =================================================================
     # VOLUME
@@ -298,7 +304,7 @@ class BreakoutDetector:
             return None
 
         latest      = bars[-1]
-        support, resistance = self.calculate_support_resistance(bars[:-1], ticker)
+        support, resistance, support_source, resistance_source = self.calculate_support_resistance(bars[:-1], ticker)
         ema_volume  = self.calculate_ema_volume(bars[:-1])
         atr         = self.calculate_atr(bars, ticker)
 
@@ -311,17 +317,7 @@ class BreakoutDetector:
         pdh, pdl        = self.get_pdh_pdl(ticker)
 
         # Detect whether session levels were used
-        session_anchored = False
-        try:
-            from app.signals.opening_range import get_session_levels
-            session = get_session_levels(ticker)
-            if session:
-                session_anchored = (
-                    abs(resistance - session['session_high']) < 0.01 or
-                    abs(support    - session['session_low'])  < 0.01
-                )
-        except Exception:
-            pass
+        session_anchored = (resistance_source == "session" or support_source == "session")
 
         # ============================================================
         # BULL BREAKOUT

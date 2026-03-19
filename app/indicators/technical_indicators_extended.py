@@ -213,28 +213,32 @@ def calculate_position_size(
 def validate_breakout_strength(
     ticker: str,
     move_size: float,
-    min_atr_multiple: float = 1.5
+    min_atr_multiple: float = 1.5,
+    atr_value: float = None,
 ) -> Tuple[bool, Optional[Dict]]:
     """
     Validate if price move is significant vs ATR.
-    
+
     Real breakouts should move > 1.5 ATR to avoid false breaks.
-    
+
     Args:
         ticker: Stock symbol
         move_size: Price move in dollars (e.g., high - breakout_level)
         min_atr_multiple: Minimum ATR multiplier (default 1.5)
-    
+        atr_value: Optional intraday ATR override. When provided, skips the
+                   daily EODHD API fetch entirely. Pass BreakoutDetector.calculate_atr()
+                   result here to avoid daily vs intraday timeframe mismatch.
+
     Returns:
         (is_strong_breakout, details_dict)
     """
-    atr_data = fetch_atr(ticker)
-    if not atr_data:
-        return False, None
-    
-    atr_value = get_latest_value(atr_data, 'atr')
-    if not atr_value:
-        return False, None
+    if atr_value is None:
+        atr_data = fetch_atr(ticker)
+        if not atr_data:
+            return False, None
+        atr_value = get_latest_value(atr_data, 'atr')
+        if not atr_value:
+            return False, None
     
     atr_multiples = move_size / atr_value if atr_value > 0 else 0
     is_strong = atr_multiples >= min_atr_multiple
@@ -332,35 +336,37 @@ def check_trend_slope(
 def check_volatility_regime(
     ticker: str,
     low_threshold: float = 0.5,
-    high_threshold: float = 2.0
+    high_threshold: float = 2.0,
+    stddev_value: float = None,
+    current_price: float = None,
 ) -> Tuple[Optional[str], Optional[Dict]]:
     """
     Classify volatility regime using STDDEV.
-    
+
     Args:
         ticker: Stock symbol
         low_threshold: Low volatility cutoff (% of price)
         high_threshold: High volatility cutoff (% of price)
-    
+        stddev_value: Optional intraday STDDEV override (avoids daily API fetch).
+        current_price: Optional price override (required when stddev_value provided).
+
     Returns:
         (regime, details_dict)
         regime: 'LOW_VOL' | 'MEDIUM_VOL' | 'HIGH_VOL'
     """
     try:
-        from app.data.data_manager import data_manager
-        bars = data_manager.get_bars_from_memory(ticker, limit=1)
-        if not bars:
-            return None, None
-        
-        current_price = bars[0]['close']
-        
-        stddev_data = fetch_stddev(ticker)
-        if not stddev_data:
-            return None, None
-        
-        stddev_value = get_latest_value(stddev_data, 'stddev')
-        if not stddev_value or current_price == 0:
-            return None, None
+        if stddev_value is None or current_price is None:
+            from app.data.data_manager import data_manager
+            bars = data_manager.get_bars_from_memory(ticker, limit=1)
+            if not bars:
+                return None, None
+            current_price = bars[0]['close']
+            stddev_data = fetch_stddev(ticker)
+            if not stddev_data:
+                return None, None
+            stddev_value = get_latest_value(stddev_data, 'stddev')
+            if not stddev_value or current_price == 0:
+                return None, None
         
         stddev_pct = (stddev_value / current_price) * 100
         
@@ -407,7 +413,7 @@ def check_volatility_expansion(
         return False, None
     
     # Average STDDEV over last 10 bars
-    recent_stddevs = [d.get('stddev') for d in stddev_data[:10] if d.get('stddev')]
+    recent_stddevs = [d.get('stddev') for d in stddev_data[-11:-1] if d.get('stddev')]
     if not recent_stddevs:
         return False, None
     
