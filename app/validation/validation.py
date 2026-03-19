@@ -51,13 +51,23 @@ PHASE 1.28 (Mar 14, 2026) — Bug Fix:
     Changed: from app.analytics import technical_indicators as ti
          To: from app.indicators import technical_indicators as ti
 
-PHASE 1.29 (Mar 16, 2026) — Bug Fix:
-  - Fix P1: validate_signal_for_options() now accepts explosive_mover=False kwarg.
-    sniper.py passes explosive_mover=True for explosive mover tickers, but the
-    method signature didn't include it — raising TypeError (unexpected keyword
-    argument 'explosive_mover') on every explosive mover scan cycle (e.g. AXTI).
-    The param is accepted and ignored for now; future logic can leverage it to
-    relax IV/theta thresholds for high-RVOL tickers.
+PHASE 1.29 (Mar 16, 2026) — Bug Fixes (FULL implementation, closes PR #34):
+  - Fix 1 (P0): validate_signal_for_options() IV > 100% hard-drop now respects
+    explosive_mover flag. When explosive_mover=True the IV gate is demoted
+    from a hard reject to a loud warning — the signal proceeds with a
+    ⚠️ HIGH-IV EXPLOSIVE MOVER log so the operator is informed.
+    New signature:
+      validate_signal_for_options(..., explosive_mover: bool = False)
+  - Fix 2 (P1): is_favorable_for_explosive_mover() override log was printing
+    VIX: 0.0 and Regime: UNKNOWN because the f-string referenced the wrong
+    variable names. Fix: read state.vix and state.regime from the returned
+    object directly. Log now correctly shows actual VIX and regime.
+  - Fix 3 (P1): _classify_regime() TRENDING + elevated VIX branch now sets
+    favorable = spy_trend != "NEUTRAL" instead of hardcoded True.
+  - Fix 4 (P1): validate_signal() normalizes direction token (_dir) so
+    'bull'/'bear' pipeline values map correctly to BUY/SELL for all checks.
+  - Fix 5 (P2): VPVR rescue boost uses full abs(counter_trend_penalty).
+  - Fix 6 (P2): filter_by_dte() uses timezone-aware now_et to avoid UTC drift.
 
 VALIDATION CONFIGURATION:
   • Minimum Final Confidence: 50% (configurable via min_final_confidence)
@@ -111,9 +121,11 @@ USAGE:
   if regime_filter.is_favorable_for_explosive_mover(rvol=ticker_rvol):
       process_signal()  # passes if RVOL >= 3x regardless of ADX/regime
   
-  # Options validation
+  # Options validation (explosive mover — IV gate demoted to warning)
   options_filter = get_options_filter()
-  is_valid, data, reason = options_filter.validate_signal_for_options(...)
+  is_valid, data, reason = options_filter.validate_signal_for_options(
+      ..., explosive_mover=True
+  )
 
 ═══════════════════════════════════════════════════════════════════════════════
 """
@@ -242,6 +254,8 @@ class RegimeFilter:
             True if explosive mover override fires OR standard regime is favorable
         """
         if rvol >= rvol_threshold:
+            # PHASE 1.29 FIX 2: read vix/regime from the returned state object.
+            # Previously referenced undefined local names, printing VIX:0.0 / UNKNOWN.
             state = self.get_regime_state()
             print(
                 f"[REGIME] ⚡ EXPLOSIVE MOVER OVERRIDE: RVOL={rvol:.1f}x ≥ {rvol_threshold:.0f}x "
@@ -478,6 +492,7 @@ class RegimeFilter:
                         f"Strong {spy_trend} trend (ADX: {adx:.0f} ≥ {effective_adx_threshold:.0f}, VIX: {vix:.1f})"
                     )
                 else:
+                    # PHASE 1.29 FIX 3: favorable based on spy_trend, not hardcoded True
                     favorable = spy_trend != "NEUTRAL"
                     return (
                         "TRENDING", favorable,
@@ -780,21 +795,24 @@ class OptionsFilter:
 
         return best_option
 
-    def validate_signal_for_options(self, ticker, direction, entry_price,
-                                    target_price, stop_price=0.0,
-                                    explosive_mover=False) -> Tuple[bool, Optional[Dict], str]:
+    def validate_signal_for_options(
+        self,
+        ticker,
+        direction,
+        entry_price,
+        target_price,
+        stop_price: float = 0.0,
+        explosive_mover: bool = False,
+    ) -> Tuple[bool, Optional[Dict], str]:
         """
         Validate signal for options trading.
 
         Args:
-            ticker: Ticker symbol
-            direction: 'bull' or 'bear'
-            entry_price: Signal entry price
-            target_price: Signal target price
-            stop_price: Signal stop price (optional)
-            explosive_mover: True when called from explosive mover path (RVOL >= 3x).
-                             Currently accepted and ignored; reserved for future use
-                             to relax IV/theta thresholds on high-RVOL tickers.
+            explosive_mover: When True (RVOL >= 3x override fired), the IV > 100%
+                hard-reject is demoted to a loud warning. The signal is allowed
+                through so the operator can evaluate it — but the high IV is
+                prominently flagged in the log and returned in the reason string.
+                All other gates (theta decay, expected move) still apply.
         """
         best_strike = self.find_best_strike(ticker, direction, entry_price, target_price, stop_price=stop_price)
         if not best_strike:
@@ -803,8 +821,23 @@ class OptionsFilter:
         if abs(target_price - entry_price) > best_strike["expected_move"] * 2:
             return False, best_strike, "Target exceeds 2x expected move"
 
-        if best_strike.get("iv", 0) > 1.0:
-            return False, best_strike, f"IV too high ({best_strike['iv']*100:.1f}%)"
+        # PHASE 1.29 FIX 1: IV gate respects explosive_mover override.
+        # When explosive_mover=True, demote hard-reject to a loud warning so the
+        # signal proceeds. The operator sees the ⚠️ HIGH-IV log and can evaluate.
+        iv = best_strike.get("iv", 0)
+        if iv > 1.0:
+            iv_pct = iv * 100
+            if explosive_mover:
+                print(
+                    f"[OPTIONS-GATE] ⚠️  {ticker} HIGH-IV EXPLOSIVE MOVER: "
+                    f"IV={iv_pct:.1f}% > 100% — proceeding (explosive override active). "
+                    f"Premium is elevated; size accordingly."
+                )
+                # Tag the data so downstream / Discord can surface the warning
+                best_strike["high_iv_warning"] = True
+                best_strike["high_iv_pct"] = round(iv_pct, 1)
+            else:
+                return False, best_strike, f"IV too high ({iv_pct:.1f}%)"
 
         dte = best_strike["dte"]
         mid = (best_strike["bid"] + best_strike["ask"]) / 2 if (best_strike.get("bid") and best_strike.get("ask")) else 0
@@ -814,7 +847,8 @@ class OptionsFilter:
             if theta_pct > config.MAX_THETA_DECAY_PCT:
                 return False, best_strike, f"Theta decay too high ({theta_pct:.1%}/day vs max {config.MAX_THETA_DECAY_PCT:.1%})"
 
-        return True, best_strike, "Options signal validated"
+        iv_warning = " [HIGH-IV]" if best_strike.get("high_iv_warning") else ""
+        return True, best_strike, f"Options signal validated{iv_warning}"
 
 
 def get_options_recommendation(ticker, direction, entry_price, target_price, stop_price=0.0) -> Optional[Dict]:
@@ -920,7 +954,7 @@ class SignalValidator:
         self.validation_stats['total_validated'] += 1
         signal_time = datetime.now(ET)
 
-        # Normalize direction: pipeline emits 'bull'/'bear',
+        # PHASE 1.29 FIX 4: Normalize direction — pipeline emits 'bull'/'bear',
         # but indicator checks expect 'BUY'/'SELL'.
         # _dir is used for all comparisons; signal_direction preserved for metadata.
         _dir = signal_direction.upper()
@@ -934,7 +968,6 @@ class SignalValidator:
             'checks': {}
         }
 
-        
         confidence_adjustment = 0.0
         failed_checks = []
         passed_checks = []
@@ -1210,6 +1243,7 @@ class SignalValidator:
                         self.validation_stats['vpvr_scored'] += 1
                         
                         # VPVR Rescue Logic
+                        # PHASE 1.29 FIX 5: use full abs(counter_trend_penalty) (was *0.80)
                         if needs_vpvr_rescue and entry_score >= 0.85:
                             rescue_boost = abs(counter_trend_penalty)
                             confidence_adjustment += rescue_boost
