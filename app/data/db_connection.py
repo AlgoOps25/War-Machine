@@ -63,6 +63,20 @@ FIX 14.C-2 (MAR 19, 2026): STALE SSL CONNECTION — SSL SYSCALL EOF
   normally so the scanner loop's existing error handler can restart cleanly.
 - This is deliberately minimal — no infinite loop, no silent swallowing.
 
+FIX 14.C-3 (MAR 19, 2026): TRANSIENT DB BLIP — DOUBLE-VALIDATION RETRY
+- When both the stale connection AND the fresh reconnect failed _validate_conn(),
+  the code immediately raised RuntimeError("Reconnected connection also failed
+  validation — DB may be down"), crashing the scanner + triggering a Railway
+  container restart.
+- Root cause: Railway's Postgres proxy occasionally blips for <5s during
+  intraday (observed at 10:19 AM EDT). The instant-fail path treated a
+  transient blip the same as a true DB outage.
+- Fix: replace the immediate raise with a retry loop (DB_RECONNECT_RETRIES=3,
+  delays: 1s / 2s / 3s). Each attempt discards dead connections and requests
+  a fresh one from the pool. Only if all retries are exhausted does the error
+  propagate, at which point a true outage is a reasonable conclusion.
+- Added db_reconnect_failures counter to _pool_stats for observability.
+
 NOTE: Railway provides DATABASE_URL as postgres:// — psycopg2 requires
 postgresql:// — we normalize it automatically here.
 """
@@ -98,6 +112,11 @@ POOL_RETRY_ATTEMPTS = 10
 POOL_RETRY_BASE_DELAY = 0.1   # seconds; doubles each attempt, capped at 2.0s
 CONNECTION_TIMEOUT_SECONDS = 300  # 5 minutes
 
+# FIX 14.C-3: retry budget when BOTH the stale conn and the first fresh conn
+# fail validation (transient Railway proxy blip).
+DB_RECONNECT_RETRIES = 3          # max additional fresh-connection attempts
+DB_RECONNECT_DELAYS  = [1, 2, 3]  # seconds to wait before each retry
+
 # Semaphore gate — caps concurrent DB checkouts below POOL_MAX so that
 # startup bursts never exhaust the pool even when many threads call get_conn().
 DB_SEMAPHORE_LIMIT = 12   # Must be <= POOL_MAX; leaves headroom for health queries
@@ -112,7 +131,8 @@ _pool_stats = {
     "timeouts": 0,
     "retries": 0,
     "semaphore_waiters": 0,
-    "stale_reconnects": 0,       # FIX 14.C-2
+    "stale_reconnects": 0,          # FIX 14.C-2
+    "db_reconnect_failures": 0,     # FIX 14.C-3
     "last_health_check": None
 }
 _checked_out_connections = {}  # conn_id -> checkout epoch time
@@ -206,6 +226,14 @@ def _validate_conn(conn) -> bool:
         return False
 
 
+def _discard_conn(conn) -> None:
+    """Safely return a known-dead connection to the pool and close the socket."""
+    try:
+        _connection_pool.putconn(conn, close=True)
+    except Exception:
+        pass
+
+
 # ==============================================================================
 # CONNECTION MANAGEMENT
 # ==============================================================================
@@ -232,6 +260,11 @@ def get_conn(sqlite_path: str = "war_machine.db"):
     If the ping fails (SSL SYSCALL EOF), the dead connection is returned to the
     pool and discarded, then one fresh connection is requested.  This handles
     the Railway TCP proxy silently dropping idle connections after ~5 min.
+
+    FIX 14.C-3: If the first fresh reconnect also fails validation (transient
+    Railway proxy blip), retry up to DB_RECONNECT_RETRIES more times with
+    increasing delays (1s / 2s / 3s) before propagating the error.  This
+    prevents a <5s Railway blip from crashing the scanner.
 
     IMPORTANT: Caller must close the connection when done!
     Better to use `with get_connection() as conn:` context manager.
@@ -266,26 +299,38 @@ def get_conn(sqlite_path: str = "war_machine.db"):
 
                     # FIX 14.C-2: validate the socket before handing it to caller
                     if not _validate_conn(conn):
-                        print("[DB] ⚠️  Stale connection detected (SSL EOF) — discarding and reconnecting")
-                        try:
-                            _connection_pool.putconn(conn, close=True)
-                        except Exception:
-                            pass
+                        print("[DB] \u26a0\ufe0f  Stale connection detected (SSL EOF) — discarding and reconnecting")
+                        _discard_conn(conn)
                         with _stats_lock:
                             _pool_stats["stale_reconnects"] += 1
-                        # Get a fresh connection — counted as one more attempt
-                        conn = _connection_pool.getconn()
-                        if conn is None:
-                            raise RuntimeError("Pool returned None on reconnect")
-                        if not _validate_conn(conn):
-                            # Both the stale and fresh connections are dead;
-                            # DB is likely down — fail fast so the caller's
-                            # error handler can decide what to do.
-                            try:
-                                _connection_pool.putconn(conn, close=True)
-                            except Exception:
-                                pass
-                            raise RuntimeError("Reconnected connection also failed validation — DB may be down")
+
+                        # FIX 14.C-3: retry fresh connection up to DB_RECONNECT_RETRIES
+                        # times before giving up — handles transient Railway proxy blips.
+                        reconnected = False
+                        for r_attempt, r_delay in enumerate(DB_RECONNECT_DELAYS, start=1):
+                            conn = _connection_pool.getconn()
+                            if conn is None:
+                                print(f"[DB] \u26a0\ufe0f  Reconnect attempt {r_attempt}/{DB_RECONNECT_RETRIES}: pool returned None")
+                                time.sleep(r_delay)
+                                continue
+                            if _validate_conn(conn):
+                                reconnected = True
+                                break
+                            # This fresh conn is also dead
+                            print(
+                                f"[DB] \u26a0\ufe0f  Reconnect attempt {r_attempt}/{DB_RECONNECT_RETRIES} "
+                                f"failed validation — waiting {r_delay}s before retry"
+                            )
+                            _discard_conn(conn)
+                            with _stats_lock:
+                                _pool_stats["db_reconnect_failures"] += 1
+                            time.sleep(r_delay)
+
+                        if not reconnected:
+                            raise RuntimeError(
+                                f"DB unavailable after {DB_RECONNECT_RETRIES} reconnect attempts "
+                                f"— Railway proxy may be down"
+                            )
 
                     conn_id = id(conn)
                     with _stats_lock:
@@ -450,7 +495,8 @@ def check_pool_health() -> dict:
         "retries": stats_copy["retries"],
         "timeouts": stats_copy["timeouts"],
         "semaphore_waiters": stats_copy["semaphore_waiters"],
-        "stale_reconnects": stats_copy["stale_reconnects"],  # FIX 14.C-2
+        "stale_reconnects": stats_copy["stale_reconnects"],        # FIX 14.C-2
+        "db_reconnect_failures": stats_copy["db_reconnect_failures"],  # FIX 14.C-3
         "stale_connections": len(stale_connections),
         "last_check": datetime.now().isoformat()
     }
@@ -464,7 +510,7 @@ def check_pool_health() -> dict:
     if stale_connections:
         print(f"[DB] {len(stale_connections)} stale connection(s) detected:")
         for conn_id, duration in stale_connections[:3]:
-            print(f"[DB]   • Connection {conn_id}: held for {duration:.1f}s")
+            print(f"[DB]   \u2022 Connection {conn_id}: held for {duration:.1f}s")
 
     return health
 
@@ -491,6 +537,7 @@ def print_pool_stats():
     print(f"Timeout Warnings:    {health['timeouts']}")
     print(f"Semaphore Waiters:   {health['semaphore_waiters']}")
     print(f"Stale Reconnects:    {health['stale_reconnects']}")
+    print(f"Reconnect Failures:  {health['db_reconnect_failures']}")
     print(f"Stale Connections:   {health['stale_connections']}")
     print("=" * 60 + "\n")
 
