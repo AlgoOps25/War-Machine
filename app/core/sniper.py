@@ -1344,15 +1344,20 @@ def process_ticker(ticker: str):
             except Exception as orb_err:
                 print(f"[{ticker}] ORB classify error (non-fatal): {orb_err}")
 
+        # AFTER
         if scan_mode is None and VWAP_RECLAIM_ENABLED:
-            vr = detect_vwap_reclaim(bars_session)
+            _vwap_val = compute_vwap(bars_session)
+            for _vr_dir in ("bull", "bear"):
+                vr = detect_vwap_reclaim(ticker, bars_session, _vr_dir, _vwap_val)
+                if vr:
+                    break
             if vr:
                 print(
                     f"[{ticker}] 🔵 VWAP RECLAIM: {vr['direction'].upper()} "
-                    f"@ ${vr['entry_price']:.2f} | VWAP=${vr['vwap_at_reclaim']:.2f}"
+                    f"@ ${vr['entry_price']:.2f} | VWAP=${vr['vwap']:.2f}"
                 )
-                vr_zone_low  = vr["vwap_at_reclaim"] * 0.9985
-                vr_zone_high = vr["vwap_at_reclaim"] * 1.0015
+                vr_zone_low  = vr["zone_low"]
+                vr_zone_high = vr["zone_high"]
                 vr_or_high   = vr["entry_price"] * 1.005
                 vr_or_low    = vr["entry_price"] * 0.995
                 _run_signal_pipeline(

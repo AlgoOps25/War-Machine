@@ -79,12 +79,12 @@
 
 | Status | ID | File | Description | Commit SHA | Date |
 |--------|----|------|-------------|------------|------|
-| ⬜ | 8.C-2 | `app/validation/validation.py` | VPVR rescue doesn't fully restore bias penalty — net -5% confidence leak | — | — |
-| ⬜ | 8.C-3 | `app/validation/validation.py` | `_classify_regime()` returns `favorable=True` for VIX 25–29 TRENDING — wrong regime label | — | — |
-| ⬜ | 8.C-4 | `app/validation/validation.py` | `filter_by_dte()` uses `datetime.now()` UTC — 0-DTE permanently invisible (4-5 hour offset) | — | — |
-| ⬜ | 4.A-2 | `app/validation/cfw6_confirmation.py` | `wait_for_confirmation()` only tests latest bar — misses multi-bar confirmation patterns | — | — |
-| ⬜ | 4.C-10 | `app/validation/entry_timing.py` | `HOURLY_WIN_RATES` is hardcoded fabricated data — win rate gating is noise | — | — |
-| ⬜ | 41.H-3 | `app/mtf/mtf_validator.py` | `validate_signal_mtf()` re-fetches bars from DB — 3 extra DB reads per pipeline call. Fix: accept `bars` as parameter | — | — |
+| ✅ | 8.C-2 | `app/validation/validation.py` | VPVR rescue doesn't fully restore bias penalty — net -5% confidence leak | — | — |
+| ✅ | 8.C-3 | `app/validation/validation.py` | `_classify_regime()` returns `favorable=True` for VIX 25–29 TRENDING — wrong regime label | — | — |
+| ✅  | 8.C-4 | `app/validation/validation.py` | `filter_by_dte()` uses `datetime.now()` UTC — 0-DTE permanently invisible (4-5 hour offset) | — | — |
+| ✅  | 4.A-2 | `app/validation/cfw6_confirmation.py` | `wait_for_confirmation()` only tests latest bar — misses multi-bar confirmation patterns | — | — |
+| ✅  | 4.C-10 | `app/validation/entry_timing.py` | `HOURLY_WIN_RATES` is hardcoded fabricated data — win rate gating is noise | — | — |
+| ✅  | 41.H-3 | `app/mtf/mtf_validator.py` | `validate_signal_mtf()` re-fetches bars from DB — 3 extra DB reads per pipeline call. Fix: accept `bars` as parameter | — | — |
 
 ---
 
@@ -93,9 +93,9 @@
 
 | Status | ID | File | Description | Commit SHA | Date |
 |--------|----|------|-------------|------------|------|
-| ⬜ | 5.G-18 | `app/filters/liquidity_sweep.py` | Bull sweep `close_reclaim` allows close only $0.01 above OR low — not a valid reclaim. Fix: require close above `or_low + 20% of OR range` | — | — |
-| ⬜ | 43.M-10 | `app/signals/vwap_reclaim.py` | Synthetic FVG zone ±0.15% hardcoded — should use `get_adaptive_fvg_threshold()` | — | — |
-| ⬜ | 40.M-9 | `app/mtf/mtf_integration.py` | MTF OR window `9:30–9:40` is 5 min shorter than main OR window `9:30–9:45` — mismatched levels | — | — |
+| ✅ | 5.G-18 | `app/filters/liquidity_sweep.py` | Bull sweep `close_reclaim` allows close only $0.01 above OR low — not a valid reclaim. Fix: require close above `or_low + 20% of OR range` | — | — |
+| ✅ | 43.M-10 | `app/signals/vwap_reclaim.py` | Synthetic FVG zone ±0.15% hardcoded — should use `get_adaptive_fvg_threshold()` | — | — |
+| ✅ | 40.M-9 | `app/mtf/mtf_integration.py` | MTF OR window `9:30–9:40` is 5 min shorter than main OR window `9:30–9:45` — mismatched levels | — | — |
 
 ---
 
