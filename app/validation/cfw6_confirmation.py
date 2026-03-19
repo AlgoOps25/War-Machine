@@ -6,6 +6,12 @@ Implements exact CFW6 video rules for candle confirmation + multi-factor validat
 FIXED (Mar 16 2026): Removed private calculate_vwap() (used close price only — wrong formula).
                      Now imports compute_vwap() + passes_vwap_gate() from app.filters.vwap_gate
                      which uses correct typical price formula: (H+L+C)/3.
+
+PHASE 4.A-2 (Mar 19 2026): wait_for_confirmation() now scans ALL new bars per cycle
+                     instead of only the latest bar. Catches multi-bar confirmation
+                     patterns (e.g. zone re-test on bar 3 after initial miss on bar 1).
+                     Also fixed dangling `confirmed` variable / unreachable sleep that
+                     was left by prior refactor.
 """
 from typing import Dict, List, Tuple
 from datetime import datetime
@@ -29,7 +35,6 @@ def _parse_bar_datetime(bar: Dict):
     if isinstance(raw, datetime):
         return raw
     if isinstance(raw, dict):
-        # Common shapes: {"value": "2026-03-12T09:30:00"} or {"date": "..."}
         raw = raw.get("value") or raw.get("date") or raw.get("datetime")
         if raw is None:
             return None
@@ -134,6 +139,10 @@ def wait_for_confirmation(
     Refactored to re-fetch bars each cycle instead of scanning a static array.
     This ensures we catch confirmations that arrive AFTER the initial signal.
 
+    4.A-2: Scans ALL new bars per cycle (not just the latest). This catches
+    multi-bar confirmation patterns where the zone is retested on bar 2 or 3
+    after an initial miss on bar 1.
+
     Args:
         ticker: Stock symbol
         direction: "bull" or "bear"
@@ -165,6 +174,7 @@ def wait_for_confirmation(
             candles_waited += 1
             continue
 
+        # Collect every bar that arrived after start_time
         new_bars = []
         for i, bar in enumerate(bars):
             bar_dt = _parse_bar_datetime(bar)
@@ -181,8 +191,7 @@ def wait_for_confirmation(
             candles_waited += 1
             continue
 
-        # Scan ALL new bars — catches multi-bar confirmation patterns
-        confirmed = False
+        # 4.A-2: Scan ALL new bars — catches multi-bar confirmation patterns
         for bar_idx, bar in new_bars:
             if direction == "bull":
                 touches_zone = bar["low"] <= zone_high and bar["low"] >= zone_low
@@ -196,13 +205,13 @@ def wait_for_confirmation(
                 if grade != "reject":
                     entry_price = bar["close"]
                     candle_time = bar.get("datetime", "N/A")
-                    print(f"[CFW6] CONFIRMED: {grade} setup at ${entry_price:.2f} "
-                        f"(candle {candles_waited}, {candle_time})")
+                    print(
+                        f"[CFW6] CONFIRMED: {grade} setup at ${entry_price:.2f} "
+                        f"(cycle {candles_waited}, {candle_time})"
+                    )
                     return True, entry_price, grade, bar_idx, confirmation_type
 
-    if not confirmed:
-        pass  # fall through to sleep below
-    
+        # No confirmation found in this cycle — wait for next bar
         time.sleep(60)
         candles_waited += 1
 
