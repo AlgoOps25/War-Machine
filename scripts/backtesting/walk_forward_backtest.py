@@ -3,7 +3,7 @@
 Walk-Forward Backtest Engine — War Machine (47.P4-1)
 
 Replays 90 days of EODHD 5m bars through the production signal pipeline
-(compute_opening_range_from_bars -> detect_breakout_after_or ->
+(OR inline for 5m -> detect_breakout_after_or ->
  detect_fvg_after_break -> passes_vwap_gate -> compute_stop_and_targets)
 and simulates trade outcomes bar-by-bar.
 
@@ -17,6 +17,12 @@ Usage:
   python scripts/backtesting/walk_forward_backtest.py --tickers SPY,QQQ,AAPL --days 90
   python scripts/backtesting/walk_forward_backtest.py --tickers SPY --days 90 --out backtests/results
   python scripts/backtesting/walk_forward_backtest.py --tickers SPY --days 30  # quick smoke test
+
+NOTE on 5m bar OR window:
+  production compute_opening_range_from_bars() is tuned for 1m bars and
+  requires >= 3 bars strictly within 9:30-9:40. With 5m data that window
+  holds only 2 bars (09:30, 09:35). We compute OR inline using 9:30-9:45
+  (3 bars at 5m: 09:30, 09:35, 09:40) with a minimum of 2 bars.
 """
 
 import sys
@@ -25,7 +31,7 @@ import json
 import logging
 import argparse
 import csv
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta, time as dtime
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple
 from collections import defaultdict
@@ -47,10 +53,14 @@ logging.basicConfig(
 )
 log = logging.getLogger("wf_backtest")
 
+# 5m OR window: 9:30-9:45 (3 bars: 09:30, 09:35, 09:40), minimum 2
+OR_5M_START   = dtime(9, 30)
+OR_5M_END     = dtime(9, 45)   # exclusive upper bound
+OR_5M_MIN_BARS = 2
+
 # ── Production pipeline imports ─────────────────────────────────────────────
 try:
     from app.signals.opening_range import (
-        compute_opening_range_from_bars,
         detect_breakout_after_or,
         detect_fvg_after_break,
     )
@@ -71,16 +81,14 @@ except Exception:
 
 try:
     from utils import config as cfg
-    ORB_BREAK_THRESHOLD = getattr(cfg, "ORB_BREAK_THRESHOLD", 0.001)
-    FVG_MIN_SIZE_PCT    = getattr(cfg, "FVG_MIN_SIZE_PCT",    0.002)
-    OR_MIN_RANGE_PCT    = getattr(cfg, "OR_MIN_RANGE_PCT",    0.003)
-    MIN_CONFIDENCE      = getattr(cfg, "MIN_CONFIDENCE",      0.45)
+    FVG_MIN_SIZE_PCT = getattr(cfg, "FVG_MIN_SIZE_PCT", 0.002)
+    OR_MIN_RANGE_PCT = getattr(cfg, "OR_MIN_RANGE_PCT", 0.003)
+    MIN_CONFIDENCE   = getattr(cfg, "MIN_CONFIDENCE",   0.45)
 except Exception:
-    cfg                 = None
-    ORB_BREAK_THRESHOLD = 0.001
-    FVG_MIN_SIZE_PCT    = 0.002
-    OR_MIN_RANGE_PCT    = 0.003
-    MIN_CONFIDENCE      = 0.45
+    cfg              = None
+    FVG_MIN_SIZE_PCT = 0.002
+    OR_MIN_RANGE_PCT = 0.003
+    MIN_CONFIDENCE   = 0.45
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -185,7 +193,6 @@ def split_into_sessions(df: pd.DataFrame) -> List[pd.DataFrame]:
     sessions = []
     for d, grp in df.groupby("date"):
         grp = grp.sort_values("datetime").reset_index(drop=True)
-        # RTH only: 9:30 – 16:00
         minutes = grp["datetime"].dt.hour * 60 + grp["datetime"].dt.minute
         grp = grp[(minutes >= 570) & (minutes < 960)]
         if len(grp) >= 20:
@@ -195,11 +202,8 @@ def split_into_sessions(df: pd.DataFrame) -> List[pd.DataFrame]:
 
 def bars_to_sniper_format(df: pd.DataFrame) -> List[Dict]:
     """
-    Convert DataFrame rows to the bar dict format sniper functions expect.
-
-    KEY: production code reads bar["datetime"] via _bar_time() — NOT "time".
-    Using "time" caused _bar_time() to return None on every bar, so
-    compute_opening_range_from_bars always found 0 OR bars → 0 signals.
+    Convert DataFrame rows to bar dicts. Key must be "datetime" so
+    _bar_time() in time_helpers.py resolves the time correctly.
     """
     bars = []
     for _, row in df.iterrows():
@@ -207,7 +211,7 @@ def bars_to_sniper_format(df: pd.DataFrame) -> List[Dict]:
             continue
         vol = row["volume"]
         bars.append({
-            "datetime": row["datetime"],          # ← must be "datetime" for _bar_time()
+            "datetime": row["datetime"],
             "open":     float(row["open"]),
             "high":     float(row["high"]),
             "low":      float(row["low"]),
@@ -217,8 +221,28 @@ def bars_to_sniper_format(df: pd.DataFrame) -> List[Dict]:
     return bars
 
 
+def compute_or_5m(bars: List[Dict]) -> Tuple[Optional[float], Optional[float]]:
+    """
+    Compute Opening Range high/low from 5-minute bars.
+
+    Uses 9:30–9:45 window (3 bars: 09:30, 09:35, 09:40) with a minimum
+    of OR_5M_MIN_BARS (2). Production compute_opening_range_from_bars()
+    requires >= 3 bars within 9:30–9:40 — that window holds only 2 bars
+    at 5m resolution so it always returns (None, None).
+
+    Returns (or_high, or_low) or (None, None) if insufficient bars.
+    """
+    or_bars = [
+        b for b in bars
+        if hasattr(b["datetime"], "time")
+        and OR_5M_START <= b["datetime"].time() < OR_5M_END
+    ]
+    if len(or_bars) < OR_5M_MIN_BARS:
+        return None, None
+    return max(b["high"] for b in or_bars), min(b["low"] for b in or_bars)
+
+
 def _session_first_time(session_df: pd.DataFrame) -> Optional[object]:
-    """Safely get the datetime of the first bar in a session DataFrame."""
     if session_df is None or len(session_df) == 0:
         return None
     return session_df.iloc[0]["datetime"]
@@ -239,7 +263,7 @@ def simulate_trade(
 ) -> Dict:
     """
     Replay bars from entry_bar_idx forward.
-    Scale-out: T1 hit → 50% out + move stop to BE; T2 hit → exit remainder.
+    Scale-out: T1 hit → move stop to BE; T2 hit → exit.
     Stop hit → full loss. EOD (15:55) → close at last bar.
     """
     entry_price = float(entry_price)
@@ -264,78 +288,44 @@ def simulate_trade(
         if eod:
             exit_p = float(bar["close"])
             pnl    = (exit_p - actual_entry) if direction == "bull" else (actual_entry - exit_p)
-            return {
-                "exit_price":  round(exit_p, 4),
-                "exit_reason": "EOD",
-                "exit_time":   t,
-                "entry_time":  entry_time,
-                "pnl_pts":     round(pnl, 4),
-                "r_multiple":  round(pnl / risk, 2) if risk else 0.0,
-            }
+            return {"exit_price": round(exit_p, 4), "exit_reason": "EOD",
+                    "exit_time": t, "entry_time": entry_time,
+                    "pnl_pts": round(pnl, 4), "r_multiple": round(pnl / risk, 2) if risk else 0.0}
 
         if direction == "bull":
             if lo <= be_stop:
-                exit_p = be_stop
-                pnl    = exit_p - actual_entry
-                return {
-                    "exit_price":  round(exit_p, 4),
-                    "exit_reason": "STOP",
-                    "exit_time":   t,
-                    "entry_time":  entry_time,
-                    "pnl_pts":     round(pnl, 4),
-                    "r_multiple":  round(pnl / risk, 2) if risk else 0.0,
-                }
+                pnl = be_stop - actual_entry
+                return {"exit_price": round(be_stop, 4), "exit_reason": "STOP",
+                        "exit_time": t, "entry_time": entry_time,
+                        "pnl_pts": round(pnl, 4), "r_multiple": round(pnl / risk, 2) if risk else 0.0}
             if not t1_hit and hi >= t1_price:
                 t1_hit  = True
                 be_stop = actual_entry
             if t1_hit and hi >= t2_price:
-                exit_p = t2_price
-                pnl    = exit_p - actual_entry
-                return {
-                    "exit_price":  round(exit_p, 4),
-                    "exit_reason": "T2",
-                    "exit_time":   t,
-                    "entry_time":  entry_time,
-                    "pnl_pts":     round(pnl, 4),
-                    "r_multiple":  round(pnl / risk, 2) if risk else 0.0,
-                }
+                pnl = t2_price - actual_entry
+                return {"exit_price": round(t2_price, 4), "exit_reason": "T2",
+                        "exit_time": t, "entry_time": entry_time,
+                        "pnl_pts": round(pnl, 4), "r_multiple": round(pnl / risk, 2) if risk else 0.0}
         else:  # bear
             if hi >= be_stop:
-                exit_p = be_stop
-                pnl    = actual_entry - exit_p
-                return {
-                    "exit_price":  round(exit_p, 4),
-                    "exit_reason": "STOP",
-                    "exit_time":   t,
-                    "entry_time":  entry_time,
-                    "pnl_pts":     round(pnl, 4),
-                    "r_multiple":  round(pnl / risk, 2) if risk else 0.0,
-                }
+                pnl = actual_entry - be_stop
+                return {"exit_price": round(be_stop, 4), "exit_reason": "STOP",
+                        "exit_time": t, "entry_time": entry_time,
+                        "pnl_pts": round(pnl, 4), "r_multiple": round(pnl / risk, 2) if risk else 0.0}
             if not t1_hit and lo <= t1_price:
                 t1_hit  = True
                 be_stop = actual_entry
             if t1_hit and lo <= t2_price:
-                exit_p = t2_price
-                pnl    = actual_entry - exit_p
-                return {
-                    "exit_price":  round(exit_p, 4),
-                    "exit_reason": "T2",
-                    "exit_time":   t,
-                    "entry_time":  entry_time,
-                    "pnl_pts":     round(pnl, 4),
-                    "r_multiple":  round(pnl / risk, 2) if risk else 0.0,
-                }
+                pnl = actual_entry - t2_price
+                return {"exit_price": round(t2_price, 4), "exit_reason": "T2",
+                        "exit_time": t, "entry_time": entry_time,
+                        "pnl_pts": round(pnl, 4), "r_multiple": round(pnl / risk, 2) if risk else 0.0}
 
     exit_p = float(bars[-1]["close"])
     pnl    = (exit_p - actual_entry) if direction == "bull" else (actual_entry - exit_p)
-    return {
-        "exit_price":  round(exit_p, 4),
-        "exit_reason": "EOD",
-        "exit_time":   bars[-1]["datetime"],
-        "entry_time":  entry_time,
-        "pnl_pts":     round(pnl, 4),
-        "r_multiple":  round(pnl / risk, 2) if risk else 0.0,
-    }
+    return {"exit_price": round(exit_p, 4), "exit_reason": "EOD",
+            "exit_time": bars[-1]["datetime"], "entry_time": entry_time,
+            "pnl_pts": round(pnl, 4), "r_multiple": round(pnl / risk, 2) if risk else 0.0}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -345,12 +335,11 @@ def simulate_trade(
 def run_session(ticker: str, session_bars: pd.DataFrame) -> Optional[Dict]:
     """
     Run one trading session through the production pipeline.
-    Uses real production function signatures — no adapters.
 
-    Pipeline:
-      compute_opening_range_from_bars(bars) -> (or_high, or_low) | (None, None)
-      detect_breakout_after_or(bars, or_high, or_low) -> (direction, idx) | (None, None)
-      detect_fvg_after_break(bars, breakout_idx, direction) -> (fvg_low, fvg_high) | (None, None)
+    OR is computed inline via compute_or_5m() (9:30-9:45, min 2 bars).
+    All other pipeline calls use real production signatures:
+      detect_breakout_after_or(bars, or_high, or_low) -> (direction, idx)
+      detect_fvg_after_break(bars, breakout_idx, direction) -> (fvg_low, fvg_high)
       compute_stop_and_targets(bars, direction, or_high, or_low, entry, grade=) -> (stop, t1, t2)
     """
     bars = bars_to_sniper_format(session_bars)
@@ -359,12 +348,8 @@ def run_session(ticker: str, session_bars: pd.DataFrame) -> Optional[Dict]:
 
     session_date = bars[0]["datetime"].date()
 
-    # ── Step 1: Opening Range ───────────────────────────────────────────────
-    try:
-        or_high, or_low = compute_opening_range_from_bars(bars)
-    except Exception as e:
-        log.debug(f"  OR failed {session_date}: {e}")
-        return None
+    # ── Step 1: Opening Range (5m inline) ──────────────────────────────────
+    or_high, or_low = compute_or_5m(bars)
 
     if or_high is None or or_low is None or or_low <= 0:
         return None
@@ -410,16 +395,16 @@ def run_session(ticker: str, session_bars: pd.DataFrame) -> Optional[Dict]:
     except Exception:
         pass  # non-fatal — proceed without VWAP gate in backtest
 
-    # ── Step 5: Entry price (FVG midpoint) ─────────────────────────────────
+    # ── Step 5: Entry ────────────────────────────────────────────────────────────
     entry_bar_idx = breakout_idx
     entry_price   = fvg_mid
 
     if entry_bar_idx >= len(bars) - 1:
         return None
 
-    # ── Step 6: Grade (optional) ────────────────────────────────────────────
+    # ── Step 6: Grade ──────────────────────────────────────────────────────────────
     grade = "A"
-    conf  = 0.65  # default backtest confidence
+    conf  = 0.65
     if GRADE_OK:
         try:
             signal = {
@@ -445,12 +430,9 @@ def run_session(ticker: str, session_bars: pd.DataFrame) -> Optional[Dict]:
     if not all([stop, t1, t2]):
         return None
 
-    # ── Step 8: Simulate outcome ────────────────────────────────────────────
-    outcome = simulate_trade(entry_bar_idx, bars, direction, entry_price, stop, t1, t2)
-
+    # ── Step 8: Simulate ──────────────────────────────────────────────────────────
+    outcome    = simulate_trade(entry_bar_idx, bars, direction, entry_price, stop, t1, t2)
     entry_dt   = bars[entry_bar_idx]["datetime"]
-    entry_hour = entry_dt.hour
-    entry_min  = entry_dt.minute
 
     return {
         "ticker":       ticker,
@@ -475,8 +457,8 @@ def run_session(ticker: str, session_bars: pd.DataFrame) -> Optional[Dict]:
         "pnl_pts":      outcome["pnl_pts"],
         "r_multiple":   outcome["r_multiple"],
         "win":          1 if outcome["pnl_pts"] > 0 else 0,
-        "entry_hour":   entry_hour,
-        "entry_minute": entry_min,
+        "entry_hour":   entry_dt.hour,
+        "entry_minute": entry_dt.minute,
     }
 
 
@@ -487,7 +469,6 @@ def run_session(ticker: str, session_bars: pd.DataFrame) -> Optional[Dict]:
 def build_walk_forward_folds(
     sessions: List[pd.DataFrame], fold_size: int = 30
 ) -> List[Dict]:
-    """Each fold: train on fold_size days, test on next day."""
     folds = []
     for i in range(fold_size, len(sessions)):
         train_start_t = _session_first_time(sessions[i - fold_size])
@@ -514,17 +495,11 @@ def compute_stats(trades: List[Dict]) -> Dict:
     losses = [t for t in trades if not t["win"]]
     rs     = [t["r_multiple"] for t in trades]
 
-    win_rate  = len(wins) / len(trades) * 100
-    avg_r     = np.mean(rs)
-    median_r  = np.median(rs)
-    avg_win_r = np.mean([t["r_multiple"] for t in wins])   if wins   else 0.0
-    avg_los_r = np.mean([t["r_multiple"] for t in losses]) if losses else 0.0
-    max_dd    = _max_drawdown(rs)
-    profit_f  = (
+    win_rate = len(wins) / len(trades) * 100
+    profit_f = (
         sum(t["r_multiple"] for t in wins) / abs(sum(t["r_multiple"] for t in losses))
         if losses else float("inf")
     )
-
     by_reason = defaultdict(int)
     for t in trades:
         by_reason[t["exit_reason"]] += 1
@@ -534,12 +509,12 @@ def compute_stats(trades: List[Dict]) -> Dict:
         "wins":           len(wins),
         "losses":         len(losses),
         "win_rate_pct":   round(win_rate, 1),
-        "avg_r":          round(float(avg_r), 3),
-        "median_r":       round(float(median_r), 3),
-        "avg_win_r":      round(float(avg_win_r), 3),
-        "avg_loss_r":     round(float(avg_los_r), 3),
+        "avg_r":          round(float(np.mean(rs)), 3),
+        "median_r":       round(float(np.median(rs)), 3),
+        "avg_win_r":      round(float(np.mean([t["r_multiple"] for t in wins])),   3) if wins   else 0.0,
+        "avg_loss_r":     round(float(np.mean([t["r_multiple"] for t in losses])), 3) if losses else 0.0,
         "profit_factor":  round(profit_f, 2),
-        "max_drawdown_r": round(max_dd, 3),
+        "max_drawdown_r": round(_max_drawdown(rs), 3),
         "exit_reasons":   dict(by_reason),
     }
 
@@ -561,17 +536,13 @@ def build_hourly_win_rates(trades: List[Dict]) -> Dict:
     by_hour = defaultdict(list)
     for t in trades:
         by_hour[t["entry_hour"]].append(t["win"])
-
     result = {}
     for hour in range(9, 16):
         bucket = by_hour.get(hour, [])
-        if len(bucket) >= 3:
-            result[str(hour)] = {
-                "win_rate":    round(sum(bucket) / len(bucket) * 100, 1),
-                "sample_size": len(bucket),
-            }
-        else:
-            result[str(hour)] = {"win_rate": None, "sample_size": len(bucket)}
+        result[str(hour)] = {
+            "win_rate":    round(sum(bucket) / len(bucket) * 100, 1) if len(bucket) >= 3 else None,
+            "sample_size": len(bucket),
+        }
     return result
 
 
@@ -585,7 +556,6 @@ def run(tickers: List[str], days: int, out_dir: str, fold_size: int = 30):
 
     fetcher    = EODHDFetcher()
     all_trades: List[Dict] = []
-
     end_dt   = datetime.now()
     start_dt = end_dt - timedelta(days=days)
 
@@ -658,13 +628,11 @@ def run(tickers: List[str], days: int, out_dir: str, fold_size: int = 30):
         agg_path  = out_path / "aggregate_summary.json"
         agg_path.write_text(json.dumps({"tickers": tickers, "days": days, **agg_stats}, indent=2))
         log.info(f"\nAggregate summary → {agg_path}")
-        log.info(f"Total trades across all tickers: {agg_stats['total_trades']}")
-        log.info(f"Overall win rate: {agg_stats['win_rate_pct']}%  |  Avg R: {agg_stats['avg_r']}")
+        log.info(f"Total trades: {agg_stats['total_trades']} | Win rate: {agg_stats['win_rate_pct']}% | Avg R: {agg_stats['avg_r']}")
 
-        hourly      = build_hourly_win_rates(all_trades)
         hourly_path = out_path / "hourly_win_rates.json"
-        hourly_path.write_text(json.dumps(hourly, indent=2))
-        log.info(f"Hourly win rates → {hourly_path}  (feeds entry_timing.py 47.P4-2)")
+        hourly_path.write_text(json.dumps(build_hourly_win_rates(all_trades), indent=2))
+        log.info(f"Hourly win rates → {hourly_path}")
     else:
         log.warning("No trades generated. Check EODHD_API_KEY and pipeline imports.")
 
@@ -676,9 +644,7 @@ def main():
     parser.add_argument("--out",     default="backtests/results", help="Output directory")
     parser.add_argument("--fold",    type=int, default=30, help="Walk-forward fold size in days (default: 30)")
     args = parser.parse_args()
-
-    tickers = [t.strip().upper() for t in args.tickers.split(",")]
-    run(tickers, args.days, args.out, args.fold)
+    run([t.strip().upper() for t in args.tickers.split(",")], args.days, args.out, args.fold)
 
 
 if __name__ == "__main__":
