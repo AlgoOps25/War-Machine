@@ -44,6 +44,13 @@ FIX #8 (MAR 16, 2026): DOUBLE SEMAPHORE RELEASE ON POOL EXHAUSTION
 - Fix: set semaphore_acquired = False immediately after release in the
   retry-exhaustion path so the outer except skips the redundant release.
 
+FIX 14.C-1 (MAR 19, 2026): LAZY POOL INIT — RAILWAY COLD-START CRASH
+- Pool was initialized at module import time via top-level if USE_POSTGRES block.
+- If Railway's DB wasn't ready yet, the import-time psycopg2.connect() call
+  raised OperationalError, crashing the entire process before main() ran.
+- Fix: moved pool init into _init_pool(), called lazily on first get_conn().
+  The module now imports cleanly regardless of DB availability.
+
 NOTE: Railway provides DATABASE_URL as postgres:// — psycopg2 requires
 postgresql:// — we normalize it automatically here.
 """
@@ -55,6 +62,7 @@ from contextlib import contextmanager
 from typing import Optional
 from datetime import datetime, timedelta
 
+
 # Strip whitespace/newlines, then normalize postgres:// → postgresql://
 _raw_url = os.getenv("DATABASE_URL", "").strip()
 if _raw_url.startswith("postgres://"):
@@ -62,6 +70,7 @@ if _raw_url.startswith("postgres://"):
 
 DATABASE_URL = _raw_url
 USE_POSTGRES = bool(DATABASE_URL and DATABASE_URL.startswith("postgresql://"))
+
 
 # ==============================================================================
 # POOL CONFIGURATION
@@ -96,39 +105,70 @@ _pool_stats = {
 _checked_out_connections = {}  # conn_id -> checkout epoch time
 _stats_lock = threading.Lock()
 
-if USE_POSTGRES:
-    try:
-        import psycopg2
-        import psycopg2.extras
-        from psycopg2 import pool
-
-        print("[DB] Testing PostgreSQL connection...")
-
-        _test = psycopg2.connect(DATABASE_URL, connect_timeout=10)
-        _test.close()
-
-        print("[DB] Initializing connection pool...")
-        _connection_pool = pool.ThreadedConnectionPool(
-            minconn=POOL_MIN,
-            maxconn=POOL_MAX,
-            dsn=DATABASE_URL,
-            connect_timeout=10
-        )
-
-        print(f"[DB] PostgreSQL mode active with connection pooling ({POOL_MIN}-{POOL_MAX} connections)")
-        print(f"[DB] FIX #7: Semaphore gate active (max {DB_SEMAPHORE_LIMIT} concurrent checkouts)")
-
-    except psycopg2.OperationalError as e:
-        print(f"[DB] PostgreSQL connection timeout or refused: {e}")
-        print("[DB] Falling back to SQLite (database may not be ready)")
-        USE_POSTGRES = False
-    except Exception as e:
-        print(f"[DB] PostgreSQL connection failed: {e}")
-        print("[DB] Falling back to SQLite")
-        USE_POSTGRES = False
-else:
+if not USE_POSTGRES:
     print("[DB] SQLite fallback mode (DATABASE_URL not set)")
 
+
+# ==============================================================================
+# LAZY POOL INIT (FIX 14.C-1)
+# ==============================================================================
+
+_pool_init_lock = threading.Lock()  # Prevents double-init on concurrent first calls
+
+def _init_pool():
+    """
+    Lazy pool initializer — called on first get_conn(), not at module import.
+
+    FIX 14.C-1: Previously the pool was created at module import time inside a
+    top-level `if USE_POSTGRES:` block. If Railway's DB wasn't ready at import
+    time, psycopg2.connect() raised OperationalError and crashed the process
+    before main() ever ran. Now the pool is created on first actual DB access,
+    by which time Railway guarantees the DB is reachable.
+    """
+    global _connection_pool, USE_POSTGRES
+
+    if _connection_pool is not None:
+        return  # Already initialized — fast path, no lock needed
+    if not USE_POSTGRES:
+        return
+
+    with _pool_init_lock:
+        # Double-checked locking: another thread may have init'd while we waited
+        if _connection_pool is not None:
+            return
+
+        try:
+            import psycopg2
+            import psycopg2.extras
+            from psycopg2 import pool as pg_pool
+
+            print("[DB] Testing PostgreSQL connection...")
+            _test = psycopg2.connect(DATABASE_URL, connect_timeout=10)
+            _test.close()
+
+            print("[DB] Initializing connection pool...")
+            _connection_pool = pg_pool.ThreadedConnectionPool(
+                minconn=POOL_MIN,
+                maxconn=POOL_MAX,
+                dsn=DATABASE_URL,
+                connect_timeout=10
+            )
+            print(f"[DB] PostgreSQL pool active ({POOL_MIN}-{POOL_MAX} connections)")
+            print(f"[DB] Semaphore gate active (max {DB_SEMAPHORE_LIMIT} concurrent checkouts)")
+
+        except psycopg2.OperationalError as e:
+            print(f"[DB] PostgreSQL connection timeout or refused: {e}")
+            print("[DB] Falling back to SQLite (database may not be ready)")
+            USE_POSTGRES = False
+        except Exception as e:
+            print(f"[DB] PostgreSQL connection failed: {e}")
+            print("[DB] Falling back to SQLite")
+            USE_POSTGRES = False
+
+
+# ==============================================================================
+# CONNECTION MANAGEMENT
+# ==============================================================================
 
 def get_conn(sqlite_path: str = "war_machine.db"):
     """
@@ -146,9 +186,13 @@ def get_conn(sqlite_path: str = "war_machine.db"):
     never performs a double-release that would inflate the semaphore counter
     above DB_SEMAPHORE_LIMIT.
 
+    FIX 14.C-1: _init_pool() called here (lazy) instead of at module import.
+
     IMPORTANT: Caller must close the connection when done!
     Better to use `with get_connection() as conn:` context manager.
     """
+    _init_pool()  # FIX 14.C-1 — lazy init, safe on Railway cold start
+
     if USE_POSTGRES:
         if _connection_pool is None:
             raise RuntimeError("Connection pool not initialized")
@@ -444,6 +488,7 @@ def ph() -> str:
 def dict_cursor(conn):
     """Return a dictionary-capable cursor for either engine."""
     if USE_POSTGRES:
+        import psycopg2.extras
         return conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     return conn.cursor()   # row_factory already set on SQLite conn
 
