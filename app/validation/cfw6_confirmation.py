@@ -18,6 +18,8 @@ from datetime import datetime
 import time
 from utils import config
 from app.filters.vwap_gate import compute_vwap, passes_vwap_gate
+import logging
+logger = logging.getLogger(__name__)
 
 
 def _parse_bar_datetime(bar: Dict):
@@ -87,19 +89,19 @@ def analyze_confirmation_candle(
         if close_price > open_price:
             wick_ratio = lower_wick / candle_range if candle_range > 0 else 0
             if wick_ratio < 0.15:
-                print(f"[CFW6] TYPE 1 (A+): Perfect green candle - minimal wick ({wick_ratio*100:.1f}%)")
+                logger.info(f"[CFW6] TYPE 1 (A+): Perfect green candle - minimal wick ({wick_ratio*100:.1f}%)")
                 return "perfect", "A+"
             if wick_ratio >= 0.25:
-                print(f"[CFW6] TYPE 2 (A): Flip candle - strong lower wick ({wick_ratio*100:.1f}%)")
+                logger.info(f"[CFW6] TYPE 2 (A): Flip candle - strong lower wick ({wick_ratio*100:.1f}%)")
                 return "flip", "A"
 
         elif close_price < open_price:
             wick_ratio = lower_wick / candle_range if candle_range > 0 else 0
             if wick_ratio >= 0.50:
-                print(f"[CFW6] TYPE 3 (A-): Wick rejection - didn't flip green ({wick_ratio*100:.1f}%)")
+                logger.info(f"[CFW6] TYPE 3 (A-): Wick rejection - didn't flip green ({wick_ratio*100:.1f}%)")
                 return "wick", "A-"
 
-        print("[CFW6] REJECT: No valid confirmation pattern")
+        logger.info("[CFW6] REJECT: No valid confirmation pattern")
         return "reject", "reject"
 
     else:  # Bear direction
@@ -110,19 +112,19 @@ def analyze_confirmation_candle(
         if close_price < open_price:
             wick_ratio = upper_wick / candle_range if candle_range > 0 else 0
             if wick_ratio < 0.15:
-                print(f"[CFW6] TYPE 1 (A+): Perfect red candle - minimal wick ({wick_ratio*100:.1f}%)")
+                logger.info(f"[CFW6] TYPE 1 (A+): Perfect red candle - minimal wick ({wick_ratio*100:.1f}%)")
                 return "perfect", "A+"
             if wick_ratio >= 0.25:
-                print(f"[CFW6] TYPE 2 (A): Flip candle - strong upper wick ({wick_ratio*100:.1f}%)")
+                logger.info(f"[CFW6] TYPE 2 (A): Flip candle - strong upper wick ({wick_ratio*100:.1f}%)")
                 return "flip", "A"
 
         elif close_price > open_price:
             wick_ratio = upper_wick / candle_range if candle_range > 0 else 0
             if wick_ratio >= 0.50:
-                print(f"[CFW6] TYPE 3 (A-): Wick rejection - didn't flip red ({wick_ratio*100:.1f}%)")
+                logger.info(f"[CFW6] TYPE 3 (A-): Wick rejection - didn't flip red ({wick_ratio*100:.1f}%)")
                 return "wick", "A-"
 
-        print("[CFW6] REJECT: No valid confirmation pattern")
+        logger.info("[CFW6] REJECT: No valid confirmation pattern")
         return "reject", "reject"
 
 
@@ -154,7 +156,7 @@ def wait_for_confirmation(
         (found, entry_price, grade, confirm_idx, confirmation_type)
     """
     zone_low, zone_high = fvg_zone
-    print(f"[CFW6] Waiting for {direction.upper()} confirmation in zone ${zone_low:.2f}-${zone_high:.2f}")
+    logger.info(f"[CFW6] Waiting for {direction.upper()} confirmation in zone ${zone_low:.2f}-${zone_high:.2f}")
 
     candles_waited = 0
 
@@ -163,13 +165,13 @@ def wait_for_confirmation(
             from app.data.data_manager import data_manager
             bars = data_manager.get_today_5m_bars(ticker)
         except Exception as e:
-            print(f"[CFW6] Error fetching bars: {e}")
+            logger.info(f"[CFW6] Error fetching bars: {e}")
             time.sleep(60)
             candles_waited += 1
             continue
 
         if not bars:
-            print("[CFW6] No bars available, waiting...")
+            logger.info("[CFW6] No bars available, waiting...")
             time.sleep(60)
             candles_waited += 1
             continue
@@ -186,7 +188,7 @@ def wait_for_confirmation(
                 new_bars.append((i, bar))
 
         if not new_bars:
-            print(f"[CFW6] No new bars yet, waiting... (cycle {candles_waited+1}/{max_wait_candles})")
+            logger.info(f"[CFW6] No new bars yet, waiting... (cycle {candles_waited+1}/{max_wait_candles})")
             time.sleep(60)
             candles_waited += 1
             continue
@@ -215,7 +217,7 @@ def wait_for_confirmation(
         time.sleep(60)
         candles_waited += 1
 
-    print(f"[CFW6] TIMEOUT: No confirmation after {max_wait_candles} cycles")
+    logger.info(f"[CFW6] TIMEOUT: No confirmation after {max_wait_candles} cycles")
     return False, 0, "reject", -1, "timeout"
 
 
@@ -282,7 +284,7 @@ def grade_signal_with_confirmations(
     - 0/3 aligned  -> downgrade / reject
     - 1-2/3 aligned -> maintain
     """
-    print(f"[CONFIRM] Checking confirmation layers for {ticker}...")
+    logger.info(f"[CONFIRM] Checking confirmation layers for {ticker}...")
 
     vwap_ok, vwap_reason = passes_vwap_gate(bars, direction, current_price)
     pd_result            = check_previous_day_levels(ticker, current_price, direction)
@@ -294,10 +296,10 @@ def grade_signal_with_confirmations(
     pd_emoji   = "OK" if pd_result["aligned"] else "FAIL"
     inst_emoji = "OK" if inst_ok else "FAIL"
 
-    print(f"[CONFIRM] Aligned: {aligned_count}/3")
-    print(f"  VWAP:          {vwap_emoji} | {vwap_reason}")
-    print(f"  Prev Day:      {pd_emoji} ({pd_result.get('level','?')} @ ${pd_result.get('level_price',0):.2f})")
-    print(f"  Institutional: {inst_emoji}")
+    logger.info(f"[CONFIRM] Aligned: {aligned_count}/3")
+    logger.info(f"  VWAP:          {vwap_emoji} | {vwap_reason}")
+    logger.info(f"  Prev Day:      {pd_emoji} ({pd_result.get('level','?')} @ ${pd_result.get('level_price',0):.2f})")
+    logger.info(f"  Institutional: {inst_emoji}")
 
     final_grade = base_grade
 
@@ -306,7 +308,7 @@ def grade_signal_with_confirmations(
             final_grade = "A+"
         elif base_grade == "A-":
             final_grade = "A"
-        print(f"[CONFIRM] Upgraded {base_grade} -> {final_grade} (perfect 3/3 alignment)")
+        logger.info(f"[CONFIRM] Upgraded {base_grade} -> {final_grade} (perfect 3/3 alignment)")
 
     elif aligned_count == 0:
         if base_grade == "A+":
@@ -315,10 +317,10 @@ def grade_signal_with_confirmations(
             final_grade = "A-"
         else:
             final_grade = "reject"
-        print(f"[CONFIRM] Downgraded {base_grade} -> {final_grade} (0/3 alignment)")
+        logger.info(f"[CONFIRM] Downgraded {base_grade} -> {final_grade} (0/3 alignment)")
 
     else:
-        print(f"[CONFIRM] Grade maintained: {final_grade} ({aligned_count}/3 aligned)")
+        logger.info(f"[CONFIRM] Grade maintained: {final_grade} ({aligned_count}/3 aligned)")
 
     return {
         "final_grade":   final_grade,

@@ -23,7 +23,7 @@ Usage:
       end_date='2026-01-01',
       strategy_params={'volume_threshold': 2.0, 'min_confidence': 60}
   )
-  print(results.summary())
+  logger.info(results.summary())
 """
 from typing import Dict, List, Optional, Callable, Tuple
 from datetime import datetime, timedelta
@@ -32,6 +32,8 @@ from collections import defaultdict
 import statistics
 
 from app.backtesting.performance_metrics import (
+import logging
+logger = logging.getLogger(__name__)
     calculate_sharpe_ratio,
     calculate_sortino_ratio,
     calculate_max_drawdown,
@@ -240,11 +242,11 @@ class BacktestEngine:
         self.trades: List[Trade] = []
         self.current_bar_index = 0
         
-        print(f"[BACKTEST] Engine initialized")
-        print(f"  Capital: ${initial_capital:,.2f}")
-        print(f"  Commission: ${commission_per_trade:.2f}")
-        print(f"  Slippage: {slippage_pct:.2f}%")
-        print(f"  Max hold: {max_bars_held} bars")
+        logger.info(f"[BACKTEST] Engine initialized")
+        logger.info(f"  Capital: ${initial_capital:,.2f}")
+        logger.info(f"  Commission: ${commission_per_trade:.2f}")
+        logger.info(f"  Slippage: {slippage_pct:.2f}%")
+        logger.info(f"  Max hold: {max_bars_held} bars")
     
     def calculate_position_size(self, entry_price: float, stop_price: float) -> int:
         """
@@ -479,10 +481,10 @@ class BacktestEngine:
         start_date = bars[0].get('datetime', datetime.now())
         end_date = bars[-1].get('datetime', datetime.now())
         
-        print(f"\n[BACKTEST] Running {ticker} backtest")
-        print(f"  Period: {start_date.date()} to {end_date.date()}")
-        print(f"  Bars: {len(bars)}")
-        print(f"  Params: {strategy_params}")
+        logger.info(f"\n[BACKTEST] Running {ticker} backtest")
+        logger.info(f"  Period: {start_date.date()} to {end_date.date()}")
+        logger.info(f"  Bars: {len(bars)}")
+        logger.info(f"  Params: {strategy_params}")
         
         # Reset state
         self.current_capital = self.initial_capital
@@ -529,6 +531,6 @@ class BacktestEngine:
 
 if __name__ == "__main__":
     # Example usage
-    print("Backtest Engine - Example Usage")
-    print("="*80)
-    print("\nSee docs/task10_backtesting_guide.md for full examples.")
+    logger.info("Backtest Engine - Example Usage")
+    logger.info("="*80)
+    logger.info("\nSee docs/task10_backtesting_guide.md for full examples.")

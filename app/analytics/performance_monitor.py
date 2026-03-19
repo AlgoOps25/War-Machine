@@ -21,6 +21,8 @@ Used via:
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from typing import Optional, Dict, Any
+import logging
+logger = logging.getLogger(__name__)
 
 _ET = ZoneInfo("America/New_York")
 
@@ -76,7 +78,7 @@ def _ensure_table():
         finally:
             return_conn(conn)
     except Exception as e:
-        print(f"[PERF-MONITOR] DB init error (non-fatal): {e}")
+        logger.info(f"[PERF-MONITOR] DB init error (non-fatal): {e}")
 
 
 _ensure_table()
@@ -140,7 +142,7 @@ def _persist_snapshot():
         finally:
             return_conn(conn)
     except Exception as e:
-        print(f"[PERF-MONITOR] Snapshot persist error (non-fatal): {e}")
+        logger.info(f"[PERF-MONITOR] Snapshot persist error (non-fatal): {e}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -187,7 +189,7 @@ def _check_risk_alerts(send_fn) -> bool:
         )
 
     for alert in alerts:
-        print(f"[PERF-MONITOR] {alert}")
+        logger.info(f"[PERF-MONITOR] {alert}")
         _session['risk_alerts_fired'] += 1
         if send_fn:
             try:
@@ -238,7 +240,6 @@ class PerformanceMonitor:
 
 # Singleton
 performance_monitor = PerformanceMonitor()
-print("[PERF-MONITOR] ✅ Initialized — Phase 4 performance tracking active")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

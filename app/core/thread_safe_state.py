@@ -13,6 +13,8 @@ All mutations are protected by threading.Lock() to prevent race conditions.
 import threading
 from typing import Dict, Any, Optional
 from datetime import datetime
+import logging
+logger = logging.getLogger(__name__)
 
 class ThreadSafeState:
     """Thread-safe singleton for managing global trading system state"""
@@ -279,4 +281,3 @@ def get_validator_stats() -> Dict[str, int]:
     return _state.get_validator_stats()
 
 
-print("[THREAD-SAFE-STATE] ✅ Module initialized - all state access is thread-safe")

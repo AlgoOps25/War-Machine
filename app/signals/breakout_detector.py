@@ -40,6 +40,8 @@ Risk Management:
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 import statistics
+import logging
+logger = logging.getLogger(__name__)
 
 
 class BreakoutDetector:
@@ -85,10 +87,10 @@ class BreakoutDetector:
         # PDH/PDL cache (refreshed daily)
         self._pdh_pdl_cache: Dict[str, Tuple[float, float]] = {}
 
-        print(f"[BREAKOUT] Split targets: T1={t1_reward_ratio}R (50%), T2={t2_reward_ratio}R (50%)")
+        logger.info(f"[BREAKOUT] Split targets: T1={t1_reward_ratio}R (50%), T2={t2_reward_ratio}R (50%)")
         print(f"[BREAKOUT] Confirmation bars: {min_bars_since_breakout} "
               f"({'first-break signal' if min_bars_since_breakout == 0 else 'wait-for-confirm'})")
-        print(f"[BREAKOUT] Lookback: {lookback_bars} bars | Session anchoring: ENABLED")
+        logger.info(f"[BREAKOUT] Lookback: {lookback_bars} bars | Session anchoring: ENABLED")
 
     # =================================================================
     # ATR
@@ -144,7 +146,7 @@ class BreakoutDetector:
                 self._pdh_pdl_cache[ticker] = (pdh, pdl)
                 return pdh, pdl
         except Exception as e:
-            print(f"[BREAKOUT] PDH/PDL fetch error for {ticker}: {e}")
+            logger.info(f"[BREAKOUT] PDH/PDL fetch error for {ticker}: {e}")
         return None, None
 
     def clear_pdh_pdl_cache(self) -> None:
@@ -715,18 +717,18 @@ if __name__ == "__main__":
     signal = detector.detect_breakout(sample_bars, ticker="TEST")
 
     if signal:
-        print("\n" + "="*60)
-        print("BREAKOUT DETECTED!")
-        print("="*60)
-        print(format_signal_message("TEST", signal))
-        print("="*60)
+        logger.info("\n" + "="*60)
+        logger.info("BREAKOUT DETECTED!")
+        logger.info("="*60)
+        logger.info(format_signal_message("TEST", signal))
+        logger.info("="*60)
         shares = detector.calculate_position_size(
             account_balance=10000, risk_percent=1.0,
             entry=signal['entry'], stop=signal['stop']
         )
-        print(f"\nPosition Size: {shares} shares")
-        print(f"Total Risk:    ${shares * signal['risk']:.2f}")
-        print(f"T1 Profit:     ${shares * 0.5 * (signal['t1'] - signal['entry']):.2f}")
-        print(f"T2 Profit:     ${shares * 0.5 * (signal['t2'] - signal['entry']):.2f}")
+        logger.info(f"\nPosition Size: {shares} shares")
+        logger.info(f"Total Risk:    ${shares * signal['risk']:.2f}")
+        logger.info(f"T1 Profit:     ${shares * 0.5 * (signal['t1'] - signal['entry']):.2f}")
+        logger.info(f"T2 Profit:     ${shares * 0.5 * (signal['t2'] - signal['entry']):.2f}")
     else:
-        print("No breakout signal detected")
+        logger.info("No breakout signal detected")

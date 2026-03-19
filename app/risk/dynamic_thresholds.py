@@ -14,6 +14,8 @@ FIXED (Mar 10 2026): All get_conn() calls now use try/finally: return_conn(conn)
 from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 from utils import config
+import logging
+logger = logging.getLogger(__name__)
 
 
 def _now_et():
@@ -80,7 +82,7 @@ def _get_vix_adjustment():
         else:
             return +0.05
     except Exception as e:
-        print(f"[DYNAMIC-THRESH] VIX lookup error: {e}")
+        logger.info(f"[DYNAMIC-THRESH] VIX lookup error: {e}")
         return 0.00
     
 def _get_winrate_adjustment(signal_type, grade):
@@ -124,7 +126,7 @@ def _get_winrate_adjustment(signal_type, grade):
             return +0.07
 
     except Exception as e:
-        print(f"[DYNAMIC-THRESH] Win rate lookup error: {e}")
+        logger.info(f"[DYNAMIC-THRESH] Win rate lookup error: {e}")
         return 0.00
 
 def _get_recent_quality_adjustment():
@@ -169,7 +171,7 @@ def _get_recent_quality_adjustment():
             return +0.04
 
     except Exception as e:
-        print(f"[DYNAMIC-THRESH] Recent quality lookup error: {e}")
+        logger.info(f"[DYNAMIC-THRESH] Recent quality lookup error: {e}")
         return 0.00
 
 def get_dynamic_threshold(signal_type, grade):

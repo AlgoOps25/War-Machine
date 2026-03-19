@@ -24,6 +24,8 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 import statistics
 import math
+import logging
+logger = logging.getLogger(__name__)
 
 ET = ZoneInfo("America/New_York")
 
@@ -41,7 +43,7 @@ class VWAPCalculator:
         # Session cache: {ticker -> vwap_data}
         self._session_cache: Dict[str, Dict] = {}
         
-        print(f"[VWAP] Calculator initialized | Bands: {', '.join([f'{x}σ' for x in num_std_devs])}")
+        logger.info(f"[VWAP] Calculator initialized | Bands: {', '.join([f'{x}σ' for x in num_std_devs])}")
     
     def calculate_vwap(self, bars: List[Dict]) -> Optional[Dict]:
         """
@@ -378,45 +380,45 @@ if __name__ == "__main__":
         {'datetime': datetime.now(), 'open': 105, 'high': 106.5, 'low': 104.5, 'close': 105.5, 'volume': 2000000},
     ]
     
-    print("\n" + "="*70)
-    print("VWAP CALCULATION")
-    print("="*70)
+    logger.info("\n" + "="*70)
+    logger.info("VWAP CALCULATION")
+    logger.info("="*70)
     
     vwap_data = get_vwap("TEST", sample_bars, use_cache=False)
     
     if vwap_data:
-        print(f"\nVWAP: ${vwap_data['vwap']:.2f}")
-        print(f"Current Price: ${vwap_data['current_price']:.2f}")
-        print(f"Distance from VWAP: {vwap_data['distance_from_vwap_pct']:+.2f}%")
+        logger.info(f"\nVWAP: ${vwap_data['vwap']:.2f}")
+        logger.info(f"Current Price: ${vwap_data['current_price']:.2f}")
+        logger.info(f"Distance from VWAP: {vwap_data['distance_from_vwap_pct']:+.2f}%")
         
-        print(f"\nStandard Deviation Bands:")
-        print(f"  +3σ: ${vwap_data['upper_3sd']:.2f}")
-        print(f"  +2σ: ${vwap_data['upper_2sd']:.2f}")
-        print(f"  +1σ: ${vwap_data['upper_1sd']:.2f}")
-        print(f"  VWAP: ${vwap_data['vwap']:.2f}")
-        print(f"  -1σ: ${vwap_data['lower_1sd']:.2f}")
-        print(f"  -2σ: ${vwap_data['lower_2sd']:.2f}")
-        print(f"  -3σ: ${vwap_data['lower_3sd']:.2f}")
+        logger.info(f"\nStandard Deviation Bands:")
+        logger.info(f"  +3σ: ${vwap_data['upper_3sd']:.2f}")
+        logger.info(f"  +2σ: ${vwap_data['upper_2sd']:.2f}")
+        logger.info(f"  +1σ: ${vwap_data['upper_1sd']:.2f}")
+        logger.info(f"  VWAP: ${vwap_data['vwap']:.2f}")
+        logger.info(f"  -1σ: ${vwap_data['lower_1sd']:.2f}")
+        logger.info(f"  -2σ: ${vwap_data['lower_2sd']:.2f}")
+        logger.info(f"  -3σ: ${vwap_data['lower_3sd']:.2f}")
         
         # Test breakout detection
         current_price = vwap_data['current_price']
-        print(f"\nVWAP Breakout (Bull): {check_vwap_breakout(current_price, vwap_data, 'bull')}")
+        logger.info(f"\nVWAP Breakout (Bull): {check_vwap_breakout(current_price, vwap_data, 'bull')}")
         
         # Test mean reversion
         mr_signal = get_mean_reversion_signal(vwap_data)
         if mr_signal:
-            print(f"\nMean Reversion Signal:")
-            print(f"  Signal: {mr_signal['signal']}")
-            print(f"  Confidence: {mr_signal['confidence']}%")
-            print(f"  Reason: {mr_signal['reason']}")
-            print(f"  Entry: ${mr_signal['entry']:.2f}")
-            print(f"  Target: ${mr_signal['target']:.2f}")
-            print(f"  Stop: ${mr_signal['stop']:.2f}")
+            logger.info(f"\nMean Reversion Signal:")
+            logger.info(f"  Signal: {mr_signal['signal']}")
+            logger.info(f"  Confidence: {mr_signal['confidence']}%")
+            logger.info(f"  Reason: {mr_signal['reason']}")
+            logger.info(f"  Entry: ${mr_signal['entry']:.2f}")
+            logger.info(f"  Target: ${mr_signal['target']:.2f}")
+            logger.info(f"  Stop: ${mr_signal['stop']:.2f}")
         else:
-            print(f"\nNo mean reversion signal (price not at 2σ/3σ bands)")
+            logger.info(f"\nNo mean reversion signal (price not at 2σ/3σ bands)")
         
         # Position relative to VWAP
         position = vwap_calculator.get_position_relative_to_vwap(vwap_data)
-        print(f"\nPosition Relative to VWAP: {position.replace('_', ' ').upper()}")
+        logger.info(f"\nPosition Relative to VWAP: {position.replace('_', ' ').upper()}")
     
-    print("="*70 + "\n")
+    logger.info("="*70 + "\n")

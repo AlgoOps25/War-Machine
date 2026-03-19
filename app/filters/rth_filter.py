@@ -32,6 +32,8 @@ See docs/RTH_FILTER_INTEGRATION.md for integration details.
 from datetime import datetime, time as dtime
 from typing import Optional
 from zoneinfo import ZoneInfo
+import logging
+logger = logging.getLogger(__name__)
 
 ET = ZoneInfo("America/New_York")
 
@@ -256,8 +258,8 @@ if __name__ == "__main__":
 
     rth = RTHFilter(block_open_chop=True, block_lunch=False, block_close_chop=True)
 
-    print("RTH Filter Tests")
-    print("-" * 50)
+    logger.info("RTH Filter Tests")
+    logger.info("-" * 50)
     for h, m, label in test_times:
         dt = datetime.now(ET).replace(hour=h, minute=m, second=0, microsecond=0)
         result  = rth.passes(dt)
@@ -266,4 +268,4 @@ if __name__ == "__main__":
         mins_open  = minutes_since_open(dt)
         mins_close = minutes_to_close(dt)
         status = '✅ PASS' if result else '❌ BLOCK'
-        print(f"{label:20s} {h:02d}:{m:02d} | RTH:{is_rth_val} | Filter:{status} | Window:{window} | +{mins_open}m open | -{mins_close}m close")
+        logger.info(f"{label:20s} {h:02d}:{m:02d} | RTH:{is_rth_val} | Filter:{status} | Window:{window} | +{mins_open}m open | -{mins_close}m close")

@@ -20,6 +20,8 @@ Usage:
 from typing import List
 import statistics
 import math
+import logging
+logger = logging.getLogger(__name__)
 
 
 def calculate_sharpe_ratio(returns: List[float], risk_free_rate: float = 0.0) -> float:
@@ -252,17 +254,17 @@ def calculate_trade_distribution_stats(trades: List) -> dict:
 
 if __name__ == "__main__":
     # Example usage
-    print("Performance Metrics - Example Usage")
-    print("="*80)
+    logger.info("Performance Metrics - Example Usage")
+    logger.info("="*80)
     
     # Sample returns
     returns = [0.02, -0.01, 0.03, -0.005, 0.015, 0.01, -0.02, 0.025]
     
-    print(f"\nSample returns: {returns}")
-    print(f"Sharpe Ratio: {calculate_sharpe_ratio(returns):.2f}")
-    print(f"Sortino Ratio: {calculate_sortino_ratio(returns):.2f}")
+    logger.info(f"\nSample returns: {returns}")
+    logger.info(f"Sharpe Ratio: {calculate_sharpe_ratio(returns):.2f}")
+    logger.info(f"Sortino Ratio: {calculate_sortino_ratio(returns):.2f}")
     
     # Sample equity curve
     equity = [10000, 10200, 10100, 10400, 10350, 10500, 10300, 10600]
-    print(f"\nSample equity curve: {equity}")
-    print(f"Max Drawdown: {calculate_max_drawdown(equity):.2f}%")
+    logger.info(f"\nSample equity curve: {equity}")
+    logger.info(f"Max Drawdown: {calculate_max_drawdown(equity):.2f}%")

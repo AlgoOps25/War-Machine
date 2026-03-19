@@ -1,3 +1,5 @@
+import logging
+logger = logging.getLogger(__name__)
 """
 arm_signal.py — Signal Arming & Discord Alert
 Extracted from sniper.py
@@ -40,7 +42,7 @@ def arm_ticker(
     _state = get_state()
 
     if abs(entry_price - stop_price) < entry_price * 0.001:
-        print(f"[ARM] ⚠️ {ticker} stop too tight — skipping")
+        logger.info(f"[ARM] ⚠️ {ticker} stop too tight — skipping")
         return
 
     mode_label = " [OR]" if signal_type == "CFW6_OR" else " [INTRADAY]"
@@ -68,7 +70,7 @@ def arm_ticker(
     )
 
     if position_id == -1:
-        print(f"[ARM] ❌ {ticker} position rejected by risk manager — Discord alert suppressed")
+        logger.info(f"[ARM] ❌ {ticker} position rejected by risk manager — Discord alert suppressed")
         return
 
     # ── FIX (Mar 16 2026): Record TRADED stage in signal_analytics ─────────────────────
@@ -76,9 +78,9 @@ def arm_ticker(
     try:
         from app.signals.signal_analytics import signal_tracker
         signal_tracker.record_trade_executed(ticker, position_id)
-        print(f"[ANALYTICS] 📊 {ticker} TRADED stage recorded (position_id={position_id})")
+        logger.info(f"[ANALYTICS] 📊 {ticker} TRADED stage recorded (position_id={position_id})")
     except Exception as _analytics_err:
-        print(f"[ANALYTICS] record_trade_executed error (non-fatal): {_analytics_err}")
+        logger.info(f"[ANALYTICS] record_trade_executed error (non-fatal): {_analytics_err}")
 
     # ── Discord alert (production helper path) ──────────────────────────────────────
     try:
@@ -124,7 +126,7 @@ def arm_ticker(
                             }
                         }
                 except Exception as greeks_err:
-                    print(f"[ARM] Greeks data extraction error (non-fatal): {greeks_err}")
+                    logger.info(f"[ARM] Greeks data extraction error (non-fatal): {greeks_err}")
 
             send_options_signal_alert(
                 ticker=ticker, direction=direction,
@@ -140,7 +142,7 @@ def arm_ticker(
                 explosive_mover=metadata.get('qualified', False)
             )
         except Exception as e:
-            print(f"[DISCORD] ❌ Alert failed: {e}")
+            logger.info(f"[DISCORD] ❌ Alert failed: {e}")
 
     # ── Persist armed signal state ───────────────────────────────────────────────────
     armed_signal_data = {
@@ -158,14 +160,14 @@ def arm_ticker(
     _state.set_armed_signal(ticker, armed_signal_data)
     _persist_armed_signal(ticker, armed_signal_data)
 
-    print(f"[ARMED] {ticker} ID:{position_id}")
+    logger.info(f"[ARMED] {ticker} ID:{position_id}")
 
     # ── Cooldown ──────────────────────────────────────────────────────────────────────────────
     try:
         from app.analytics.cooldown_tracker import set_cooldown as _set_cooldown
         _set_cooldown(ticker, direction, signal_type)
     except Exception as e:
-        print(f"[COOLDOWN] Warning: could not set cooldown for {ticker}: {e}")
+        logger.info(f"[COOLDOWN] Warning: could not set cooldown for {ticker}: {e}")
 
     # ── Phase 4 alert check ───────────────────────────────────────────────────────────
     try:

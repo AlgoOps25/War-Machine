@@ -61,7 +61,7 @@ Usage:
     # In sniper before entry:
     ok, spread = is_spread_acceptable("AAPL")
     if not ok:
-        print(f"[SPREAD] AAPL blocked: {spread:.3f}% > threshold")
+        logger.info(f"[SPREAD] AAPL blocked: {spread:.3f}% > threshold")
         return
 """
 import asyncio
@@ -71,6 +71,8 @@ import time
 from collections import defaultdict, deque
 from datetime import datetime
 from zoneinfo import ZoneInfo
+import logging
+logger = logging.getLogger(__name__)
 
 try:
     import websockets
@@ -230,7 +232,7 @@ async def _do_subscribe(ws, tickers: list):
         with _sub_lock:
             _subscribed.update(chunk)
         preview = ", ".join(chunk[:8]) + ("..." if len(chunk) > 8 else "")
-        print(f"[QUOTE] +{len(chunk)} tickers subscribed: {preview}")
+        logger.info(f"[QUOTE] +{len(chunk)} tickers subscribed: {preview}")
 
 
 def subscribe_quote_tickers(tickers: list):
@@ -257,7 +259,7 @@ def subscribe_quote_tickers(tickers: list):
             _do_subscribe(_ws_connection, new), _event_loop
         )
     except Exception as e:
-        print(f"[QUOTE] subscribe_quote_tickers error: {e}")
+        logger.info(f"[QUOTE] subscribe_quote_tickers error: {e}")
 
 
 # ── Server message handler ────────────────────────────────────────────────────
@@ -276,7 +278,7 @@ def _handle_server_msg(msg: dict, consecutive_500s: list) -> str:
     text = msg.get("message", "")
 
     if code == 200:
-        print(f"[QUOTE] Server msg: {msg}")
+        logger.info(f"[QUOTE] Server msg: {msg}")
         return "ok"
 
     if code == 500:
@@ -287,7 +289,7 @@ def _handle_server_msg(msg: dict, consecutive_500s: list) -> str:
             print(f"[QUOTE] ⚠️  Server 500 (#{count}): {text} — will back off after "
                   f"{SERVER_500_BACKOFF_THRESHOLD} consecutive errors")
         elif count % 10 == 0:
-            print(f"[QUOTE] ⚠️  Server 500 (#{count}, suppressed repeats): {text}")
+            logger.info(f"[QUOTE] ⚠️  Server 500 (#{count}, suppressed repeats): {text}")
         return "count_500"
 
     # Any other non-200 code (401 Unauthorized, 403 Forbidden, 429 rate-limit, etc.)
@@ -398,7 +400,7 @@ async def _ws_run():
                                       bid_size, ask_size, int(ts_ms))
 
                     except Exception as exc:
-                        print(f"[QUOTE] Tick error: {exc}")
+                        logger.info(f"[QUOTE] Tick error: {exc}")
 
                 _connected     = False
                 _ws_connection = None
@@ -443,7 +445,7 @@ def start_quote_feed(tickers: list):
 
     if _started:
         subscribe_quote_tickers(tickers)
-        print(f"[QUOTE] Already running — merged {len(tickers)} tickers into active session")
+        logger.info(f"[QUOTE] Already running — merged {len(tickers)} tickers into active session")
         return
     _started = True
 
@@ -469,24 +471,24 @@ def start_quote_feed(tickers: list):
 # ── Module self-test ──────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    print("=" * 60)
-    print("QUOTE FEED - Connection Test")
-    print("=" * 60)
+    logger.info("=" * 60)
+    logger.info("QUOTE FEED - Connection Test")
+    logger.info("=" * 60)
 
     test_tickers = ["SPY", "QQQ", "AAPL", "NVDA", "TSLA"]
     start_quote_feed(test_tickers)
 
-    print(f"\nMonitoring spreads for: {test_tickers}")
-    print(f"Max spread threshold:   {MAX_SPREAD_PCT:.2f}%")
-    print("\nPress Ctrl+C to stop\n")
+    logger.info(f"\nMonitoring spreads for: {test_tickers}")
+    logger.info(f"Max spread threshold:   {MAX_SPREAD_PCT:.2f}%")
+    logger.info("\nPress Ctrl+C to stop\n")
 
     try:
         while True:
             time.sleep(5)
-            print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Spread snapshot:")
+            logger.info(f"\n[{datetime.now().strftime('%H:%M:%S')}] Spread snapshot:")
 
             if not is_quote_connected():
-                print("  Waiting for connection...")
+                logger.info("  Waiting for connection...")
                 continue
 
             for ticker in test_tickers:
@@ -498,13 +500,13 @@ if __name__ == "__main__":
                     print(f"  {ticker:6s}  bid={q['bid']:.2f}  ask={q['ask']:.2f}  "
                           f"spread={q['spread_pct']:.3f}%  avg={avg:.3f}%  {status}")
                 else:
-                    print(f"  {ticker:6s}  waiting for quote...")
+                    logger.info(f"  {ticker:6s}  waiting for quote...")
 
     except KeyboardInterrupt:
-        print("\n[QUOTE] Test stopped")
+        logger.info("\n[QUOTE] Test stopped")
         summary = get_spread_summary()
         if summary:
-            print("\nFinal spread snapshot:")
+            logger.info("\nFinal spread snapshot:")
             for ticker, data in sorted(summary.items()):
                 print(f"  {ticker:6s}  {data['spread_pct']:.3f}%  "
                       f"mid={data['mid']:.2f}")

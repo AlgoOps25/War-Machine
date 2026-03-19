@@ -7,6 +7,8 @@ These prevent crashes from external service failures.
 
 import requests
 import traceback
+import logging
+logger = logging.getLogger(__name__)
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -29,13 +31,13 @@ def _send_alert_safe(alert_func, *args, **kwargs):
         alert_func(*args, **kwargs)
         return True
     except requests.Timeout:
-        print("[DISCORD] ⏱️  Alert timed out (continuing)")
+        logger.info("[DISCORD] ⏱️  Alert timed out (continuing)")
         return False
     except requests.RequestException as e:
-        print(f"[DISCORD] ❌ Request failed (continuing): {e}")
+        logger.info(f"[DISCORD] ❌ Request failed (continuing): {e}")
         return False
     except Exception as e:
-        print(f"[DISCORD] ❌ Alert failed (continuing): {e}")
+        logger.info(f"[DISCORD] ❌ Alert failed (continuing): {e}")
         return False
 
 # Usage:
@@ -62,11 +64,11 @@ def _fetch_data_safe(ticker, data_func, data_type="data"):
     try:
         data = data_func(ticker)
         if not data:
-            print(f"[{ticker}] ⚠️  No {data_type} available")
+            logger.info(f"[{ticker}] ⚠️  No {data_type} available")
             return None
         return data
     except Exception as e:
-        print(f"[{ticker}] ❌ Failed to fetch {data_type}: {e}")
+        logger.info(f"[{ticker}] ❌ Failed to fetch {data_type}: {e}")
         import traceback
         traceback.print_exc()
         return None
@@ -104,9 +106,9 @@ def _db_operation_safe(operation_func, operation_name="DB operation"):
         if conn:
             try:
                 conn.rollback()
-                print(f"[DB] ↩️  Rolled back {operation_name}: {e}")
+                logger.info(f"[DB] ↩️  Rolled back {operation_name}: {e}")
             except:
-                print(f"[DB] ❌ Rollback failed for {operation_name}: {e}")
+                logger.info(f"[DB] ❌ Rollback failed for {operation_name}: {e}")
         raise
     finally:
         if conn:

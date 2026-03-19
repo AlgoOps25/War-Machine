@@ -18,6 +18,8 @@ US Market Holidays 2026 (NYSE observed dates):
 """
 from datetime import date, datetime, time
 from zoneinfo import ZoneInfo
+import logging
+logger = logging.getLogger(__name__)
 
 ET = ZoneInfo("America/New_York")
 
@@ -123,4 +125,3 @@ def next_market_open(dt: datetime = None) -> datetime:
     return candidate
 
 
-print("[CALENDAR] Market calendar loaded — weekend/holiday guard active")

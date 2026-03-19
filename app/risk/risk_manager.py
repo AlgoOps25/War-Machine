@@ -28,6 +28,8 @@ from typing import Dict, List, Optional, Tuple
 # ── Internal risk modules ────────────────────────────────────────────────────
 from app.risk.position_manager import position_manager
 from app.risk.trade_calculator import (
+import logging
+logger = logging.getLogger(__name__)
     compute_stop_and_targets,
     get_adaptive_fvg_threshold,
     get_adaptive_orb_threshold,
@@ -195,7 +197,7 @@ def _reject(
     except Exception:
         pass
 
-    print(f"[RISK] REJECTED — {reason}")
+    logger.info(f"[RISK] REJECTED — {reason}")
     return {
         "approved":   False,
         "reason":     reason,

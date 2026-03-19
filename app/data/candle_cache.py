@@ -37,6 +37,8 @@ from collections import defaultdict
 from utils import config
 from app.data import db_connection
 from app.data.db_connection import get_conn, return_conn, ph, dict_cursor
+import logging
+logger = logging.getLogger(__name__)
 
 ET = ZoneInfo("America/New_York")
 
@@ -96,7 +98,7 @@ class CandleCache:
                 ON cache_metadata(cache_status, last_cache_time)
             """)
             conn.commit()
-            print("[CACHE] ✅ Candle cache tables initialized")
+            logger.info("[CACHE] ✅ Candle cache tables initialized")
         finally:
             if conn:
                 return_conn(conn)
@@ -174,7 +176,7 @@ class CandleCache:
                     conn.rollback()
                 except Exception:
                     pass
-            print(f"[CACHE] Error caching {ticker} {timeframe}: {e}")
+            logger.info(f"[CACHE] Error caching {ticker} {timeframe}: {e}")
             return 0
         finally:
             if conn:
@@ -253,15 +255,15 @@ class CandleCache:
             return []
         intervals = {'1m': 1, '5m': 5, '15m': 15, '1h': 60, '1d': 1440}
         if source_tf not in intervals or target_tf not in intervals:
-            print(f"[CACHE] Unsupported aggregation: {source_tf} -> {target_tf}")
+            logger.info(f"[CACHE] Unsupported aggregation: {source_tf} -> {target_tf}")
             return []
         source_mins = intervals[source_tf]
         target_mins = intervals[target_tf]
         if target_mins <= source_mins:
-            print(f"[CACHE] Cannot aggregate down: {source_tf} -> {target_tf}")
+            logger.info(f"[CACHE] Cannot aggregate down: {source_tf} -> {target_tf}")
             return []
         if target_mins % source_mins != 0:
-            print(f"[CACHE] Incompatible timeframes: {source_tf} -> {target_tf}")
+            logger.info(f"[CACHE] Incompatible timeframes: {source_tf} -> {target_tf}")
             return []
         buckets = defaultdict(list)
         for bar in source_bars:

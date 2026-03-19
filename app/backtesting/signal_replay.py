@@ -136,7 +136,7 @@ def create_custom_strategy(signal_logic: Callable) -> Callable:
         try:
             return signal_logic(bars, params)
         except Exception as e:
-            print(f"[BACKTEST] Strategy error: {e}")
+            logger.info(f"[BACKTEST] Strategy error: {e}")
             return None
     
     return strategy
@@ -189,7 +189,7 @@ def example_simple_breakout_strategy(bars: List[Dict], params: Dict) -> Optional
 
 
 if __name__ == "__main__":
-    print("Signal Replay - Example Usage")
-    print("="*80)
-    print("\nUse create_strategy_from_breakout_detector() to wrap your actual signal logic.")
-    print("Then pass to BacktestEngine.run() for historical testing.")
+    logger.info("Signal Replay - Example Usage")
+    logger.info("="*80)
+    logger.info("\nUse create_strategy_from_breakout_detector() to wrap your actual signal logic.")
+    logger.info("Then pass to BacktestEngine.run() for historical testing.")

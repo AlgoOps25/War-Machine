@@ -11,6 +11,8 @@ from datetime import datetime, timedelta, date
 from zoneinfo import ZoneInfo
 import requests
 import os
+import logging
+logger = logging.getLogger(__name__)
 
 ET = ZoneInfo("America/New_York")
 
@@ -32,9 +34,9 @@ class OptionsDTESelector:
             self.historical_advisor = dte_advisor
         except:
             self.historical_advisor = None
-            print("[OPTIONS-DTE] Historical advisor unavailable")
+            logger.info("[OPTIONS-DTE] Historical advisor unavailable")
         
-        print("[OPTIONS-DTE] Initialized with data-driven approach")
+        logger.info("[OPTIONS-DTE] Initialized with data-driven approach")
     
     def calculate_optimal_dte(self, ticker: str, entry_price: float, direction: str, confidence: float,
                              adx: float = None, vix: float = None, t1_price: float = None, t2_price: float = None,

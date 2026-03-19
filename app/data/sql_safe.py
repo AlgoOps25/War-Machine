@@ -360,44 +360,44 @@ def get_placeholder(conn) -> str:
 
 if __name__ == "__main__":
     # Demo usage patterns
-    print("=" * 80)
-    print("SQL INJECTION PREVENTION MODULE - Usage Examples")
-    print("=" * 80)
+    logger.info("=" * 80)
+    logger.info("SQL INJECTION PREVENTION MODULE - Usage Examples")
+    logger.info("=" * 80)
     
     # Example 1: Basic parameterized query
-    print("\n1. Basic parameterized INSERT:")
+    logger.info("\n1. Basic parameterized INSERT:")
     query = build_insert("trades", ["ticker", "price", "timestamp"])
-    print(f"   Query: {query}")
-    print(f"   Usage: safe_execute(cursor, query, ('AAPL', 150.25, datetime.now()))")
+    logger.info(f"   Query: {query}")
+    logger.info(f"   Usage: safe_execute(cursor, query, ('AAPL', 150.25, datetime.now()))")
     
     # Example 2: Dictionary insert
-    print("\n2. Dictionary-based INSERT:")
-    print("   safe_insert_dict(cursor, 'trades', {")
-    print("       'ticker': 'AAPL',")
-    print("       'price': 150.25,")
-    print("       'timestamp': datetime.now()")
-    print("   })")
+    logger.info("\n2. Dictionary-based INSERT:")
+    logger.info("   safe_insert_dict(cursor, 'trades', {")
+    logger.info("       'ticker': 'AAPL',")
+    logger.info("       'price': 150.25,")
+    logger.info("       'timestamp': datetime.now()")
+    logger.info("   })")
     
     # Example 3: Safe IN clause
-    print("\n3. Safe IN clause:")
+    logger.info("\n3. Safe IN clause:")
     tickers = ["AAPL", "MSFT", "GOOGL"]
     in_clause, params = safe_in_clause(tickers)
-    print(f"   Tickers: {tickers}")
-    print(f"   IN clause: ({in_clause})")
-    print(f"   Query: SELECT * FROM trades WHERE ticker IN ({in_clause})")
-    print(f"   Params: {params}")
+    logger.info(f"   Tickers: {tickers}")
+    logger.info(f"   IN clause: ({in_clause})")
+    logger.info(f"   Query: SELECT * FROM trades WHERE ticker IN ({in_clause})")
+    logger.info(f"   Params: {params}")
     
     # Example 4: Query builder
-    print("\n4. Fluent query builder:")
+    logger.info("\n4. Fluent query builder:")
     builder = SafeQueryBuilder("trades")
     builder.select(["ticker", "price"]) \
            .where("ticker = ?", "AAPL") \
            .order_by("timestamp DESC") \
            .limit(10)
     query, params = builder.build()
-    print(f"   Query: {query}")
-    print(f"   Params: {params}")
+    logger.info(f"   Query: {query}")
+    logger.info(f"   Params: {params}")
     
-    print("\n" + "=" * 80)
-    print("✅ SQL Injection Prevention Module Ready")
-    print("=" * 80)
+    logger.info("\n" + "=" * 80)
+    logger.info("✅ SQL Injection Prevention Module Ready")
+    logger.info("=" * 80)

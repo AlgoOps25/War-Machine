@@ -32,6 +32,8 @@ FIX 43.M-12 (Mar 19 2026): expires_at uses datetime.now(timezone.utc)
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from typing import Optional, Dict
+import logging
+logger = logging.getLogger(__name__)
 
 COOLDOWN_SAME_DIRECTION_MINUTES     = 30
 COOLDOWN_OPPOSITE_DIRECTION_MINUTES = 15
@@ -58,7 +60,7 @@ def _ensure_cooldown_table():
         """)
         conn.commit()
     except Exception as e:
-        print(f"[COOLDOWN-DB] Init error: {e}")
+        logger.info(f"[COOLDOWN-DB] Init error: {e}")
     finally:
         if conn:
             return_conn(conn)
@@ -80,7 +82,7 @@ def _persist_cooldown(ticker, direction, signal_type, expires_at):
         )
         conn.commit()
     except Exception as e:
-        print(f"[COOLDOWN-DB] Persist error {ticker}: {e}")
+        logger.info(f"[COOLDOWN-DB] Persist error {ticker}: {e}")
     finally:
         if conn:
             return_conn(conn)
@@ -95,7 +97,7 @@ def _remove_cooldown_from_db(ticker):
         conn.cursor().execute(f"DELETE FROM signal_cooldowns WHERE ticker={p}", (ticker,))
         conn.commit()
     except Exception as e:
-        print(f"[COOLDOWN-DB] Remove error {ticker}: {e}")
+        logger.info(f"[COOLDOWN-DB] Remove error {ticker}: {e}")
     finally:
         if conn:
             return_conn(conn)
@@ -118,14 +120,14 @@ def cleanup_expired_cooldowns():
         cur = conn.cursor()
         cur.execute(f"DELETE FROM signal_cooldowns WHERE expires_at < {p}", (now,))
         if cur.rowcount > 0:
-            print(f"[COOLDOWN-DB] 🧹 Auto-cleaned {cur.rowcount} expired cooldown(s)")
+            logger.info(f"[COOLDOWN-DB] 🧹 Auto-cleaned {cur.rowcount} expired cooldown(s)")
         conn.commit()
         # Also evict from in-memory cache
         expired_keys = [t for t, c in _cooldown_cache.items() if now >= c["expires_at"]]
         for k in expired_keys:
             del _cooldown_cache[k]
     except Exception as e:
-        print(f"[COOLDOWN-DB] Cleanup error: {e}")
+        logger.info(f"[COOLDOWN-DB] Cleanup error: {e}")
     finally:
         if conn:
             return_conn(conn)
@@ -164,10 +166,10 @@ def _load_cooldowns_from_db() -> Dict[str, Dict]:
                 "expires_at":  raw_exp,
             }
         if loaded:
-            print(f"[COOLDOWN-DB] 📄 Reloaded {len(loaded)} cooldown(s): {', '.join(loaded.keys())}")
+            logger.info(f"[COOLDOWN-DB] 📄 Reloaded {len(loaded)} cooldown(s): {', '.join(loaded.keys())}")
         return loaded
     except Exception as e:
-        print(f"[COOLDOWN-DB] Load error: {e}")
+        logger.info(f"[COOLDOWN-DB] Load error: {e}")
         return {}
     finally:
         if conn:
@@ -226,14 +228,14 @@ def set_cooldown(ticker: str, direction: str, signal_type: str = "CFW6"):
     except Exception:
         pass
     et_exp = expires_at.astimezone(ZoneInfo("America/New_York"))
-    print(f"[COOLDOWN] {ticker} {direction.upper()} cooldown until {et_exp.strftime('%I:%M %p ET')} ({COOLDOWN_SAME_DIRECTION_MINUTES}m)")
+    logger.info(f"[COOLDOWN] {ticker} {direction.upper()} cooldown until {et_exp.strftime('%I:%M %p ET')} ({COOLDOWN_SAME_DIRECTION_MINUTES}m)")
 
 
 def clear_cooldown(ticker: str):
     if ticker in _cooldown_cache:
         del _cooldown_cache[ticker]
         _remove_cooldown_from_db(ticker)
-        print(f"[COOLDOWN] {ticker} cooldown cleared")
+        logger.info(f"[COOLDOWN] {ticker} cooldown cleared")
 
 
 def clear_all_cooldowns():
@@ -247,11 +249,11 @@ def clear_all_cooldowns():
         conn.cursor().execute("DELETE FROM signal_cooldowns")
         conn.commit()
     except Exception as e:
-        print(f"[COOLDOWN-DB] Clear all error: {e}")
+        logger.info(f"[COOLDOWN-DB] Clear all error: {e}")
     finally:
         if conn:
             return_conn(conn)
-    print("[COOLDOWN] All cooldowns cleared")
+    logger.info("[COOLDOWN] All cooldowns cleared")
 
 
 def get_active_cooldowns() -> Dict[str, Dict]:
@@ -272,19 +274,19 @@ def print_cooldown_summary():
     active = get_active_cooldowns()
     if not active:
         return
-    print("\n" + "="*80)
-    print("SIGNAL COOLDOWN SUMMARY")
-    print("="*80)
-    print(f"Active Cooldowns: {len(active)}")
-    print("Ticker   Direction  Signal Type      Expires At        Time Left")
-    print("-"*80)
+    logger.info("\n" + "="*80)
+    logger.info("SIGNAL COOLDOWN SUMMARY")
+    logger.info("="*80)
+    logger.info(f"Active Cooldowns: {len(active)}")
+    logger.info("Ticker   Direction  Signal Type      Expires At        Time Left")
+    logger.info("-"*80)
     for ticker, d in sorted(active.items(), key=lambda x: x[1]['expires_at']):
         exp_et = d['expires_at'].astimezone(ZoneInfo("America/New_York"))
         print(
             f"{ticker:<8} {d['direction']:<10} {d['signal_type']:<16} "
             f"{exp_et.strftime('%I:%M %p ET'):<17} {d['minutes_remaining']}m"
         )
-    print("="*80 + "\n")
+    logger.info("="*80 + "\n")
 
 
 # ── Legacy class shim ─────────────────────────────────────────────────────────

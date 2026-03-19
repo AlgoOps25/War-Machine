@@ -12,6 +12,8 @@ Phase 1.35: Stats tracking — every evaluate() result recorded to mtf_bias_stat
 
 from typing import Optional
 from datetime import datetime
+import logging
+logger = logging.getLogger(__name__)
 
 MTF_BIAS_ENABLED = True
 MIN_BARS_1H      = 5
@@ -84,7 +86,7 @@ class MTFBiasEngine:
             finally:
                 return_conn(conn)
         except Exception as e:
-            print(f"[MTF-BIAS] Stats DB init failed (non-fatal): {e}")
+            logger.info(f"[MTF-BIAS] Stats DB init failed (non-fatal): {e}")
             self._db_ready = False
 
     def record_stat(self, ticker: str, direction: str, result: dict):
@@ -119,7 +121,7 @@ class MTFBiasEngine:
             finally:
                 return_conn(conn)
         except Exception as e:
-            print(f"[MTF-BIAS] record_stat error (non-fatal): {e}")
+            logger.info(f"[MTF-BIAS] record_stat error (non-fatal): {e}")
 
     # ── Core evaluate ────────────────────────────────────────────────────────
     def evaluate(

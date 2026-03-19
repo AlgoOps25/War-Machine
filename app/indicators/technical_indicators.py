@@ -44,6 +44,8 @@ from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime, timedelta, time as dtime
 from zoneinfo import ZoneInfo
 from utils import config
+import logging
+logger = logging.getLogger(__name__)
 
 ET = ZoneInfo("America/New_York")
 
@@ -114,7 +116,7 @@ class IndicatorCache:
 
     def clear(self):
         self.cache = {}
-        print("[INDICATORS] Cache cleared")
+        logger.info("[INDICATORS] Cache cleared")
 
     def get_stats(self) -> Dict:
         now = datetime.now(ET)
@@ -170,10 +172,10 @@ def fetch_technical_indicator(
             _indicator_cache.set(cache_key, data)
         return data
     except requests.exceptions.HTTPError as e:
-        print(f"[INDICATORS] API error for {ticker} {function}: {e}")
+        logger.info(f"[INDICATORS] API error for {ticker} {function}: {e}")
         return None
     except Exception as e:
-        print(f"[INDICATORS] Unexpected error for {ticker} {function}: {e}")
+        logger.info(f"[INDICATORS] Unexpected error for {ticker} {function}: {e}")
         return None
 
 
@@ -321,12 +323,12 @@ def batch_fetch_indicators(
         for name in indicators:
             func = indicator_map.get(name)
             if not func:
-                print(f"[INDICATORS] Unknown indicator: {name}")
+                logger.info(f"[INDICATORS] Unknown indicator: {name}")
                 continue
             try:
                 results[ticker][name] = func(ticker, use_cache=use_cache)
             except Exception as e:
-                print(f"[INDICATORS] Error fetching {name} for {ticker}: {e}")
+                logger.info(f"[INDICATORS] Error fetching {name} for {ticker}: {e}")
                 results[ticker][name] = None
 
     return results
@@ -566,7 +568,7 @@ def check_rsi_divergence(
         return 'NO_DIV', details
 
     except Exception as e:
-        print(f"[INDICATORS] RSI divergence error for {ticker}: {e}")
+        logger.info(f"[INDICATORS] RSI divergence error for {ticker}: {e}")
         return None, None
 
 
@@ -824,35 +826,35 @@ def get_cache_stats() -> Dict:
 if __name__ == "__main__":
     test_ticker = "AAPL"
     test_price  = 175.50
-    print(f"Testing technical indicators for {test_ticker}...\n")
+    logger.info(f"Testing technical indicators for {test_ticker}...\n")
 
     is_trending, adx = check_trend_strength(test_ticker)
-    print(f"ADX: {adx} | {'✅ TRENDING' if is_trending else '❌ WEAK'} (threshold: 25)")
+    logger.info(f"ADX: {adx} | {'✅ TRENDING' if is_trending else '❌ WEAK'} (threshold: 25)")
 
     rsi_zone, rsi_val = check_rsi_zone(test_ticker, 'BUY')
-    print(f"RSI: {rsi_val} | Zone: {rsi_zone}")
+    logger.info(f"RSI: {rsi_val} | Zone: {rsi_zone}")
 
     div_result, div_details = check_rsi_divergence(test_ticker, 'BUY')
-    print(f"RSI Divergence: {div_result}")
+    logger.info(f"RSI Divergence: {div_result}")
     if div_details:
-        print(f"  Details: {div_details}")
+        logger.info(f"  Details: {div_details}")
 
     ema_aligned, ema_val = check_ema_position(test_ticker, test_price, 'BUY', period=50)
-    print(f"EMA50: {ema_val} | Aligned: {ema_aligned}")
+    logger.info(f"EMA50: {ema_val} | Aligned: {ema_aligned}")
 
     ema200_aligned, ema200_val = check_ema_position(test_ticker, test_price, 'BUY', period=200)
-    print(f"EMA200: {ema200_val} | Aligned: {ema200_aligned}")
+    logger.info(f"EMA200: {ema200_val} | Aligned: {ema200_aligned}")
 
     macd_result, macd_details = check_macd_crossover(test_ticker, 'BUY')
-    print(f"MACD: {macd_result} | {macd_details}")
+    logger.info(f"MACD: {macd_result} | {macd_details}")
 
     stoch_result, stoch_details = check_stochastic_crossover(test_ticker, 'BUY')
-    print(f"Stoch: {stoch_result} | {stoch_details}")
+    logger.info(f"Stoch: {stoch_result} | {stoch_details}")
 
     is_squeezed, bw = check_bollinger_squeeze(test_ticker)
-    print(f"BB Squeeze: {is_squeezed} | Width: {bw}")
+    logger.info(f"BB Squeeze: {is_squeezed} | Width: {bw}")
 
     direction = get_trend_direction(test_ticker)
-    print(f"DMI Direction: {direction}")
+    logger.info(f"DMI Direction: {direction}")
 
-    print(f"\nCache: {get_cache_stats()}")
+    logger.info(f"\nCache: {get_cache_stats()}")

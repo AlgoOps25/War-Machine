@@ -72,6 +72,8 @@ FIX #10 (MAR 16, 2026) — UNICODE SURROGATE PAIRS:
 from utils import config
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
+import logging
+logger = logging.getLogger(__name__)
 
 _ET = ZoneInfo("America/New_York")
 
@@ -100,11 +102,11 @@ except ImportError:
 try:
     from app.signals.signal_analytics import signal_tracker
     SIGNAL_TRACKING_ENABLED = True
-    print("[POSITION] \u2705 Signal trade tracking enabled (signal_analytics)")
+    logger.info("[POSITION] \u2705 Signal trade tracking enabled (signal_analytics)")
 except ImportError:
     signal_tracker = None
     SIGNAL_TRACKING_ENABLED = False
-    print("[POSITION] \u26a0\ufe0f  Signal trade tracking disabled (signal_analytics not available)")
+    logger.info("[POSITION] \u26a0\ufe0f  Signal trade tracking disabled (signal_analytics not available)")
 
 
 # Sector/ticker correlation mapping used to prevent over-concentration in correlated assets
@@ -186,7 +188,7 @@ def _write_completed_at(
         )
 
     except Exception as exc:
-        print(f"[ML-SIGNALS] \u26a0\ufe0f  completed_at write skipped ({ticker}): {exc}")
+        logger.info(f"[ML-SIGNALS] \u26a0\ufe0f  completed_at write skipped ({ticker}): {exc}")
     finally:
         if conn:
             return_conn(conn)
@@ -264,7 +266,7 @@ class PositionManager:
                 print(f"[RISK] \U0001f504 Reloaded {len(self.positions)} open position(s) "
                       f"from DB after restart: {tickers}")
             else:
-                print("[RISK] \u2705 No open positions to reload \u2014 clean session start")
+                logger.info("[RISK] \u2705 No open positions to reload \u2014 clean session start")
             # ─────────────────────────────────────────────────────────────────────
 
             closed_trades = self.get_todays_closed_trades()
@@ -275,7 +277,7 @@ class PositionManager:
                   f"P&L: ${total_pnl:+.0f} | Streak: {self._format_streak()}")
 
         except Exception as e:
-            print(f"[RISK] Session state load error: {e}")
+            logger.info(f"[RISK] Session state load error: {e}")
 
     def _update_performance_streak(self, trades: List[Dict]) -> None:
         """Update consecutive win/loss streak for dynamic sizing."""
@@ -489,7 +491,7 @@ class PositionManager:
             return streak >= max_consecutive_losses
 
         except Exception as e:
-            print(f"[POSITION] Loss-streak check error: {e}")
+            logger.info(f"[POSITION] Loss-streak check error: {e}")
             return False
         finally:
             if conn:
@@ -557,10 +559,10 @@ class PositionManager:
             stale = cursor.fetchall()
 
             if not stale:
-                print("[POSITION] No stale positions from prior sessions")
+                logger.info("[POSITION] No stale positions from prior sessions")
                 return
 
-            print(f"[POSITION] \u26a0\ufe0f  Found {len(stale)} stale position(s) \u2014 force closing before session")
+            logger.info(f"[POSITION] \u26a0\ufe0f  Found {len(stale)} stale position(s) \u2014 force closing before session")
             for pos in stale:
                 pos = dict(pos)
                 print(f"[POSITION] Force closing {pos['ticker']} {pos['direction'].upper()} "
@@ -643,7 +645,7 @@ class PositionManager:
 
         is_valid_rr, risk_reward = self.validate_risk_reward(entry_price, stop_price, t2)
         if not is_valid_rr:
-            print(f"[RISK] \u274c {ticker} rejected - R:R {risk_reward:.2f} < {self.min_risk_reward_ratio:.2f} minimum")
+            logger.info(f"[RISK] \u274c {ticker} rejected - R:R {risk_reward:.2f} < {self.min_risk_reward_ratio:.2f} minimum")
             return -1
 
         risk_per_share = round(abs(entry_price - stop_price), 4) or 1.0
@@ -655,7 +657,7 @@ class PositionManager:
         # FIX #6: call _check_risk_limits() so tests can monkeypatch this hook
         can_open, reason = self._check_risk_limits(ticker, risk_dollars)
         if not can_open:
-            print(f"[RISK] \u274c {ticker} rejected - {reason}")
+            logger.info(f"[RISK] \u274c {ticker} rejected - {reason}")
             return -1
 
         strike         = None
@@ -733,17 +735,17 @@ class PositionManager:
                         position_id=position_id
                     )
                 except Exception as e:
-                    print(f"[POSITION] Signal tracking error: {e}")
+                    logger.info(f"[POSITION] Signal tracking error: {e}")
 
             sector = self._get_ticker_sector(ticker) or "UNKNOWN"
-            print(f"[POSITION] Opened {ticker} {direction.upper()} - ID {position_id}")
+            logger.info(f"[POSITION] Opened {ticker} {direction.upper()} - ID {position_id}")
             print(f"  Entry: {entry_price:.2f}  Stop: {stop_price:.2f}  "
                   f"T1: {t1:.2f}  T2: {t2:.2f}  R:R: {risk_reward:.2f}:1")
             print(f"  Contracts: {contracts}  Grade: {grade}  "
                   f"Confidence: {confidence:.1%}  Risk: ${risk_dollars:.0f} "
                   f"({sizing['risk_percentage']:.1f}%)  "
                   f"Perf: x{sizing['performance_adj']:.2f}  VIX: x{sizing['vix_mult']:.2f}")
-            print(f"  Sector: {sector}  Streak: {self._format_streak()}")
+            logger.info(f"  Sector: {sector}  Streak: {self._format_streak()}")
 
             if options_rec:
                 opt_str = f"  Options: {contract_type} ${strike} exp {expiry}"
@@ -753,7 +755,7 @@ class PositionManager:
                     opt_str += f" | IVR: {ivr:.0f}"
                 if gex_context:
                     opt_str += f" | {gex_context}"
-                print(opt_str)
+                logger.info(opt_str)
 
             return position_id
         finally:
@@ -821,7 +823,7 @@ class PositionManager:
             row = cursor.fetchone()
             return bool(row["t1_hit"]) if row else False
         except Exception as e:
-            print(f"[POSITION] _get_t1_hit_from_db error (non-fatal): {e}")
+            logger.info(f"[POSITION] _get_t1_hit_from_db error (non-fatal): {e}")
             return False
         finally:
             if conn:
@@ -873,16 +875,16 @@ class PositionManager:
                     cached["pnl"]                = cached.get("pnl", 0) + partial_pnl
                     break
 
-            print(f"[POSITION] \u26a1 SCALE OUT {ticker} @ {exit_price:.2f}")
-            print(f"  Closed {contracts_to_close} contracts | Remaining: {contracts_left}")
-            print(f"  Partial P&L: ${partial_pnl:.2f} | Stop \u2192 BE: {entry_price:.2f}")
+            logger.info(f"[POSITION] \u26a1 SCALE OUT {ticker} @ {exit_price:.2f}")
+            logger.info(f"  Closed {contracts_to_close} contracts | Remaining: {contracts_left}")
+            logger.info(f"  Partial P&L: ${partial_pnl:.2f} | Stop \u2192 BE: {entry_price:.2f}")
 
             try:
                 from app.discord_helpers import send_scaling_alert
                 send_scaling_alert(ticker, exit_price, contracts_to_close,
                                    contracts_left, partial_pnl, entry_price)
             except Exception as e:
-                print(f"[POSITION] Discord scale alert failed: {e}")
+                logger.info(f"[POSITION] Discord scale alert failed: {e}")
         finally:
             if conn:
                 return_conn(conn)
@@ -949,8 +951,8 @@ class PositionManager:
                 self._update_performance_streak(closed_trades)
 
             emoji = "\u2705" if final_pnl > 0 else "\u274c"
-            print(f"[POSITION] {emoji} CLOSED {ticker} @ {exit_price:.2f} | {exit_reason}")
-            print(f"  Total P&L: ${final_pnl:.2f}  Streak: {self._format_streak()}")
+            logger.info(f"[POSITION] {emoji} CLOSED {ticker} @ {exit_price:.2f} | {exit_reason}")
+            logger.info(f"  Total P&L: ${final_pnl:.2f}  Streak: {self._format_streak()}")
 
             if exit_reason != "STALE_EOD":
                 try:
@@ -965,20 +967,20 @@ class PositionManager:
                         "timeframe": "5m"
                     })
                 except Exception as e:
-                    print(f"[POSITION] AI record error: {e}")
+                    logger.info(f"[POSITION] AI record error: {e}")
 
             try:
                 from app.discord_helpers import send_exit_alert
                 send_exit_alert(ticker, exit_price, exit_reason, final_pnl)
             except Exception as e:
-                print(f"[POSITION] Discord exit alert failed: {e}")
+                logger.info(f"[POSITION] Discord exit alert failed: {e}")
 
             # FIX #8: use real session P&L from DB (cache already busted above)
             session_stats = self.get_daily_stats()
             breached, reason = self.check_circuit_breaker(stats=session_stats)
             if breached:
-                print(f"\n[RISK] \U0001f6a8 {reason}")
-                print("[RISK] No new positions will be opened until next session\n")
+                logger.info(f"\n[RISK] \U0001f6a8 {reason}")
+                logger.info("[RISK] No new positions will be opened until next session\n")
         finally:
             if conn:
                 return_conn(conn)
@@ -996,7 +998,7 @@ class PositionManager:
         self.consecutive_wins = 0
         self.consecutive_losses = 0
         self.performance_multiplier = 1.0
-        print("[POSITION] \U0001f504 EOD streak reset \u2014 performance_multiplier \u2192 1.0x for next session")
+        logger.info("[POSITION] \U0001f504 EOD streak reset \u2014 performance_multiplier \u2192 1.0x for next session")
         # ─────────────────────────────────────────────────────────────────────
 
 

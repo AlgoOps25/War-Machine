@@ -37,6 +37,8 @@ import statistics
 
 from app.backtesting.backtest_engine import BacktestEngine, BacktestResults
 from app.backtesting.parameter_optimizer import ParameterOptimizer
+import logging
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -157,11 +159,11 @@ class WalkForward:
         self.optimization_metric = optimization_metric
         self.min_train_bars = min_train_bars
         
-        print(f"[WALK-FORWARD] Initialized")
-        print(f"  Train window: {train_months} months")
-        print(f"  Test window:  {test_months} months")
-        print(f"  Step size:    {step_months} months")
-        print(f"  Optimize on:  {optimization_metric}")
+        logger.info(f"[WALK-FORWARD] Initialized")
+        logger.info(f"  Train window: {train_months} months")
+        logger.info(f"  Test window:  {test_months} months")
+        logger.info(f"  Step size:    {step_months} months")
+        logger.info(f"  Optimize on:  {optimization_metric}")
     
     def create_windows(self, bars: List[Dict]) -> List[WalkForwardWindow]:
         """
@@ -237,23 +239,23 @@ class WalkForward:
         Returns:
             WalkForwardResults object
         """
-        print(f"\n[WALK-FORWARD] Starting validation for {ticker}")
-        print(f"  Total bars: {len(bars)}")
-        print(f"  Period: {bars[0]['datetime'].date()} to {bars[-1]['datetime'].date()}")
+        logger.info(f"\n[WALK-FORWARD] Starting validation for {ticker}")
+        logger.info(f"  Total bars: {len(bars)}")
+        logger.info(f"  Period: {bars[0]['datetime'].date()} to {bars[-1]['datetime'].date()}")
         
         # Create windows
         windows = self.create_windows(bars)
-        print(f"  Windows created: {len(windows)}")
+        logger.info(f"  Windows created: {len(windows)}")
         
         if not windows:
-            print("[WALK-FORWARD] No valid windows created")
+            logger.info("[WALK-FORWARD] No valid windows created")
             return WalkForwardResults([], initial_capital)
         
         # Process each window
         for i, window in enumerate(windows, 1):
-            print(f"\n[WALK-FORWARD] Window {i}/{len(windows)}")
-            print(f"  Train: {window.train_start.date()} to {window.train_end.date()} ({len(window.train_bars)} bars)")
-            print(f"  Test:  {window.test_start.date()} to {window.test_end.date()} ({len(window.test_bars)} bars)")
+            logger.info(f"\n[WALK-FORWARD] Window {i}/{len(windows)}")
+            logger.info(f"  Train: {window.train_start.date()} to {window.train_end.date()} ({len(window.train_bars)} bars)")
+            logger.info(f"  Test:  {window.test_start.date()} to {window.test_end.date()} ({len(window.test_bars)} bars)")
             
             # Optimize on train window
             optimizer = ParameterOptimizer(
@@ -269,7 +271,7 @@ class WalkForward:
             )
             
             if not train_results:
-                print(f"  [TRAIN] No results from optimization")
+                logger.info(f"  [TRAIN] No results from optimization")
                 continue
             
             # Get best params from train
@@ -277,8 +279,8 @@ class WalkForward:
             window.optimal_params = best_result['params']
             window.train_results = best_result['results']
             
-            print(f"  [TRAIN] Best params: {window.optimal_params}")
-            print(f"  [TRAIN] {self.optimization_metric}: {getattr(best_result['results'], self.optimization_metric):.2f}")
+            logger.info(f"  [TRAIN] Best params: {window.optimal_params}")
+            logger.info(f"  [TRAIN] {self.optimization_metric}: {getattr(best_result['results'], self.optimization_metric):.2f}")
             
             # Test on OOS window
             engine = BacktestEngine(initial_capital=initial_capital)
@@ -289,21 +291,21 @@ class WalkForward:
                 strategy_params=window.optimal_params
             )
             
-            print(f"  [TEST]  OOS Trades: {len(window.test_results.trades)}")
-            print(f"  [TEST]  OOS P&L: ${window.test_results.net_pnl:,.2f} ({window.test_results.total_return_pct:+.1f}%)")
-            print(f"  [TEST]  OOS Win Rate: {window.test_results.win_rate:.1f}%")
+            logger.info(f"  [TEST]  OOS Trades: {len(window.test_results.trades)}")
+            logger.info(f"  [TEST]  OOS P&L: ${window.test_results.net_pnl:,.2f} ({window.test_results.total_return_pct:+.1f}%)")
+            logger.info(f"  [TEST]  OOS Win Rate: {window.test_results.win_rate:.1f}%")
         
         # Generate aggregate results
         results = WalkForwardResults(windows, initial_capital)
         
-        print(f"\n[WALK-FORWARD] Validation complete")
-        print(f"  Total OOS trades: {len(results.all_test_trades)}")
-        print(f"  Aggregate OOS P&L: ${results.net_pnl:,.2f} ({results.total_return_pct:+.1f}%)")
+        logger.info(f"\n[WALK-FORWARD] Validation complete")
+        logger.info(f"  Total OOS trades: {len(results.all_test_trades)}")
+        logger.info(f"  Aggregate OOS P&L: ${results.net_pnl:,.2f} ({results.total_return_pct:+.1f}%)")
         
         return results
 
 
 if __name__ == "__main__":
-    print("Walk-Forward Validation - Example Usage")
-    print("="*80)
-    print("\nSee docs/task10_backtesting_guide.md for examples.")
+    logger.info("Walk-Forward Validation - Example Usage")
+    logger.info("="*80)
+    logger.info("\nSee docs/task10_backtesting_guide.md for examples.")

@@ -289,9 +289,9 @@ def validate_required_env_vars() -> None:
     blocking work (DB connect, WS init, etc.) so Railway surfaces a
     clear config error instead of a cryptic mid-boot crash.
     """
-    print("\n" + "=" * 62, flush=True)
-    print("[CONFIG] Environment variable validation", flush=True)
-    print("=" * 62, flush=True)
+    logger.info("\n" + "=" * 62)
+    logger.info("[CONFIG] Environment variable validation")
+    logger.info("=" * 62)
 
     missing_required = []
 
@@ -299,67 +299,67 @@ def validate_required_env_vars() -> None:
         value = os.getenv(var, "").strip()
         if value:
             masked = value[:6] + "..." if len(value) > 6 else "***"
-            print(f"  ✅ {var:<40} {masked}", flush=True)
+            logger.info(f"  ✅ {var:<40} {masked}")
         else:
-            print(f"  ❌ {var:<40} MISSING  ← {description}", flush=True)
+            logger.info(f"  ❌ {var:<40} MISSING  ← {description}")
             missing_required.append(var)
 
     for var, description in _OPTIONAL_VARS:
         value = os.getenv(var, "").strip()
         if value:
             masked = value[:6] + "..." if len(value) > 6 else "***"
-            print(f"  ✅ {var:<40} {masked}", flush=True)
+            logger.info(f"  ✅ {var:<40} {masked}")
         else:
-            print(f"  ⚠️  {var:<39} not set  ({description})", flush=True)
+            logger.info(f"  ⚠️  {var:<39} not set  ({description})")
 
-    print("=" * 62, flush=True)
+    logger.info("=" * 62)
 
     if missing_required:
-        print("\n[CONFIG] ❌ FATAL — Missing required environment variables:", flush=True)
+        logger.info("\n[CONFIG] ❌ FATAL — Missing required environment variables:")
         for var in missing_required:
-            print(f"         • {var}", flush=True)
+            logger.info(f"         • {var}")
         print(
             "\n         Set these in Railway → Variables before deploying.\n",
             flush=True
         )
         sys.exit(1)
 
-    print("[CONFIG] ✅ All required vars present — boot continuing\n", flush=True)
+    logger.info("[CONFIG] ✅ All required vars present — boot continuing\n")
 
 
 if __name__ == "__main__":
-    print("=" * 70)
-    print("WAR MACHINE CONFIGURATION")
-    print("=" * 70)
-    print(f"Account Size: ${ACCOUNT_SIZE:,.0f}")
-    print(f"Max Open Positions: {MAX_OPEN_POSITIONS}")
-    print(f"Max Daily Loss: {MAX_DAILY_LOSS_PCT}%")
-    print(f"Min Confidence (OR): {MIN_CONFIDENCE_OR*100:.0f}%")
-    print(f"Min Confidence (Intraday): {MIN_CONFIDENCE_INTRADAY*100:.0f}%")
-    print(f"Opening Range Window: {OR_START_TIME} - {OR_END_TIME}")
-    print(f"Trading Window: {TRADING_START} - {TRADING_END}")
-    print(f"Force Close: {FORCE_CLOSE_TIME}")
-    print(f"\nVIX-Scaled OR Thresholds:")
+    logger.info("=" * 70)
+    logger.info("WAR MACHINE CONFIGURATION")
+    logger.info("=" * 70)
+    logger.info(f"Account Size: ${ACCOUNT_SIZE:,.0f}")
+    logger.info(f"Max Open Positions: {MAX_OPEN_POSITIONS}")
+    logger.info(f"Max Daily Loss: {MAX_DAILY_LOSS_PCT}%")
+    logger.info(f"Min Confidence (OR): {MIN_CONFIDENCE_OR*100:.0f}%")
+    logger.info(f"Min Confidence (Intraday): {MIN_CONFIDENCE_INTRADAY*100:.0f}%")
+    logger.info(f"Opening Range Window: {OR_START_TIME} - {OR_END_TIME}")
+    logger.info(f"Trading Window: {TRADING_START} - {TRADING_END}")
+    logger.info(f"Force Close: {FORCE_CLOSE_TIME}")
+    logger.info(f"\nVIX-Scaled OR Thresholds:")
     for upper, pct in VIX_OR_THRESHOLDS:
         label = f"VIX < {upper}" if upper < 999 else "VIX ≥ 35"
-        print(f"  {label:<12} → {pct*100:.1f}%")
-    print(f"\nSecondary Range (Power Hour):")
-    print(f"  Window  : {SECONDARY_RANGE_START} - {SECONDARY_RANGE_END}")
-    print(f"  Enabled : {SECONDARY_RANGE_ENABLED}")
-    print(f"  Min Bars: {SECONDARY_RANGE_MIN_BARS}")
-    print(f"  Min Pct : {SECONDARY_RANGE_MIN_PCT*100:.1f}%")
-    print(f"\nAdvanced Features:")
-    print(f"  Validator: {'Enabled' if VALIDATOR_ENABLED else 'Disabled'}")
-    print(f"  Options Filter: {'Enabled (' + OPTIONS_FILTER_MODE + ')' if OPTIONS_FILTER_ENABLED else 'Disabled'}")
-    print(f"  Regime Filter: {'Enabled' if REGIME_FILTER_ENABLED else 'Disabled'}")
-    print(f"  MTF Convergence: {'Enabled' if MTF_ENABLED else 'Disabled'}")
-    print(f"  Hourly Gate: {'Enabled' if HOURLY_GATE_ENABLED else 'Disabled'}")
-    print(f"  Correlation Check: {'Enabled' if CORRELATION_CHECK_ENABLED else 'Disabled'}")
-    print(f"\nCampaign Champion (2026-03-10):")
-    print(f"  BOS Threshold : {ORB_BREAK_THRESHOLD*100:.2f}%")
-    print(f"  Min RVOL      : {MIN_RELATIVE_VOLUME}x")
-    print(f"  MFI Floor     : {MFI_MIN}")
-    print(f"  VWAP Zone     : {VWAP_ZONE}")
-    print(f"  TF Confirm    : {TF_CONFIRM}")
-    print("=" * 70)
+        logger.info(f"  {label:<12} → {pct*100:.1f}%")
+    logger.info(f"\nSecondary Range (Power Hour):")
+    logger.info(f"  Window  : {SECONDARY_RANGE_START} - {SECONDARY_RANGE_END}")
+    logger.info(f"  Enabled : {SECONDARY_RANGE_ENABLED}")
+    logger.info(f"  Min Bars: {SECONDARY_RANGE_MIN_BARS}")
+    logger.info(f"  Min Pct : {SECONDARY_RANGE_MIN_PCT*100:.1f}%")
+    logger.info(f"\nAdvanced Features:")
+    logger.info(f"  Validator: {'Enabled' if VALIDATOR_ENABLED else 'Disabled'}")
+    logger.info(f"  Options Filter: {'Enabled (' + OPTIONS_FILTER_MODE + ')' if OPTIONS_FILTER_ENABLED else 'Disabled'}")
+    logger.info(f"  Regime Filter: {'Enabled' if REGIME_FILTER_ENABLED else 'Disabled'}")
+    logger.info(f"  MTF Convergence: {'Enabled' if MTF_ENABLED else 'Disabled'}")
+    logger.info(f"  Hourly Gate: {'Enabled' if HOURLY_GATE_ENABLED else 'Disabled'}")
+    logger.info(f"  Correlation Check: {'Enabled' if CORRELATION_CHECK_ENABLED else 'Disabled'}")
+    logger.info(f"\nCampaign Champion (2026-03-10):")
+    logger.info(f"  BOS Threshold : {ORB_BREAK_THRESHOLD*100:.2f}%")
+    logger.info(f"  Min RVOL      : {MIN_RELATIVE_VOLUME}x")
+    logger.info(f"  MFI Floor     : {MFI_MIN}")
+    logger.info(f"  VWAP Zone     : {VWAP_ZONE}")
+    logger.info(f"  TF Confirm    : {TF_CONFIRM}")
+    logger.info("=" * 70)
     validate_required_env_vars()

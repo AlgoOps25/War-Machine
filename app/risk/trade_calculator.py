@@ -23,6 +23,8 @@ FIXED Mar 13 2026:
 import numpy as np
 from datetime import time as dtime
 from typing import List, Dict, Tuple
+import logging
+logger = logging.getLogger(__name__)
 
 # ============================================================================
 # ATR & VOLATILITY CALCULATIONS
@@ -116,10 +118,10 @@ def get_adaptive_fvg_threshold(bars: List[Dict], ticker: str) -> Tuple[float, fl
     # Lower threshold for high RVOL tickers (gap day movers)
     if _rvol >= 5.0:
         fvg_threshold = min(fvg_threshold, 0.001)
-        print(f"[ADAPTIVE] {ticker} HIGH RVOL ({_rvol:.1f}x) — FVG threshold lowered to {fvg_threshold*100:.2f}%")
+        logger.info(f"[ADAPTIVE] {ticker} HIGH RVOL ({_rvol:.1f}x) — FVG threshold lowered to {fvg_threshold*100:.2f}%")
 
-    print(f"[ADAPTIVE] {ticker} ATR: {atr:.2f} ({atr_pct:.2f}%) - {volatility_label} volatility")
-    print(f"  FVG threshold: {fvg_threshold*100:.2f}% | Confidence adj: {confidence_adjustment:.2f}x")
+    logger.info(f"[ADAPTIVE] {ticker} ATR: {atr:.2f} ({atr_pct:.2f}%) - {volatility_label} volatility")
+    logger.info(f"  FVG threshold: {fvg_threshold*100:.2f}% | Confidence adj: {confidence_adjustment:.2f}x")
     return fvg_threshold, confidence_adjustment
 
 # ============================================================================
@@ -145,13 +147,13 @@ def get_adaptive_orb_threshold(bars: List[Dict], breakout_idx: int) -> float:
     volume_multiplier = calculate_volume_multiplier(bars, breakout_idx)
     if volume_multiplier >= 2.0:
         orb_threshold = 0.0008
-        print(f"[ADAPTIVE] High volume breakout ({volume_multiplier:.1f}x) - Using 0.08% threshold")
+        logger.info(f"[ADAPTIVE] High volume breakout ({volume_multiplier:.1f}x) - Using 0.08% threshold")
     elif volume_multiplier >= 1.5:
         orb_threshold = 0.001
-        print(f"[ADAPTIVE] Standard volume ({volume_multiplier:.1f}x) - Using 0.10% threshold")
+        logger.info(f"[ADAPTIVE] Standard volume ({volume_multiplier:.1f}x) - Using 0.10% threshold")
     else:
         orb_threshold = 0.0015
-        print(f"[ADAPTIVE] Low volume ({volume_multiplier:.1f}x) - Using 0.15% threshold")
+        logger.info(f"[ADAPTIVE] Low volume ({volume_multiplier:.1f}x) - Using 0.15% threshold")
     return orb_threshold
 
 # ============================================================================
@@ -177,8 +179,8 @@ def apply_confidence_decay(base_confidence: float, candles_waited: int) -> float
 
     adjusted_confidence = base_confidence * (1 - decay)
     if candles_waited > 5:
-        print(f"[DECAY] Waited {candles_waited} candles - Confidence reduced by {decay*100:.1f}%")
-        print(f"  {base_confidence:.2%} -> {adjusted_confidence:.2%}")
+        logger.info(f"[DECAY] Waited {candles_waited} candles - Confidence reduced by {decay*100:.1f}%")
+        logger.info(f"  {base_confidence:.2%} -> {adjusted_confidence:.2%}")
     return max(adjusted_confidence, 0.50)
 
 # ============================================================================
@@ -250,10 +252,10 @@ def calculate_stop_loss_by_grade(
     # or at or below entry on bear — can happen on A+ high-vol tight-OR tape.
     if direction == "bull" and stop_price >= entry_price:
         stop_price = entry_price - (atr * 0.5)
-        print(f"[STOP] ⚠️  Bull stop above entry — forced to ${stop_price:.2f} (0.5x ATR fallback)")
+        logger.info(f"[STOP] ⚠️  Bull stop above entry — forced to ${stop_price:.2f} (0.5x ATR fallback)")
     elif direction == "bear" and stop_price <= entry_price:
         stop_price = entry_price + (atr * 0.5)
-        print(f"[STOP] ⚠️  Bear stop below entry — forced to ${stop_price:.2f} (0.5x ATR fallback)")
+        logger.info(f"[STOP] ⚠️  Bear stop below entry — forced to ${stop_price:.2f} (0.5x ATR fallback)")
 
     return stop_price
 
@@ -277,7 +279,7 @@ def calculate_targets_by_grade(
         t1 = entry_price - t1_distance
         t2 = entry_price - t2_distance
 
-    print(f"[TARGETS] {grade}: T1=${t1:.2f} (2R) | T2=${t2:.2f} (3.5R) | Risk/contract=${risk:.2f}")
+    logger.info(f"[TARGETS] {grade}: T1=${t1:.2f} (2R) | T2=${t2:.2f} (3.5R) | Risk/contract=${risk:.2f}")
     return t1, t2
 
 

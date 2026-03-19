@@ -17,6 +17,8 @@ Used via:
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from typing import Dict, Optional
+import logging
+logger = logging.getLogger(__name__)
 
 _ET = ZoneInfo("America/New_York")
 
@@ -58,7 +60,7 @@ def _ensure_table():
         finally:
             return_conn(conn)
     except Exception as e:
-        print(f"[GRADE-GATE-TRACKER] DB init error (non-fatal): {e}")
+        logger.info(f"[GRADE-GATE-TRACKER] DB init error (non-fatal): {e}")
 
 
 _ensure_table()
@@ -102,7 +104,7 @@ def _record(ticker: str, grade: str, confidence: float, threshold: float,
         finally:
             return_conn(conn)
     except Exception as e:
-        print(f"[GRADE-GATE-TRACKER] Record error (non-fatal): {e}")
+        logger.info(f"[GRADE-GATE-TRACKER] Record error (non-fatal): {e}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -144,21 +146,21 @@ class GradeGateTracker:
         stats = self.get_daily_stats()
         if stats['total_evaluated'] == 0:
             return
-        print("\n" + "="*60)
-        print("📊 GRADE GATE TRACKER — EOD REPORT")
-        print("="*60)
-        print(f"  Evaluated : {stats['total_evaluated']}")
-        print(f"  Passed    : {stats['total_passed']} ({stats['pass_rate_pct']:.1f}%)")
-        print(f"  Rejected  : {stats['total_rejected']}")
+        logger.info("\n" + "="*60)
+        logger.info("📊 GRADE GATE TRACKER — EOD REPORT")
+        logger.info("="*60)
+        logger.info(f"  Evaluated : {stats['total_evaluated']}")
+        logger.info(f"  Passed    : {stats['total_passed']} ({stats['pass_rate_pct']:.1f}%)")
+        logger.info(f"  Rejected  : {stats['total_rejected']}")
         if stats['by_grade']:
-            print("\n  By Grade:")
+            logger.info("\n  By Grade:")
             for grade, counts in sorted(stats['by_grade'].items()):
-                print(f"    {grade:<5}  ✅{counts['passed']}  ❌{counts['rejected']}")
+                logger.info(f"    {grade:<5}  ✅{counts['passed']}  ❌{counts['rejected']}")
         if stats['by_signal_type']:
-            print("\n  By Signal Type:")
+            logger.info("\n  By Signal Type:")
             for st, counts in sorted(stats['by_signal_type'].items()):
-                print(f"    {st:<18}  ✅{counts['passed']}  ❌{counts['rejected']}")
-        print("="*60 + "\n")
+                logger.info(f"    {st:<18}  ✅{counts['passed']}  ❌{counts['rejected']}")
+        logger.info("="*60 + "\n")
 
     def reset_daily_stats(self) -> None:
         _daily_stats.update({
@@ -172,4 +174,3 @@ class GradeGateTracker:
 
 # Singleton
 grade_gate_tracker = GradeGateTracker()
-print("[GRADE-GATE-TRACKER] ✅ Initialized — grade gate events will be recorded to DB")

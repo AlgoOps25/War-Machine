@@ -140,8 +140,6 @@ def build_partial_higher_tf_bar(bars_5m: List[dict], target_tf: str) -> Optional
     }
 
 
-print("[MTF-COMPRESSION] ✅ Extended compression module loaded")
-print("[MTF-COMPRESSION] Supports: 1m→3m, 5m→15m/30m, all timeframes 1m-1h")
 
 def compress_to_3m(bars_5m: List[dict]) -> List[dict]:
     

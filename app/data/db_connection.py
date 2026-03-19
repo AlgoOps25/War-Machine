@@ -96,6 +96,8 @@ import time
 from contextlib import contextmanager
 from typing import Optional
 from datetime import datetime, timedelta
+import logging
+logger = logging.getLogger(__name__)
 
 
 # Strip whitespace/newlines, then normalize postgres:// → postgresql://
@@ -141,7 +143,7 @@ _checked_out_connections = {}
 _stats_lock = threading.Lock()
 
 if not USE_POSTGRES:
-    print("[DB] SQLite fallback mode (DATABASE_URL not set)")
+    logger.info("[DB] SQLite fallback mode (DATABASE_URL not set)")
 
 
 # ==============================================================================
@@ -191,19 +193,19 @@ def _init_pool():
             import psycopg2.extras
             from psycopg2 import pool as pg_pool
 
-            print("[DB] Testing PostgreSQL connection...")
+            logger.info("[DB] Testing PostgreSQL connection...")
             _test = psycopg2.connect(DATABASE_URL, connect_timeout=10)
             _test.close()
 
-            print("[DB] Initializing connection pool...")
+            logger.info("[DB] Initializing connection pool...")
             _connection_pool = pg_pool.ThreadedConnectionPool(
                 minconn=POOL_MIN,
                 maxconn=POOL_MAX,
                 dsn=DATABASE_URL,
                 connect_timeout=10
             )
-            print(f"[DB] PostgreSQL pool active ({POOL_MIN}-{POOL_MAX} connections)")
-            print(f"[DB] Semaphore gate active (max {DB_SEMAPHORE_LIMIT} concurrent checkouts)")
+            logger.info(f"[DB] PostgreSQL pool active ({POOL_MIN}-{POOL_MAX} connections)")
+            logger.info(f"[DB] Semaphore gate active (max {DB_SEMAPHORE_LIMIT} concurrent checkouts)")
 
         except Exception as e:
             # FIX 14.C-4: Only fall back to SQLite if we have not yet built a
@@ -211,13 +213,13 @@ def _init_pool():
             # thread that got here first) we do NOT touch USE_POSTGRES — the
             # working pool must not be destroyed.
             if _connection_pool is None:
-                print(f"[DB] PostgreSQL connection failed: {e}")
-                print("[DB] Falling back to SQLite")
+                logger.info(f"[DB] PostgreSQL connection failed: {e}")
+                logger.info("[DB] Falling back to SQLite")
                 USE_POSTGRES = False
             else:
                 # Pool was built by another thread; this exception came from
                 # the redundant test ping — safe to ignore.
-                print(f"[DB] _init_pool() secondary test ping failed (pool already active, ignoring): {e}")
+                logger.info(f"[DB] _init_pool() secondary test ping failed (pool already active, ignoring): {e}")
 
 
 # ==============================================================================
@@ -296,7 +298,7 @@ def get_conn(sqlite_path: str = "war_machine.db"):
 
                     # FIX 14.C-2: validate socket before handing to caller
                     if not _validate_conn(conn):
-                        print("[DB] ⚠️  Stale connection detected (SSL EOF) — discarding and reconnecting")
+                        logger.info("[DB] ⚠️  Stale connection detected (SSL EOF) — discarding and reconnecting")
                         _discard_conn(conn)
                         with _stats_lock:
                             _pool_stats["stale_reconnects"] += 1
@@ -306,7 +308,7 @@ def get_conn(sqlite_path: str = "war_machine.db"):
                         for r_attempt, r_delay in enumerate(DB_RECONNECT_DELAYS, start=1):
                             conn = _connection_pool.getconn()
                             if conn is None:
-                                print(f"[DB] ⚠️  Reconnect attempt {r_attempt}/{DB_RECONNECT_RETRIES}: pool returned None")
+                                logger.info(f"[DB] ⚠️  Reconnect attempt {r_attempt}/{DB_RECONNECT_RETRIES}: pool returned None")
                                 time.sleep(r_delay)
                                 continue
                             if _validate_conn(conn):
@@ -355,7 +357,7 @@ def get_conn(sqlite_path: str = "war_machine.db"):
 
                     with _stats_lock:
                         _pool_stats["errors"] += 1
-                    print(f"[DB] Connection checkout failed after {attempt + 1} attempts: {e}")
+                    logger.info(f"[DB] Connection checkout failed after {attempt + 1} attempts: {e}")
                     if semaphore_acquired:
                         _db_semaphore.release()
                         semaphore_acquired = False
@@ -417,7 +419,7 @@ def return_conn(conn):
                 _connection_pool.putconn(conn)
 
             except Exception as e:
-                print(f"[DB] Error returning connection to pool: {e}")
+                logger.info(f"[DB] Error returning connection to pool: {e}")
                 try:
                     conn.close()
                 except Exception:
@@ -493,12 +495,12 @@ def check_pool_health() -> dict:
         _pool_stats["last_health_check"] = time.time()
 
     if leaked > 5:
-        print(f"[DB] Pool health warning: {leaked} connections not returned (possible leak)")
+        logger.info(f"[DB] Pool health warning: {leaked} connections not returned (possible leak)")
 
     if stale_connections:
-        print(f"[DB] {len(stale_connections)} stale connection(s) detected:")
+        logger.info(f"[DB] {len(stale_connections)} stale connection(s) detected:")
         for conn_id, duration in stale_connections[:3]:
-            print(f"[DB]   • Connection {conn_id}: held for {duration:.1f}s")
+            logger.info(f"[DB]   • Connection {conn_id}: held for {duration:.1f}s")
 
     return health
 
@@ -508,26 +510,26 @@ def print_pool_stats():
     health = check_pool_health()
 
     if not health["pooling"]:
-        print(f"[DB] Mode: {health['mode']} (no pooling)")
+        logger.info(f"[DB] Mode: {health['mode']} (no pooling)")
         return
 
-    print("\n" + "=" * 60)
-    print("CONNECTION POOL STATISTICS")
-    print("=" * 60)
-    print(f"Status:              {'HEALTHY' if health['healthy'] else 'WARNING'}")
-    print(f"Pool Size:           {health['pool_size']['min']}-{health['pool_size']['max']} connections")
-    print(f"Semaphore Gate:      {health['semaphore_limit']} max concurrent ({health['semaphore_available']} available)")
-    print(f"Total Checkouts:     {health['checkouts']}")
-    print(f"Total Returns:       {health['returns']}")
-    print(f"Currently Out:       {health['currently_checked_out']}")
-    print(f"Retry Events:        {health['retries']}")
-    print(f"Errors:              {health['errors']}")
-    print(f"Timeout Warnings:    {health['timeouts']}")
-    print(f"Semaphore Waiters:   {health['semaphore_waiters']}")
-    print(f"Stale Reconnects:    {health['stale_reconnects']}")
-    print(f"Reconnect Failures:  {health['db_reconnect_failures']}")
-    print(f"Stale Connections:   {health['stale_connections']}")
-    print("=" * 60 + "\n")
+    logger.info("\n" + "=" * 60)
+    logger.info("CONNECTION POOL STATISTICS")
+    logger.info("=" * 60)
+    logger.info(f"Status:              {'HEALTHY' if health['healthy'] else 'WARNING'}")
+    logger.info(f"Pool Size:           {health['pool_size']['min']}-{health['pool_size']['max']} connections")
+    logger.info(f"Semaphore Gate:      {health['semaphore_limit']} max concurrent ({health['semaphore_available']} available)")
+    logger.info(f"Total Checkouts:     {health['checkouts']}")
+    logger.info(f"Total Returns:       {health['returns']}")
+    logger.info(f"Currently Out:       {health['currently_checked_out']}")
+    logger.info(f"Retry Events:        {health['retries']}")
+    logger.info(f"Errors:              {health['errors']}")
+    logger.info(f"Timeout Warnings:    {health['timeouts']}")
+    logger.info(f"Semaphore Waiters:   {health['semaphore_waiters']}")
+    logger.info(f"Stale Reconnects:    {health['stale_reconnects']}")
+    logger.info(f"Reconnect Failures:  {health['db_reconnect_failures']}")
+    logger.info(f"Stale Connections:   {health['stale_connections']}")
+    logger.info("=" * 60 + "\n")
 
 
 def force_close_stale_connections():
@@ -548,7 +550,7 @@ def force_close_stale_connections():
     if not stale:
         return 0
 
-    print(f"[DB] Force-clearing {len(stale)} stale tracking entries...")
+    logger.info(f"[DB] Force-clearing {len(stale)} stale tracking entries...")
     for conn_id in stale:
         with _stats_lock:
             _checked_out_connections.pop(conn_id, None)
@@ -557,7 +559,7 @@ def force_close_stale_connections():
         except Exception:
             pass
 
-    print(f"[DB] Cleared {len(stale)} stale entries")
+    logger.info(f"[DB] Cleared {len(stale)} stale entries")
     return len(stale)
 
 
@@ -566,14 +568,14 @@ def close_pool():
     global _connection_pool
 
     if USE_POSTGRES and _connection_pool is not None:
-        print("\n[DB] Shutting down connection pool...")
+        logger.info("\n[DB] Shutting down connection pool...")
         print_pool_stats()
 
         with _pool_lock:
             _connection_pool.closeall()
             _connection_pool = None
 
-        print("[DB] Connection pool closed")
+        logger.info("[DB] Connection pool closed")
 
 
 def get_pool_stats() -> dict:

@@ -103,11 +103,13 @@ from app.data.data_manager import data_manager
 from utils import config
 from app.mtf.bos_fvg_engine import scan_bos_fvg, is_force_close_time, find_fvg_after_bos
 from app.filters.early_session_disqualifier import should_skip_cfw6_or_early
+import logging
+logger = logging.getLogger(__name__)
 try:
     from app.screening.screener_integration import get_ticker_screener_metadata
-    print("[SNIPER] ✅ screener_integration loaded")
+    logger.info("[SNIPER] ✅ screener_integration loaded")
 except ImportError:
-    print("[SNIPER] ⚠️  screener_integration not found — using watchlist fallback")
+    logger.info("[SNIPER] ⚠️  screener_integration not found — using watchlist fallback")
     def get_ticker_screener_metadata(ticker):
         # FIX 45.H-3 + 45.M-6 (MAR 19 2026): real lookup from locked watchlist
         # instead of stub always returning qualified=False, rvol=0.0.
@@ -130,7 +132,7 @@ except ImportError:
                         'tier':      tier,
                     }
         except Exception as _e:
-            print(f"[SNIPER] screener_metadata fallback error ({ticker}): {_e}")
+            logger.info(f"[SNIPER] screener_metadata fallback error ({ticker}): {_e}")
         return {'qualified': False, 'score': 0, 'rvol': 0.0, 'tier': None}
 
 from app.core.watch_signal_store import (
@@ -144,45 +146,44 @@ from app.core.armed_signal_store import (
 # ── Refactored modules ────────────────────────────────────────────────────────
 try:
     from app.core.eod_reporter import run_eod_reports
-    print("[SNIPER] ✅ eod_reporter loaded")
+    logger.info("[SNIPER] ✅ eod_reporter loaded")
 except ImportError:
-    print("[SNIPER] ⚠️  eod_reporter not found — EOD reports disabled")
+    logger.info("[SNIPER] ⚠️  eod_reporter not found — EOD reports disabled")
     def run_eod_reports(*args, **kwargs):
-        print("[EOD] ⚠️  run_eod_reports stub called — module not installed")
+        logger.info("[EOD] ⚠️  run_eod_reports stub called — module not installed")
 from app.filters.vwap_gate import compute_vwap, passes_vwap_gate
 try:
     from app.filters.mtf_bias import mtf_bias_engine
     MTF_BIAS_ENABLED = True
-    print("[SNIPER] ✅ MTF bias engine enabled (Phase 1.34 — 1H/15m top-down)")
+    logger.info("[SNIPER] ✅ MTF bias engine enabled (Phase 1.34 — 1H/15m top-down)")
 except ImportError:
     MTF_BIAS_ENABLED = False
-    print("[SNIPER] ⚠️  MTF bias engine disabled")
+    logger.info("[SNIPER] ⚠️  MTF bias engine disabled")
     mtf_bias_engine = None
 try:
     from app.core.gate_stats import _track_gate_result
-    print("[SNIPER] ✅ gate_stats loaded")
+    logger.info("[SNIPER] ✅ gate_stats loaded")
 except ImportError:
-    print("[SNIPER] ⚠️  gate_stats not found — using stub")
+    logger.info("[SNIPER] ⚠️  gate_stats not found — using stub")
     def _track_gate_result(grade, signal_type, confidence, passed): pass
 from app.ai.ai_learning import compute_confidence
 from app.core.arm_signal import arm_ticker
 try:
     from app.core.sniper_log import _track_validation_call
-    print("[SNIPER] ✅ sniper_log loaded")
+    logger.info("[SNIPER] ✅ sniper_log loaded")
 except ImportError:
-    print("[SNIPER] ⚠️  sniper_log not found — using stub")
+    logger.info("[SNIPER] ⚠️  sniper_log not found — using stub")
     def _track_validation_call(ticker, direction, price): return False
 # ── FIX #15: DB-persisted signal cooldown (survives Railway restarts) ─────────
 from app.analytics.cooldown_tracker import is_on_cooldown, set_cooldown
-print("[SNIPER] ✅ Signal cooldown gate loaded (DB-persisted, restart-safe)")
 
 try:
     from app.validation.volume_profile import get_volume_analyzer
     VOLUME_PROFILE_ENABLED = True
-    print("[SNIPER] ✅ Volume profile validation enabled")
+    logger.info("[SNIPER] ✅ Volume profile validation enabled")
 except ImportError:
     VOLUME_PROFILE_ENABLED = False
-    print("[SNIPER] ⚠️  Volume profile disabled")
+    logger.info("[SNIPER] ⚠️  Volume profile disabled")
     def get_volume_analyzer():
         return None
 try:
@@ -190,10 +191,10 @@ try:
         identify_order_block, cache_order_block, apply_ob_retest_boost, clear_ob_cache
     )
     ORDER_BLOCK_ENABLED = True
-    print("[SNIPER] ✅ Order block retest cache enabled")
+    logger.info("[SNIPER] ✅ Order block retest cache enabled")
 except ImportError:
     ORDER_BLOCK_ENABLED = False
-    print("[SNIPER] ⚠️  Order block cache disabled")
+    logger.info("[SNIPER] ⚠️  Order block cache disabled")
     def identify_order_block(bars, bos_idx, direction): return None
     def cache_order_block(ticker, ob): pass
     def apply_ob_retest_boost(ticker, entry_price, direction, confidence): return confidence, None
@@ -207,46 +208,46 @@ try:
         detect_fvg_after_break,
 )
     ORB_TRACKER_ENABLED = True
-    print("[SNIPER] ✅ ORB Detector enabled")
+    logger.info("[SNIPER] ✅ ORB Detector enabled")
 except ImportError:
     ORB_TRACKER_ENABLED = False
     or_detector = None
-    print("[SNIPER] ⚠️  ORB Detector disabled")
+    logger.info("[SNIPER] ⚠️  ORB Detector disabled")
 try:
     from app.signals.vwap_reclaim import detect_vwap_reclaim
     VWAP_RECLAIM_ENABLED = True
-    print("[SNIPER] ✅ VWAP reclaim signal enabled")
+    logger.info("[SNIPER] ✅ VWAP reclaim signal enabled")
 except ImportError:
     VWAP_RECLAIM_ENABLED = False
-    print("[SNIPER] ⚠️  VWAP reclaim signal disabled")
+    logger.info("[SNIPER] ⚠️  VWAP reclaim signal disabled")
     def detect_vwap_reclaim(bars): return None
 
 try:
     from app.validation.entry_timing import get_entry_timing_validator
     ENTRY_TIMING_ENABLED = True
-    print("[SNIPER] ✅ Entry timing validation enabled")
+    logger.info("[SNIPER] ✅ Entry timing validation enabled")
 except ImportError:
     ENTRY_TIMING_ENABLED = False
-    print("[SNIPER] ⚠️  Entry timing disabled")
+    logger.info("[SNIPER] ⚠️  Entry timing disabled")
     def get_entry_timing_validator():
         return None
 
 try:
     from app.filters.liquidity_sweep import apply_sweep_boost
     LIQUIDITY_SWEEP_ENABLED = True
-    print("[SNIPER] ✅ Liquidity sweep detector enabled")
+    logger.info("[SNIPER] ✅ Liquidity sweep detector enabled")
 except ImportError:
     LIQUIDITY_SWEEP_ENABLED = False
-    print("[SNIPER] ⚠️  Liquidity sweep detector disabled")
+    logger.info("[SNIPER] ⚠️  Liquidity sweep detector disabled")
     def apply_sweep_boost(ticker, bars, direction, or_high, or_low, confidence, vwap=0.0):
         return confidence, None
 try:
     from app.mtf.mtf_integration import run_mtf_trend_step
     MTF_TREND_ENABLED = True
-    print("[SNIPER] ✅ MTF trend validator enabled (Step 8.5)")
+    logger.info("[SNIPER] ✅ MTF trend validator enabled (Step 8.5)")
 except ImportError:
     MTF_TREND_ENABLED = False
-    print("[SNIPER] ⚠️  MTF trend validator disabled")
+    logger.info("[SNIPER] ⚠️  MTF trend validator disabled")
     def run_mtf_trend_step(ticker, direction, entry_price, confidence, signal_data):
         return confidence, signal_data
 
@@ -254,10 +255,10 @@ except ImportError:
 try:
     from app.mtf.smc_engine import enrich_signal_with_smc
     SMC_ENRICHMENT_ENABLED = True
-    print("[SNIPER] ✅ SMC enrichment enabled (Step 8.6 — CHoCH/Inducement/OB/Phase)")
+    logger.info("[SNIPER] ✅ SMC enrichment enabled (Step 8.6 — CHoCH/Inducement/OB/Phase)")
 except ImportError:
     SMC_ENRICHMENT_ENABLED = False
-    print("[SNIPER] ⚠️  SMC enrichment disabled")
+    logger.info("[SNIPER] ⚠️  SMC enrichment disabled")
     def enrich_signal_with_smc(ticker, bars, signal_data):
         return signal_data
 
@@ -266,10 +267,10 @@ try:
         cache_sd_zones, apply_sd_confluence_boost, clear_sd_cache
     )
     SD_ZONE_ENABLED = True
-    print("[SNIPER] ✅ S/D zone confluence enabled")
+    logger.info("[SNIPER] ✅ S/D zone confluence enabled")
 except ImportError:
     SD_ZONE_ENABLED = False
-    print("[SNIPER] ⚠️  S/D zone confluence disabled")
+    logger.info("[SNIPER] ⚠️  S/D zone confluence disabled")
     def cache_sd_zones(ticker, bars): pass
     def apply_sd_confluence_boost(ticker, entry_price, direction, confidence): return confidence, None
     def clear_sd_cache(ticker=None): pass
@@ -282,11 +283,11 @@ except ImportError:
 try:
     from app.analytics.funnel_analytics import funnel_tracker as _funnel_tracker
     FUNNEL_ANALYTICS_ENABLED = True
-    print("[SNIPER] ✅ Funnel analytics enabled (log_bos + log_fvg)")
+    logger.info("[SNIPER] ✅ Funnel analytics enabled (log_bos + log_fvg)")
 except ImportError:
     _funnel_tracker = None
     FUNNEL_ANALYTICS_ENABLED = False
-    print("[SNIPER] ⚠️  Funnel analytics disabled")
+    logger.info("[SNIPER] ⚠️  Funnel analytics disabled")
 
 
 def _log_bos_event(ticker: str, direction: str, bos_price: float, signal_type: str):
@@ -299,7 +300,7 @@ def _log_bos_event(ticker: str, direction: str, bos_price: float, signal_type: s
             reason=f"{direction.upper()} {signal_type} @ ${bos_price:.2f}"
         )
     except Exception as _e:
-        print(f"[FUNNEL] _log_bos_event error (non-fatal): {_e}")
+        logger.info(f"[FUNNEL] _log_bos_event error (non-fatal): {_e}")
 
 
 def _log_fvg_event(ticker: str, direction: str, fvg_low: float, fvg_high: float, signal_type: str):
@@ -312,7 +313,7 @@ def _log_fvg_event(ticker: str, direction: str, fvg_low: float, fvg_high: float,
             reason=f"{direction.upper()} {signal_type} zone=${fvg_low:.2f}-{fvg_high:.2f}"
         )
     except Exception as _e:
-        print(f"[FUNNEL] _log_fvg_event error (non-fatal): {_e}")
+        logger.info(f"[FUNNEL] _log_fvg_event error (non-fatal): {_e}")
 
 
 from app.ml.metrics_cache import get_ticker_win_rates
@@ -360,10 +361,10 @@ try:
         get_market_regime, print_market_regime,
     )
     SPY_EMA_CONTEXT_ENABLED = True
-    print("[SNIPER] ✅ SPY EMA context enabled (5m EMA 9/21/50)")
+    logger.info("[SNIPER] ✅ SPY EMA context enabled (5m EMA 9/21/50)")
 except ImportError as e:
     SPY_EMA_CONTEXT_ENABLED = False
-    print(f"[SNIPER] ⚠️  SPY EMA context disabled: {e}")
+    logger.info(f"[SNIPER] ⚠️  SPY EMA context disabled: {e}")
     def get_market_regime(force_refresh=False): return {"label": "UNKNOWN", "score_adj": 0}
     def print_market_regime(r, ticker=""): pass
 
@@ -373,7 +374,6 @@ except ImportError as e:
 from app.core.thread_safe_state import get_state
 
 _state = get_state()
-print("[SNIPER] ✅ Thread-safe state management enabled")
 # ══════════════════════════════════════════════════════════════════════════════
 # INTEGRATION POINT #1: IMPORT TRACKERS
 # ══════════════════════════════════════════════════════════════════════════════
@@ -382,18 +382,14 @@ try:
     from app.analytics.explosive_tracker import explosive_tracker
     from app.analytics.grade_gate_tracker import grade_gate_tracker
     TRACKERS_ENABLED = True
-    print("[SNIPER] ✅ Analytics trackers loaded (cooldown, explosive, grade gate)")
+    logger.info("[SNIPER] ✅ Analytics trackers loaded (cooldown, explosive, grade gate)")
 except ImportError as e:
     cooldown_tracker = None
     explosive_tracker = None
     grade_gate_tracker = None
     TRACKERS_ENABLED = False
-    print(f"[SNIPER] ⚠️  Analytics trackers not available: {e}")
+    logger.info(f"[SNIPER] ⚠️  Analytics trackers not available: {e}")
 
-print("[SNIPER] ✅ VWAP directional gate enabled (app.filters.vwap_gate)")
-print("[SNIPER] ✅ Confidence model loaded (app.ai.ai_learning)")
-print("[SNIPER] ✅ Gate stats tracker loaded (app.core.gate_stats)")
-print("[SNIPER] ✅ arm_ticker loaded (app.core.arm_signal)")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PHASE 4 INTEGRATION - Signal Analytics & Performance Monitoring
@@ -407,21 +403,21 @@ try:
     )
     PHASE_4_ENABLED = True
     alert_manager = None
-    print("[SIGNALS] ✅ Phase 4 monitoring enabled (analytics + performance)")
+    logger.info("[SIGNALS] ✅ Phase 4 monitoring enabled (analytics + performance)")
 except ImportError as import_err:
     signal_tracker = None
     performance_monitor = None
     alert_manager = None
     PHASE_4_ENABLED = False
-    print(f"[SIGNALS] ⚠️  Phase 4 monitoring disabled: {import_err}")
+    logger.info(f"[SIGNALS] ⚠️  Phase 4 monitoring disabled: {import_err}")
 
 try:
     from utils.production_helpers import _send_alert_safe, _fetch_data_safe, _db_operation_safe
     PRODUCTION_HELPERS_ENABLED = True
-    print("[SNIPER] ✅ Production hardening enabled")
+    logger.info("[SNIPER] ✅ Production hardening enabled")
 except ImportError:
     PRODUCTION_HELPERS_ENABLED = False
-    print("[SNIPER] ⚠️  Production helpers not available")
+    logger.info("[SNIPER] ⚠️  Production helpers not available")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # HOURLY CONFIDENCE GATE
@@ -429,10 +425,10 @@ except ImportError:
 try:
     from app.validation.hourly_gate import get_hourly_confidence_multiplier, get_current_hour_context, print_hourly_gate_stats
     HOURLY_GATE_ENABLED = True
-    print("[SIGNALS] ✅ Hourly confidence gate enabled (time-based WR adjustment)")
+    logger.info("[SIGNALS] ✅ Hourly confidence gate enabled (time-based WR adjustment)")
 except ImportError:
     HOURLY_GATE_ENABLED = False
-    print("[SIGNALS] ⚠️  Hourly gate disabled (module not found)")
+    logger.info("[SIGNALS] ⚠️  Hourly gate disabled (module not found)")
     def get_hourly_confidence_multiplier():
         return 1.0
     def get_current_hour_context():
@@ -442,18 +438,16 @@ except ImportError:
 
 VALIDATOR_ENABLED = True
 VALIDATOR_TEST_MODE = False
-print("[SIGNALS] ✅ Multi-indicator validator ACTIVE (filtering enabled)")
 
 OPTIONS_PRE_GATE_ENABLED = True
-print("[SNIPER] ✅ Options pre-validation gate enabled (via validation.py)")
 
 try:
     from app.mtf.mtf_integration import enhance_signal_with_mtf, print_mtf_stats
     MTF_ENABLED = True
-    print("[SNIPER] ✅ MTF convergence boost enabled")
+    logger.info("[SNIPER] ✅ MTF convergence boost enabled")
 except ImportError:
     MTF_ENABLED = False
-    print("[SNIPER] ⚠️  MTF system not available — single-timeframe mode")
+    logger.info("[SNIPER] ⚠️  MTF system not available — single-timeframe mode")
     def enhance_signal_with_mtf(*args, **kwargs):
         return {'enabled': False, 'convergence': False, 'boost': 0.0, 'reason': 'MTF disabled', 'timeframes': []}
     def print_mtf_stats():
@@ -462,10 +456,10 @@ except ImportError:
 try:
     from app.mtf.mtf_fvg_priority import get_highest_priority_fvg, get_full_mtf_analysis, print_priority_stats
     MTF_PRIORITY_ENABLED = True
-    print("[SNIPER] ✅ MTF FVG priority resolver enabled")
+    logger.info("[SNIPER] ✅ MTF FVG priority resolver enabled")
 except ImportError:
     MTF_PRIORITY_ENABLED = False
-    print("[SNIPER] ⚠️  MTF priority resolver not available — single-TF FVG mode")
+    logger.info("[SNIPER] ⚠️  MTF priority resolver not available — single-TF FVG mode")
     def get_highest_priority_fvg(*args, **kwargs):
         return None
     def get_full_mtf_analysis(*args, **kwargs):
@@ -474,11 +468,9 @@ except ImportError:
         pass
 
 REGIME_FILTER_ENABLED = True
-print("[SNIPER] ✅ Regime filter enabled (VIX/SPY market condition detection - via validation.py)")
 
 EXPLOSIVE_SCORE_THRESHOLD = 80
 EXPLOSIVE_RVOL_THRESHOLD = 3.0
-print(f"[SNIPER] ✅ Explosive mover override enabled (score>={EXPLOSIVE_SCORE_THRESHOLD} + RVOL>={EXPLOSIVE_RVOL_THRESHOLD}x)")
 
 MAX_WATCH_BARS = 12
 OPTIONS_PRE_GATE_MODE = "HARD"
@@ -495,16 +487,16 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
     try:
         blocked, cooldown_reason = is_on_cooldown(ticker, direction)
         if blocked:
-            print(f"[{ticker}] 🚫 SIGNAL COOLDOWN: {cooldown_reason}")
+            logger.info(f"[{ticker}] 🚫 SIGNAL COOLDOWN: {cooldown_reason}")
             return False
     except Exception as _cd_err:
-        print(f"[{ticker}] [COOLDOWN] Check error (non-fatal): {_cd_err}")
+        logger.info(f"[{ticker}] [COOLDOWN] Check error (non-fatal): {_cd_err}")
 
     # Analytics cooldown tracker (in-memory reporting, non-blocking)
     if TRACKERS_ENABLED and cooldown_tracker:
         if cooldown_tracker.is_in_cooldown(ticker):
             remaining = cooldown_tracker.get_cooldown_remaining(ticker)
-            print(f"[{ticker}] 🚫 ANALYTICS COOLDOWN: {remaining:.0f}s remaining — signal dropped")
+            logger.info(f"[{ticker}] 🚫 ANALYTICS COOLDOWN: {remaining:.0f}s remaining — signal dropped")
             return False
 
     _pre_options_data = None
@@ -514,9 +506,9 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
             _proxy_entry = bars_session[-1]["close"]
             greeks_valid, greeks_reason = validate_signal_greeks(ticker, direction, _proxy_entry)
             greeks_emoji = "✅" if greeks_valid else "❌"
-            print(f"[{ticker}] {greeks_emoji} GREEKS-GATE: {greeks_reason}")
+            logger.info(f"[{ticker}] {greeks_emoji} GREEKS-GATE: {greeks_reason}")
             if OPTIONS_PRE_GATE_MODE == "HARD" and not greeks_valid:
-                print(f"[{ticker}] 🚫 Signal dropped: Greeks pre-check failed")
+                logger.info(f"[{ticker}] 🚫 Signal dropped: Greeks pre-check failed")
                 return False
             if greeks_valid or OPTIONS_PRE_GATE_MODE == "SOFT":
                 from app.validation.validation import get_options_filter
@@ -530,14 +522,14 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
                 _pre_options_data = _opts_data
                 if OPTIONS_PRE_GATE_MODE == "HARD":
                     if not _tradeable:
-                        print(f"[{ticker}] ❌ OPTIONS-GATE [FULL]: {_reason} — signal dropped")
+                        logger.info(f"[{ticker}] ❌ OPTIONS-GATE [FULL]: {_reason} — signal dropped")
                         return False
-                    print(f"[{ticker}] ✅ OPTIONS-GATE [FULL]: passed → proceeding to confirmation")
+                    logger.info(f"[{ticker}] ✅ OPTIONS-GATE [FULL]: passed → proceeding to confirmation")
                 else:
                     full_emoji = "✅" if _tradeable else "⚠️"
-                    print(f"[{ticker}] {full_emoji} OPTIONS-GATE [FULL-SOFT]: {_reason}")
+                    logger.info(f"[{ticker}] {full_emoji} OPTIONS-GATE [FULL-SOFT]: {_reason}")
         except Exception as _gate_err:
-            print(f"[{ticker}] OPTIONS-GATE error (non-fatal): {_gate_err}")
+            logger.info(f"[{ticker}] OPTIONS-GATE error (non-fatal): {_gate_err}")
             _pre_options_data = None
 
     vp_boost = 0.0
@@ -555,7 +547,7 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
                     bars=bars_session
                 )
                 vp_emoji = "✅" if is_valid else "❌"
-                print(f"[{ticker}] {vp_emoji} VOLUME PROFILE: {vp_reason}")
+                logger.info(f"[{ticker}] {vp_emoji} VOLUME PROFILE: {vp_reason}")
                 if vp_data:
                     vp_boost = vp_data.get('confidence_boost', 0.0)
                     vp_bias  = vp_data.get('options_bias', 'NEUTRAL')
@@ -567,10 +559,10 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
                     )
 
                 if not is_valid:
-                    print(f"[{ticker}] 🚫 Signal dropped: Volume profile validation failed")
+                    logger.info(f"[{ticker}] 🚫 Signal dropped: Volume profile validation failed")
                     return False
         except Exception as vp_err:
-            print(f"[{ticker}] Volume profile validation error (non-fatal): {vp_err}")
+            logger.info(f"[{ticker}] Volume profile validation error (non-fatal): {vp_err}")
 
     if skip_cfw6_confirmation:
         # FIX #3 (MAR 15, 2026): use close of last confirmed bar, not open.
@@ -579,16 +571,16 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         base_grade  = bos_confirmation if bos_confirmation in ("A+", "A", "A-", "B+", "B") else "A-"
         confirm_idx = len(bars_session) - 1
         confirm_type = bos_candle_type or "BOS+FVG"
-        print(f"[{ticker}] ✅ BOS CONFIRMATION (pre-confirmed): {base_grade} grade @ ${entry_price:.2f}")
+        logger.info(f"[{ticker}] ✅ BOS CONFIRMATION (pre-confirmed): {base_grade} grade @ ${entry_price:.2f}")
     else:
         result = wait_for_confirmation(
             bars_session, direction, (zone_low, zone_high), breakout_idx + 1
         )
         found, entry_price, base_grade, confirm_idx, confirm_type = result
         if not found or base_grade == "reject":
-            print(f"[{ticker}] — No confirmation (found={found}, grade={base_grade})")
+            logger.info(f"[{ticker}] — No confirmation (found={found}, grade={base_grade})")
             return False
-        print(f"[{ticker}] ✅ CONFIRMATION: {base_grade} grade @ ${entry_price:.2f}")
+        logger.info(f"[{ticker}] ✅ CONFIRMATION: {base_grade} grade @ ${entry_price:.2f}")
 
 
     if ENTRY_TIMING_ENABLED:
@@ -601,7 +593,7 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
                     grade=base_grade
                 )
                 timing_emoji = "✅" if is_valid else "❌"
-                print(f"[{ticker}] {timing_emoji} ENTRY TIMING: {timing_reason}")
+                logger.info(f"[{ticker}] {timing_emoji} ENTRY TIMING: {timing_reason}")
                 if timing_data:
                     print(
                         f"[{ticker}] Timing Details: Hour={timing_data.get('hour')}:00 | "
@@ -609,25 +601,25 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
                         f"Quality={timing_data.get('session_quality', 'unknown')}"
                     )
                 if not is_valid:
-                    print(f"[{ticker}] 🚫 Signal dropped: Entry timing validation failed")
+                    logger.info(f"[{ticker}] 🚫 Signal dropped: Entry timing validation failed")
                     return False
         except Exception as timing_err:
-            print(f"[{ticker}] Entry timing validation error (non-fatal): {timing_err}")
+            logger.info(f"[{ticker}] Entry timing validation error (non-fatal): {timing_err}")
 
     if ORDER_BLOCK_ENABLED:
         _ob = identify_order_block(bars_session, breakout_idx, direction)
         if _ob:
             cache_order_block(ticker, _ob)
-            print(f"[{ticker}] 📦 OB cached: ${_ob['ob_low']:.2f}–${_ob['ob_high']:.2f}")
+            logger.info(f"[{ticker}] 📦 OB cached: ${_ob['ob_low']:.2f}–${_ob['ob_high']:.2f}")
 
     _vwap_val = compute_vwap(bars_session)  # PHASE 3C: compute once, reuse everywhere
     vwap_passes, vwap_reason = passes_vwap_gate(bars_session, direction, entry_price, vwap=_vwap_val)
 
     if not vwap_passes:
-        print(f"[{ticker}] 🚫 VWAP GATE: {vwap_reason}")
+        logger.info(f"[{ticker}] 🚫 VWAP GATE: {vwap_reason}")
         return False
     else:
-        print(f"[{ticker}] ✅ VWAP GATE: {vwap_reason}")
+        logger.info(f"[{ticker}] ✅ VWAP GATE: {vwap_reason}")
         # ── Phase 1.34: MTF Bias Gate (1H + 15m top-down, Nitro Trades) ──────────
     # ── Phase 1.34: MTF Bias Gate (1H + 15m top-down, Nitro Trades) ──────────
     if MTF_BIAS_ENABLED and mtf_bias_engine:
@@ -643,14 +635,14 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
                 current_price=entry_price,
             )
             _mtf_emoji = "✅" if _mtf["pass"] else "🚫"
-            print(f"[{ticker}] {_mtf_emoji} MTF BIAS: {_mtf['reason']}")
+            logger.info(f"[{ticker}] {_mtf_emoji} MTF BIAS: {_mtf['reason']}")
             mtf_bias_engine.record_stat(ticker, direction, _mtf)  # Phase 1.35
             if not _mtf["pass"]:
                 return False
             _mtf_bias_adj = _mtf["confidence_adj"]
 
         except Exception as _mtf_err:
-            print(f"[{ticker}] MTF bias check skipped (non-fatal): {_mtf_err}")
+            logger.info(f"[{ticker}] MTF bias check skipped (non-fatal): {_mtf_err}")
             _mtf_bias_adj = 0.0
     else:
         _mtf_bias_adj = 0.0
@@ -662,7 +654,7 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         current_price=entry_price, breakout_idx=breakout_idx, base_grade=base_grade
     )
     if conf_result["final_grade"] == "reject":
-        print(f"[{ticker}] — Rejected by confirmation layers")
+        logger.info(f"[{ticker}] — Rejected by confirmation layers")
         return False
     final_grade = conf_result["final_grade"]
 
@@ -689,7 +681,7 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
     _smc_delta = _smc_signal_data.get('smc', {}).get('total_confidence_delta', 0.0)
     _smc_summary = _smc_signal_data.get('smc', {}).get('smc_summary', '')
     if _smc_summary:
-        print(f"[{ticker}] 🔬 SMC: {_smc_summary} | conf_delta={_smc_delta:+.3f}")
+        logger.info(f"[{ticker}] 🔬 SMC: {_smc_summary} | conf_delta={_smc_delta:+.3f}")
 
     mtf_result = enhance_signal_with_mtf(
         ticker=ticker,
@@ -705,7 +697,7 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
             f"Boost: +{mtf_result['boost']:.2%}"
         )
     else:
-        print(f"[{ticker}] MTF: {mtf_result['reason']}")
+        logger.info(f"[{ticker}] MTF: {mtf_result['reason']}")
 
     stop_price, t1, t2 = compute_stop_and_targets(
         bars_session, direction, or_high_ref, or_low_ref, entry_price,
@@ -725,9 +717,9 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
                 t1_price=t1,
                 t2_price=t2
             )
-            print(f"[PHASE 4] 📊 {ticker} signal GENERATED - {signal_type} {direction.upper()} {final_grade}")
+            logger.info(f"[PHASE 4] 📊 {ticker} signal GENERATED - {signal_type} {direction.upper()} {final_grade}")
         except Exception as e:
-            print(f"[PHASE 4] Signal tracking error: {e}")
+            logger.info(f"[PHASE 4] Signal tracking error: {e}")
 
     latest_bar = bars_session[-1]
     current_volume = latest_bar.get("volume", 0)
@@ -739,7 +731,7 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
     if VALIDATOR_ENABLED:
         is_duplicate = _track_validation_call(ticker, direction, entry_price)
         if is_duplicate:
-            print(f"[VALIDATOR] 🚫 {ticker} - Skipping duplicate validation")
+            logger.info(f"[VALIDATOR] 🚫 {ticker} - Skipping duplicate validation")
             return False
 
         try:
@@ -791,7 +783,7 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
                     if isinstance(v, dict) and not v.get('passed', True)
                 ]
                 if failed:
-                    print(f"[VALIDATOR]   Would filter: {', '.join(failed)}")
+                    logger.info(f"[VALIDATOR]   Would filter: {', '.join(failed)}")
 
             if PHASE_4_ENABLED and signal_tracker:
                 try:
@@ -809,20 +801,20 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
                         rejection_reason=", ".join(validation_result['failed_checks']) if not validation_result['should_take'] else ""
                     )
                     status = "VALIDATED" if validation_result['should_take'] else "REJECTED"
-                    print(f"[PHASE 4] ✅ {ticker} signal {status}")
+                    logger.info(f"[PHASE 4] ✅ {ticker} signal {status}")
                 except Exception as e:
-                    print(f"[PHASE 4] Validation tracking error: {e}")
+                    logger.info(f"[PHASE 4] Validation tracking error: {e}")
 
             if VALIDATOR_TEST_MODE:
                 base_confidence = adjusted_conf
             else:
                 if not validation_result['should_take']:
-                    print(f"[VALIDATOR] {ticker} FILTERED - {', '.join(validation_result['failed_checks'])}")
+                    logger.info(f"[VALIDATOR] {ticker} FILTERED - {', '.join(validation_result['failed_checks'])}")
                     return False
                 base_confidence = adjusted_conf
 
         except Exception as e:
-            print(f"[VALIDATOR] Error validating {ticker}: {e}")
+            logger.info(f"[VALIDATOR] Error validating {ticker}: {e}")
             traceback.print_exc()
 
     ml_boost = 0.0
@@ -830,7 +822,7 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
 
     options_rec = _pre_options_data
     if _pre_options_data and _pre_options_data.get("gex_data"):
-        print(f"[{ticker}] [OPTIONS] GEX data reused from Step 6.5 cache")
+        logger.info(f"[{ticker}] [OPTIONS] GEX data reused from Step 6.5 cache")
 
     ticker_multiplier = 1.0
     mtf_boost = mtf_result.get('boost', 0.0)
@@ -869,7 +861,7 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         spy_regime_adj = (max(0, score_adj) / 100.0 if direction == "bull"
                          else max(0, -score_adj) / 100.0)
         final_confidence = max(0.40, min(final_confidence + spy_regime_adj, 0.95))
-        print(f"[{ticker}] SPY EMA ADJ: {spy_regime_adj:+.3f} | Regime={spy_regime.get('label')}")
+        logger.info(f"[{ticker}] SPY EMA ADJ: {spy_regime_adj:+.3f} | Regime={spy_regime.get('label')}")
 
     _sweep_result = None
     if LIQUIDITY_SWEEP_ENABLED:
@@ -880,7 +872,7 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
             vwap=_vwap_val  # PHASE 3C: reuse VWAP already computed above
         )
         if _sweep_result is None:
-            print(f"[{ticker}] — No liquidity sweep detected")
+            logger.info(f"[{ticker}] — No liquidity sweep detected")
 
     _ob_result = None
     if ORDER_BLOCK_ENABLED:
@@ -888,7 +880,7 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
             ticker, entry_price, direction, final_confidence
         )
         if _ob_result is None:
-            print(f"[{ticker}] — No OB retest detected")
+            logger.info(f"[{ticker}] — No OB retest detected")
 
     _sd_result = None
     if SD_ZONE_ENABLED:
@@ -896,7 +888,7 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
             ticker, entry_price, direction, final_confidence
         )
         if _sd_result is None:
-            print(f"[{ticker}] — No S/D zone confluence")
+            logger.info(f"[{ticker}] — No S/D zone confluence")
 
     now_time = _now_et().time()
     if now_time >= time(15, 0):
@@ -904,7 +896,7 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         decay = max(0.85, 1.0 - (minutes_past_3 / 30) * 0.15)
         final_confidence *= decay
         final_confidence = max(0.40, min(final_confidence, 0.95))
-        print(f"[{ticker}] ⏳ POST-3PM DECAY: {decay:.3f}x → confidence={final_confidence:.3f}")
+        logger.info(f"[{ticker}] ⏳ POST-3PM DECAY: {decay:.3f}x → confidence={final_confidence:.3f}")
 
     print(
         f"[CONFIDENCE-v2] Base:{base_confidence:.2f} "
@@ -952,7 +944,7 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
                     f"Threshold: {original_eff_min:.2f} → {eff_min:.2f} ({hourly_mult:.2f}x)"
                 )
         except Exception as hourly_err:
-            print(f"[HOURLY GATE] Error (non-fatal): {hourly_err}")
+            logger.info(f"[HOURLY GATE] Error (non-fatal): {hourly_err}")
 
     if final_confidence < eff_min:
         _track_gate_result(final_grade, signal_type, final_confidence, passed=False)
@@ -990,7 +982,7 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
             signal_type=signal_type
         )
 
-    print(f"[{ticker}] ✅ GATE PASSED: {final_confidence:.2f} >= {eff_min:.2f} (dynamic)")
+    logger.info(f"[{ticker}] ✅ GATE PASSED: {final_confidence:.2f} >= {eff_min:.2f} (dynamic)")
 
     if PHASE_4_ENABLED and signal_tracker:
         try:
@@ -1001,9 +993,9 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
                 bars_to_confirmation=bars_to_confirmation,
                 confirmation_type=confirm_type or 'retest'
             )
-            print(f"[PHASE 4] 🎯 {ticker} signal ARMED - confidence={final_confidence:.2f}")
+            logger.info(f"[PHASE 4] 🎯 {ticker} signal ARMED - confidence={final_confidence:.2f}")
         except Exception as e:
-            print(f"[PHASE 4] Armed tracking error: {e}")
+            logger.info(f"[PHASE 4] Armed tracking error: {e}")
 
     arm_ticker(
         ticker, direction, zone_low, zone_high,
@@ -1075,10 +1067,10 @@ def process_ticker(ticker: str):
             try:
                 bars_session = data_manager.get_today_session_bars(ticker)
                 if not bars_session:
-                    print(f"[{ticker}] No session bars")
+                    logger.info(f"[{ticker}] No session bars")
                     return
             except Exception as e:
-                print(f"[{ticker}] ❌ Data fetch failed: {e}")
+                logger.info(f"[{ticker}] ❌ Data fetch failed: {e}")
                 return
 
         print(
@@ -1095,7 +1087,7 @@ def process_ticker(ticker: str):
                 spy_regime = get_market_regime()
                 print_market_regime(spy_regime, ticker)
             except Exception as e:
-                print(f"[{ticker}] SPY EMA context error (non-fatal): {e}")
+                logger.info(f"[{ticker}] SPY EMA context error (non-fatal): {e}")
 
         if is_force_close_time(bars_session[-1]):
             run_eod_reports(
@@ -1150,12 +1142,12 @@ def process_ticker(ticker: str):
 
             bars_since = len(bars_session) - w["breakout_idx"]
             if bars_since > MAX_WATCH_BARS:
-                print(f"[{ticker}] ⏰ Watch expired — clearing")
+                logger.info(f"[{ticker}] ⏰ Watch expired — clearing")
                 _state.remove_watching_signal(ticker)
                 _remove_watch_from_db(ticker)
                 return
             else:
-                print(f"[{ticker}] 👁️ WATCHING [{bars_since}/{MAX_WATCH_BARS}]")
+                logger.info(f"[{ticker}] 👁️ WATCHING [{bars_since}/{MAX_WATCH_BARS}]")
                 fvg_threshold, _ = get_adaptive_fvg_threshold(bars_session, ticker)
                 fvg_result = find_fvg_after_bos(
                     bars_session, w["breakout_idx"], w["direction"],
@@ -1192,7 +1184,7 @@ def process_ticker(ticker: str):
                     f"— skipping OR path, trying intraday BOS"
                 )
             else:
-                print(f"[{ticker}] OR: ${or_low:.2f}—${or_high:.2f} ({or_range_pct:.2%})")
+                logger.info(f"[{ticker}] OR: ${or_low:.2f}—${or_high:.2f} ({or_range_pct:.2%})")
 
                 now_et = _now_et()
                 if should_skip_cfw6_or_early(or_range_pct, now_et):
@@ -1240,10 +1232,10 @@ def process_ticker(ticker: str):
                                 or_high, or_low, "CFW6_OR"
                             )
                         else:
-                            print(f"[{ticker}] 🔕 BOS watch alert suppressed (already sent)")
+                            logger.info(f"[{ticker}] 🔕 BOS watch alert suppressed (already sent)")
                         return
                 else:
-                    print(f"[{ticker}] No ORB")
+                    logger.info(f"[{ticker}] No ORB")
 
                 if scan_mode is None and _now_et().time() >= time(10, 30):
                     from app.signals.opening_range import get_secondary_range_levels
@@ -1291,11 +1283,11 @@ def process_ticker(ticker: str):
                                         sr["sr_high"], sr["sr_low"], "CFW6_OR"
                                     )
                                 else:
-                                    print(f"[{ticker}] 🔕 BOS watch alert suppressed (already sent)")
+                                    logger.info(f"[{ticker}] 🔕 BOS watch alert suppressed (already sent)")
                                 return
 
         else:
-            print(f"[{ticker}] No OR bars")
+            logger.info(f"[{ticker}] No OR bars")
 
         if scan_mode is None:
             if len(bars_session) < 15:
@@ -1304,7 +1296,7 @@ def process_ticker(ticker: str):
             fvg_threshold, _ = get_adaptive_fvg_threshold(bars_session, ticker)
             bos_signal = scan_bos_fvg(ticker, bars_session, fvg_min_pct=fvg_threshold)
             if bos_signal is None:
-                print(f"[{ticker}] — No BOS+FVG signal")
+                logger.info(f"[{ticker}] — No BOS+FVG signal")
                 return
 
             direction = bos_signal["direction"]
@@ -1330,7 +1322,7 @@ def process_ticker(ticker: str):
                     )
                     primary_fvg = mtf_analysis['primary_fvg']
                     if primary_fvg is None:
-                        print(f"[{ticker}] — No FVGs found on any timeframe (MTF scan)")
+                        logger.info(f"[{ticker}] — No FVGs found on any timeframe (MTF scan)")
                         return
                     zone_low = primary_fvg['fvg_low']
                     zone_high = primary_fvg['fvg_high']
@@ -1346,7 +1338,7 @@ def process_ticker(ticker: str):
                             f"Zone: ${zone_low:.2f}-${zone_high:.2f}"
                         )
                 except Exception as priority_err:
-                    print(f"[{ticker}] MTF priority error (falling back to 5m): {priority_err}")
+                    logger.info(f"[{ticker}] MTF priority error (falling back to 5m): {priority_err}")
                     zone_low = bos_signal["fvg_low"]
                     zone_high = bos_signal["fvg_high"]
             else:
@@ -1363,7 +1355,7 @@ def process_ticker(ticker: str):
             scan_mode = "INTRADAY_BOS"
 
         signal_type = "CFW6_OR" if scan_mode == "OR_ANCHORED" else "CFW6_INTRADAY"
-        print(f"[{ticker}] {scan_mode} | FVG ${zone_low:.2f}—${zone_high:.2f}")
+        logger.info(f"[{ticker}] {scan_mode} | FVG ${zone_low:.2f}—${zone_high:.2f}")
         _run_signal_pipeline(
             ticker, direction, zone_low, zone_high,
             or_high_ref, or_low_ref, signal_type,
@@ -1385,7 +1377,7 @@ def process_ticker(ticker: str):
                         f"ATR Ratio: {or_data['or_range_atr']:.2f}x"
                     )
             except Exception as orb_err:
-                print(f"[{ticker}] ORB classify error (non-fatal): {orb_err}")
+                logger.info(f"[{ticker}] ORB classify error (non-fatal): {orb_err}")
 
         # AFTER
         if scan_mode is None and VWAP_RECLAIM_ENABLED:
@@ -1417,8 +1409,8 @@ def process_ticker(ticker: str):
                     skip_cfw6_confirmation=True,
                 )
             else:
-                print(f"[{ticker}] — No VWAP reclaim signal")
+                logger.info(f"[{ticker}] — No VWAP reclaim signal")
 
     except Exception as e:
-        print(f"process_ticker error {ticker}:", e)
+        logger.info(f"process_ticker error {ticker}:", e)
         traceback.print_exc()

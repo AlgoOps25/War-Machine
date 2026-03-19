@@ -160,23 +160,20 @@ analytics_conn = None
 _analytics_conn_lock = __import__('threading').Lock()
 DATABASE_URL = os.getenv('DATABASE_URL')
 
-print("=" * 50, flush=True)
-print("[DB] Attempting connection...", flush=True)
 if DATABASE_URL:
     try:
         import psycopg2
         analytics_conn = psycopg2.connect(DATABASE_URL, connect_timeout=10)
         analytics_conn.autocommit = True
-        print("[DB] ✓ Connected - Analytics ONLINE", flush=True)
+        logger.info("[DB] ✓ Connected - Analytics ONLINE")
         ANALYTICS_AVAILABLE = True
     except Exception as e:
-        print(f"[DB] ✗ FAILED: {e}", flush=True)
-        print("[DB] Analytics DISABLED - continuing without tracking", flush=True)
+        logger.info(f"[DB] ✗ FAILED: {e}")
+        logger.info("[DB] Analytics DISABLED - continuing without tracking")
         ANALYTICS_AVAILABLE = False
 else:
-    print("[DB] ✗ DATABASE_URL not set - Analytics DISABLED", flush=True)
+    logger.info("[DB] ✗ DATABASE_URL not set - Analytics DISABLED")
     ANALYTICS_AVAILABLE = False
-print("=" * 50, flush=True)
 
 def _get_analytics_conn():
     global analytics_conn, ANALYTICS_AVAILABLE
@@ -360,7 +357,7 @@ def get_adaptive_scan_interval() -> int:
         interval = 300
         label = "Outside Market Hours"
     if interval != _last_logged_interval:
-        print(f"[SCANNER] {label} -> Scanning every {interval}s")
+        logger.info(f"[SCANNER] {label} -> Scanning every {interval}s")
         _last_logged_interval = interval
     return interval
 
@@ -387,7 +384,7 @@ def calculate_optimal_watchlist_size() -> int:
     else:
         size = 40
     if size != _last_logged_watchlist_size:
-        print(f"[SCANNER] Watchlist size adjusted to {size} tickers")
+        logger.info(f"[SCANNER] Watchlist size adjusted to {size} tickers")
         _last_logged_watchlist_size = size
     return size
 
@@ -480,87 +477,87 @@ def start_scanner_loop():
         HAS_AI_LEARNING = False
 
     # ── STARTUP BANNER ────────────────────────────────────────────────────────────────────
-    print("=" * 60, flush=True)
-    print("WAR MACHINE CFW6 SCANNER v1.34 - STARTUP", flush=True)
-    print("=" * 60, flush=True)
-    print("✓ REGIME-FILTER  VIX/SPY regime detection active", flush=True)
-    print("=" * 60, flush=True)
-    print("Risk Manager:    ✅ ENABLED (unified risk layer — Phase 1.15)", flush=True)
-    print("✓ DATA-INGEST    WebSocket starting (tickers TBD)", flush=True)
+    logger.info("=" * 60)
+    logger.info("WAR MACHINE CFW6 SCANNER v1.34 - STARTUP")
+    logger.info("=" * 60)
+    logger.info("✓ REGIME-FILTER  VIX/SPY regime detection active")
+    logger.info("=" * 60)
+    logger.info("Risk Manager:    ✅ ENABLED (unified risk layer — Phase 1.15)")
+    logger.info("✓ DATA-INGEST    WebSocket starting (tickers TBD)")
 
     try:
         cache_dir  = os.path.join(os.getcwd(), 'cache')
         os.makedirs(cache_dir, exist_ok=True)
         cache_files = len([f for f in os.listdir(cache_dir) if f.endswith('.parquet')])
-        print(f"✓ CACHE          {cache_files} cached ticker files, 30d history", flush=True)
+        logger.info(f"✓ CACHE          {cache_files} cached ticker files, 30d history")
     except Exception as e:
-        print(f"? CACHE          Status unknown: {e}", flush=True)
+        logger.info(f"? CACHE          Status unknown: {e}")
 
     db_icon = "✓" if ANALYTICS_AVAILABLE else "✗"
     db_msg  = "Connected - Analytics tracking enabled" if ANALYTICS_AVAILABLE else "OFFLINE - no volume/signal/P&L tracking"
-    print(f"✓ DATABASE        {db_msg}", flush=True)
+    logger.info(f"✓ DATABASE        {db_msg}")
 
     discord_webhook = os.getenv('DISCORD_WEBHOOK_URL')
     disc_icon = "✓" if discord_webhook else "✗"
     disc_msg  = "Alert notifications ready" if discord_webhook else "NOT CONFIGURED - no alerts"
-    print(f"{disc_icon} DISCORD         {disc_msg}", flush=True)
+    logger.info(f"{disc_icon} DISCORD         {disc_msg}")
 
     screener_icon = "✓" if API_KEY else "✗"
     screener_msg  = ("EODHD API configured (" + API_KEY[:8] + "...)") if API_KEY else "EODHD_API_KEY not set"
-    print(f"{screener_icon} SCREENER       {screener_msg}", flush=True)
+    logger.info(f"{screener_icon} SCREENER       {screener_msg}")
 
     try:
         from app.validation.validation import get_regime_filter
         get_regime_filter()
-        print("✓ REGIME-FILTER  VIX/SPY regime detection active", flush=True)
+        logger.info("✓ REGIME-FILTER  VIX/SPY regime detection active")
     except Exception:
-        print("? REGIME-FILTER  Module not found (may be inline)", flush=True)
+        logger.info("? REGIME-FILTER  Module not found (may be inline)")
 
     regime_webhook = os.getenv('REGIME_WEBHOOK_URL')
     reg_icon = "✓" if regime_webhook else "✗"
     reg_msg  = "Regime channel active (SPY+QQQ visual)" if regime_webhook else "NOT CONFIGURED — set REGIME_WEBHOOK_URL"
-    print(f"{reg_icon} REGIME-DISCORD  {reg_msg}", flush=True)
+    logger.info(f"{reg_icon} REGIME-DISCORD  {reg_msg}")
 
     opts_icon = "✓" if OPTIONS_AVAILABLE else "✗"
     opts_msg  = "Integrated - Greeks analysis active" if OPTIONS_AVAILABLE else "NOT INTEGRATED"
-    print(f"{opts_icon} OPTIONS-GATE    {opts_msg}", flush=True)
+    logger.info(f"{opts_icon} OPTIONS-GATE    {opts_msg}")
 
     val_icon = "✓" if VALIDATION_AVAILABLE else "✗"
     val_msg  = "Integrated - CFW6 confirmation active" if VALIDATION_AVAILABLE else "NOT INTEGRATED"
-    print(f"{val_icon} VALIDATION      {val_msg}", flush=True)
+    logger.info(f"{val_icon} VALIDATION      {val_msg}")
 
-    print("=" * 60, flush=True)
+    logger.info("=" * 60)
     pm_mode = "Pre-market" if is_premarket() else "Live"
-    print("Trading session: 09:30 - 16:00 ET", flush=True)
-    print(f"Scanner mode: {pm_mode}", flush=True)
-    print("=" * 60, flush=True)
-    print("Candle Cache:    ✅ ENABLED (95%+ API reduction on redeploy)", flush=True)
-    print("WS Failover:     ✅ ENABLED (REST API fallback on disconnect)", flush=True)
-    print("Spread Gate:     ✅ ENABLED (us-quote bid/ask filter active)", flush=True)
-    print("Dynamic WS:      ✅ ENABLED (live session ticker subscription)", flush=True)
-    print("CFW6 Engine:     ✅ ENABLED (sniper.py direct — Phase 1.16)", flush=True)
-    print("BG Backfill:     ✅ ENABLED (fire-and-forget — Phase 1.17)", flush=True)
-    print("Cache Dir Fix:   ✅ FIXED   (os.getcwd() — Phase 1.18a)", flush=True)
-    print("Health HTTP:     ✅ ENABLED (GET /health → 200/503 — Phase 1.19 C5)", flush=True)
-    print("Analytics Conn:  ✅ FIXED   (reconnect guard — Phase 1.20 H1)", flush=True)
-    print(f"Ticker Watchdog: ✅ ENABLED ({TICKER_TIMEOUT_SECONDS}s hard timeout — Phase 1.21 P0-3)", flush=True)
-    print("Cache Cleanup:   ✅ ENABLED (30d candle_cache pruning EOD — Phase 1.22)", flush=True)
-    print("OR Window:       ✅ FIXED   (9:30-9:40 scans every 5s — Phase 1.23)", flush=True)
-    print("Regime Banner:   ✅ FIXED   (correct import path — Phase 1.23a)", flush=True)
-    print("Session Guard:   ✅ FIXED   (skip premarket on redeploy — Phase 1.24)", flush=True)
-    print("Log Noise:       ✅ REDUCED (no per-ticker banners, no lock spam — Phase 1.24)", flush=True)
-    print("Smart Backfill:  ✅ ENABLED (skip warm cache tickers on redeploy — Phase 1.24)", flush=True)
-    print("Market Regime:   ✅ VISUAL  (SPY+QQQ → REGIME_WEBHOOK_URL, no blocks — Phase 1.25)", flush=True)
-    print(f"Regime WS Feed:  ✅ FIXED   (SPY+QQQ always subscribed for regime bars — Phase 1.26)", flush=True)
-    print("Health Boot Fix: ✅ FIXED   (start_health_server at module load — Phase 1.27)", flush=True)
-    print("Env Var Guard:   ✅ ENABLED (validate_required_env_vars — Phase 1.28)", flush=True)
-    print("DB Checkout Fix: ✅ FIXED   (single get_session_status per cycle — Phase 1.29)", flush=True)
-    print("Sniper Import:   ✅ FIXED   (hard import, no dead stubs fallback — Phase 1.30)", flush=True)
-    print("Discord Import:  ✅ FIXED   (app.notifications.discord_helpers — Phase 1.31)", flush=True)
-    print("EOD Reporter:    ✅ ENABLED (eod_reporter.run_eod_report() — Phase 1.32)", flush=True)
-    print("Dead Code:       ✅ REMOVED (_get_eod_summary_metrics deleted — Phase 1.33)", flush=True)
-    print("Funnel Reset:    ✅ FIXED   (reset_funnel() at EOD — daily watchlist — Phase 1.34)", flush=True)
-    print("=" * 60 + "\n", flush=True)
+    logger.info("Trading session: 09:30 - 16:00 ET")
+    logger.info(f"Scanner mode: {pm_mode}")
+    logger.info("=" * 60)
+    logger.info("Candle Cache:    ✅ ENABLED (95%+ API reduction on redeploy)")
+    logger.info("WS Failover:     ✅ ENABLED (REST API fallback on disconnect)")
+    logger.info("Spread Gate:     ✅ ENABLED (us-quote bid/ask filter active)")
+    logger.info("Dynamic WS:      ✅ ENABLED (live session ticker subscription)")
+    logger.info("CFW6 Engine:     ✅ ENABLED (sniper.py direct — Phase 1.16)")
+    logger.info("BG Backfill:     ✅ ENABLED (fire-and-forget — Phase 1.17)")
+    logger.info("Cache Dir Fix:   ✅ FIXED   (os.getcwd() — Phase 1.18a)")
+    logger.info("Health HTTP:     ✅ ENABLED (GET /health → 200/503 — Phase 1.19 C5)")
+    logger.info("Analytics Conn:  ✅ FIXED   (reconnect guard — Phase 1.20 H1)")
+    logger.info(f"Ticker Watchdog: ✅ ENABLED ({TICKER_TIMEOUT_SECONDS}s hard timeout — Phase 1.21 P0-3)")
+    logger.info("Cache Cleanup:   ✅ ENABLED (30d candle_cache pruning EOD — Phase 1.22)")
+    logger.info("OR Window:       ✅ FIXED   (9:30-9:40 scans every 5s — Phase 1.23)")
+    logger.info("Regime Banner:   ✅ FIXED   (correct import path — Phase 1.23a)")
+    logger.info("Session Guard:   ✅ FIXED   (skip premarket on redeploy — Phase 1.24)")
+    logger.info("Log Noise:       ✅ REDUCED (no per-ticker banners, no lock spam — Phase 1.24)")
+    logger.info("Smart Backfill:  ✅ ENABLED (skip warm cache tickers on redeploy — Phase 1.24)")
+    logger.info("Market Regime:   ✅ VISUAL  (SPY+QQQ → REGIME_WEBHOOK_URL, no blocks — Phase 1.25)")
+    logger.info(f"Regime WS Feed:  ✅ FIXED   (SPY+QQQ always subscribed for regime bars — Phase 1.26)")
+    logger.info("Health Boot Fix: ✅ FIXED   (start_health_server at module load — Phase 1.27)")
+    logger.info("Env Var Guard:   ✅ ENABLED (validate_required_env_vars — Phase 1.28)")
+    logger.info("DB Checkout Fix: ✅ FIXED   (single get_session_status per cycle — Phase 1.29)")
+    logger.info("Sniper Import:   ✅ FIXED   (hard import, no dead stubs fallback — Phase 1.30)")
+    logger.info("Discord Import:  ✅ FIXED   (app.notifications.discord_helpers — Phase 1.31)")
+    logger.info("EOD Reporter:    ✅ ENABLED (eod_reporter.run_eod_report() — Phase 1.32)")
+    logger.info("Dead Code:       ✅ REMOVED (_get_eod_summary_metrics deleted — Phase 1.33)")
+    logger.info("Funnel Reset:    ✅ FIXED   (reset_funnel() at EOD — daily watchlist — Phase 1.34)")
+    logger.info("=" * 60 + "\n")
 
     _booting_into_market_hours = is_market_hours()
     premarket_watchlist = []
@@ -824,7 +821,7 @@ def start_scanner_loop():
                         try:
                             learning_engine.optimize_confirmation_weights()
                             learning_engine.optimize_fvg_threshold()
-                            print(learning_engine.generate_performance_report())
+                            logger.info(learning_engine.generate_performance_report())
                         except Exception as e:
                             logger.error(f"[AI] Optimization error: {e}")
 
@@ -874,7 +871,7 @@ def start_scanner_loop():
 
         except KeyboardInterrupt:
             logger.info("[SCANNER] Shutdown signal received")
-            print(get_eod_report())
+            logger.info(get_eod_report())
             raise
 
         except Exception as e:

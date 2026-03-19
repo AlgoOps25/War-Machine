@@ -20,6 +20,8 @@ from typing import List, Dict, Optional, Tuple
 from datetime import datetime, date
 import statistics
 from app.data.db_connection import get_conn, return_conn, ph
+import logging
+logger = logging.getLogger(__name__)
 
 
 class VolumeState:
@@ -188,12 +190,12 @@ class VolumeAnalyzer:
     def track_ticker(self, ticker: str, lookback_bars: int = 20):
         if ticker not in self.tracked_tickers:
             self.tracked_tickers[ticker] = VolumeState(ticker, lookback_bars)
-            print(f"[VOL] Tracking {ticker} (lookback={lookback_bars} bars)")
+            logger.info(f"[VOL] Tracking {ticker} (lookback={lookback_bars} bars)")
     
     def stop_tracking(self, ticker: str):
         if ticker in self.tracked_tickers:
             del self.tracked_tickers[ticker]
-            print(f"[VOL] Stopped tracking {ticker}")
+            logger.info(f"[VOL] Stopped tracking {ticker}")
     
     def update_bar(self, ticker: str, price: float, volume: int, timestamp: datetime = None):
         if timestamp is None:
@@ -234,7 +236,7 @@ class VolumeAnalyzer:
             cursor.execute(query, (ticker, lookback_minutes))
             rows = cursor.fetchall()
         except Exception as e:
-            print(f"[VOL] Error loading historical bars for {ticker}: {e}")
+            logger.info(f"[VOL] Error loading historical bars for {ticker}: {e}")
             rows = []
         finally:
             return_conn(conn)
@@ -260,7 +262,7 @@ class VolumeAnalyzer:
                 timestamp = ts
             self.update_bar(ticker, close_price, volume, timestamp)
         
-        print(f"[VOL] Loaded {len(rows)} historical bars for {ticker}")
+        logger.info(f"[VOL] Loaded {len(rows)} historical bars for {ticker}")
 
 
 # ===============================================================================
@@ -300,7 +302,7 @@ def get_session_volume(ticker: str) -> int:
         val = row[0] if not isinstance(row, dict) else row.get('coalesce', 0) or row.get('sum', 0) or 0
         return int(val)
     except Exception as e:
-        print(f"[VOL] Error fetching session volume for {ticker}: {e}")
+        logger.info(f"[VOL] Error fetching session volume for {ticker}: {e}")
         return 0
     finally:
         return_conn(conn)
@@ -367,6 +369,6 @@ if __name__ == "__main__":
     analyzer.print_summary()
     signals = analyzer.get_active_signals()
     if signals:
-        print("\nACTIVE SIGNALS:")
+        logger.info("\nACTIVE SIGNALS:")
         for sig in signals:
-            print(f"  {sig['type']}: {sig['ticker']} - {sig['reason']} (conf: {sig['confidence']}%)")
+            logger.info(f"  {sig['type']}: {sig['ticker']} - {sig['reason']} (conf: {sig['confidence']}%)")

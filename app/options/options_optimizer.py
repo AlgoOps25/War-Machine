@@ -19,6 +19,8 @@ from typing import Dict, List, Optional, Tuple
 from datetime import datetime, timedelta
 import time
 import random
+import logging
+logger = logging.getLogger(__name__)
 
 
 def generate_test_strike_data(
@@ -134,9 +136,9 @@ class OptionsChainOptimizer:
         }
         
         if self.test_mode:
-            print("[OPTIONS-OPT] 🧪 TEST MODE: Using simulated data")
+            logger.info("[OPTIONS-OPT] 🧪 TEST MODE: Using simulated data")
         else:
-            print("[OPTIONS-OPT] 🚀 PRODUCTION MODE: Live API enabled")
+            logger.info("[OPTIONS-OPT] 🚀 PRODUCTION MODE: Live API enabled")
     
     async def __aenter__(self):
         """Async context manager entry"""
@@ -196,7 +198,7 @@ class OptionsChainOptimizer:
         if not self.session:
             return None
         
-        print("[OPTIONS-OPT] 🔍 Detecting API endpoint...")
+        logger.info("[OPTIONS-OPT] 🔍 Detecting API endpoint...")
         
         for endpoint in self.ENDPOINTS:
             try:
@@ -214,13 +216,13 @@ class OptionsChainOptimizer:
                         data = await response.json()
                         # Check if response has expected structure
                         if isinstance(data, dict) and ("data" in data or "items" in data):
-                            print(f"[OPTIONS-OPT] ✅ Working endpoint: {endpoint}")
+                            logger.info(f"[OPTIONS-OPT] ✅ Working endpoint: {endpoint}")
                             return endpoint
             except Exception as e:
-                print(f"[OPTIONS-OPT] ❌ Endpoint failed: {endpoint} - {e}")
+                logger.info(f"[OPTIONS-OPT] ❌ Endpoint failed: {endpoint} - {e}")
                 continue
         
-        print("[OPTIONS-OPT] ⚠️  No working endpoint found")
+        logger.info("[OPTIONS-OPT] ⚠️  No working endpoint found")
         return None
     
     def _validate_and_sanitize_response(self, data: Dict, strike: float) -> Optional[Dict]:
@@ -278,7 +280,7 @@ class OptionsChainOptimizer:
             return validated
             
         except Exception as e:
-            print(f"[OPTIONS-OPT] ⚠️  Response validation error: {e}")
+            logger.info(f"[OPTIONS-OPT] ⚠️  Response validation error: {e}")
             self.stats["validation_errors"] += 1
             return None
     
@@ -312,14 +314,14 @@ class OptionsChainOptimizer:
         
         # PRODUCTION MODE: Real API call
         if not self.session:
-            print("[OPTIONS-OPT] ⚠️  Session not initialized - use async with")
+            logger.info("[OPTIONS-OPT] ⚠️  Session not initialized - use async with")
             return None
         
         # Auto-detect endpoint on first call
         if self.base_url is None:
             self.base_url = await self._detect_working_endpoint(ticker, expiration)
             if self.base_url is None:
-                print("[OPTIONS-OPT] ❌ API endpoint detection failed")
+                logger.info("[OPTIONS-OPT] ❌ API endpoint detection failed")
                 return None
         
         params = {
@@ -349,12 +351,12 @@ class OptionsChainOptimizer:
                     
             except asyncio.TimeoutError:
                 if attempt == max_retries - 1:
-                    print(f"[OPTIONS-OPT] ⏱️  Timeout: {ticker} ${strike}")
+                    logger.info(f"[OPTIONS-OPT] ⏱️  Timeout: {ticker} ${strike}")
                     self.stats["api_errors"] += 1
                 return None
             except Exception as e:
                 if attempt == max_retries - 1:
-                    print(f"[OPTIONS-OPT] ❌ Error: {ticker} ${strike} - {e}")
+                    logger.info(f"[OPTIONS-OPT] ❌ Error: {ticker} ${strike} - {e}")
                     self.stats["api_errors"] += 1
                 return None
         
@@ -395,11 +397,11 @@ class OptionsChainOptimizer:
         if hours_left < 2.5:
             # Use tomorrow's expiration (1DTE)
             expiration = (now_et + timedelta(days=1)).strftime("%Y-%m-%d")
-            print(f"[OPTIONS-OPT] 🕐 Using 1DTE ({hours_left:.1f}h left today)")
+            logger.info(f"[OPTIONS-OPT] 🕐 Using 1DTE ({hours_left:.1f}h left today)")
         else:
             # Use today's expiration (0DTE)
             expiration = now_et.strftime("%Y-%m-%d")
-            print(f"[OPTIONS-OPT] 🎯 Using 0DTE ({hours_left:.1f}h left)")
+            logger.info(f"[OPTIONS-OPT] 🎯 Using 0DTE ({hours_left:.1f}h left)")
         
         # Generate strike list
         spacing = 0.50 if current_price < 100 else 1.00
@@ -411,9 +413,9 @@ class OptionsChainOptimizer:
         
         option_type = "call" if direction == "bull" else "put"
         
-        print(f"[OPTIONS-OPT] ⚡ Fetching {len(strikes)} strikes in parallel...")
-        print(f"[OPTIONS-OPT]    Range: ${min_strike:.2f} - ${max_strike:.2f}")
-        print(f"[OPTIONS-OPT]    Target Δ: {target_delta_min:.2f} - {target_delta_max:.2f}")
+        logger.info(f"[OPTIONS-OPT] ⚡ Fetching {len(strikes)} strikes in parallel...")
+        logger.info(f"[OPTIONS-OPT]    Range: ${min_strike:.2f} - ${max_strike:.2f}")
+        logger.info(f"[OPTIONS-OPT]    Target Δ: {target_delta_min:.2f} - {target_delta_max:.2f}")
         
         # Fetch all strikes in parallel
         tasks = [
@@ -429,7 +431,7 @@ class OptionsChainOptimizer:
         for i, result in enumerate(results):
             # Handle exceptions from gather
             if isinstance(result, Exception):
-                print(f"[OPTIONS-OPT] ⚠️  Strike ${strikes[i]:.2f} error: {result}")
+                logger.info(f"[OPTIONS-OPT] ⚠️  Strike ${strikes[i]:.2f} error: {result}")
                 self.stats["api_errors"] += 1
                 continue
             
@@ -471,7 +473,7 @@ class OptionsChainOptimizer:
         elapsed = time.time() - start_time
         self.stats["time_saved_sec"] += max(0, (len(strikes) * 0.3) - elapsed)  # Estimate 300ms per serial fetch
         
-        print(f"[OPTIONS-OPT] ✅ Found {len(valid_strikes)}/{len(strikes)} valid strikes in {elapsed:.2f}s")
+        logger.info(f"[OPTIONS-OPT] ✅ Found {len(valid_strikes)}/{len(strikes)} valid strikes in {elapsed:.2f}s")
         
         if valid_strikes:
             best = valid_strikes[0]
@@ -480,7 +482,7 @@ class OptionsChainOptimizer:
                   f"Bid/Ask=${best['bid']:.2f}/${best['ask']:.2f} "
                   f"Score={best['score']:.1f}")
         else:
-            print(f"[OPTIONS-OPT] ⚠️  No valid strikes found (filtered: {self.stats['strikes_filtered']})")
+            logger.info(f"[OPTIONS-OPT] ⚠️  No valid strikes found (filtered: {self.stats['strikes_filtered']})")
         
         return valid_strikes
     
@@ -551,17 +553,17 @@ class OptionsChainOptimizer:
     def print_stats(self):
         """Print performance statistics"""
         stats = self.get_stats()
-        print("\n" + "="*70)
-        print("OPTIONS CHAIN OPTIMIZER - PERFORMANCE STATS")
-        print("="*70)
-        print(f"Total Fetches:          {stats['total_fetches']}")
-        print(f"Strikes Fetched:        {stats['parallel_fetches']}")
-        print(f"Avg Strikes/Fetch:      {stats['avg_strikes_per_fetch']}")
-        print(f"Strikes Filtered:       {stats['strikes_filtered']}")
-        print(f"API Errors:             {stats['api_errors']} ({stats['error_rate']:.1%})")
-        print(f"Validation Errors:      {stats['validation_errors']} ({stats['validation_error_rate']:.1%})")
-        print(f"Time Saved:             {stats['time_saved_min']:.2f} minutes")
-        print("="*70 + "\n")
+        logger.info("\n" + "="*70)
+        logger.info("OPTIONS CHAIN OPTIMIZER - PERFORMANCE STATS")
+        logger.info("="*70)
+        logger.info(f"Total Fetches:          {stats['total_fetches']}")
+        logger.info(f"Strikes Fetched:        {stats['parallel_fetches']}")
+        logger.info(f"Avg Strikes/Fetch:      {stats['avg_strikes_per_fetch']}")
+        logger.info(f"Strikes Filtered:       {stats['strikes_filtered']}")
+        logger.info(f"API Errors:             {stats['api_errors']} ({stats['error_rate']:.1%})")
+        logger.info(f"Validation Errors:      {stats['validation_errors']} ({stats['validation_error_rate']:.1%})")
+        logger.info(f"Time Saved:             {stats['time_saved_min']:.2f} minutes")
+        logger.info("="*70 + "\n")
 
 
 # Synchronous wrapper for existing code compatibility
@@ -597,7 +599,7 @@ def get_optimal_strikes_sync(
     try:
         return asyncio.run(_run())
     except Exception as e:
-        print(f"[OPTIONS-OPT] ❌ Fatal error: {e}")
+        logger.info(f"[OPTIONS-OPT] ❌ Fatal error: {e}")
         return []
 
 
@@ -608,67 +610,67 @@ if __name__ == "__main__":
     # Check for test mode flag
     test_mode = "--test" in sys.argv or "--demo" in sys.argv
     
-    print("=" * 70)
-    print("0DTE OPTIONS CHAIN OPTIMIZER - TEST SUITE")
-    print("=" * 70)
+    logger.info("=" * 70)
+    logger.info("0DTE OPTIONS CHAIN OPTIMIZER - TEST SUITE")
+    logger.info("=" * 70)
     
     if test_mode:
-        print("🧪 RUNNING IN TEST MODE (simulated data)\n")
+        logger.info("🧪 RUNNING IN TEST MODE (simulated data)\n")
     else:
         now = datetime.now()
         is_weekend = now.weekday() >= 5  # Saturday=5, Sunday=6
         market_hours = 9 <= now.hour < 16
         
         if is_weekend or not market_hours:
-            print("🔴 WARNING: Market is closed")
-            print("💡 Run with --test flag to see simulated data demo")
-            print("   Example: python -m app.options.options_optimizer --test\n")
+            logger.info("🔴 WARNING: Market is closed")
+            logger.info("💡 Run with --test flag to see simulated data demo")
+            logger.info("   Example: python -m app.options.options_optimizer --test\n")
         else:
-            print("🟢 Market is open - using LIVE DATA\n")
+            logger.info("🟢 Market is open - using LIVE DATA\n")
     
-    print("Testing 0DTE Options Chain Optimizer...\n")
+    logger.info("Testing 0DTE Options Chain Optimizer...\n")
     
     # Test with AAPL
     ticker = "AAPL"
     current_price = 225.50
     direction = "bull"  # Looking for calls
     
-    print(f"Ticker:   {ticker}")
-    print(f"Price:    ${current_price}")
-    print(f"Strategy: {direction.upper()} (calls)")
-    print(f"Target Δ: 0.30 - 0.50\n")
+    logger.info(f"Ticker:   {ticker}")
+    logger.info(f"Price:    ${current_price}")
+    logger.info(f"Strategy: {direction.upper()} (calls)")
+    logger.info(f"Target Δ: 0.30 - 0.50\n")
     
     strikes = get_optimal_strikes_sync(ticker, current_price, direction, test_mode=test_mode)
     
     if strikes:
-        print(f"\n✅ SUCCESS: Found {len(strikes)} optimal strikes")
-        print("=" * 70)
+        logger.info(f"\n✅ SUCCESS: Found {len(strikes)} optimal strikes")
+        logger.info("=" * 70)
         
         for i, strike in enumerate(strikes[:3], 1):
-            print(f"\n#{i} STRIKE: ${strike['strike']:.2f}")
-            print(f"   Score:     {strike['score']:.1f}/100")
-            print(f"   Delta:     {strike['delta']:.3f}")
-            print(f"   Gamma:     {strike['gamma']:.4f}")
-            print(f"   Theta:     {strike['theta']:.3f}")
-            print(f"   IV:        {strike['iv']*100:.1f}%")
-            print(f"   Bid/Ask:   ${strike['bid']:.2f} / ${strike['ask']:.2f}")
-            print(f"   Mid:       ${strike['mid']:.2f}")
-            print(f"   Spread:    {strike['spread_pct']:.1f}%")
-            print(f"   Volume:    {strike['volume']:,}")
-            print(f"   OI:        {strike['oi']:,}")
+            logger.info(f"\n#{i} STRIKE: ${strike['strike']:.2f}")
+            logger.info(f"   Score:     {strike['score']:.1f}/100")
+            logger.info(f"   Delta:     {strike['delta']:.3f}")
+            logger.info(f"   Gamma:     {strike['gamma']:.4f}")
+            logger.info(f"   Theta:     {strike['theta']:.3f}")
+            logger.info(f"   IV:        {strike['iv']*100:.1f}%")
+            logger.info(f"   Bid/Ask:   ${strike['bid']:.2f} / ${strike['ask']:.2f}")
+            logger.info(f"   Mid:       ${strike['mid']:.2f}")
+            logger.info(f"   Spread:    {strike['spread_pct']:.1f}%")
+            logger.info(f"   Volume:    {strike['volume']:,}")
+            logger.info(f"   OI:        {strike['oi']:,}")
         
         if len(strikes) > 3:
-            print(f"\n   ... and {len(strikes) - 3} more strikes")
+            logger.info(f"\n   ... and {len(strikes) - 3} more strikes")
         
-        print("\n" + "=" * 70)
-        print("RECOMMENDATION:")
+        logger.info("\n" + "=" * 70)
+        logger.info("RECOMMENDATION:")
         best = strikes[0]
-        print(f"BUY {ticker} ${int(best['strike'])}C")
-        print(f"LIMIT PRICE: ${best['mid']:.2f} (mid)")
-        print(f"MAX PRICE:   ${best['ask']:.2f} (ask)")
-        print("=" * 70)
+        logger.info(f"BUY {ticker} ${int(best['strike'])}C")
+        logger.info(f"LIMIT PRICE: ${best['mid']:.2f} (mid)")
+        logger.info(f"MAX PRICE:   ${best['ask']:.2f} (ask)")
+        logger.info("=" * 70)
     else:
-        print("\n❌ FAILURE: No optimal strikes found")
+        logger.info("\n❌ FAILURE: No optimal strikes found")
         if not test_mode:
-            print("💡 This is expected on weekends - try --test flag for demo")
-        print("=" * 70)
+            logger.info("💡 This is expected on weekends - try --test flag for demo")
+        logger.info("=" * 70)

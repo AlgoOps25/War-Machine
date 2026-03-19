@@ -15,6 +15,8 @@ IMPORT UPDATED: app.analytics.technical_indicators → app.indicators.technical_
 
 from typing import Dict, List, Optional, Tuple
 from app.indicators.technical_indicators import (
+import logging
+logger = logging.getLogger(__name__)
     fetch_technical_indicator,
     get_latest_value,
     _indicator_cache
@@ -450,38 +452,38 @@ if __name__ == "__main__":
     test_ticker = "AAPL"
     test_price = 175.50
     
-    print(f"Testing extended indicators for {test_ticker}...\n")
+    logger.info(f"Testing extended indicators for {test_ticker}...\n")
     
     # ATR
     atr_pct = get_atr_percentage(test_ticker, test_price)
-    print(f"ATR: {atr_pct}% of price")
+    logger.info(f"ATR: {atr_pct}% of price")
     
     if atr_pct:
         atr_value = test_price * (atr_pct / 100)
         stop_long = calculate_atr_stop(test_price, atr_value, 2.0, 'LONG')
-        print(f"  Long stop (2x ATR): ${stop_long:.2f}")
+        logger.info(f"  Long stop (2x ATR): ${stop_long:.2f}")
         
         position = calculate_position_size(10000, 0.01, test_price, atr_value, 2.0)
-        print(f"  Position size (1% risk): {position} shares")
+        logger.info(f"  Position size (1% risk): {position} shares")
     
     # StochRSI
     stochrsi_signal, stochrsi_details = check_stochrsi_signal(test_ticker, 'CALL')
-    print(f"\nStochRSI: {stochrsi_signal}")
+    logger.info(f"\nStochRSI: {stochrsi_signal}")
     if stochrsi_details:
-        print(f"  K={stochrsi_details['k']:.3f}, D={stochrsi_details['d']:.3f}")
+        logger.info(f"  K={stochrsi_details['k']:.3f}, D={stochrsi_details['d']:.3f}")
     
     # Slope
     trend, slope_val = check_trend_slope(test_ticker, min_slope=0.3)
-    print(f"\nSlope: {slope_val} → {trend}")
+    logger.info(f"\nSlope: {slope_val} → {trend}")
     
     # STDDEV
     vol_regime, vol_details = check_volatility_regime(test_ticker)
-    print(f"\nVolatility Regime: {vol_regime}")
+    logger.info(f"\nVolatility Regime: {vol_regime}")
     if vol_details:
-        print(f"  STDDEV: {vol_details['stddev_pct']:.2f}% of price")
+        logger.info(f"  STDDEV: {vol_details['stddev_pct']:.2f}% of price")
     
     # Expansion
     is_expanding, exp_details = check_volatility_expansion(test_ticker)
-    print(f"\nVolatility Expansion: {is_expanding}")
+    logger.info(f"\nVolatility Expansion: {is_expanding}")
     if exp_details:
-        print(f"  Ratio: {exp_details['expansion_ratio']:.2f}x average")
+        logger.info(f"  Ratio: {exp_details['expansion_ratio']:.2f}x average")

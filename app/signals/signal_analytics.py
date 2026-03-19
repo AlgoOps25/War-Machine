@@ -34,6 +34,8 @@ from zoneinfo import ZoneInfo
 import statistics
 from collections import defaultdict
 from app.data.db_connection import get_conn, return_conn, ph, dict_cursor, serial_pk
+import logging
+logger = logging.getLogger(__name__)
 
 ET = ZoneInfo("America/New_York")
 
@@ -124,9 +126,9 @@ class SignalTracker:
             """)
 
             conn.commit()
-            print("[ANALYTICS] Signal tracking database initialized")
+            logger.info("[ANALYTICS] Signal tracking database initialized")
         except Exception as e:
-            print(f"[ANALYTICS] DB init error: {e}")
+            logger.info(f"[ANALYTICS] DB init error: {e}")
         finally:
             if conn:
                 return_conn(conn)
@@ -196,7 +198,7 @@ class SignalTracker:
 
             return event_id
         except Exception as e:
-            print(f"[ANALYTICS] record_signal_generated error for {ticker}: {e}")
+            logger.info(f"[ANALYTICS] record_signal_generated error for {ticker}: {e}")
             return -1
         finally:
             if conn:
@@ -226,7 +228,7 @@ class SignalTracker:
         """
         cached = self.session_signals.get(ticker)
         if not cached or cached['stage'] != 'GENERATED':
-            print(f"[ANALYTICS] Warning: No GENERATED signal found for {ticker}")
+            logger.info(f"[ANALYTICS] Warning: No GENERATED signal found for {ticker}")
             return -1
 
         p = ph()
@@ -275,7 +277,7 @@ class SignalTracker:
 
             return event_id
         except Exception as e:
-            print(f"[ANALYTICS] record_validation_result error for {ticker}: {e}")
+            logger.info(f"[ANALYTICS] record_validation_result error for {ticker}: {e}")
             return -1
         finally:
             if conn:
@@ -296,7 +298,7 @@ class SignalTracker:
         """
         cached = self.session_signals.get(ticker)
         if not cached or cached['stage'] != 'VALIDATED':
-            print(f"[ANALYTICS] Warning: No VALIDATED signal found for {ticker}")
+            logger.info(f"[ANALYTICS] Warning: No VALIDATED signal found for {ticker}")
             return -1
 
         p = ph()
@@ -336,7 +338,7 @@ class SignalTracker:
 
             return event_id
         except Exception as e:
-            print(f"[ANALYTICS] record_signal_armed error for {ticker}: {e}")
+            logger.info(f"[ANALYTICS] record_signal_armed error for {ticker}: {e}")
             return -1
         finally:
             if conn:
@@ -356,7 +358,7 @@ class SignalTracker:
         """
         cached = self.session_signals.get(ticker)
         if not cached or cached['stage'] != 'ARMED':
-            print(f"[ANALYTICS] Warning: No ARMED signal found for {ticker}")
+            logger.info(f"[ANALYTICS] Warning: No ARMED signal found for {ticker}")
             return -1
 
         p = ph()
@@ -393,7 +395,7 @@ class SignalTracker:
 
             return event_id
         except Exception as e:
-            print(f"[ANALYTICS] record_trade_executed error for {ticker}: {e}")
+            logger.info(f"[ANALYTICS] record_trade_executed error for {ticker}: {e}")
             return -1
         finally:
             if conn:
@@ -436,7 +438,7 @@ class SignalTracker:
 
             rows = cursor.fetchall()
         except Exception as e:
-            print(f"[ANALYTICS] get_funnel_stats error: {e}")
+            logger.info(f"[ANALYTICS] get_funnel_stats error: {e}")
             rows = []
         finally:
             if conn:
@@ -481,7 +483,7 @@ class SignalTracker:
 
             rows = cursor.fetchall()
         except Exception as e:
-            print(f"[ANALYTICS] get_grade_distribution error: {e}")
+            logger.info(f"[ANALYTICS] get_grade_distribution error: {e}")
             rows = []
         finally:
             if conn:
@@ -525,7 +527,7 @@ class SignalTracker:
 
             row = cursor.fetchone()
         except Exception as e:
-            print(f"[ANALYTICS] get_multiplier_impact error: {e}")
+            logger.info(f"[ANALYTICS] get_multiplier_impact error: {e}")
             row = None
         finally:
             if conn:
@@ -581,7 +583,7 @@ class SignalTracker:
             """, (cutoff,))
             rows = cursor.fetchall()
         except Exception as e:
-            print(f"[ANALYTICS] get_rejection_breakdown error: {e}")
+            logger.info(f"[ANALYTICS] get_rejection_breakdown error: {e}")
             rows = []
         finally:
             if conn:
@@ -615,7 +617,7 @@ class SignalTracker:
             """, (cutoff,))
             rows = cursor.fetchall()
         except Exception as e:
-            print(f"[ANALYTICS] get_hourly_funnel error: {e}")
+            logger.info(f"[ANALYTICS] get_hourly_funnel error: {e}")
             rows = []
         finally:
             if conn:
@@ -743,7 +745,7 @@ class SignalTracker:
         """Clear session cache (call at EOD)."""
         self.session_signals.clear()
         self.session_start = datetime.now(ET)
-        print("[ANALYTICS] Session cache cleared")
+        logger.info("[ANALYTICS] Session cache cleared")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -758,9 +760,9 @@ signal_tracker = SignalTracker()
 # ══════════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    print("Testing Signal Analytics System...\n")
+    logger.info("Testing Signal Analytics System...\n")
 
-    print("1. Generating signal...")
+    logger.info("1. Generating signal...")
     signal_tracker.record_signal_generated(
         ticker="SPY",
         signal_type="CFW6_OR",
@@ -773,7 +775,7 @@ if __name__ == "__main__":
         t2_price=600.75
     )
 
-    print("2. Recording validation result...")
+    logger.info("2. Recording validation result...")
     signal_tracker.record_validation_result(
         ticker="SPY",
         passed=True,
@@ -789,7 +791,7 @@ if __name__ == "__main__":
         checks_passed=['ADX', 'VOLUME', 'DMI', 'VPVR']
     )
 
-    print("3. Arming signal...")
+    logger.info("3. Arming signal...")
     signal_tracker.record_signal_armed(
         ticker="SPY",
         final_confidence=0.81,
@@ -797,25 +799,25 @@ if __name__ == "__main__":
         confirmation_type="retest"
     )
 
-    print("4. Recording trade execution...")
+    logger.info("4. Recording trade execution...")
     signal_tracker.record_trade_executed(
         ticker="SPY",
         position_id=42
     )
 
-    print("\n" + signal_tracker.get_daily_summary())
+    logger.info("\n" + signal_tracker.get_daily_summary())
 
     funnel = signal_tracker.get_funnel_stats()
-    print("\nFunnel Visualization:")
+    logger.info("\nFunnel Visualization:")
     print(f"{funnel['generated']} generated → "
           f"{funnel['validated']} validated ({funnel['validation_rate']:.0f}%) → "
           f"{funnel['armed']} armed ({funnel['arming_rate']:.0f}%) → "
           f"{funnel['traded']} traded ({funnel['execution_rate']:.0f}%)")
 
-    print("\nRejection Breakdown (7d):")
+    logger.info("\nRejection Breakdown (7d):")
     for reason, count in signal_tracker.get_rejection_breakdown(days=7).items():
-        print(f"  {reason}: {count}x")
+        logger.info(f"  {reason}: {count}x")
 
-    print("\nHourly Funnel (7d):")
+    logger.info("\nHourly Funnel (7d):")
     for hour, data in signal_tracker.get_hourly_funnel(days=7).items():
-        print(f"  {hour:02d}:00  Gen={data['generated']} Val={data['validated']} ({data['validation_rate']:.0f}%)")
+        logger.info(f"  {hour:02d}:00  Gen={data['generated']} Val={data['validated']} ({data['validation_rate']:.0f}%)")

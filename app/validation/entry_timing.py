@@ -18,6 +18,8 @@ PHASE 4.C-10 (Mar 19, 2026):
 from datetime import datetime, time
 from typing import Tuple, Dict, Optional
 from zoneinfo import ZoneInfo
+import logging
+logger = logging.getLogger(__name__)
 
 
 class EntryTimingValidator:
@@ -61,10 +63,10 @@ class EntryTimingValidator:
 
     def __init__(self, min_win_rate: float = 0.50):
         self.min_win_rate = min_win_rate
-        print("[ENTRY-TIMING] ✅ Validator initialized")
-        print(f"[ENTRY-TIMING] Min win rate threshold: {min_win_rate:.1%}")
-        print(f"[ENTRY-TIMING] Golden hour threshold: {self.GOLDEN_HOUR_THRESHOLD:.1%}")
-        print("[ENTRY-TIMING] ⚠️  Win rate gating DISABLED — no real data (4.C-10)")
+        logger.info("[ENTRY-TIMING] ✅ Validator initialized")
+        logger.info(f"[ENTRY-TIMING] Min win rate threshold: {min_win_rate:.1%}")
+        logger.info(f"[ENTRY-TIMING] Golden hour threshold: {self.GOLDEN_HOUR_THRESHOLD:.1%}")
+        logger.info("[ENTRY-TIMING] ⚠️  Win rate gating DISABLED — no real data (4.C-10)")
 
     def validate_entry_time(
         self,
@@ -171,9 +173,9 @@ class EntryTimingValidator:
 
     def print_timing_summary(self):
         """Print summary of hourly win rates."""
-        print("\n" + "=" * 80)
-        print("ENTRY TIMING - HOURLY WIN RATES")
-        print("=" * 80)
+        logger.info("\n" + "=" * 80)
+        logger.info("ENTRY TIMING - HOURLY WIN RATES")
+        logger.info("=" * 80)
 
         for hour in sorted(self.HOURLY_WIN_RATES.keys()):
             win_rate, sample_size = self.HOURLY_WIN_RATES[hour]
@@ -187,11 +189,11 @@ class EntryTimingValidator:
                 f"{classification}"
             )
 
-        print("=" * 80)
-        print(f"Golden hour threshold: {self.GOLDEN_HOUR_THRESHOLD:.1%}")
-        print(f"Weak hour threshold:   {self.WEAK_HOUR_THRESHOLD:.1%}")
-        print(f"Minimum sample size:   {self.MIN_SAMPLE_SIZE} trades")
-        print("=" * 80 + "\n")
+        logger.info("=" * 80)
+        logger.info(f"Golden hour threshold: {self.GOLDEN_HOUR_THRESHOLD:.1%}")
+        logger.info(f"Weak hour threshold:   {self.WEAK_HOUR_THRESHOLD:.1%}")
+        logger.info(f"Minimum sample size:   {self.MIN_SAMPLE_SIZE} trades")
+        logger.info("=" * 80 + "\n")
 
 
 # Singleton instance
@@ -218,4 +220,4 @@ if __name__ == "__main__":
 
     for test_time in test_times:
         is_valid, reason, data = validator.validate_entry_time(test_time, grade="A")
-        print(f"{test_time.strftime('%H:%M')} | Valid: {is_valid} | {reason}")
+        logger.info(f"{test_time.strftime('%H:%M')} | Valid: {is_valid} | {reason}")

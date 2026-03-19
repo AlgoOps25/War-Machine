@@ -20,13 +20,15 @@ Usage:
   
   # Get daily report
   report = funnel_tracker.get_daily_report()
-  print(report)
+  logger.info(report)
 """
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from typing import Dict, List, Optional, Tuple
 from collections import defaultdict
 from app.data.db_connection import get_conn, return_conn, ph, dict_cursor, serial_pk
+import logging
+logger = logging.getLogger(__name__)
 
 ET = ZoneInfo("America/New_York")
 
@@ -78,9 +80,9 @@ class FunnelTracker:
             """)
             
             conn.commit()
-            print("[FUNNEL] Funnel analytics database initialized")
+            logger.info("[FUNNEL] Funnel analytics database initialized")
         except Exception as e:
-            print(f"[FUNNEL] Init error: {e}")
+            logger.info(f"[FUNNEL] Init error: {e}")
         finally:
             return_conn(conn)
     
@@ -147,7 +149,7 @@ class FunnelTracker:
             
             conn.commit()
         except Exception as e:
-            print(f"[FUNNEL] record_stage error: {e}")
+            logger.info(f"[FUNNEL] record_stage error: {e}")
         finally:
             return_conn(conn)
     
@@ -185,7 +187,7 @@ class FunnelTracker:
             
             row = cursor.fetchone()
         except Exception as e:
-            print(f"[FUNNEL] get_stage_conversion error: {e}")
+            logger.info(f"[FUNNEL] get_stage_conversion error: {e}")
             row = None
         finally:
             return_conn(conn)
@@ -234,7 +236,7 @@ class FunnelTracker:
             
             rows = cursor.fetchall()
         except Exception as e:
-            print(f"[FUNNEL] get_rejection_reasons error: {e}")
+            logger.info(f"[FUNNEL] get_rejection_reasons error: {e}")
             rows = []
         finally:
             return_conn(conn)
@@ -319,7 +321,7 @@ class FunnelTracker:
             
             rows = cursor.fetchall()
         except Exception as e:
-            print(f"[FUNNEL] get_hourly_breakdown error: {e}")
+            logger.info(f"[FUNNEL] get_hourly_breakdown error: {e}")
             rows = []
         finally:
             return_conn(conn)
@@ -369,7 +371,7 @@ def log_filled(ticker: str, passed: bool = True):
 
 
 if __name__ == "__main__":
-    print("Testing Funnel Analytics...\n")
+    logger.info("Testing Funnel Analytics...\n")
     
     # Simulate funnel progression
     funnel_tracker.record_stage('AAPL', 'SCREENED', True)
@@ -389,4 +391,4 @@ if __name__ == "__main__":
     funnel_tracker.record_stage('NVDA', 'FIRED', True)
     
     # Generate report
-    print(funnel_tracker.get_daily_report())
+    logger.info(funnel_tracker.get_daily_report())

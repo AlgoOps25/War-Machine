@@ -32,6 +32,8 @@
 import os
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
+import logging
+logger = logging.getLogger(__name__)
 
 _ET = ZoneInfo("America/New_York")
 
@@ -128,10 +130,10 @@ def _fetch_eodhd_intraday(symbol: str, interval: str = "5m", limit: int = 60) ->
         ]
         bars = bars[-limit:]
         _eodhd_bar_cache[symbol] = {"bars": bars, "ts": now}
-        print(f"[REGIME] \u2705 EODHD fallback: {symbol} {len(bars)} bars fetched")
+        logger.info(f"[REGIME] \u2705 EODHD fallback: {symbol} {len(bars)} bars fetched")
         return bars
     except Exception as e:
-        print(f"[REGIME] EODHD fallback error for {symbol}: {e}")
+        logger.info(f"[REGIME] EODHD fallback error for {symbol}: {e}")
         return []
 
 

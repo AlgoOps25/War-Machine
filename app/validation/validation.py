@@ -115,7 +115,7 @@ USAGE:
   # Regime filtering (standard)
   regime_filter = get_regime_filter()
   if not regime_filter.is_favorable_regime():
-      print("Bad tape - skip signal")
+      logger.info("Bad tape - skip signal")
   
   # Regime filtering (explosive mover override — call this INSTEAD of is_favorable_regime)
   if regime_filter.is_favorable_for_explosive_mover(rvol=ticker_rvol):
@@ -144,6 +144,8 @@ from utils import config
 # Import IV/GEX modules for options filter
 from app.options.iv_tracker import store_iv_observation, compute_ivr, ivr_to_confidence_multiplier
 from app.options.gex_engine import compute_gex_levels, get_gex_signal_context
+import logging
+logger = logging.getLogger(__name__)
 
 # UOA now comes from options_intelligence (Phase 3C consolidation)
 try:
@@ -296,7 +298,7 @@ class RegimeFilter:
             return state
             
         except Exception as e:
-            print(f"[REGIME] Error calculating regime: {e}")
+            logger.info(f"[REGIME] Error calculating regime: {e}")
             return self._create_state(
                 regime="CHOPPY", vix=20.0, spy_trend="NEUTRAL",
                 adx=None, favorable=False, reason=f"Error: {str(e)}"
@@ -327,7 +329,7 @@ class RegimeFilter:
                 return latest_bar["close"]
             return 20.0
         except Exception as e:
-            print(f"[REGIME] Error fetching VIX: {e}")
+            logger.info(f"[REGIME] Error fetching VIX: {e}")
             return 20.0
     
     def _get_spy_bars(self, limit: int = 50) -> list:
@@ -345,7 +347,7 @@ class RegimeFilter:
                 return bars[-limit:] if len(bars) > limit else bars
             return []
         except Exception as e:
-            print(f"[REGIME] Error fetching SPY bars: {e}")
+            logger.info(f"[REGIME] Error fetching SPY bars: {e}")
             return []
     
     def _calculate_spy_trend(self, bars: list) -> str:
@@ -432,7 +434,7 @@ class RegimeFilter:
             return round(adx, 2)
 
         except Exception as e:
-            print(f"[REGIME] ADX calculation error: {e}")
+            logger.info(f"[REGIME] ADX calculation error: {e}")
             return None
     
     def _calculate_ema(self, values: list, period: int) -> float:
@@ -516,21 +518,21 @@ class RegimeFilter:
         emoji = {"TRENDING": "📈" if state.favorable else "📉", "CHOPPY": "〰️", "VOLATILE": "⚡"}[state.regime]
         status = "✅ FAVORABLE" if state.favorable else "🚫 UNFAVORABLE"
         
-        print("\n" + "=" * 70)
-        print(f"{emoji}  MARKET REGIME: {state.regime}  {status}")
-        print("=" * 70)
-        print(f"VIX:       {state.vix:.2f}")
-        print(f"SPY Trend: {state.spy_trend}")
+        logger.info("\n" + "=" * 70)
+        logger.info(f"{emoji}  MARKET REGIME: {state.regime}  {status}")
+        logger.info("=" * 70)
+        logger.info(f"VIX:       {state.vix:.2f}")
+        logger.info(f"SPY Trend: {state.spy_trend}")
         if state.adx:
-            print(f"ADX:       {state.adx:.1f} (trend strength)")
-        print(f"Reason:    {state.reason}")
-        print("=" * 70 + "\n")
+            logger.info(f"ADX:       {state.adx:.1f} (trend strength)")
+        logger.info(f"Reason:    {state.reason}")
+        logger.info("=" * 70 + "\n")
     
     def reset_cache(self) -> None:
         """Clear cached regime state."""
         self._cache = None
         self._last_check = 0
-        print("[REGIME] Cache cleared")
+        logger.info("[REGIME] Cache cleared")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -592,7 +594,7 @@ class OptionsFilter:
                 return {"data": self._normalize_v2_chain(items)}
             return raw
         except Exception as e:
-            print(f"[OPTIONS] Error fetching chain for {ticker}: {e}")
+            logger.info(f"[OPTIONS] Error fetching chain for {ticker}: {e}")
             return None
 
     def filter_by_liquidity(self, option: Dict) -> bool:
@@ -643,14 +645,14 @@ class OptionsFilter:
                 )
 
                 if not strikes:
-                    print(f"[OPTIONS] {ticker}: No strikes from optimizer")
+                    logger.info(f"[OPTIONS] {ticker}: No strikes from optimizer")
                     return None
 
                 best_option = strikes[0]
                 return best_option
 
             except Exception as e:
-                print(f"[OPTIONS] {ticker}: Optimizer error - {e}, falling back to legacy")
+                logger.info(f"[OPTIONS] {ticker}: Optimizer error - {e}, falling back to legacy")
                 # Fall through to legacy code below
 
         chain = self.get_options_chain(ticker)
@@ -715,7 +717,7 @@ class OptionsFilter:
                 "ivr_multiplier": mult, "ivr_label": label
             })
             status = f"IVR={ivr:.0f}" if (ivr is not None and reliable) else "IVR-BUILDING"
-            print(f"[IVR] {ticker}: IV={iv*100:.1f}% | {status} ({obs} obs) | {mult:.2f}x [{label}]")
+            logger.info(f"[IVR] {ticker}: IV={iv*100:.1f}% | {status} ({obs} obs) | {mult:.2f}x [{label}]")
         else:
             best_option.update({
                 "ivr": None, "ivr_obs": 0, "ivr_reliable": False,
@@ -727,11 +729,11 @@ class OptionsFilter:
             uoa_result = scan_chain_for_uoa(ticker, direction, entry_price)
             best_option.update(uoa_result)
             if uoa_result.get('uoa_detected'):
-                print(f"[UOA] {ticker}: {format_uoa_summary(uoa_result)}")
+                logger.info(f"[UOA] {ticker}: {format_uoa_summary(uoa_result)}")
             else:
-                print(f"[UOA] {ticker}: No unusual activity detected")
+                logger.info(f"[UOA] {ticker}: No unusual activity detected")
         except Exception as e:
-            print(f"[UOA] {ticker} error: {e}")
+            logger.info(f"[UOA] {ticker} error: {e}")
             best_option.update({
                 "uoa_multiplier": 1.0, "uoa_label": "UOA-ERROR",
                 "uoa_detected": False, "uoa_aligned": False,
@@ -756,9 +758,9 @@ class OptionsFilter:
                 flip_str = f"${gex_data['gamma_flip']:.2f}" if gex_data["gamma_flip"] else "N/A"
                 pin_str = f"${gex_data['gamma_pin']:.2f}" if gex_data["gamma_pin"] else "N/A"
                 zone = "NEG" if gex_data["neg_gex_zone"] else "POS"
-                print(f"[GEX] {ticker}: Pin={pin_str} | Flip={flip_str} | Zone={zone} | {gex_mult:.2f}x [{gex_label}]")
+                logger.info(f"[GEX] {ticker}: Pin={pin_str} | Flip={flip_str} | Zone={zone} | {gex_mult:.2f}x [{gex_label}]")
             else:
-                print(f"[GEX] {ticker}: No gamma data in chain")
+                logger.info(f"[GEX] {ticker}: No gamma data in chain")
                 best_option.update({
                     "gex_multiplier": 1.0, "gex_label": "GEX-NO-DATA",
                     "gamma_pin": None, "gamma_flip": None,
@@ -766,7 +768,7 @@ class OptionsFilter:
                     "gex_top_pos": [], "gex_top_neg": []
                 })
         except Exception as e:
-            print(f"[GEX] {ticker} error: {e}")
+            logger.info(f"[GEX] {ticker} error: {e}")
             best_option.update({
                 "gex_multiplier": 1.0, "gex_label": "GEX-ERROR",
                 "gamma_pin": None, "gamma_flip": None,
@@ -791,7 +793,7 @@ class OptionsFilter:
             "contract_type": _ctype, "spread_pct": _spd,
             "contract_label": f"{ticker} ${int(best_option['strike'])}{_ctype[0]} {_exp_label}",
         })
-        print(f"[LIMIT-ENTRY] {ticker}: {_ctype} ${int(best_option['strike'])} Bid:${_bid:.2f}  Mid:${_mid:.2f}  Ask:${_ask:.2f}  Spread:{_spd:.1f}%")
+        logger.info(f"[LIMIT-ENTRY] {ticker}: {_ctype} ${int(best_option['strike'])} Bid:${_bid:.2f}  Mid:${_mid:.2f}  Ask:${_ask:.2f}  Spread:{_spd:.1f}%")
 
         return best_option
 
@@ -856,9 +858,9 @@ def get_options_recommendation(ticker, direction, entry_price, target_price, sto
     f = OptionsFilter()
     is_valid, data, reason = f.validate_signal_for_options(ticker, direction, entry_price, target_price, stop_price=stop_price)
     if is_valid and data:
-        print(f"[OPTIONS] ✅ {ticker}: {reason}")
+        logger.info(f"[OPTIONS] ✅ {ticker}: {reason}")
         return data
-    print(f"[OPTIONS] ⚠️ {ticker}: {reason}")
+    logger.info(f"[OPTIONS] ⚠️ {ticker}: {reason}")
     return None
 
 
@@ -923,24 +925,24 @@ class SignalValidator:
         }
         
         # Production initialization banner
-        print("[VALIDATOR] ╔════════════════════════════════════════════════╗")
-        print("[VALIDATOR] ║  SIGNAL VALIDATOR - PRODUCTION CONFIG          ║")
-        print(f"[VALIDATOR] ║  Min Final Confidence: {int(min_final_confidence*100)}%{' '*(24-len(str(int(min_final_confidence*100))))}║")
-        print("[VALIDATOR] ╚════════════════════════════════════════════════╝")
+        logger.info("[VALIDATOR] ╔════════════════════════════════════════════════╗")
+        logger.info("[VALIDATOR] ║  SIGNAL VALIDATOR - PRODUCTION CONFIG          ║")
+        logger.info(f"[VALIDATOR] ║  Min Final Confidence: {int(min_final_confidence*100)}%{' '*(24-len(str(int(min_final_confidence*100))))}║")
+        logger.info("[VALIDATOR] ╚════════════════════════════════════════════════╝")
         
         if self.enable_daily_bias:
-            print(f"[VALIDATOR] Daily bias penalty active (min confidence: {min_bias_confidence*100:.0f}%)")
-            print(f"[VALIDATOR] ⭐ Counter-trend signals penalized but can be rescued by VPVR")
+            logger.info(f"[VALIDATOR] Daily bias penalty active (min confidence: {min_bias_confidence*100:.0f}%)")
+            logger.info(f"[VALIDATOR] ⭐ Counter-trend signals penalized but can be rescued by VPVR")
         if self.enable_time_filter:
-            print(f"[VALIDATOR] Time-of-day quality scoring enabled")
+            logger.info(f"[VALIDATOR] Time-of-day quality scoring enabled")
         if self.enable_ema_stack:
-            print(f"[VALIDATOR] EMA stack confirmation enabled")
+            logger.info(f"[VALIDATOR] EMA stack confirmation enabled")
         if self.enable_rsi_divergence:
-            print(f"[VALIDATOR] RSI divergence detection enabled")
+            logger.info(f"[VALIDATOR] RSI divergence detection enabled")
         if self.enable_vpvr:
-            print(f"[VALIDATOR] VPVR entry scoring enabled")
-        print(f"[VALIDATOR] ADX threshold: {min_adx} (VIX-aware dynamic threshold in regime filter)")
-        print(f"[VALIDATOR] Volume ratio: {min_volume_ratio}x")
+            logger.info(f"[VALIDATOR] VPVR entry scoring enabled")
+        logger.info(f"[VALIDATOR] ADX threshold: {min_adx} (VIX-aware dynamic threshold in regime filter)")
+        logger.info(f"[VALIDATOR] Volume ratio: {min_volume_ratio}x")
     
     def validate_signal(
         self,
@@ -993,7 +995,7 @@ class SignalValidator:
                     failed_checks.append('BIAS_COUNTER_TREND_STRONG')
                     needs_vpvr_rescue = True
                     self.validation_stats['bias_penalized'] += 1
-                    print(f"[VALIDATOR] ⚠️  {ticker} counter-trend to {bias_data['bias']} bias (-25%) - VPVR can rescue")
+                    logger.info(f"[VALIDATOR] ⚠️  {ticker} counter-trend to {bias_data['bias']} bias (-25%) - VPVR can rescue")
                 elif bias_data['bias'] != 'NEUTRAL':
                     if not should_filter:
                         bias_boost = bias_data['confidence'] * 0.10
@@ -1021,12 +1023,12 @@ class SignalValidator:
                 regime_penalty = -0.30
                 confidence_adjustment += regime_penalty
                 failed_checks.append(f'REGIME_{regime_state.regime}')
-                print(f"[VALIDATOR] WARNING {ticker} in {regime_state.regime} regime (-30%): {regime_state.reason}")
+                logger.info(f"[VALIDATOR] WARNING {ticker} in {regime_state.regime} regime (-30%): {regime_state.reason}")
             elif regime_state.regime == 'TRENDING':
                 regime_boost = 0.05
                 confidence_adjustment += regime_boost
                 passed_checks.append('REGIME_TRENDING')
-                print(f"[VALIDATOR] OK {ticker} in TRENDING regime (+5%): {regime_state.reason}")
+                logger.info(f"[VALIDATOR] OK {ticker} in TRENDING regime (+5%): {regime_state.reason}")
             else:
                 passed_checks.append('REGIME_NEUTRAL')
         except Exception as e:
@@ -1251,25 +1253,25 @@ class SignalValidator:
                             failed_checks.remove('BIAS_COUNTER_TREND_STRONG')
                             vpvr_rescue_applied = True
                             self.validation_stats['vpvr_rescued'] += 1
-                            print(f"[VPVR] ✨ {ticker} RESCUED: Excellent entry at {entry_reason} overrides bias penalty (+{rescue_boost:.2%})")
+                            logger.info(f"[VPVR] ✨ {ticker} RESCUED: Excellent entry at {entry_reason} overrides bias penalty (+{rescue_boost:.2%})")
                         
                         # Standard VPVR scoring
                         if entry_score >= 0.85:
                             if not vpvr_rescue_applied:
                                 confidence_adjustment += 0.08
                                 passed_checks.append('VPVR_STRONG')
-                            print(f"[VPVR] ✅ {ticker} strong entry: {entry_reason}")
+                            logger.info(f"[VPVR] ✅ {ticker} strong entry: {entry_reason}")
                         elif entry_score >= 0.70:
                             confidence_adjustment += 0.03
                             passed_checks.append('VPVR_GOOD')
-                            print(f"[VPVR] 🟢 {ticker} good entry: {entry_reason}")
+                            logger.info(f"[VPVR] 🟢 {ticker} good entry: {entry_reason}")
                         elif entry_score < 0.50:
                             confidence_adjustment -= 0.05
                             failed_checks.append('VPVR_WEAK')
-                            print(f"[VPVR] ⚠️  {ticker} weak entry: {entry_reason}")
+                            logger.info(f"[VPVR] ⚠️  {ticker} weak entry: {entry_reason}")
                         else:
                             passed_checks.append('VPVR_NEUTRAL')
-                            print(f"[VPVR] 🟡 {ticker} neutral entry: {entry_reason}")
+                            logger.info(f"[VPVR] 🟡 {ticker} neutral entry: {entry_reason}")
                         
                         if vpvr_rescue_applied:
                             metadata['checks']['vpvr']['rescued'] = True
@@ -1286,7 +1288,7 @@ class SignalValidator:
         if adjusted_confidence < self.min_final_confidence:
             should_pass = False
             self.validation_stats['confidence_filtered'] += 1
-            print(f"[VALIDATOR] ❌ {ticker} FILTERED: {adjusted_confidence*100:.1f}% < {self.min_final_confidence*100:.1f}% minimum")
+            logger.info(f"[VALIDATOR] ❌ {ticker} FILTERED: {adjusted_confidence*100:.1f}% < {self.min_final_confidence*100:.1f}% minimum")
         elif self.strict_mode:
             critical_failures = ['VOLUME_WEAK', 'DMI_CONFLICT', 'ADX_WEAK']
             should_pass = not any(fail in failed_checks for fail in critical_failures)
@@ -1336,38 +1338,38 @@ class SignalValidator:
         adj = summary.get('confidence_adjustment', 0)
         conf_change = f"+{adj*100:.1f}%" if adj >= 0 else f"{adj*100:.1f}%"
         
-        print("=" * 70)
-        print(f"🎯 VALIDATION SUMMARY: {ticker}")
-        print("=" * 70)
-        print(f"Result:     {result}")
-        print(f"Quality:    {quality}")
-        print(f"Confidence: {base*100:.1f}% → {conf*100:.1f}% ({conf_change})")
-        print(f"Score:      {summary.get('check_score', 'N/A')} checks passed")
-        print("")
+        logger.info("=" * 70)
+        logger.info(f"🎯 VALIDATION SUMMARY: {ticker}")
+        logger.info("=" * 70)
+        logger.info(f"Result:     {result}")
+        logger.info(f"Quality:    {quality}")
+        logger.info(f"Confidence: {base*100:.1f}% → {conf*100:.1f}% ({conf_change})")
+        logger.info(f"Score:      {summary.get('check_score', 'N/A')} checks passed")
+        logger.info("")
         
         regime = checks.get('regime_filter', {})
         if regime and 'regime' in regime:
             status = "✓" if regime.get('favorable') else "✗"
-            print(f"Regime:     {status} {regime['regime']} (VIX: {regime.get('vix', 0):.1f})")
-            print("")
+            logger.info(f"Regime:     {status} {regime['regime']} (VIX: {regime.get('vix', 0):.1f})")
+            logger.info("")
         
         passed = summary.get('passed_checks', [])
         if passed:
-            print(f"Passed:     {', '.join(passed[:5])}")
+            logger.info(f"Passed:     {', '.join(passed[:5])}")
             if len(passed) > 5:
-                print(f"            +{len(passed)-5} more")
-            print("")
+                logger.info(f"            +{len(passed)-5} more")
+            logger.info("")
         
         failed = summary.get('failed_checks', [])
         if failed:
-            print(f"Failed:     {', '.join(failed)}")
-            print("")
+            logger.info(f"Failed:     {', '.join(failed)}")
+            logger.info("")
         
         if summary.get('vpvr_rescued'):
-            print("✨ VPVR RESCUE: Counter-trend signal saved by excellent entry point!")
-            print("")
+            logger.info("✨ VPVR RESCUE: Counter-trend signal saved by excellent entry point!")
+            logger.info("")
         
-        print("=" * 70)
+        logger.info("=" * 70)
     
     def get_validation_stats(self) -> Dict:
         """Get validation statistics."""
@@ -1465,22 +1467,22 @@ __all__ = [
 
 
 if __name__ == "__main__":
-    print("\n" + "=" * 70)
-    print("VALIDATION MODULE - Unified Testing")
-    print("=" * 70 + "\n")
+    logger.info("\n" + "=" * 70)
+    logger.info("VALIDATION MODULE - Unified Testing")
+    logger.info("=" * 70 + "\n")
     
-    print("Testing SignalValidator...")
+    logger.info("Testing SignalValidator...")
     validator = get_validator()
-    print(f"✅ SignalValidator initialized")
+    logger.info(f"✅ SignalValidator initialized")
     
-    print("\nTesting RegimeFilter...")
+    logger.info("\nTesting RegimeFilter...")
     regime = get_regime_filter()
     regime.print_regime_summary()
     
-    print("\nTesting OptionsFilter...")
+    logger.info("\nTesting OptionsFilter...")
     opts = get_options_filter()
-    print(f"✅ OptionsFilter initialized")
+    logger.info(f"✅ OptionsFilter initialized")
     
-    print("\n" + "=" * 70)
-    print("All validation components operational!")
-    print("=" * 70)
+    logger.info("\n" + "=" * 70)
+    logger.info("All validation components operational!")
+    logger.info("=" * 70)

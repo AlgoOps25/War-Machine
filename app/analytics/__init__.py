@@ -1,3 +1,5 @@
+import logging
+logger = logging.getLogger(__name__)
 """
 Analytics Module for War Machine
 Central import point for signal tracking and performance analytics
@@ -15,7 +17,7 @@ try:
         log_filled,
     )
 except ImportError as e:
-    print(f"[ANALYTICS] funnel_tracker unavailable: {e}")
+    logger.info(f"[ANALYTICS] funnel_tracker unavailable: {e}")
     funnel_tracker = None
     log_screened = log_bos = log_fvg = log_validator = None
     log_armed = log_fired = log_filled = None
@@ -23,14 +25,14 @@ except ImportError as e:
 try:
     from app.analytics.ab_test import ab_test
 except ImportError as e:
-    print(f"[ANALYTICS] ab_test unavailable: {e}")
+    logger.info(f"[ANALYTICS] ab_test unavailable: {e}")
     ab_test = None
 
 try:
     from app.core.analytics_integration import AnalyticsIntegration
     ANALYTICS_AVAILABLE = True
 except Exception as e:
-    print(f"[ANALYTICS] Module unavailable: {e}")
+    logger.info(f"[ANALYTICS] Module unavailable: {e}")
     ANALYTICS_AVAILABLE = False
     AnalyticsIntegration = None
 

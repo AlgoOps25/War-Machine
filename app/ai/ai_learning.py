@@ -15,6 +15,8 @@ from typing import Dict, List
 import numpy as np
 from app.data import db_connection
 from utils import config
+import logging
+logger = logging.getLogger(__name__)
 
 
 # =============================================================================
@@ -114,7 +116,7 @@ class AILearningEngine:
             """)
             conn.commit()
         except Exception as e:
-            print(f"[AI] Error creating learning table: {e}")
+            logger.info(f"[AI] Error creating learning table: {e}")
         finally:
             if conn:
                 db_connection.return_conn(conn)
@@ -148,7 +150,7 @@ class AILearningEngine:
                         d = json.loads(d)
                     return {**default_data, **d}
             except Exception as e:
-                print(f"[AI] Error loading from PostgreSQL: {e}")
+                logger.info(f"[AI] Error loading from PostgreSQL: {e}")
             finally:
                 if conn:
                     db_connection.return_conn(conn)
@@ -161,7 +163,7 @@ class AILearningEngine:
                 if isinstance(loaded, dict):
                     return {**default_data, **loaded}
             except Exception as e:
-                print(f"[AI] Error loading JSON: {e}")
+                logger.info(f"[AI] Error loading JSON: {e}")
         return default_data
 
     def save_data(self):
@@ -182,7 +184,7 @@ class AILearningEngine:
                 """, (json.dumps(self.data),))
                 conn.commit()
             except Exception as e:
-                print(f"[AI] Error saving to PostgreSQL: {e}")
+                logger.info(f"[AI] Error saving to PostgreSQL: {e}")
             finally:
                 if conn:
                     db_connection.return_conn(conn)
@@ -192,7 +194,7 @@ class AILearningEngine:
             with open(self.db_path, "w") as f:
                 json.dump(self.data, f, indent=2)
         except Exception as e:
-            print(f"[AI] Error saving JSON: {e}")
+            logger.info(f"[AI] Error saving JSON: {e}")
 
     def record_trade(self, trade: Dict):
         """Record a completed trade for learning."""
@@ -256,7 +258,7 @@ class AILearningEngine:
         ]
 
         if len(trades_with_confirmations) < 20:
-            print("[AI] Not enough data for confirmation optimization (need 20+ trades)")
+            logger.info("[AI] Not enough data for confirmation optimization (need 20+ trades)")
             return
 
         all_trades = self.data["trades"]
@@ -288,9 +290,9 @@ class AILearningEngine:
                 new_weight = win_rate / baseline_wr
                 self.data["confirmation_weights"][conf_type] = round(new_weight, 2)
 
-        print("[AI] Confirmation weights optimized:")
+        logger.info("[AI] Confirmation weights optimized:")
         for conf, weight in self.data["confirmation_weights"].items():
-            print(f"  {conf}: {weight:.2f}")
+            logger.info(f"  {conf}: {weight:.2f}")
         self.save_data()
 
     def optimize_fvg_threshold(self):
@@ -308,7 +310,7 @@ class AILearningEngine:
         if len(winning_fvg) > 10:
             optimal_fvg = np.median(winning_fvg)
             self.data["fvg_size_optimal"] = round(optimal_fvg, 4)
-            print(f"[AI] Optimal FVG size updated: {optimal_fvg:.4f}")
+            logger.info(f"[AI] Optimal FVG size updated: {optimal_fvg:.4f}")
             self.save_data()
 
     def get_ticker_confidence_multiplier(self, ticker: str) -> float:
@@ -365,7 +367,7 @@ class AILearningEngine:
         except ImportError:
             return 1.0
         except Exception as e:
-            print(f"[AI] Error getting options flow weight for {ticker}: {e}")
+            logger.info(f"[AI] Error getting options flow weight for {ticker}: {e}")
             return 1.0
 
     def get_optimal_parameters(self) -> Dict:

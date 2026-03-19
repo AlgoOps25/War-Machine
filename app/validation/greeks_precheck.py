@@ -44,6 +44,8 @@ import time
 import requests
 
 from utils import config
+import logging
+logger = logging.getLogger(__name__)
 
 # How long to suppress retries for tickers with no options (30 minutes)
 NO_OPTIONS_TTL = 1800
@@ -291,7 +293,7 @@ class GreeksCache:
             return snapshots
 
         except Exception as e:
-            print(f"[GREEKS-CACHE] Error fetching {ticker}: {e}")
+            logger.info(f"[GREEKS-CACHE] Error fetching {ticker}: {e}")
             return []
 
     def update_cache(self, ticker: str, current_price: float) -> bool:
@@ -533,12 +535,12 @@ class GreeksCache:
             self._cache.pop(ticker, None)
             self._cache_timestamps.pop(ticker, None)
             self._no_options_set.pop(ticker, None)
-            print(f"[GREEKS-CACHE] Cleared cache for {ticker}")
+            logger.info(f"[GREEKS-CACHE] Cleared cache for {ticker}")
         else:
             self._cache.clear()
             self._cache_timestamps.clear()
             self._no_options_set.clear()
-            print("[GREEKS-CACHE] Cleared all cache")
+            logger.info("[GREEKS-CACHE] Cleared all cache")
 
 
 # Global instance
@@ -608,40 +610,40 @@ def get_cached_greeks(
 
 if __name__ == "__main__":
     """Test the Greeks cache with real data."""
-    print("\n" + "=" * 70)
-    print("GREEKS PRE-VALIDATION CACHE - Test Suite")
-    print("=" * 70 + "\n")
+    logger.info("\n" + "=" * 70)
+    logger.info("GREEKS PRE-VALIDATION CACHE - Test Suite")
+    logger.info("=" * 70 + "\n")
 
     test_ticker   = "AAPL"
     initial_price = 250.0
 
-    print(f"Discovering real {test_ticker} price...")
+    logger.info(f"Discovering real {test_ticker} price...")
     greeks_cache.update_cache(test_ticker, initial_price)
     real_price = greeks_cache.estimate_current_price(test_ticker)
 
     if real_price:
-        print(f"✅ Estimated {test_ticker} price: ${real_price:.2f}\n")
+        logger.info(f"✅ Estimated {test_ticker} price: ${real_price:.2f}\n")
         test_price = real_price
     else:
-        print(f"⚠️  Could not estimate price, using ${initial_price}\n")
+        logger.info(f"⚠️  Could not estimate price, using ${initial_price}\n")
         test_price = initial_price
 
-    print(f"Test 1: Quick validate {test_ticker} CALL at ${test_price:.2f}")
+    logger.info(f"Test 1: Quick validate {test_ticker} CALL at ${test_price:.2f}")
     is_valid, reason = quick_validate_options(test_ticker, "bull", test_price)
-    print(f"Result: {'✅ VALID' if is_valid else '❌ INVALID'}")
-    print(f"Reason: {reason}\n")
+    logger.info(f"Result: {'✅ VALID' if is_valid else '❌ INVALID'}")
+    logger.info(f"Reason: {reason}\n")
 
-    print(f"Test 2: Quick validate {test_ticker} PUT at ${test_price:.2f}")
+    logger.info(f"Test 2: Quick validate {test_ticker} PUT at ${test_price:.2f}")
     is_valid, reason = quick_validate_options(test_ticker, "bear", test_price)
-    print(f"Result: {'✅ VALID' if is_valid else '❌ INVALID'}")
-    print(f"Reason: {reason}\n")
+    logger.info(f"Result: {'✅ VALID' if is_valid else '❌ INVALID'}")
+    logger.info(f"Reason: {reason}\n")
 
-    print(f"Test 3: Get cached ATM CALLS for {test_ticker}")
+    logger.info(f"Test 3: Get cached ATM CALLS for {test_ticker}")
     calls = get_cached_greeks(test_ticker, "bull", num_strikes=5)
-    print(f"Found {len(calls)} ATM call strikes (sorted by DTE asc):\n")
+    logger.info(f"Found {len(calls)} ATM call strikes (sorted by DTE asc):\n")
     for i, strike_data in enumerate(calls[:3], 1):
-        print(f"{i}. ${strike_data['strike']:.0f} CALL  |  {strike_data['dte']}DTE")
-        print(f"   Delta: {strike_data['delta']:.3f} | IV: {strike_data['iv']*100:.1f}%")
+        logger.info(f"{i}. ${strike_data['strike']:.0f} CALL  |  {strike_data['dte']}DTE")
+        logger.info(f"   Delta: {strike_data['delta']:.3f} | IV: {strike_data['iv']*100:.1f}%")
         print(
             f"   Bid/Ask: ${strike_data['bid']:.2f}/${strike_data['ask']:.2f} "
             f"(spread: {strike_data['spread_pct']:.1f}%)"
@@ -651,13 +653,13 @@ if __name__ == "__main__":
             f"| Delta OK: {'✅' if abs(strike_data['delta']) >= 0.30 else '❌'}\n"
         )
 
-    print("=" * 70)
-    print("Cache Statistics:")
-    print("=" * 70)
+    logger.info("=" * 70)
+    logger.info("Cache Statistics:")
+    logger.info("=" * 70)
     stats = greeks_cache.get_stats()
     for key, value in stats.items():
-        print(f"{key}: {value}")
-    print("=" * 70)
+        logger.info(f"{key}: {value}")
+    logger.info("=" * 70)
 
 
 # ════════════════════════════════════════════════════════════════════════════════

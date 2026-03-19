@@ -19,6 +19,8 @@ from typing import Dict, List, Optional, Tuple
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import os
+import logging
+logger = logging.getLogger(__name__)
 
 ET = ZoneInfo("America/New_York")
 
@@ -56,9 +58,9 @@ class UnusualOptionsDetector:
         self.min_oi_ratio = 2.0  # 2x open interest
         self.min_sweep_legs = 3  # Minimum exchanges for sweep detection
         
-        print("[UOA] Unusual Options Detector initialized")
-        print(f"[UOA] Whale threshold: ${self.min_premium_whale:,}")
-        print(f"[UOA] Cache TTL: {self.cache_ttl}s")
+        logger.info("[UOA] Unusual Options Detector initialized")
+        logger.info(f"[UOA] Whale threshold: ${self.min_premium_whale:,}")
+        logger.info(f"[UOA] Cache TTL: {self.cache_ttl}s")
     
     def check_whale_activity(self, ticker: str, direction: str = 'CALL') -> Dict:
         """
@@ -75,7 +77,7 @@ class UnusualOptionsDetector:
         # Check cache first
         if self._is_cached(ticker, direction):
             cached = self.cache[(ticker, direction)]['data']
-            print(f"[UOA] {ticker} - Using cached whale data")
+            logger.info(f"[UOA] {ticker} - Using cached whale data")
             return cached
         
         # Detect whale activity from multiple sources
@@ -125,8 +127,8 @@ class UnusualOptionsDetector:
         
         # Log significant activity
         if is_unusual:
-            print(f"[UOA] {ticker} 🐋 UNUSUAL ACTIVITY DETECTED | Overall: {overall_score:.1f}/10 | Whale: {whale_score:.1f} | Flow: {flow_score:.1f} | Sweep: {sweep_score:.1f} | Dark Pool: {dark_pool_score:.1f}")
-            print(f"[UOA]   Confidence Boost: +{confidence_boost*100:.0f}%")
+            logger.info(f"[UOA] {ticker} 🐋 UNUSUAL ACTIVITY DETECTED | Overall: {overall_score:.1f}/10 | Whale: {whale_score:.1f} | Flow: {flow_score:.1f} | Sweep: {sweep_score:.1f} | Dark Pool: {dark_pool_score:.1f}")
+            logger.info(f"[UOA]   Confidence Boost: +{confidence_boost*100:.0f}%")
         
         return result
     
@@ -162,11 +164,11 @@ class UnusualOptionsDetector:
             # Check for volume spikes (proxy for whale activity)
             # Real API integration would replace this
             
-            print(f"[UOA] {ticker} whale detection: {score:.1f}/10")
+            logger.info(f"[UOA] {ticker} whale detection: {score:.1f}/10")
             return score
         
         except Exception as e:
-            print(f"[UOA] {ticker} whale detection error: {e}")
+            logger.info(f"[UOA] {ticker} whale detection error: {e}")
             return 0.0
     
     def _analyze_options_flow(self, ticker: str, direction: str) -> float:
@@ -197,11 +199,11 @@ class UnusualOptionsDetector:
             
             score = 0.0
             
-            print(f"[UOA] {ticker} flow analysis: {score:.1f}/10")
+            logger.info(f"[UOA] {ticker} flow analysis: {score:.1f}/10")
             return score
         
         except Exception as e:
-            print(f"[UOA] {ticker} flow analysis error: {e}")
+            logger.info(f"[UOA] {ticker} flow analysis error: {e}")
             return 0.0
     
     def _detect_sweeps(self, ticker: str, direction: str) -> float:
@@ -230,11 +232,11 @@ class UnusualOptionsDetector:
             
             score = 0.0
             
-            print(f"[UOA] {ticker} sweep detection: {score:.1f}/10")
+            logger.info(f"[UOA] {ticker} sweep detection: {score:.1f}/10")
             return score
         
         except Exception as e:
-            print(f"[UOA] {ticker} sweep detection error: {e}")
+            logger.info(f"[UOA] {ticker} sweep detection error: {e}")
             return 0.0
     
     def _check_dark_pool_activity(self, ticker: str) -> float:
@@ -262,11 +264,11 @@ class UnusualOptionsDetector:
             
             score = 0.0
             
-            print(f"[UOA] {ticker} dark pool activity: {score:.1f}/10")
+            logger.info(f"[UOA] {ticker} dark pool activity: {score:.1f}/10")
             return score
         
         except Exception as e:
-            print(f"[UOA] {ticker} dark pool check error: {e}")
+            logger.info(f"[UOA] {ticker} dark pool check error: {e}")
             return 0.0
     
     def _generate_summary(self, overall: float, whale: float, flow: float, sweep: float) -> str:
@@ -319,7 +321,7 @@ class UnusualOptionsDetector:
         """Clear UOA cache (called at EOD reset)."""
         count = len(self.cache)
         self.cache.clear()
-        print(f"[UOA] Cache cleared ({count} entries removed)")
+        logger.info(f"[UOA] Cache cleared ({count} entries removed)")
     
     def get_whale_alerts(self, tickers: List[str], min_score: float = 6.0) -> List[Dict]:
         """
@@ -348,7 +350,7 @@ class UnusualOptionsDetector:
                     alerts.append(put_data)
             
             except Exception as e:
-                print(f"[UOA] Error scanning {ticker}: {e}")
+                logger.info(f"[UOA] Error scanning {ticker}: {e}")
                 continue
         
         # Sort by overall score (highest first)
@@ -418,26 +420,26 @@ if __name__ == "__main__":
     # Example: Check whale activity
     test_ticker = "AAPL"
     
-    print(f"Checking whale activity for {test_ticker}...\n")
+    logger.info(f"Checking whale activity for {test_ticker}...\n")
     
     call_activity = check_whale_activity(test_ticker, 'CALL')
-    print(f"\nCALL Activity:")
-    print(f"  Unusual: {call_activity['is_unusual']}")
-    print(f"  Score: {call_activity['overall_score']}/10")
-    print(f"  Boost: +{call_activity['confidence_boost']*100:.0f}%")
-    print(f"  Summary: {call_activity['summary']}")
+    logger.info(f"\nCALL Activity:")
+    logger.info(f"  Unusual: {call_activity['is_unusual']}")
+    logger.info(f"  Score: {call_activity['overall_score']}/10")
+    logger.info(f"  Boost: +{call_activity['confidence_boost']*100:.0f}%")
+    logger.info(f"  Summary: {call_activity['summary']}")
     
     # Example: Scan watchlist
-    print("\n" + "="*70)
-    print("Scanning watchlist for whale activity...\n")
+    logger.info("\n" + "="*70)
+    logger.info("Scanning watchlist for whale activity...\n")
     
     test_watchlist = ["SPY", "QQQ", "AAPL", "TSLA", "NVDA"]
     whale_alerts = scan_for_whales(test_watchlist, min_score=5.0)
     
     if whale_alerts:
-        print(f"Found {len(whale_alerts)} whale alerts:\n")
+        logger.info(f"Found {len(whale_alerts)} whale alerts:\n")
         for alert in whale_alerts:
-            print(format_whale_alert(alert))
-            print("-" * 70)
+            logger.info(format_whale_alert(alert))
+            logger.info("-" * 70)
     else:
-        print("No significant whale activity detected")
+        logger.info("No significant whale activity detected")

@@ -86,7 +86,7 @@ def run_eod_report(session_date: str | None = None) -> None:
 
         # Log full summary to Railway stdout for ops visibility
         full_summary = signal_tracker.get_daily_summary(session_date)
-        print(full_summary)
+        logger.info(full_summary)
 
         # Clear session cache for next trading day
         signal_tracker.clear_session_cache()

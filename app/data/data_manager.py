@@ -1,3 +1,5 @@
+import logging
+logger = logging.getLogger(__name__)
 ﻿"""
 Data Manager - Consolidated Data Fetching, Storage, and Database Management
 
@@ -213,7 +215,7 @@ class DataManager:
                     cursor.execute("DELETE FROM fetch_metadata")
                     cursor.execute("DELETE FROM db_version")
                     cursor.execute("INSERT INTO db_version (version) VALUES (2)")
-                    print("[DATA] Migration v2: Cleared UTC bars — switching to ET-naive storage")
+                    logger.info("[DATA] Migration v2: Cleared UTC bars — switching to ET-naive storage")
                 else:
                     # Stamp v2 so this branch never fires again on this DB.
                     # The data is already ET-naive on Railway; no wipe needed.
@@ -228,7 +230,7 @@ class DataManager:
             conn.commit()
 
             db_type = "PostgreSQL" if db_connection.USE_POSTGRES else self.db_path
-            print(f"[DATA] Database initialized: {db_type}")
+            logger.info(f"[DATA] Database initialized: {db_type}")
 
         finally:
             if conn:
@@ -266,7 +268,7 @@ class DataManager:
                     missing = [k for k in required if k not in bar or bar[k] is None]
 
                     if missing:
-                        print(f"[DATA] {ticker}: Skipping bar with missing fields: {missing}")
+                        logger.info(f"[DATA] {ticker}: Skipping bar with missing fields: {missing}")
                         continue
 
                     dt_et = datetime.fromtimestamp(
@@ -282,16 +284,16 @@ class DataManager:
                         "volume":   int(bar["volume"])
                     })
                 except (ValueError, TypeError, KeyError) as e:
-                    print(f"[DATA] Bar parse error for {ticker}: {e}")
+                    logger.info(f"[DATA] Bar parse error for {ticker}: {e}")
                     continue
 
             return bars
 
         except requests.exceptions.HTTPError as e:
-            print(f"[DATA] API Error for {ticker}: {e}")
+            logger.info(f"[DATA] API Error for {ticker}: {e}")
             return []
         except Exception as e:
-            print(f"[DATA] Unexpected error for {ticker}: {e}")
+            logger.info(f"[DATA] Unexpected error for {ticker}: {e}")
             return []
 
     # =============================================================
@@ -322,9 +324,9 @@ class DataManager:
                     print(f"[DATA] [{idx}/{len(tickers)}] {ticker}: "
                           f"no historical bars returned")
             except Exception as e:
-                print(f"[DATA] [{idx}/{len(tickers)}] {ticker} backfill error: {e}")
+                logger.info(f"[DATA] [{idx}/{len(tickers)}] {ticker} backfill error: {e}")
 
-        print("[DATA] Startup backfill complete — WebSocket feed handles today's bars\n")
+        logger.info("[DATA] Startup backfill complete — WebSocket feed handles today's bars\n")
 
     def startup_intraday_backfill_today(self, tickers: List[str]):
         """
@@ -349,12 +351,12 @@ class DataManager:
                     self.materialize_5m_bars(ticker)
                     filled += 1
             except Exception as e:
-                print(f"[DATA] Today REST backfill error for {ticker}: {e}")
+                logger.info(f"[DATA] Today REST backfill error for {ticker}: {e}")
 
         if filled:
-            print(f"[DATA] Today REST backfill complete: {filled}/{len(tickers)} tickers\n")
+            logger.info(f"[DATA] Today REST backfill complete: {filled}/{len(tickers)} tickers\n")
         else:
-            print(f"[DATA] Today REST backfill: no same-day data from EODHD — WS-only session\n")
+            logger.info(f"[DATA] Today REST backfill: no same-day data from EODHD — WS-only session\n")
 
     # =============================================================
     # CACHE-AWARE STARTUP & SYNC
@@ -379,7 +381,7 @@ class DataManager:
         now_et = datetime.now(ET)
         timeframe = '1m'
 
-        print(f"\n[CACHE] Smart startup backfill: {len(tickers)} tickers | {days} days")
+        logger.info(f"\n[CACHE] Smart startup backfill: {len(tickers)} tickers | {days} days")
 
         cache_hits = 0
         cache_misses = 0
@@ -449,23 +451,23 @@ class DataManager:
                     print(f"[CACHE] [{idx}/{len(tickers)}] {ticker}: "
                           f"{len(bars)} bars fetched and cached")
                 else:
-                    print(f"[CACHE] [{idx}/{len(tickers)}] {ticker}: no data returned")
+                    logger.info(f"[CACHE] [{idx}/{len(tickers)}] {ticker}: no data returned")
 
             except Exception as e:
-                print(f"[CACHE] [{idx}/{len(tickers)}] {ticker} error: {e}")
+                logger.info(f"[CACHE] [{idx}/{len(tickers)}] {ticker} error: {e}")
 
-        print(f"\n[CACHE] Startup complete!")
-        print(f"[CACHE] Stats:")
-        print(f"[CACHE]   - Cache hits: {cache_hits}/{len(tickers)} ({cache_hits/len(tickers)*100:.1f}%)")
-        print(f"[CACHE]   - Cache misses: {cache_misses}")
-        print(f"[CACHE]   - Gap fills: {gap_fills}")
-        print(f"[CACHE]   - Bars from cache: {total_cached_bars:,}")
-        print(f"[CACHE]   - Bars from API: {total_api_bars:,}")
+        logger.info(f"\n[CACHE] Startup complete!")
+        logger.info(f"[CACHE] Stats:")
+        logger.info(f"[CACHE]   - Cache hits: {cache_hits}/{len(tickers)} ({cache_hits/len(tickers)*100:.1f}%)")
+        logger.info(f"[CACHE]   - Cache misses: {cache_misses}")
+        logger.info(f"[CACHE]   - Gap fills: {gap_fills}")
+        logger.info(f"[CACHE]   - Bars from cache: {total_cached_bars:,}")
+        logger.info(f"[CACHE]   - Bars from API: {total_api_bars:,}")
 
         if cache_hits > 0:
             api_reduction = (1 - total_api_bars / (total_cached_bars + total_api_bars)) * 100 if (total_cached_bars + total_api_bars) > 0 else 0
-            print(f"[CACHE]   - API reduction: {api_reduction:.1f}%")
-        print()
+            logger.info(f"[CACHE]   - API reduction: {api_reduction:.1f}%")
+        logger.info("")
 
     def store_bars_with_cache(self, ticker: str, bars: List[Dict], quiet: bool = False) -> int:
         """
@@ -481,7 +483,7 @@ class DataManager:
                 from app.data.candle_cache import candle_cache
                 candle_cache.cache_candles(ticker, '1m', bars, quiet=True)
             except Exception as e:
-                print(f"[CACHE] Auto-cache failed for {ticker}: {e}")
+                logger.info(f"[CACHE] Auto-cache failed for {ticker}: {e}")
 
         return result
 
@@ -499,7 +501,7 @@ class DataManager:
         if not (config.MARKET_OPEN <= now_et.time() <= dtime(17, 0)):
             return
 
-        print(f"[CACHE] Background sync: {len(tickers)} tickers")
+        logger.info(f"[CACHE] Background sync: {len(tickers)} tickers")
 
         synced = 0
         for ticker in tickers:
@@ -527,10 +529,10 @@ class DataManager:
                         synced += 1
 
             except Exception as e:
-                print(f"[CACHE] Background sync error for {ticker}: {e}")
+                logger.info(f"[CACHE] Background sync error for {ticker}: {e}")
 
         if synced > 0:
-            print(f"[CACHE] Background sync complete: {synced}/{len(tickers)} updated")
+            logger.info(f"[CACHE] Background sync complete: {synced}/{len(tickers)} updated")
 
     def warmup_cache(self, tickers: List[str], days: int = 60):
         """
@@ -538,7 +540,7 @@ class DataManager:
         """
         from app.data.candle_cache import candle_cache
 
-        print(f"[CACHE] Cache warmup: {len(tickers)} tickers | {days} days")
+        logger.info(f"[CACHE] Cache warmup: {len(tickers)} tickers | {days} days")
 
         now_et = datetime.now(ET)
         today_midnight = now_et.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -550,13 +552,13 @@ class DataManager:
                 bars = self._fetch_range(ticker, from_ts, to_ts)
                 if bars:
                     candle_cache.cache_candles(ticker, '1m', bars)
-                    print(f"[CACHE] [{idx}/{len(tickers)}] {ticker}: {len(bars)} bars cached")
+                    logger.info(f"[CACHE] [{idx}/{len(tickers)}] {ticker}: {len(bars)} bars cached")
                 else:
-                    print(f"[CACHE] [{idx}/{len(tickers)}] {ticker}: no data")
+                    logger.info(f"[CACHE] [{idx}/{len(tickers)}] {ticker}: no data")
             except Exception as e:
-                print(f"[CACHE] [{idx}/{len(tickers)}] {ticker} error: {e}")
+                logger.info(f"[CACHE] [{idx}/{len(tickers)}] {ticker} error: {e}")
 
-        print(f"[CACHE] Warmup complete!\n")
+        logger.info(f"[CACHE] Warmup complete!\n")
 
     # =============================================================
     # INCREMENTAL UPDATE
@@ -620,14 +622,14 @@ class DataManager:
                 to_ts = int(now_et.timestamp())
                 label = f"gap fill from {fetch_from.strftime('%H:%M ET')}"
 
-        print(f"[DATA] {ticker} -> {label}")
+        logger.info(f"[DATA] {ticker} -> {label}")
         bars = self._fetch_range(ticker, from_ts, to_ts)
 
         if bars:
             self.store_bars(ticker, bars)
             self.materialize_5m_bars(ticker)
         else:
-            print(f"[DATA] {ticker}: no new bars returned")
+            logger.info(f"[DATA] {ticker}: no new bars returned")
 
     # =============================================================
     # STORAGE (FIX #4: GUARANTEED CONNECTION RETURN)
@@ -675,7 +677,7 @@ class DataManager:
                 if conn:
                     return_conn(conn)
 
-        print(f"[DATA] All {max_retries} store attempts failed for {ticker}")
+        logger.info(f"[DATA] All {max_retries} store attempts failed for {ticker}")
         return 0
 
     def materialize_5m_bars(self, ticker: str):
@@ -721,7 +723,7 @@ class DataManager:
             cursor.executemany(upsert_bar_5m_sql(), data)
             conn.commit()
         except Exception as e:
-            print(f"[DATA] 5m materialization error for {ticker}: {e}")
+            logger.info(f"[DATA] 5m materialization error for {ticker}: {e}")
             if conn:
                 try:
                     conn.rollback()
@@ -881,7 +883,7 @@ class DataManager:
                 "volume": int(bar["volume"])
             }
         except Exception as e:
-            print(f"[DATA] Error fetching daily OHLC for {ticker} on {target_date}: {e}")
+            logger.info(f"[DATA] Error fetching daily OHLC for {ticker} on {target_date}: {e}")
             return None
 
     def get_previous_day_ohlc(self, ticker: str) -> Optional[Dict]:
@@ -963,7 +965,7 @@ class DataManager:
             return result
 
         except Exception as e:
-            print(f"[LIVE] Bulk snapshot error: {e}")
+            logger.info(f"[LIVE] Bulk snapshot error: {e}")
             return result
 
     # =============================================================
@@ -999,7 +1001,7 @@ class DataManager:
                 f"DELETE FROM intraday_bars_5m WHERE datetime < {p}", (cutoff,)
             )
             conn.commit()
-            print(f"[CLEANUP] Removed bars older than {days_to_keep} days")
+            logger.info(f"[CLEANUP] Removed bars older than {days_to_keep} days")
         finally:
             if conn:
                 return_conn(conn)
@@ -1103,7 +1105,7 @@ class DataManager:
             return None
 
         except Exception as e:
-            print(f"[DATA-MGR] VIX fetch error: {e}")
+            logger.info(f"[DATA-MGR] VIX fetch error: {e}")
             return None
 
 

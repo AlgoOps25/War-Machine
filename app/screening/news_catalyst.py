@@ -22,6 +22,8 @@ from typing import Dict, List, Optional
 import re
 import requests
 from utils import config
+import logging
+logger = logging.getLogger(__name__)
 
 
 # Catalyst type -> emoji for Discord embed
@@ -112,9 +114,9 @@ def notify_news_catalyst(catalyst: 'NewsCatalyst') -> None:
             timeout=10
         )
         if resp.status_code not in (200, 204):
-            print(f'[NEWS-DISCORD] Webhook error {resp.status_code} for {catalyst.ticker}')
+            logger.info(f'[NEWS-DISCORD] Webhook error {resp.status_code} for {catalyst.ticker}')
     except Exception as e:
-        print(f'[NEWS-DISCORD] Failed to send alert for {catalyst.ticker}: {e}')
+        logger.info(f'[NEWS-DISCORD] Failed to send alert for {catalyst.ticker}: {e}')
 
 
 class NewsCatalystDetector:
@@ -220,20 +222,20 @@ class NewsCatalystDetector:
         
         news_items = self._fetch_news(ticker)
         if not news_items:
-            print(f"[NEWS] {ticker}: No news items returned from API")
+            logger.info(f"[NEWS] {ticker}: No news items returned from API")
             self.cache[ticker] = (None, datetime.now())
             return None
         
-        print(f"[NEWS] {ticker}: Fetched {len(news_items)} news items")
+        logger.info(f"[NEWS] {ticker}: Fetched {len(news_items)} news items")
         catalyst = self._analyze_news(ticker, news_items)
         self.cache[ticker] = (catalyst, datetime.now())
         
         if catalyst:
-            print(f"[NEWS] {ticker}: Catalyst found - {catalyst.catalyst_type} (weight={catalyst.weight})")
+            logger.info(f"[NEWS] {ticker}: Catalyst found - {catalyst.catalyst_type} (weight={catalyst.weight})")
             # Fire Discord alert to news channel
             notify_news_catalyst(catalyst)
         else:
-            print(f"[NEWS] {ticker}: No catalyst found")
+            logger.info(f"[NEWS] {ticker}: No catalyst found")
         
         return catalyst
     
@@ -251,12 +253,12 @@ class NewsCatalystDetector:
             }
             response = requests.get(url, params=params, timeout=10)
             if response.status_code != 200:
-                print(f"[NEWS] {ticker}: API returned HTTP {response.status_code}")
+                logger.info(f"[NEWS] {ticker}: API returned HTTP {response.status_code}")
                 return []
             news_data = response.json()
             return news_data if isinstance(news_data, list) else []
         except Exception as e:
-            print(f"[NEWS] Error fetching news for {ticker}: {e}")
+            logger.info(f"[NEWS] Error fetching news for {ticker}: {e}")
             return []
     
     def _is_ticker_specific(self, ticker: str, title: str, content: str) -> bool:
@@ -302,7 +304,7 @@ class NewsCatalystDetector:
                     matched_kw = kw
                     break
             if matched_kw:
-                print(f"[NEWS] {ticker}: earnings match on '{matched_kw}'")
+                logger.info(f"[NEWS] {ticker}: earnings match on '{matched_kw}'")
                 catalysts.append(NewsCatalyst(
                     ticker=ticker, catalyst_type='earnings',
                     headline=title,
@@ -317,7 +319,7 @@ class NewsCatalystDetector:
                     matched_kw = kw
                     break
             if matched_kw:
-                print(f"[NEWS] {ticker}: upgrade match on '{matched_kw}'")
+                logger.info(f"[NEWS] {ticker}: upgrade match on '{matched_kw}'")
                 catalysts.append(NewsCatalyst(
                     ticker=ticker, catalyst_type='upgrade',
                     headline=title, sentiment='bullish',
@@ -333,7 +335,7 @@ class NewsCatalystDetector:
                     matched_kw = kw
                     break
             if matched_kw:
-                print(f"[NEWS] {ticker}: downgrade match on '{matched_kw}'")
+                logger.info(f"[NEWS] {ticker}: downgrade match on '{matched_kw}'")
                 catalysts.append(NewsCatalyst(
                     ticker=ticker, catalyst_type='downgrade',
                     headline=title, sentiment='bearish',
@@ -349,7 +351,7 @@ class NewsCatalystDetector:
                     matched_kw = kw
                     break
             if matched_kw:
-                print(f"[NEWS] {ticker}: merger match on '{matched_kw}'")
+                logger.info(f"[NEWS] {ticker}: merger match on '{matched_kw}'")
                 catalysts.append(NewsCatalyst(
                     ticker=ticker, catalyst_type='merger',
                     headline=title, sentiment='bullish',
@@ -365,7 +367,7 @@ class NewsCatalystDetector:
                     matched_kw = kw
                     break
             if matched_kw:
-                print(f"[NEWS] {ticker}: fda match on '{matched_kw}'")
+                logger.info(f"[NEWS] {ticker}: fda match on '{matched_kw}'")
                 catalysts.append(NewsCatalyst(
                     ticker=ticker, catalyst_type='fda',
                     headline=title,
@@ -374,7 +376,7 @@ class NewsCatalystDetector:
                 ))
                 continue
         
-        print(f"[NEWS] {ticker}: {ticker_specific_count} ticker-specific news items, {len(catalysts)} catalysts detected")
+        logger.info(f"[NEWS] {ticker}: {ticker_specific_count} ticker-specific news items, {len(catalysts)} catalysts detected")
         
         if catalysts:
             return max(catalysts, key=lambda c: c.weight)

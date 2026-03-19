@@ -61,6 +61,8 @@ from zoneinfo import ZoneInfo
 import numpy as np
 
 from app.data.data_manager import data_manager
+import logging
+logger = logging.getLogger(__name__)
 
 ET = ZoneInfo("America/New_York")
 
@@ -157,13 +159,13 @@ class OpeningRangeDetector:
         # Structure: ticker -> secondary range result dict (immutable once set)
         self.sr_cache: Dict[str, Dict] = {}
 
-        print("[OR] Opening Range Detector initialized")
-        print(f"[OR] Window: 9:30-9:40 AM ET (10 minutes)")
-        print(f"[OR] Thresholds: TIGHT<{self.tight_threshold} ATR, WIDE>{self.wide_threshold} ATR")
-        print(f"[OR] Scan frequencies: Tight={self.scan_freq_tight}s, Normal={self.scan_freq_normal}s")
-        print(f"[OR] Mid-session fallback: DYNAMIC range (9:30->now) if OR missed")
-        print(f"[OR] DYNAMIC cache TTL: {int(OR_CACHE_DYNAMIC_TTL.total_seconds() // 60)} min")
-        print(f"[OR] Secondary Range: 10:00-10:30 AM ET (Power Hour) — Phase B1")
+        logger.info("[OR] Opening Range Detector initialized")
+        logger.info(f"[OR] Window: 9:30-9:40 AM ET (10 minutes)")
+        logger.info(f"[OR] Thresholds: TIGHT<{self.tight_threshold} ATR, WIDE>{self.wide_threshold} ATR")
+        logger.info(f"[OR] Scan frequencies: Tight={self.scan_freq_tight}s, Normal={self.scan_freq_normal}s")
+        logger.info(f"[OR] Mid-session fallback: DYNAMIC range (9:30->now) if OR missed")
+        logger.info(f"[OR] DYNAMIC cache TTL: {int(OR_CACHE_DYNAMIC_TTL.total_seconds() // 60)} min")
+        logger.info(f"[OR] Secondary Range: 10:00-10:30 AM ET (Power Hour) — Phase B1")
 
     # ------------------------------------------------------------------
     # PUBLIC API
@@ -204,14 +206,14 @@ class OpeningRangeDetector:
             if cached_at and (current_time.replace(tzinfo=None) - cached_at.replace(tzinfo=None)) < OR_CACHE_DYNAMIC_TTL:
                 return cached
             # TTL expired — evict and re-evaluate
-            print(f"[OR] {ticker} DYNAMIC cache expired — re-evaluating with accumulated bars")
+            logger.info(f"[OR] {ticker} DYNAMIC cache expired — re-evaluating with accumulated bars")
             del self.or_cache[ticker]
 
         # ── Get today's session bars ──────────────────────────────────
         bars_1m = data_manager.get_today_session_bars(ticker)
 
         if not bars_1m:
-            print(f"[OR] {ticker} - No session bars available")
+            logger.info(f"[OR] {ticker} - No session bars available")
             return None
 
         # ── Try to extract the real 9:30-9:40 OR first ───────────────────
@@ -224,11 +226,11 @@ class OpeningRangeDetector:
                                             current_time=current_time)
 
         # ── Fallback: mid-session restart, OR was missed ──────────────
-        print(f"[OR] {ticker} - OR window missed (mid-session restart) — using DYNAMIC session range")
+        logger.info(f"[OR] {ticker} - OR window missed (mid-session restart) — using DYNAMIC session range")
         session_bars = self._extract_session_bars(bars_1m)
 
         if not session_bars:
-            print(f"[OR] {ticker} - No bars found in session window (9:30->now)")
+            logger.info(f"[OR] {ticker} - No bars found in session window (9:30->now)")
             return None
 
         return self._classify_from_bars(ticker, session_bars, classification_label="DYNAMIC",
@@ -603,7 +605,7 @@ class OpeningRangeDetector:
         atr = self._calculate_atr(ticker)
 
         if atr is None or atr == 0:
-            print(f"[OR] {ticker} - Could not calculate ATR")
+            logger.info(f"[OR] {ticker} - Could not calculate ATR")
             return None
 
         or_range_atr = or_range / atr
@@ -661,13 +663,13 @@ class OpeningRangeDetector:
               f"ATR Ratio: {or_range_atr:.2f}x | Bars: {len(bars)}")
 
         if classification == 'TIGHT':
-            print(f"[OR]   \U0001f680 Expansion breakout likely — scanning every {scan_frequency}s")
-            print(f"[OR]   \U0001f4c8 Confidence boost: +{confidence_adjustment*100:.0f}%")
+            logger.info(f"[OR]   \U0001f680 Expansion breakout likely — scanning every {scan_frequency}s")
+            logger.info(f"[OR]   \U0001f4c8 Confidence boost: +{confidence_adjustment*100:.0f}%")
         elif classification == 'WIDE':
-            print(f"[OR]   \u23f3 Consolidation likely — min confidence raised to {min_confidence*100:.0f}%")
+            logger.info(f"[OR]   \u23f3 Consolidation likely — min confidence raised to {min_confidence*100:.0f}%")
         elif classification == 'DYNAMIC':
-            print(f"[OR]   \U0001f504 Mid-session fallback — {len(bars)} bars from 9:30 used as range")
-            print(f"[OR]   \U0001f551 Will re-evaluate in {int(OR_CACHE_DYNAMIC_TTL.total_seconds() // 60)} min")
+            logger.info(f"[OR]   \U0001f504 Mid-session fallback — {len(bars)} bars from 9:30 used as range")
+            logger.info(f"[OR]   \U0001f551 Will re-evaluate in {int(OR_CACHE_DYNAMIC_TTL.total_seconds() // 60)} min")
 
         return result
 
@@ -851,10 +853,10 @@ def detect_breakout_after_or(bars, or_high, or_low):
         if bt is None or bt < time(9, 45):
             continue
         if bar["close"] > or_high * (1 + config.ORB_BREAK_THRESHOLD):
-            print(f"[BREAKOUT] BULL idx {i} ${bar['close']:.2f}")
+            logger.info(f"[BREAKOUT] BULL idx {i} ${bar['close']:.2f}")
             return "bull", i
         if bar["close"] < or_low * (1 - config.ORB_BREAK_THRESHOLD):
-            print(f"[BREAKOUT] BEAR idx {i} ${bar['close']:.2f}")
+            logger.info(f"[BREAKOUT] BEAR idx {i} ${bar['close']:.2f}")
             return "bear", i
     return None, None
 
@@ -869,12 +871,12 @@ def detect_fvg_after_break(bars, breakout_idx, direction):
         if direction == "bull":
             gap = c2["low"] - c0["high"]
             if gap > 0 and (gap / c0["high"]) >= config.FVG_MIN_SIZE_PCT:
-                print(f"[FVG] BULL ${c0['high']:.2f}—${c2['low']:.2f}")
+                logger.info(f"[FVG] BULL ${c0['high']:.2f}—${c2['low']:.2f}")
                 return c0["high"], c2["low"]
         elif direction == "bear":
             gap = c0["low"] - c2["high"]
             if gap > 0 and (gap / c0["low"]) >= config.FVG_MIN_SIZE_PCT:
-                print(f"[FVG] BEAR ${c2['high']:.2f}—${c0['low']:.2f}")
+                logger.info(f"[FVG] BEAR ${c2['high']:.2f}—${c0['low']:.2f}")
                 return c2["high"], c0["low"]
     return None, None
 
@@ -883,37 +885,37 @@ def detect_fvg_after_break(bars, breakout_idx, direction):
 # ========================================
 if __name__ == "__main__":
     test_ticker = "SPY"
-    print(f"Testing OR detection for {test_ticker}...\n")
+    logger.info(f"Testing OR detection for {test_ticker}...\n")
     or_data = classify_or(test_ticker)
     if or_data:
-        print(f"\nOR Classification:")
-        print(f"  Ticker:          {or_data['ticker']}")
-        print(f"  Range:           ${or_data['or_range']} ({or_data['or_range_pct']}%)")
-        print(f"  ATR:             ${or_data['atr']}")
-        print(f"  ATR Ratio:       {or_data['or_range_atr']}x")
-        print(f"  Classification:  {or_data['classification']}")
-        print(f"  Bars used:       {or_data['bar_count']}")
-        print(f"  Scan Frequency:  {or_data['scan_frequency']}s")
-        print(f"  Confidence Adj:  +{or_data['confidence_adjustment']*100:.0f}%")
-        print(f"  Min Confidence:  {or_data['min_confidence']*100:.0f}%")
+        logger.info(f"\nOR Classification:")
+        logger.info(f"  Ticker:          {or_data['ticker']}")
+        logger.info(f"  Range:           ${or_data['or_range']} ({or_data['or_range_pct']}%)")
+        logger.info(f"  ATR:             ${or_data['atr']}")
+        logger.info(f"  ATR Ratio:       {or_data['or_range_atr']}x")
+        logger.info(f"  Classification:  {or_data['classification']}")
+        logger.info(f"  Bars used:       {or_data['bar_count']}")
+        logger.info(f"  Scan Frequency:  {or_data['scan_frequency']}s")
+        logger.info(f"  Confidence Adj:  +{or_data['confidence_adjustment']*100:.0f}%")
+        logger.info(f"  Min Confidence:  {or_data['min_confidence']*100:.0f}%")
 
         levels = get_session_levels(test_ticker)
         if levels:
-            print(f"\nSession Levels:")
-            print(f"  Session High: ${levels['session_high']}")
-            print(f"  Session Low:  ${levels['session_low']}")
-            print(f"  Session Open: ${levels['session_open']}")
-            print(f"  Bars:         {levels['bar_count']}")
+            logger.info(f"\nSession Levels:")
+            logger.info(f"  Session High: ${levels['session_high']}")
+            logger.info(f"  Session Low:  ${levels['session_low']}")
+            logger.info(f"  Session Open: ${levels['session_open']}")
+            logger.info(f"  Bars:         {levels['bar_count']}")
 
         sr_levels = get_secondary_range_levels(test_ticker)
         if sr_levels:
-            print(f"\nSecondary Range (10:00-10:30):")
-            print(f"  SR High:         ${sr_levels['sr_high']}")
-            print(f"  SR Low:          ${sr_levels['sr_low']}")
-            print(f"  SR Range %:      {sr_levels['sr_range_pct']}%")
-            print(f"  Classification:  {sr_levels['classification']}")
-            print(f"  Bars:            {sr_levels['bar_count']}")
+            logger.info(f"\nSecondary Range (10:00-10:30):")
+            logger.info(f"  SR High:         ${sr_levels['sr_high']}")
+            logger.info(f"  SR Low:          ${sr_levels['sr_low']}")
+            logger.info(f"  SR Range %:      {sr_levels['sr_range_pct']}%")
+            logger.info(f"  Classification:  {sr_levels['classification']}")
+            logger.info(f"  Bars:            {sr_levels['bar_count']}")
         else:
-            print("\nSecondary Range: not yet available (before 10:30) or insufficient data")
+            logger.info("\nSecondary Range: not yet available (before 10:30) or insufficient data")
     else:
-        print("OR not yet complete or insufficient data")
+        logger.info("OR not yet complete or insufficient data")

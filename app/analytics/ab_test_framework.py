@@ -17,6 +17,8 @@ from zoneinfo import ZoneInfo
 from typing import Dict, Optional, Any
 from collections import defaultdict
 import hashlib
+import logging
+logger = logging.getLogger(__name__)
 
 ET = ZoneInfo("America/New_York")
 
@@ -41,7 +43,7 @@ class ABTestFramework:
         try:
             self._initialize_database()
         except Exception as e:
-            print(f"[AB_TEST] ⚠️  DB init deferred (non-fatal): {e}")
+            logger.info(f"[AB_TEST] ⚠️  DB init deferred (non-fatal): {e}")
 
     def _initialize_database(self):
         """Create ab_test_results table."""
@@ -67,7 +69,7 @@ class ABTestFramework:
                 ON ab_test_results(param_name, variant, session)
             """)
             conn.commit()
-            print("[AB_TEST] A/B test framework database initialized")
+            logger.info("[AB_TEST] A/B test framework database initialized")
         finally:
             if conn:
                 return_conn(conn)
@@ -113,7 +115,7 @@ class ABTestFramework:
             )
             conn.commit()
         except Exception as e:
-            print(f"[AB_TEST] record_outcome error: {e}")
+            logger.info(f"[AB_TEST] record_outcome error: {e}")
         finally:
             if conn:
                 return_conn(conn)
@@ -146,7 +148,7 @@ class ABTestFramework:
                     stats[v] = {'samples': 0, 'wins': 0, 'win_rate': 0.0}
             return stats
         except Exception as e:
-            print(f"[AB_TEST] get_variant_stats error: {e}")
+            logger.info(f"[AB_TEST] get_variant_stats error: {e}")
             return {'A': {'samples': 0, 'wins': 0, 'win_rate': 0.0},
                     'B': {'samples': 0, 'wins': 0, 'win_rate': 0.0}}
         finally:

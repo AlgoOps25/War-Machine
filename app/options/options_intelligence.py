@@ -1,3 +1,5 @@
+import logging
+logger = logging.getLogger(__name__)
 ﻿"""
 Options Intelligence Layer
 Consolidated options data management and unusual activity detection.
@@ -85,7 +87,7 @@ class OptionsIntelligence:
         # Historical tracking for change detection
         self._prev_chains: Dict[str, Dict] = {}  # ticker -> previous chain snapshot
         
-        print("[OPTIONS-DM] Initialized with 5-minute cache TTL")
+        logger.info("[OPTIONS-DM] Initialized with 5-minute cache TTL")
     
     # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     # CORE: CHAIN FETCHING & CACHING
@@ -118,7 +120,7 @@ class OptionsIntelligence:
                     _filter = OptionsFilter()
                     chain = _filter.get_options_chain(ticker)
                 except Exception as e:
-                    print(f"[OPTIONS-DM] Chain fetch error for {ticker}: {e}")
+                    logger.info(f"[OPTIONS-DM] Chain fetch error for {ticker}: {e}")
                     chain = None
 
             if chain:
@@ -1015,7 +1017,7 @@ class OptionsIntelligence:
                 self._ivr_cache.pop(ticker, None)
                 self._uoa_cache.pop(ticker, None)
                 self._prev_chains.pop(ticker, None)
-                print(f"[OPTIONS-DM] Cleared cache for {ticker}")
+                logger.info(f"[OPTIONS-DM] Cleared cache for {ticker}")
             else:
                 self._chain_cache.clear()
                 self._score_cache.clear()
@@ -1023,7 +1025,7 @@ class OptionsIntelligence:
                 self._ivr_cache.clear()
                 self._uoa_cache.clear()
                 self._prev_chains.clear()
-                print("[OPTIONS-DM] Cleared all caches")
+                logger.info("[OPTIONS-DM] Cleared all caches")
     
     def get_cache_stats(self) -> Dict:
         """Get cache statistics."""

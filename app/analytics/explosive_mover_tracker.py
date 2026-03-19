@@ -16,6 +16,8 @@ FIX 13.C-1 (Mar 19 2026): All conn.close() calls replaced with return_conn(conn)
 from datetime import datetime, time
 from zoneinfo import ZoneInfo
 from typing import Dict, List, Optional
+import logging
+logger = logging.getLogger(__name__)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Session State
@@ -61,7 +63,7 @@ def _ensure_explosive_override_table():
         """)
         conn.commit()
     except Exception as e:
-        print(f"[EXPLOSIVE-TRACKER] Init error: {e}")
+        logger.info(f"[EXPLOSIVE-TRACKER] Init error: {e}")
     finally:
         if conn:
             return_conn(conn)
@@ -124,7 +126,7 @@ def track_explosive_override(
             f"Regime: {regime_type} (VIX: {vix_level:.1f})"
         )
     except Exception as e:
-        print(f"[EXPLOSIVE-TRACKER] Track error for {ticker}: {e}")
+        logger.info(f"[EXPLOSIVE-TRACKER] Track error for {ticker}: {e}")
     finally:
         if conn:
             return_conn(conn)
@@ -149,9 +151,9 @@ def update_override_outcome(ticker: str, outcome: str, pnl_pct: float):
         )
         conn.commit()
         del _override_signals[ticker]
-        print(f"[EXPLOSIVE-OVERRIDE] {ticker} outcome: {outcome} ({pnl_pct:+.2f}%)")
+        logger.info(f"[EXPLOSIVE-OVERRIDE] {ticker} outcome: {outcome} ({pnl_pct:+.2f}%)")
     except Exception as e:
-        print(f"[EXPLOSIVE-TRACKER] Update outcome error for {ticker}: {e}")
+        logger.info(f"[EXPLOSIVE-TRACKER] Update outcome error for {ticker}: {e}")
     finally:
         if conn:
             return_conn(conn)
@@ -209,7 +211,7 @@ def get_daily_override_stats() -> Dict:
             'pending': total - total_closed
         }
     except Exception as e:
-        print(f"[EXPLOSIVE-TRACKER] Stats error: {e}")
+        logger.info(f"[EXPLOSIVE-TRACKER] Stats error: {e}")
         return {}
     finally:
         if conn:
@@ -221,25 +223,25 @@ def print_explosive_override_summary():
     stats = get_daily_override_stats()
     if not stats or stats['total_overrides'] == 0:
         return
-    print("\n" + "="*80)
-    print("🚀 EXPLOSIVE MOVER OVERRIDE - DAILY SUMMARY")
-    print("="*80)
-    print(f"Total Overrides: {stats['total_overrides']}")
-    print(f"Closed Trades: {stats['wins'] + stats['losses']} (Pending: {stats['pending']})")
-    print(f"Win Rate: {stats['win_rate']:.1f}% ({stats['wins']}W / {stats['losses']}L)")
-    print(f"\nAverage Metrics:")
-    print(f"  Score: {stats['avg_score']:.1f}")
-    print(f"  RVOL: {stats['avg_rvol']:.2f}x")
-    print(f"  Confidence: {stats['avg_confidence']:.1%}")
+    logger.info("\n" + "="*80)
+    logger.info("🚀 EXPLOSIVE MOVER OVERRIDE - DAILY SUMMARY")
+    logger.info("="*80)
+    logger.info(f"Total Overrides: {stats['total_overrides']}")
+    logger.info(f"Closed Trades: {stats['wins'] + stats['losses']} (Pending: {stats['pending']})")
+    logger.info(f"Win Rate: {stats['win_rate']:.1f}% ({stats['wins']}W / {stats['losses']}L)")
+    logger.info(f"\nAverage Metrics:")
+    logger.info(f"  Score: {stats['avg_score']:.1f}")
+    logger.info(f"  RVOL: {stats['avg_rvol']:.2f}x")
+    logger.info(f"  Confidence: {stats['avg_confidence']:.1%}")
     if _daily_stats['by_hour']:
-        print(f"\nHourly Distribution:")
+        logger.info(f"\nHourly Distribution:")
         for hour in sorted(_daily_stats['by_hour'].keys()):
-            print(f"  {hour:02d}:00 - {_daily_stats['by_hour'][hour]} override(s)")
+            logger.info(f"  {hour:02d}:00 - {_daily_stats['by_hour'][hour]} override(s)")
     if _daily_stats['by_regime']:
-        print(f"\nRegime Distribution:")
+        logger.info(f"\nRegime Distribution:")
         for regime, count in sorted(_daily_stats['by_regime'].items(), key=lambda x: -x[1]):
-            print(f"  {regime}: {count} override(s)")
-    print("="*80 + "\n")
+            logger.info(f"  {regime}: {count} override(s)")
+    logger.info("="*80 + "\n")
 
 
 def get_threshold_optimization_data(days: int = 30) -> Dict:
@@ -289,7 +291,7 @@ def get_threshold_optimization_data(days: int = 30) -> Dict:
 
         return {'days_analyzed': days, 'score_brackets': score_analysis, 'rvol_brackets': rvol_analysis}
     except Exception as e:
-        print(f"[EXPLOSIVE-TRACKER] Optimization data error: {e}")
+        logger.info(f"[EXPLOSIVE-TRACKER] Optimization data error: {e}")
         return {}
     finally:
         if conn:
@@ -301,24 +303,24 @@ def print_threshold_recommendations():
     data = get_threshold_optimization_data(days=30)
     if not data:
         return
-    print("\n" + "="*80)
-    print("🎯 EXPLOSIVE OVERRIDE THRESHOLD OPTIMIZATION (30 days)")
-    print("="*80)
-    print("\nScore Bracket Analysis:")
-    print(f"{'Bracket':<12} {'Total':<8} {'Wins':<8} {'Win Rate':<12}")
-    print("-" * 45)
+    logger.info("\n" + "="*80)
+    logger.info("🎯 EXPLOSIVE OVERRIDE THRESHOLD OPTIMIZATION (30 days)")
+    logger.info("="*80)
+    logger.info("\nScore Bracket Analysis:")
+    logger.info(f"{'Bracket':<12} {'Total':<8} {'Wins':<8} {'Win Rate':<12}")
+    logger.info("-" * 45)
     for bracket, stats in data['score_brackets'].items():
-        print(f"{bracket:<12} {stats['total']:<8} {stats['wins']:<8} {stats['win_rate']:.1f}%")
-    print("\nRVOL Bracket Analysis:")
-    print(f"{'Bracket':<12} {'Total':<8} {'Wins':<8} {'Win Rate':<12}")
-    print("-" * 45)
+        logger.info(f"{bracket:<12} {stats['total']:<8} {stats['wins']:<8} {stats['win_rate']:.1f}%")
+    logger.info("\nRVOL Bracket Analysis:")
+    logger.info(f"{'Bracket':<12} {'Total':<8} {'Wins':<8} {'Win Rate':<12}")
+    logger.info("-" * 45)
     for bracket, stats in data['rvol_brackets'].items():
-        print(f"{bracket:<12} {stats['total']:<8} {stats['wins']:<8} {stats['win_rate']:.1f}%")
-    print("\n💡 Recommendations:")
-    print("  - Review brackets with >60% win rate for threshold tightening")
-    print("  - Review brackets with <45% win rate for threshold loosening")
-    print("  - Minimum 20 samples per bracket for statistical significance")
-    print("="*80 + "\n")
+        logger.info(f"{bracket:<12} {stats['total']:<8} {stats['wins']:<8} {stats['win_rate']:.1f}%")
+    logger.info("\n💡 Recommendations:")
+    logger.info("  - Review brackets with >60% win rate for threshold tightening")
+    logger.info("  - Review brackets with <45% win rate for threshold loosening")
+    logger.info("  - Minimum 20 samples per bracket for statistical significance")
+    logger.info("="*80 + "\n")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

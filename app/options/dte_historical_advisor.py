@@ -10,6 +10,8 @@ from typing import Dict
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from app.data.db_connection import get_conn, return_conn, ph, dict_cursor
+import logging
+logger = logging.getLogger(__name__)
 
 ET = ZoneInfo("America/New_York")
 
@@ -21,7 +23,7 @@ class DTEHistoricalAdvisor:
         self.vix_buckets = [(0, 15, "LOW"), (15, 25, "NORMAL"), (25, 35, "ELEVATED"), (35, 100, "HIGH")]
         self.target_buckets = [(0.0, 0.5, "TIGHT"), (0.5, 0.8, "SMALL"), (0.8, 1.2, "MEDIUM"), (1.2, 100, "LARGE")]
         self.hour_buckets = [(9, 10, "OPEN"), (10, 12, "MORNING"), (12, 14, "MIDDAY"), (14, 16, "AFTERNOON")]
-        print("[DTE-ADVISOR] Initialized")
+        logger.info("[DTE-ADVISOR] Initialized")
     
     def _bucket(self, val: float, buckets: list) -> str:
         for low, high, label in buckets:
@@ -60,7 +62,7 @@ class DTEHistoricalAdvisor:
             cursor.execute(query, tuple(params))
             trades = cursor.fetchall()
         except Exception as e:
-            print(f"[DTE-ADVISOR] DB query error: {e}")
+            logger.info(f"[DTE-ADVISOR] DB query error: {e}")
         finally:
             if conn:
                 return_conn(conn)
@@ -108,5 +110,5 @@ class DTEHistoricalAdvisor:
 try:
     dte_advisor = DTEHistoricalAdvisor()
 except Exception as e:
-    print(f"[DTE-ADVISOR] Init failed: {e}")
+    logger.info(f"[DTE-ADVISOR] Init failed: {e}")
     dte_advisor = None

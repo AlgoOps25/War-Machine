@@ -26,6 +26,8 @@ from utils import config
 # PHASE 3E: Import consolidated timeframe compression + metadata
 ###########################################################################
 from .mtf_compression import (
+import logging
+logger = logging.getLogger(__name__)
     compress_to_3m,
     compress_to_2m,
     compress_to_1m,
@@ -449,22 +451,19 @@ def print_priority_stats():
     conflict_rate = (_priority_stats['conflicts_resolved'] / _priority_stats['scans']) * 100
     confluence_rate = (_priority_stats['confluence_found'] / _priority_stats['scans']) * 100
     
-    print("\n" + "="*80)
-    print("MTF FVG PRIORITY RESOLVER - DAILY STATISTICS")
-    print("="*80)
-    print(f"Total Scans:          {_priority_stats['scans']}")
-    print(f"Conflicts Resolved:   {_priority_stats['conflicts_resolved']} ({conflict_rate:.1f}%)")
-    print(f"Confluence Found:     {_priority_stats['confluence_found']} ({confluence_rate:.1f}%)")
-    print("\nPrimary FVG Timeframe Breakdown:")
+    logger.info("\n" + "="*80)
+    logger.info("MTF FVG PRIORITY RESOLVER - DAILY STATISTICS")
+    logger.info("="*80)
+    logger.info(f"Total Scans:          {_priority_stats['scans']}")
+    logger.info(f"Conflicts Resolved:   {_priority_stats['conflicts_resolved']} ({conflict_rate:.1f}%)")
+    logger.info(f"Confluence Found:     {_priority_stats['confluence_found']} ({confluence_rate:.1f}%)")
+    logger.info("\nPrimary FVG Timeframe Breakdown:")
     for tf in TIMEFRAME_PRIORITY:
         count = _priority_stats['primary_tf_breakdown'][tf]
         pct = (count / _priority_stats['scans'] * 100) if _priority_stats['scans'] > 0 else 0
-        print(f"  {tf}: {count} ({pct:.1f}%)")
-    print("\nPriority Rule: 5m > 3m > 2m > 1m")
-    print("Confluence: Lower-TF FVGs overlapping primary FVG zone")
-    print("="*80 + "\n")
+        logger.info(f"  {tf}: {count} ({pct:.1f}%)")
+    logger.info("\nPriority Rule: 5m > 3m > 2m > 1m")
+    logger.info("Confluence: Lower-TF FVGs overlapping primary FVG zone")
+    logger.info("="*80 + "\n")
 
 
-print("[MTF-PRIORITY] \u2705 Multi-timeframe FVG priority resolver loaded")
-print("[MTF-PRIORITY] Rule: Always trade the highest-TF FVG when conflicts exist")
-print("[MTF-PRIORITY] Priority order: 5m > 3m > 2m > 1m")
