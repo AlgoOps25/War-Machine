@@ -488,6 +488,7 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
             _pre_options_data = None
 
     vp_boost = 0.0
+    vp_bias = 'NEUTRAL'
 
     if VOLUME_PROFILE_ENABLED:
         try:
@@ -984,7 +985,8 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         validation_result=validation_result,
         bos_confirmation=bos_confirmation,
         bos_candle_type=bos_candle_type,
-        mtf_result=mtf_result, metadata=_meta
+        mtf_result=mtf_result, metadata=_meta,
+        vp_bias=vp_bias
     )
 
     return True

@@ -18,7 +18,8 @@ def arm_ticker(
     ticker, direction, zone_low, zone_high, or_low, or_high,
     entry_price, stop_price, t1, t2, confidence, grade,
     options_rec=None, signal_type="CFW6_OR", validation_result=None,
-    bos_confirmation=None, bos_candle_type=None, mtf_result=None, metadata=None
+    bos_confirmation=None, bos_candle_type=None, mtf_result=None, metadata=None,
+    vp_bias=None
 ):
     """
     Arm a confirmed signal:
@@ -98,7 +99,8 @@ def arm_ticker(
             volume_rank=None,
             composite_score=metadata.get('score'),
             mtf_convergence=mtf_convergence_count,
-            explosive_mover=metadata.get('qualified', False)
+            explosive_mover=metadata.get('qualified', False),
+            vp_bias=vp_bias
         )
     else:
         try:
