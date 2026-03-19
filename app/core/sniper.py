@@ -921,7 +921,7 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
 
     try:
         from app.risk.dynamic_thresholds import get_dynamic_threshold
-        eff_min = get_dynamic_threshold(signal_type, final_grade)
+        eff_min = get_dynamic_threshold(signal_type, final_grade, bars_session, ticker)
     except ImportError:
         min_type = (
             config.MIN_CONFIDENCE_INTRADAY
