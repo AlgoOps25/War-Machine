@@ -84,6 +84,13 @@ FIX v3.8 (MAR 17, 2026) - WS coverage filter before lock:
     so there is zero overhead during the live session.
   - Falls back to the full unfiltered list only if every ticker fails the
     check (safety net — should never happen in practice).
+
+PHASE 1.34 (MAR 19, 2026) - Daily funnel reset:
+  - reset_funnel() added: sets _funnel_instance = None so the EOD block in
+    scanner.py can clear the prior session's locked watchlist.
+  - Without this, the Railway process retains the WatchlistFunnel singleton
+    across session boundaries, causing yesterday's locked watchlist to be
+    returned all day on the following session.
 """
 import sys
 from pathlib import Path
@@ -649,6 +656,20 @@ def get_funnel() -> WatchlistFunnel:
     if _funnel_instance is None:
         _funnel_instance = WatchlistFunnel()
     return _funnel_instance
+
+
+def reset_funnel() -> None:
+    """
+    PHASE 1.34: Reset the global funnel singleton.
+
+    Called by scanner.py at EOD so the next session starts with a fresh
+    WatchlistFunnel() — no stale locked watchlist, no prior-day stage state.
+    Without this, the Railway process retains the singleton across midnight
+    and the locked watchlist from yesterday is returned all day.
+    """
+    global _funnel_instance
+    _funnel_instance = None
+    print("[FUNNEL] 🔄 Funnel singleton reset — fresh build on next premarket scan")
 
 
 def get_current_watchlist(force_refresh: bool = False) -> List[str]:

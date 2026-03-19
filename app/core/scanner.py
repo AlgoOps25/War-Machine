@@ -82,6 +82,14 @@ PHASE 1.33 (MAR 17, 2026):
   - Remove dead _get_eod_summary_metrics() helper.
     Was only used by the old inline EOD block removed in Phase 1.32.
     No callers remain in the codebase.
+
+PHASE 1.34 (MAR 19, 2026):
+  - FIX: Wire reset_funnel() into EOD reset block.
+    The WatchlistFunnel singleton (_funnel_instance) persisted across session
+    boundaries on Railway (no restart between days). Yesterday's locked
+    watchlist was returned all day on the following session.
+    reset_funnel() sets _funnel_instance = None so the next premarket
+    scan creates a fresh WatchlistFunnel() with no stale lock.
 """
 from app.core.health_server import start_health_server, health_heartbeat
 
@@ -108,7 +116,8 @@ from app.data.ws_quote_feed import start_quote_feed, subscribe_quote_tickers
 from app.screening.watchlist_funnel import (
     get_current_watchlist,
     get_watchlist_with_metadata,
-    get_funnel
+    get_funnel,
+    reset_funnel,          # PHASE 1.34: daily singleton reset
 )
 from app.risk.risk_manager import (
     get_loss_streak,
@@ -474,7 +483,7 @@ def start_scanner_loop():
 
     # ── STARTUP BANNER ────────────────────────────────────────────────────────────────────
     print("=" * 60, flush=True)
-    print("WAR MACHINE CFW6 SCANNER v1.33 - STARTUP", flush=True)
+    print("WAR MACHINE CFW6 SCANNER v1.34 - STARTUP", flush=True)
     print("=" * 60, flush=True)
     print("✓ REGIME-FILTER  VIX/SPY regime detection active", flush=True)
     print("=" * 60, flush=True)
@@ -552,6 +561,7 @@ def start_scanner_loop():
     print("Discord Import:  ✅ FIXED   (app.notifications.discord_helpers — Phase 1.31)", flush=True)
     print("EOD Reporter:    ✅ ENABLED (eod_reporter.run_eod_report() — Phase 1.32)", flush=True)
     print("Dead Code:       ✅ REMOVED (_get_eod_summary_metrics deleted — Phase 1.33)", flush=True)
+    print("Funnel Reset:    ✅ FIXED   (reset_funnel() at EOD — daily watchlist — Phase 1.34)", flush=True)
     print("=" * 60 + "\n", flush=True)
 
     _booting_into_market_hours = is_market_hours()
@@ -575,8 +585,8 @@ def start_scanner_loop():
 
     try:
         send_simple_message(
-            f"⚔️ WAR MACHINE ONLINE — CFW6 v1.33 | "
-            f"{'Resuming intraday' if _booting_into_market_hours else 'OR window active'} | Phase 1.33"
+            f"⚔️ WAR MACHINE ONLINE — CFW6 v1.34 | "
+            f"{'Resuming intraday' if _booting_into_market_hours else 'OR window active'} | Phase 1.34"
         )
     except Exception as e:
         logger.warning(f"[SCANNER] Discord unavailable: {e}")
@@ -848,6 +858,9 @@ def start_scanner_loop():
                     loss_streak_alerted       = False
                     last_subscribed_watchlist = set()
                     _watchlist_lock_logged    = False
+
+                    # ── PHASE 1.34: Reset funnel singleton for fresh daily build ──
+                    reset_funnel()
 
                     clear_armed_signals()
                     clear_watching_signals()
