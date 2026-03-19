@@ -145,9 +145,9 @@
 | Status | ID | File | Description | Commit SHA | Date |
 |--------|----|------|-------------|------------|------|
 | ✅ | 9.C-1 | `app/core/scanner.py` | Single-worker watchdog executor — OR window scan loop serializes all tickers | — | — |
-| ⬜ | 9.C-2 | `app/core/scanner.py` | Circuit breaker operator precedence bug — scanner may halt incorrectly | — | — |
-| ⬜ | 10.C-1 | `app/risk/position_manager.py` | `datetime.now()` UTC — circuit breaker clears after midnight UTC (8 PM ET) | — | — |
-| ⬜ | 10.C-2 | `app/risk/position_manager.py` | Dual timestamps for `exit_time` — positions vs ml_signals drift on DST | — | — |
+| ✅ | 9.C-2 | `app/core/scanner.py` | Circuit breaker operator precedence bug — scanner may halt incorrectly | — | — |
+| ✅ | 10.C-1 | `app/risk/position_manager.py` | `datetime.now()` UTC — circuit breaker clears after midnight UTC (8 PM ET) | — | — |
+| ✅ | 10.C-2 | `app/risk/position_manager.py` | Dual timestamps for `exit_time` — positions vs ml_signals drift on DST | — | — |
 
 ---
 
