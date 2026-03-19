@@ -569,8 +569,9 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
     # ── Phase 1.34: MTF Bias Gate (1H + 15m top-down, Nitro Trades) ──────────
     if MTF_BIAS_ENABLED and mtf_bias_engine:
         try:
+            from app.mtf.mtf_compression import compress_to_1m as _compress_1m
             def _resample_bars(bars_1m: list, minutes: int) -> list:
-                """Aggregate 1m bars into N-minute bars."""
+                """Delegate to mtf_compression for 15m/1h aggregation."""
                 from collections import defaultdict
                 buckets = defaultdict(list)
                 for b in bars_1m:
