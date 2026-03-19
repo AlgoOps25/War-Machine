@@ -51,6 +51,18 @@ FIX 14.C-1 (MAR 19, 2026): LAZY POOL INIT — RAILWAY COLD-START CRASH
 - Fix: moved pool init into _init_pool(), called lazily on first get_conn().
   The module now imports cleanly regardless of DB availability.
 
+FIX 14.C-2 (MAR 19, 2026): STALE SSL CONNECTION — SSL SYSCALL EOF
+- Railway's Postgres TCP proxy silently drops idle connections after ~5 min.
+  psycopg2's ThreadedConnectionPool keeps the dead socket in the pool and
+  returns it on the next getconn() — the caller's first query then raises
+  `psycopg2.OperationalError: SSL SYSCALL error: EOF detected`.
+- Fix: _validate_conn() pings each checked-out connection with a lightweight
+  SELECT 1 query.  If the ping raises OperationalError the connection is
+  discarded (putconn + closed) and a fresh one is requested from the pool.
+  A single reconnect attempt is made; if that also fails the error propagates
+  normally so the scanner loop's existing error handler can restart cleanly.
+- This is deliberately minimal — no infinite loop, no silent swallowing.
+
 NOTE: Railway provides DATABASE_URL as postgres:// — psycopg2 requires
 postgresql:// — we normalize it automatically here.
 """
@@ -100,6 +112,7 @@ _pool_stats = {
     "timeouts": 0,
     "retries": 0,
     "semaphore_waiters": 0,
+    "stale_reconnects": 0,       # FIX 14.C-2
     "last_health_check": None
 }
 _checked_out_connections = {}  # conn_id -> checkout epoch time
@@ -167,6 +180,33 @@ def _init_pool():
 
 
 # ==============================================================================
+# FIX 14.C-2: STALE CONNECTION VALIDATOR
+# ==============================================================================
+
+def _validate_conn(conn) -> bool:
+    """
+    Ping conn with a lightweight SELECT 1.  Returns True if the connection is
+    alive, False if the Railway proxy has dropped the SSL socket.
+
+    On failure the connection's internal state is rolled back so it can be
+    safely putconn()'d back into the pool before being replaced.
+    """
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT 1")
+        cur.close()
+        # Discard any open transaction started by the ping
+        conn.rollback()
+        return True
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return False
+
+
+# ==============================================================================
 # CONNECTION MANAGEMENT
 # ==============================================================================
 
@@ -187,6 +227,11 @@ def get_conn(sqlite_path: str = "war_machine.db"):
     above DB_SEMAPHORE_LIMIT.
 
     FIX 14.C-1: _init_pool() called here (lazy) instead of at module import.
+
+    FIX 14.C-2: After getconn() succeeds, _validate_conn() pings the socket.
+    If the ping fails (SSL SYSCALL EOF), the dead connection is returned to the
+    pool and discarded, then one fresh connection is requested.  This handles
+    the Railway TCP proxy silently dropping idle connections after ~5 min.
 
     IMPORTANT: Caller must close the connection when done!
     Better to use `with get_connection() as conn:` context manager.
@@ -218,6 +263,29 @@ def get_conn(sqlite_path: str = "war_machine.db"):
 
                     if conn is None:
                         raise RuntimeError("Pool returned None connection")
+
+                    # FIX 14.C-2: validate the socket before handing it to caller
+                    if not _validate_conn(conn):
+                        print("[DB] ⚠️  Stale connection detected (SSL EOF) — discarding and reconnecting")
+                        try:
+                            _connection_pool.putconn(conn, close=True)
+                        except Exception:
+                            pass
+                        with _stats_lock:
+                            _pool_stats["stale_reconnects"] += 1
+                        # Get a fresh connection — counted as one more attempt
+                        conn = _connection_pool.getconn()
+                        if conn is None:
+                            raise RuntimeError("Pool returned None on reconnect")
+                        if not _validate_conn(conn):
+                            # Both the stale and fresh connections are dead;
+                            # DB is likely down — fail fast so the caller's
+                            # error handler can decide what to do.
+                            try:
+                                _connection_pool.putconn(conn, close=True)
+                            except Exception:
+                                pass
+                            raise RuntimeError("Reconnected connection also failed validation — DB may be down")
 
                     conn_id = id(conn)
                     with _stats_lock:
@@ -382,6 +450,7 @@ def check_pool_health() -> dict:
         "retries": stats_copy["retries"],
         "timeouts": stats_copy["timeouts"],
         "semaphore_waiters": stats_copy["semaphore_waiters"],
+        "stale_reconnects": stats_copy["stale_reconnects"],  # FIX 14.C-2
         "stale_connections": len(stale_connections),
         "last_check": datetime.now().isoformat()
     }
@@ -421,6 +490,7 @@ def print_pool_stats():
     print(f"Errors:              {health['errors']}")
     print(f"Timeout Warnings:    {health['timeouts']}")
     print(f"Semaphore Waiters:   {health['semaphore_waiters']}")
+    print(f"Stale Reconnects:    {health['stale_reconnects']}")
     print(f"Stale Connections:   {health['stale_connections']}")
     print("=" * 60 + "\n")
 
