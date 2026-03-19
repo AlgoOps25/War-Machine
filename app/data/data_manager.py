@@ -32,6 +32,26 @@ FIX #4: CONNECTION LIFECYCLE MANAGEMENT
   - All database operations now use try/finally to guarantee connection return
   - Prevents connection pool exhaustion from leaked connections
   - Better error handling with connection cleanup
+
+FIX 15.C-1 (MAR 19, 2026): DESTRUCTIVE MIGRATION GUARD
+  - initialize_database() ran `DELETE FROM intraday_bars` whenever db_version
+    row was unreadable (transient DB error → current_version defaults to 0 →
+    condition `< 2` fires → all bar history wiped mid-session).
+  - Fix: migration DELETEs now require FORCE_MIGRATION=true env flag.
+  - If version row is missing/unreadable without the flag, we stamp v2 and log
+    a warning instead of deleting — the data is already ET-naive on Railway.
+  - One-time use: set FORCE_MIGRATION=true only on a fresh DB before first run.
+
+FIX 15.C-2 (MAR 19, 2026): INVERTED TZ LOGIC IN startup_backfill_with_cache()
+  - age_minutes calculation used `.replace(tzinfo=ET if last_cached.tzinfo is None
+    else None)` — the condition is inverted: naive datetimes got ET attached
+    (correct), but tz-aware datetimes had tzinfo stripped to None, making them
+    naive while now_et remained tz-aware → TypeError on subtraction → exception
+    swallowed by outer except → fell through to full 30-day API backfill on
+    every restart, completely bypassing the cache on Railway/Postgres.
+  - Fix: if naive, attach ET; if already tz-aware, leave as-is. Both branches
+    result in a tz-aware datetime that subtracts cleanly against now_et.
+  - Same bug patched in background_cache_sync().
 """
 import time
 import os
@@ -56,6 +76,19 @@ _last_update: Dict[str, datetime] = {}
 UPDATE_TTL = timedelta(minutes=2)
 
 
+def _to_aware_et(dt: datetime) -> datetime:
+    """
+    Normalize a datetime to tz-aware ET regardless of input state.
+
+    FIX 15.C-2: Replaces the inverted `.replace(tzinfo=ET if dt.tzinfo is None
+    else None)` pattern that stripped tzinfo from already-aware datetimes and
+    then failed to subtract against tz-aware now_et.
+    """
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=ET)
+    return dt.astimezone(ET)
+
+
 class DataManager:
     def __init__(self, db_path: str = "market_memory.db"):
         self.db_path = db_path
@@ -73,24 +106,23 @@ class DataManager:
         """
         if not config.ENABLE_WEBSOCKET_FEED:
             return None
-        
+
         try:
             from ws_feed import is_connected, get_current_bar
             if is_connected():
                 return get_current_bar(ticker)
         except ImportError:
             pass
-        except Exception as e:
-            # Silently fail - WS is optional optimization
+        except Exception:
             pass
-        
+
         return None
 
     def _is_ws_connected(self) -> bool:
         """Check if WebSocket feed is active."""
         if not config.ENABLE_WEBSOCKET_FEED:
             return False
-        
+
         try:
             from ws_feed import is_connected
             return is_connected()
@@ -167,19 +199,37 @@ class DataManager:
             current_version = (
                 row[0] if isinstance(row, (list, tuple)) else row["version"]
             ) if row else 0
+
             if current_version < 2:
-                cursor.execute("DELETE FROM intraday_bars")
-                cursor.execute("DELETE FROM intraday_bars_5m")
-                cursor.execute("DELETE FROM fetch_metadata")
-                cursor.execute("DELETE FROM db_version")
-                cursor.execute("INSERT INTO db_version (version) VALUES (2)")
-                print("[DATA] Migration v2: Cleared UTC bars — switching to ET-naive storage")
+                # FIX 15.C-1: Never wipe bar history without an explicit opt-in.
+                # A transient DB error makes current_version default to 0, which
+                # previously triggered DELETEs on all intraday_bars mid-session.
+                # Migration is a one-time operation on a fresh DB — set
+                # FORCE_MIGRATION=true before the very first deploy, then unset it.
+                force_migration = os.getenv("FORCE_MIGRATION", "").strip().lower() == "true"
+                if force_migration:
+                    cursor.execute("DELETE FROM intraday_bars")
+                    cursor.execute("DELETE FROM intraday_bars_5m")
+                    cursor.execute("DELETE FROM fetch_metadata")
+                    cursor.execute("DELETE FROM db_version")
+                    cursor.execute("INSERT INTO db_version (version) VALUES (2)")
+                    print("[DATA] Migration v2: Cleared UTC bars — switching to ET-naive storage")
+                else:
+                    # Stamp v2 so this branch never fires again on this DB.
+                    # The data is already ET-naive on Railway; no wipe needed.
+                    cursor.execute("DELETE FROM db_version")
+                    cursor.execute("INSERT INTO db_version (version) VALUES (2)")
+                    print(
+                        "[DATA] db_version was <2 but FORCE_MIGRATION not set — "
+                        "stamped v2 without deleting bars. "
+                        "Set FORCE_MIGRATION=true only on a brand-new empty DB."
+                    )
 
             conn.commit()
-            
+
             db_type = "PostgreSQL" if db_connection.USE_POSTGRES else self.db_path
             print(f"[DATA] Database initialized: {db_type}")
-        
+
         finally:
             if conn:
                 return_conn(conn)
@@ -212,26 +262,24 @@ class DataManager:
             bars = []
             for bar in data:
                 try:
-                    # Check for required fields
                     required = ["timestamp", "open", "high", "low", "close", "volume"]
                     missing = [k for k in required if k not in bar or bar[k] is None]
-                    
+
                     if missing:
                         print(f"[DATA] {ticker}: Skipping bar with missing fields: {missing}")
                         continue
-                    
+
                     dt_et = datetime.fromtimestamp(
                         bar["timestamp"], tz=ET
                     ).replace(tzinfo=None)
-                    
-                    # Legitimate zero volume is fine - we already validated it exists
+
                     bars.append({
                         "datetime": dt_et,
                         "open":     float(bar["open"]),
                         "high":     float(bar["high"]),
                         "low":      float(bar["low"]),
                         "close":    float(bar["close"]),
-                        "volume":   int(bar["volume"])  # Can be 0 legitimately
+                        "volume":   int(bar["volume"])
                     })
                 except (ValueError, TypeError, KeyError) as e:
                     print(f"[DATA] Bar parse error for {ticker}: {e}")
@@ -315,63 +363,61 @@ class DataManager:
     def startup_backfill_with_cache(self, tickers: List[str], days: int = 30):
         """
         Smart startup backfill using candle_cache.
-        
+
         Workflow:
         1. Check cache for each ticker
         2. If cache exists and fresh: Load from cache (INSTANT)
         3. If cache missing/stale: Fetch from API and cache
         4. Only fetch gaps (new data since last cache)
-        
+
         This reduces:
         - API calls from ~160,000 to <500 per deploy
         - Startup time from 5-10 min to 10-30 seconds
         """
         from app.data.candle_cache import candle_cache
-        
+
         now_et = datetime.now(ET)
         timeframe = '1m'
-        
-        print(f"\n[CACHE] 🚀 Smart startup backfill: {len(tickers)} tickers | {days} days")
-        
+
+        print(f"\n[CACHE] Smart startup backfill: {len(tickers)} tickers | {days} days")
+
         cache_hits = 0
         cache_misses = 0
         gap_fills = 0
         total_api_bars = 0
         total_cached_bars = 0
-        
+
         for idx, ticker in enumerate(tickers, 1):
             try:
-                # Step 1: Check cache status
                 metadata = candle_cache.get_cache_metadata(ticker, timeframe)
-                
+
                 if metadata and metadata["bar_count"] > 0:
-                    # Cache exists - check if we need updates
                     last_cached = metadata["last_bar_time"]
                     if isinstance(last_cached, str):
                         last_cached = datetime.fromisoformat(last_cached)
-                    
-                    # Load from cache
+
                     cached_bars = candle_cache.load_cached_candles(ticker, timeframe, days)
-                    
+
                     if cached_bars:
-                        # Store cached bars to intraday_bars (for compatibility)
                         self.store_bars(ticker, cached_bars, quiet=True)
                         self.materialize_5m_bars(ticker)
                         total_cached_bars += len(cached_bars)
-                        
-                        # Check if we need to fetch new data
-                        age_minutes = (now_et - last_cached.replace(tzinfo=ET if last_cached.tzinfo is None else None)).total_seconds() / 60
-                        
-                        if age_minutes > 60:  # Cache older than 1 hour
-                            # Fetch only new data since last cache
-                            from_ts = int(last_cached.replace(tzinfo=ET).timestamp())
+
+                        # FIX 15.C-2: Use _to_aware_et() — the previous inline
+                        # `.replace(tzinfo=ET if last_cached.tzinfo is None else None)`
+                        # was inverted: tz-aware datetimes had tzinfo stripped to None,
+                        # then TypeError fired subtracting naive from tz-aware now_et.
+                        age_minutes = (
+                            now_et - _to_aware_et(last_cached)
+                        ).total_seconds() / 60
+
+                        if age_minutes > 60:
+                            from_ts = int(_to_aware_et(last_cached).timestamp())
                             to_ts = int(now_et.timestamp())
-                            
+
                             new_bars = self._fetch_range(ticker, from_ts, to_ts)
                             if new_bars:
-                                # Cache new bars
                                 candle_cache.cache_candles(ticker, timeframe, new_bars, quiet=True)
-                                # Also store to intraday_bars
                                 self.store_bars(ticker, new_bars, quiet=True)
                                 self.materialize_5m_bars(ticker)
                                 total_api_bars += len(new_bars)
@@ -384,21 +430,19 @@ class DataManager:
                         else:
                             print(f"[CACHE] [{idx}/{len(tickers)}] {ticker}: "
                                   f"{len(cached_bars)} bars from cache (fresh)")
-                        
+
                         cache_hits += 1
                         continue
-                
-                # Step 2: Cache miss - full backfill from API
+
+                # Cache miss — full backfill from API
                 cache_misses += 1
                 today_midnight = now_et.replace(hour=0, minute=0, second=0, microsecond=0)
                 from_ts = int((today_midnight - timedelta(days=days)).timestamp())
                 to_ts = int((today_midnight - timedelta(seconds=1)).timestamp())
-                
+
                 bars = self._fetch_range(ticker, from_ts, to_ts)
                 if bars:
-                    # Cache the bars
                     candle_cache.cache_candles(ticker, timeframe, bars, quiet=True)
-                    # Store to intraday_bars
                     self.store_bars(ticker, bars, quiet=True)
                     self.materialize_5m_bars(ticker)
                     total_api_bars += len(bars)
@@ -406,19 +450,18 @@ class DataManager:
                           f"{len(bars)} bars fetched and cached")
                 else:
                     print(f"[CACHE] [{idx}/{len(tickers)}] {ticker}: no data returned")
-            
+
             except Exception as e:
                 print(f"[CACHE] [{idx}/{len(tickers)}] {ticker} error: {e}")
-        
-        # Print summary
-        print(f"\n[CACHE] ✅ Startup complete!")
-        print(f"[CACHE] 📊 Stats:")
+
+        print(f"\n[CACHE] Startup complete!")
+        print(f"[CACHE] Stats:")
         print(f"[CACHE]   - Cache hits: {cache_hits}/{len(tickers)} ({cache_hits/len(tickers)*100:.1f}%)")
         print(f"[CACHE]   - Cache misses: {cache_misses}")
         print(f"[CACHE]   - Gap fills: {gap_fills}")
         print(f"[CACHE]   - Bars from cache: {total_cached_bars:,}")
         print(f"[CACHE]   - Bars from API: {total_api_bars:,}")
-        
+
         if cache_hits > 0:
             api_reduction = (1 - total_api_bars / (total_cached_bars + total_api_bars)) * 100 if (total_cached_bars + total_api_bars) > 0 else 0
             print(f"[CACHE]   - API reduction: {api_reduction:.1f}%")
@@ -427,88 +470,81 @@ class DataManager:
     def store_bars_with_cache(self, ticker: str, bars: List[Dict], quiet: bool = False) -> int:
         """
         Enhanced store_bars that auto-caches to candle_cache.
-        
-        This is a wrapper around store_bars() that also caches to candle_cache.
-        Use this when you want automatic caching behavior.
         """
         if not bars:
             return 0
-        
-        # Store to intraday_bars (original behavior)
+
         result = self.store_bars(ticker, bars, quiet)
-        
-        # Also cache to candle_cache
+
         if result > 0:
             try:
                 from app.data.candle_cache import candle_cache
                 candle_cache.cache_candles(ticker, '1m', bars, quiet=True)
             except Exception as e:
                 print(f"[CACHE] Auto-cache failed for {ticker}: {e}")
-        
+
         return result
 
     def background_cache_sync(self, tickers: List[str]):
         """
         Hourly background task to sync cache with latest data.
-        
+
         Run this every 60 minutes to keep cache fresh without
         impacting real-time scanning performance.
         """
         from app.data.candle_cache import candle_cache
-        
+
         now_et = datetime.now(ET)
-        
-        # Only sync during market hours + 1 hour after close
+
         if not (config.MARKET_OPEN <= now_et.time() <= dtime(17, 0)):
             return
-        
-        print(f"[CACHE] 🔄 Background sync: {len(tickers)} tickers")
-        
+
+        print(f"[CACHE] Background sync: {len(tickers)} tickers")
+
         synced = 0
         for ticker in tickers:
             try:
                 metadata = candle_cache.get_cache_metadata(ticker, '1m')
                 if not metadata:
                     continue
-                
+
                 last_cached = metadata["last_bar_time"]
                 if isinstance(last_cached, str):
                     last_cached = datetime.fromisoformat(last_cached)
-                
-                # Sync if cache is > 10 minutes old
-                age_minutes = (now_et - last_cached.replace(tzinfo=ET if last_cached.tzinfo is None else None)).total_seconds() / 60
-                
+
+                # FIX 15.C-2: same inverted-TZ bug as startup_backfill_with_cache()
+                age_minutes = (
+                    now_et - _to_aware_et(last_cached)
+                ).total_seconds() / 60
+
                 if age_minutes > 10:
-                    from_ts = int(last_cached.replace(tzinfo=ET).timestamp())
+                    from_ts = int(_to_aware_et(last_cached).timestamp())
                     to_ts = int(now_et.timestamp())
-                    
+
                     new_bars = self._fetch_range(ticker, from_ts, to_ts)
                     if new_bars:
                         candle_cache.cache_candles(ticker, '1m', new_bars, quiet=True)
                         synced += 1
-            
+
             except Exception as e:
                 print(f"[CACHE] Background sync error for {ticker}: {e}")
-        
+
         if synced > 0:
-            print(f"[CACHE] ✅ Background sync complete: {synced}/{len(tickers)} updated")
+            print(f"[CACHE] Background sync complete: {synced}/{len(tickers)} updated")
 
     def warmup_cache(self, tickers: List[str], days: int = 60):
         """
         One-time cache warmup with extended history.
-        
-        Use this to pre-populate cache with 60 days of data
-        for better backtesting capabilities.
         """
         from app.data.candle_cache import candle_cache
-        
-        print(f"[CACHE] 🔥 Cache warmup: {len(tickers)} tickers | {days} days")
-        
+
+        print(f"[CACHE] Cache warmup: {len(tickers)} tickers | {days} days")
+
         now_et = datetime.now(ET)
         today_midnight = now_et.replace(hour=0, minute=0, second=0, microsecond=0)
         from_ts = int((today_midnight - timedelta(days=days)).timestamp())
         to_ts = int((today_midnight - timedelta(seconds=1)).timestamp())
-        
+
         for idx, ticker in enumerate(tickers, 1):
             try:
                 bars = self._fetch_range(ticker, from_ts, to_ts)
@@ -519,8 +555,8 @@ class DataManager:
                     print(f"[CACHE] [{idx}/{len(tickers)}] {ticker}: no data")
             except Exception as e:
                 print(f"[CACHE] [{idx}/{len(tickers)}] {ticker} error: {e}")
-        
-        print(f"[CACHE] ✅ Warmup complete!\n")
+
+        print(f"[CACHE] Warmup complete!\n")
 
     # =============================================================
     # INCREMENTAL UPDATE
@@ -559,40 +595,34 @@ class DataManager:
         """
         now_et = datetime.now(ET)
         today_et = now_et.date()
-        
-        # CRITICAL OPTIMIZATION: Skip during market hours if WebSocket is connected
+
         if config.MARKET_OPEN <= now_et.time() <= config.MARKET_CLOSE:
             if self._is_ws_connected():
-                return  # WebSocket owns today - no API calls needed
-        
+                return
+
         last_bar = self._get_last_bar_ts(ticker)
-        
-        # If no data at all, fetch 30 days
+
         if not last_bar:
             from_ts = int((now_et - timedelta(days=30)).timestamp())
             to_ts = int(now_et.timestamp())
             label = "initial 30-day seed"
         else:
-            # Gap detection: fetch from last bar to now
             last_bar_date = last_bar.date()
-            
-            # If last bar is from prior day, fetch yesterday only (not full range)
+
             if last_bar_date < today_et:
-                # Fetch yesterday's bars only
                 yesterday = today_et - timedelta(days=1)
                 from_ts = int(datetime.combine(yesterday, dtime(4, 0)).replace(tzinfo=ET).timestamp())
                 to_ts = int(datetime.combine(yesterday, dtime(20, 0)).replace(tzinfo=ET).timestamp())
                 label = f"yesterday's bars ({yesterday})"
             else:
-                # Same-day gap fill (after hours)
                 fetch_from = last_bar + timedelta(minutes=1)
                 from_ts = int(fetch_from.replace(tzinfo=ET).timestamp())
                 to_ts = int(now_et.timestamp())
                 label = f"gap fill from {fetch_from.strftime('%H:%M ET')}"
-        
+
         print(f"[DATA] {ticker} -> {label}")
         bars = self._fetch_range(ticker, from_ts, to_ts)
-        
+
         if bars:
             self.store_bars(ticker, bars)
             self.materialize_5m_bars(ticker)
@@ -607,12 +637,6 @@ class DataManager:
         """
         Upsert 1m bars into intraday_bars and update fetch_metadata.
         FIX #4: Ensures connection is returned even on error.
-
-        Args:
-            ticker: Stock symbol.
-            bars:   List of bar dicts (datetime, open, high, low, close, volume).
-            quiet:  When True, suppress the per-call log line. Used by ws_feed
-                    during the startup backfill window to avoid console spam.
         """
         if not bars:
             return 0
@@ -648,7 +672,6 @@ class DataManager:
                 if attempt < max_retries - 1:
                     time.sleep(1)
             finally:
-                # FIX #4: GUARANTEED CONNECTION RETURN
                 if conn:
                     return_conn(conn)
 
@@ -705,7 +728,6 @@ class DataManager:
                 except Exception:
                     pass
         finally:
-            # FIX #4: GUARANTEED CONNECTION RETURN
             if conn:
                 return_conn(conn)
 
@@ -797,7 +819,7 @@ class DataManager:
         ws_bar = self._get_ws_bar(ticker)
         if ws_bar:
             return ws_bar
-        
+
         p = ph()
         conn = None
         try:
@@ -811,10 +833,10 @@ class DataManager:
                 LIMIT 1
             """, (ticker,))
             row = cursor.fetchone()
-            
+
             if not row:
                 return None
-            
+
             bars = self._parse_bar_rows([row])
             return bars[0] if bars else None
         finally:
@@ -846,10 +868,10 @@ class DataManager:
             response = requests.get(url, params=params, timeout=15)
             response.raise_for_status()
             data = response.json()
-            
+
             if not data or len(data) == 0:
                 return None
-            
+
             bar = data[0]
             return {
                 "open":   float(bar["open"]),
@@ -868,13 +890,13 @@ class DataManager:
         Returns dict: {"open", "high", "low", "close", "volume"} or None.
         """
         now_et = datetime.now(ET)
-        
+
         for days_back in range(1, 6):
             target_date = now_et.date() - timedelta(days=days_back)
             ohlc = self.get_daily_ohlc(ticker, target_date)
             if ohlc:
                 return ohlc
-        
+
         return None
 
     # =============================================================
@@ -892,8 +914,7 @@ class DataManager:
 
         result = {}
         tickers_needing_api = []
-        
-        # First pass: Try to get data from WebSocket
+
         if self._is_ws_connected():
             for ticker in tickers:
                 ws_bar = self._get_ws_bar(ticker)
@@ -903,8 +924,7 @@ class DataManager:
                     tickers_needing_api.append(ticker)
         else:
             tickers_needing_api = tickers
-        
-        # Second pass: Fetch remaining tickers via REST API
+
         if not tickers_needing_api:
             return result
 
@@ -951,15 +971,11 @@ class DataManager:
     # =============================================================
 
     def clear_prev_day_cache(self) -> None:
-        """Clear previous day OHLC cache and PDH/PDL cache in breakout detector.
-        
+        """
         DEPRECATED: signal_generator.py is deprecated. This cache clear is no longer needed
         since sniper.py doesn't maintain a PDH/PDL cache that needs clearing.
         """
-        # PHASE 1.14: Removed deprecated signal_generator import
-        # The sniper.py signal path doesn't need PDH/PDL cache clearing
         pass
-
 
     # =============================================================
     # UTILITIES (FIX #4)
@@ -991,14 +1007,13 @@ class DataManager:
     def get_bars_from_memory(self, ticker: str, limit: int = 390) -> List[Dict]:
         """
         Return N most recent bars. Prefer get_today_session_bars() for live scanning.
-        If requesting only 1 bar and WS is connected, returns WS bar immediately.
         FIX #4: Ensures connection is returned.
         """
         if limit == 1:
             ws_bar = self._get_ws_bar(ticker)
             if ws_bar:
                 return [ws_bar]
-        
+
         p = ph()
         conn = None
         try:
@@ -1069,12 +1084,12 @@ class DataManager:
             bars = self.get_bars_from_memory("VIX", limit=1)
             if bars:
                 return bars[-1]["close"]
-            
+
             bar = self.get_latest_bar("VIX")
             if bar:
                 return bar["close"]
 
-            url = f"https://eodhd.com/api/real-time/VIX.INDX"
+            url = "https://eodhd.com/api/real-time/VIX.INDX"
             params = {
                 "api_token": config.EODHD_API_KEY,
                 "fmt": "json"
@@ -1096,9 +1111,3 @@ class DataManager:
 # Global singleton
 # ───────────────────────────────────────────────────────────────
 data_manager = DataManager()
-
-
-
-
-
-
