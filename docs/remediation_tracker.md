@@ -1,7 +1,7 @@
 # War Machine — Remediation Tracker
 **Audit Scope:** Batches 1–46 | ~850 findings across the full codebase
 **Tracker Created:** 2026-03-18
-**Last Updated:** 2026-03-18
+**Last Updated:** 2026-03-19
 
 > This file is updated after **every committed fix**. Each row tracks finding ID,
 > file, description, status, commit SHA, and date resolved.
@@ -28,7 +28,7 @@
 | ✅ | 44.H-2 | `utils/time_helpers.py` | `_strip_tz()` drops TZ without converting to ET first — root cause of 15+ tz-naive bugs across 20+ files. Fix: `dt.astimezone(ET).replace(tzinfo=None)` | `5cee401` | 2026-03-18 |
 | ✅ | 8.C-1 | `app/validation/validation.py` | Direction mismatch `BUY/SELL` vs `bull/bear` — -14% confidence penalty on every bull signal. Fix: normalize direction string before comparison | `409b5f6` | 2026-03-18 |
 | ✅ | 7.C-1 | `app/options/options_intelligence.py` | `get_chain()` always returns `None` — entire options layer is dark. Fix: restore live chain fetch via `OptionsFilter.get_options_chain()` | `c9f613f` | 2026-03-18 |
-| ⬜ | 14.C-1 | `app/data/db_connection.py` | Pool initialized at module import — Railway cold-start crash if DB unavailable. Fix: lazy pool init with `_get_pool()` accessor | — | — |
+| ✅ | 14.C-1 | `app/data/db_connection.py` | Pool initialized at module import — Railway cold-start crash if DB unavailable. Fix: lazy pool init via `_init_pool()` with double-checked locking | `242a37a` | 2026-03-19 |
 | ⬜ | 15.C-1 | `app/data/data_manager.py` | Destructive migration fires on transient DB error mid-session — can wipe all bars. Fix: require explicit `FORCE_MIGRATION=true` env flag | — | — |
 | ⬜ | 15.C-2 | `app/data/data_manager.py` | Inverted tz logic in `startup_backfill_with_cache()` → TypeError → full API backfill every startup, cache never used | — | — |
 
@@ -236,7 +236,7 @@
 
 | Phase | Total Findings | Fixed | Remaining |
 |-------|---------------|-------|-----------|
-| Phase 1 — Root Causes | 6 | 3 | 3 |
+| Phase 1 — Root Causes | 6 | 4 | 2 |
 | Phase 2A — BOS/FVG Logic | 7 | 0 | 7 |
 | Phase 2B — Confidence Gate | 4 | 0 | 4 |
 | Phase 2C — Race Conditions | 5 | 0 | 5 |
@@ -252,7 +252,7 @@
 | Phase 4D — Screening | 2 | 0 | 2 |
 | Phase 4E — Indicators | 4 | 0 | 4 |
 | Phase 5 — Code Quality | 10 | 0 | 10 |
-| **TOTAL** | **84** | **3** | **81** |
+| **TOTAL** | **84** | **4** | **80** |
 
 > Note: 84 tracked findings represent the highest-priority subset of ~850 total audit findings.
 > Lower-priority L-findings not listed above will be bundled into Phase 5 cleanup commits.
@@ -266,6 +266,7 @@
 | 2026-03-18 | `5cee401` | `utils/time_helpers.py` | 44.H-2 — `_strip_tz()` ET conversion fix |
 | 2026-03-18 | `409b5f6` | `app/validation/validation.py` | 8.C-1 — Direction normalization `bull/bear` → `BUY/SELL` |
 | 2026-03-18 | `c9f613f` | `app/options/options_intelligence.py` | 7.C-1 — `get_chain()` wired to `OptionsFilter.get_options_chain()` |
+| 2026-03-19 | `242a37a` | `app/data/db_connection.py` | 14.C-1 — Lazy pool init via `_init_pool()` with double-checked locking |
 
 ---
 
