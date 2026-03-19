@@ -39,11 +39,11 @@
 
 | Status | ID | File | Description | Commit SHA | Date |
 |--------|----|------|-------------|------------|------|
-| ⬜ | 40.H-2 | `app/mtf/bos_fvg_engine.py` | `detect_bos()` only checks the single latest bar — BOS events 1-2 cycles old are permanently missed. Fix: scan last 5 bars | — | — |
-| ⬜ | 40.H-3 | `app/mtf/bos_fvg_engine.py` | FVG bounce check uses `fvg_mid` instead of `fvg_high/low` — entries fire while price still inside gap. Fix: bull=`>= fvg_high`, bear=`<= fvg_low` | — | — |
-| ⬜ | 40.H-1 | `app/mtf/bos_fvg_engine.py` | `find_fvg_after_bos()` searches 5 bars BEFORE BOS — finds pre-BOS imbalances. Fix: `search_start = bos_idx` | — | — |
-| ⬜ | 40.H-4 | `app/mtf/mtf_integration.py` | `_mtf_cache` keyed by `ticker_direction` never expires intra-day — stale 9:35 result returned at 11:00. Fix: key by `(ticker, direction, len(bars))` | — | — |
-| ⬜ | 40.M-7 | `app/mtf/mtf_integration.py` | `scan_tf_for_signal()` uses `config.FVG_MIN_SIZE_PCT` — adaptive threshold from `sniper.py` not propagated to MTF scans | — | — |
+| ✅ | 40.H-1 | `app/mtf/bos_fvg_engine.py` | `find_fvg_after_bos()` searches 5 bars BEFORE BOS — finds pre-BOS imbalances. Fix: `search_start = bos_idx` | `9b53fa0` | 2026-03-19 |
+| ✅ | 40.H-2 | `app/mtf/bos_fvg_engine.py` | `detect_bos()` only checks the single latest bar — BOS events 1-2 cycles old are permanently missed. Fix: scan last 5 bars (newest first, return most recent BOS) | `9b53fa0` | 2026-03-19 |
+| 🔁 | 40.H-3 | `app/mtf/bos_fvg_engine.py` | FVG bounce check — superseded by prior refactor. `check_fvg_entry()` already uses correct `fvg_mid` bounce guard (bull: `close >= fvg_mid`, bear: `close <= fvg_mid`). No change required. | superseded | 2026-03-19 |
+| ✅ | 40.H-4 | `app/mtf/mtf_integration.py` | `_mtf_cache` keyed by `ticker_direction` never expires intra-day — stale 9:35 result returned at 11:00. Fix: key by `f"{ticker}_{direction}_{len(bars_session)}"` | `9b53fa0` | 2026-03-19 |
+| ✅ | 40.M-7 | `app/mtf/mtf_integration.py` | `scan_tf_for_signal()` uses `config.FVG_MIN_SIZE_PCT` — adaptive threshold from `sniper.py` not propagated to MTF scans. Fix: `fvg_min_pct` kwarg threaded through `enhance_signal_with_mtf` → `check_mtf_convergence` → `scan_tf_for_signal` → `detect_fvg` | `9b53fa0` | 2026-03-19 |
 | ⬜ | 46.H-1 | `app/mtf/mtf_compression.py` | Compression functions assume 1m input — if `bars_session` is 5m, all TFs are 5× too long | — | — |
 | ⬜ | 46.H-2 | `app/mtf/mtf_compression.py` | Duplicate bar resampler — also defined inline in `sniper.py`. Fix: delete inline version, import from `mtf_compression.py` | — | — |
 
@@ -237,7 +237,7 @@
 | Phase | Total Findings | Fixed | Remaining |
 |-------|---------------|-------|-----------|
 | Phase 1 — Root Causes | 6 | 6 | 0 |
-| Phase 2A — BOS/FVG Logic | 7 | 0 | 7 |
+| Phase 2A — BOS/FVG Logic | 7 | 5 | 2 |
 | Phase 2B — Confidence Gate | 4 | 0 | 4 |
 | Phase 2C — Race Conditions | 5 | 0 | 5 |
 | Phase 2D — Validation Logic | 6 | 0 | 6 |
@@ -252,7 +252,7 @@
 | Phase 4D — Screening | 2 | 0 | 2 |
 | Phase 4E — Indicators | 4 | 0 | 4 |
 | Phase 5 — Code Quality | 10 | 0 | 10 |
-| **TOTAL** | **84** | **6** | **78** |
+| **TOTAL** | **84** | **12** | **72** |
 
 > Note: 84 tracked findings represent the highest-priority subset of ~850 total audit findings.
 > Lower-priority L-findings not listed above will be bundled into Phase 5 cleanup commits.
@@ -268,6 +268,7 @@
 | 2026-03-18 | `c9f613f` | `app/options/options_intelligence.py` | 7.C-1 — `get_chain()` wired to `OptionsFilter.get_options_chain()` |
 | 2026-03-19 | `242a37a` | `app/data/db_connection.py` | 14.C-1 — Lazy pool init via `_init_pool()` with double-checked locking |
 | 2026-03-19 | `26d6528` | `app/data/data_manager.py` | 15.C-1 — Destructive migration gated by `FORCE_MIGRATION=true`; 15.C-2 — Inverted TZ logic fixed via `_to_aware_et()` |
+| 2026-03-19 | `9b53fa0` | `app/mtf/bos_fvg_engine.py`, `app/mtf/mtf_integration.py` | 40.H-1 — FVG search starts at BOS not before; 40.H-2 — BOS scans last 5 bars; 40.H-3 — superseded; 40.H-4 — MTF cache key includes bar count; 40.M-7 — adaptive FVG threshold propagated through MTF stack |
 
 ---
 
