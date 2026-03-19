@@ -14,10 +14,11 @@ Usage:
   results = engine.run(ticker='AAPL', start_date='2025-01-01', end_date='2026-01-01')
   logger.info(results.summary())
 """
-from app.backtesting.backtest_engine import BacktestEngine, BacktestResults, Trade, Position
-from app.backtesting.performance_metrics import (
 import logging
 logger = logging.getLogger(__name__)
+
+from app.backtesting.backtest_engine import BacktestEngine, BacktestResults, Trade, Position
+from app.backtesting.performance_metrics import (
     calculate_sharpe_ratio,
     calculate_sortino_ratio,
     calculate_max_drawdown,

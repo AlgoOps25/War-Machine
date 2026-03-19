@@ -9,23 +9,24 @@ Adds 4 essential indicators:
 
 These integrate with existing technical_indicators.py
 
-MOVED: app/analytics/technical_indicators_extended.py → app/indicators/technical_indicators_extended.py
-IMPORT UPDATED: app.analytics.technical_indicators → app.indicators.technical_indicators
+MOVED: app/analytics/technical_indicators_extended.py -> app/indicators/technical_indicators_extended.py
+IMPORT UPDATED: app.analytics.technical_indicators -> app.indicators.technical_indicators
 """
 
+import logging
 from typing import Dict, List, Optional, Tuple
 from app.indicators.technical_indicators import (
-import logging
-logger = logging.getLogger(__name__)
     fetch_technical_indicator,
     get_latest_value,
     _indicator_cache
 )
 
+logger = logging.getLogger(__name__)
 
-# ═══════════════════════════════════════════════════════════════════════════
+
+# ═════════════════════════════════════════════════════════════════════════
 # NEW INDICATOR FETCH FUNCTIONS
-# ═══════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════
 
 def fetch_atr(ticker: str, period: int = 14, use_cache: bool = True) -> Optional[List[Dict]]:
     """
@@ -112,7 +113,7 @@ def fetch_stddev(ticker: str, period: int = 20, use_cache: bool = True) -> Optio
     Use cases:
     - Volatility clustering detection
     - Position sizing (reduce size in high STDDEV)
-    - Breakout setup (low STDDEV → high STDDEV = expansion)
+    - Breakout setup (low STDDEV -> high STDDEV = expansion)
     
     Complements ATR:
     - ATR = range-based volatility
@@ -124,9 +125,9 @@ def fetch_stddev(ticker: str, period: int = 20, use_cache: bool = True) -> Optio
     return fetch_technical_indicator(ticker, 'stddev', use_cache=use_cache, period=period)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════
 # ANALYSIS HELPER FUNCTIONS
-# ═══════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════
 
 def get_atr_percentage(ticker: str, current_price: float, period: int = 14) -> Optional[float]:
     """
@@ -435,9 +436,9 @@ def check_volatility_expansion(
     return is_expanding, details
 
 
-# ═══════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════
 # UPDATE BATCH FETCH TO INCLUDE NEW INDICATORS
-# ═══════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════
 
 EXTENDED_INDICATOR_MAP = {
     'atr': fetch_atr,
@@ -474,7 +475,7 @@ if __name__ == "__main__":
     
     # Slope
     trend, slope_val = check_trend_slope(test_ticker, min_slope=0.3)
-    logger.info(f"\nSlope: {slope_val} → {trend}")
+    logger.info(f"\nSlope: {slope_val} -> {trend}")
     
     # STDDEV
     vol_regime, vol_details = check_volatility_regime(test_ticker)

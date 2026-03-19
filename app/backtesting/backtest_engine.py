@@ -25,6 +25,7 @@ Usage:
   )
   logger.info(results.summary())
 """
+import logging
 from typing import Dict, List, Optional, Callable, Tuple
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field
@@ -32,8 +33,6 @@ from collections import defaultdict
 import statistics
 
 from app.backtesting.performance_metrics import (
-import logging
-logger = logging.getLogger(__name__)
     calculate_sharpe_ratio,
     calculate_sortino_ratio,
     calculate_max_drawdown,
@@ -41,6 +40,8 @@ logger = logging.getLogger(__name__)
     calculate_profit_factor,
     calculate_expectancy
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
