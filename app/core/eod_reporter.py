@@ -17,12 +17,19 @@ Can also be run standalone: python -m app.core.eod_reporter
 ADDED (Phase 1.32 — Mar 17 2026):
   - Created this module (was referenced in AUDIT_REGISTRY but never built)
   - Replaces the 30-line inline EOD Discord block in scanner.py
+
+FIX (Mar 19 2026):
+  - get_daily_summary() output now sent to both print() AND logger.info()
+    so test_daily_summary_printed_to_stdout (capsys) captures it correctly.
 """
 from __future__ import annotations
 
 import logging
 from datetime import datetime
-from zoneinfo import ZoneInfo
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    from backports.zoneinfo import ZoneInfo
 
 from app.risk.risk_manager import get_session_status, get_eod_report
 from app.notifications.discord_helpers import send_daily_summary, send_simple_message
@@ -84,8 +91,9 @@ def run_eod_report(session_date: str | None = None) -> None:
             send_simple_message(discord_msg)
             logger.info("[EOD-REPORTER] ✅ Signal funnel block sent to Discord")
 
-        # Log full summary to Railway stdout for ops visibility
+        # Print full summary to stdout for ops visibility (Railway logs + capsys)
         full_summary = signal_tracker.get_daily_summary(session_date)
+        print(full_summary)
         logger.info(full_summary)
 
         # Clear session cache for next trading day
