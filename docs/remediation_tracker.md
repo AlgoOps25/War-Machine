@@ -183,7 +183,7 @@
 
 | Status | ID | File | Description | Commit SHA | Date |
 |--------|----|------|-------------|------------|------|
-| ⬜ | 45.H-1 | `app/notifications/discord_helpers.py` | Synchronous HTTP POST in scan loop blocks ticker processing 100–500ms per send. Fix: fire-and-forget thread | — | — |
+| ✅ | 45.H-1 | `app/notifications/discord_helpers.py` | Synchronous HTTP POST in scan loop blocks ticker processing 100–500ms per send. Fix: fire-and-forget thread | — | — |
 | ⬜ | 45.H-2 | `app/notifications/discord_helpers.py` | Webhook URL read on every call — raises TypeError if unset. Fix: cache at module load | — | — |
 | ⬜ | 45.M-4 | `app/notifications/discord_helpers.py` | No rate limiting — 10 simultaneous signals → HTTP 429 from Discord | — | — |
 | ⬜ | 45.M-5 | `app/notifications/discord_helpers.py` | No request timeout — can block indefinitely. Fix: `timeout=5` | — | — |
