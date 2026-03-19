@@ -104,13 +104,13 @@
 
 | Status | ID | File | Description | Commit SHA | Date |
 |--------|----|------|-------------|------------|------|
-| ⬜ | 13.C-1 | `app/analytics/explosive_mover_tracker.py` | `conn.close()` instead of `return_conn()` — pool exhaustion over session | — | — |
-| ⬜ | 13.C-2 | `app/analytics/ab_test_framework.py` | `get_conn(db_path)` raises TypeError at import — crashes Railway startup | — | — |
-| ⬜ | 14.H-7 | `app/data/candle_cache.py` | Stripped TZ on cache rows → naive UTC vs ET boundary → `_filter_session_bars()` returns zero bars on Railway | — | — |
-| ⬜ | 14.H-6 | `app/data/candle_cache.py` | `is_cache_fresh()` stamps ET on UTC timestamp → stale cache appears fresh | — | — |
-| ⬜ | 12.C-2 | `app/analytics/cooldown_tracker.py` | tz-aware vs naive timestamp — expired cooldowns never cleaned on Railway/Postgres | — | — |
-| ⬜ | 43.M-9 | `app/signals/signal_generator_cooldown.py` | DELETE expired cooldowns on every read query — adds write load in hot path. Fix: scheduled cleanup task | — | — |
-| ⬜ | 43.M-12 | `app/signals/signal_generator_cooldown.py` | `expires_at` uses `datetime.utcnow()` without explicit TZ in SQL — drift risk on TIMESTAMPTZ columns | — | — |
+| ✅ | 13.C-1 | `app/analytics/explosive_mover_tracker.py` | `conn.close()` instead of `return_conn()` — pool exhaustion over session | — | — |
+| ✅ | 13.C-2 | `app/analytics/ab_test_framework.py` | `get_conn(db_path)` raises TypeError at import — crashes Railway startup | — | — |
+| ✅ | 14.H-7 | `app/data/candle_cache.py` | Stripped TZ on cache rows → naive UTC vs ET boundary → `_filter_session_bars()` returns zero bars on Railway | — | — |
+| ✅ | 14.H-6 | `app/data/candle_cache.py` | `is_cache_fresh()` stamps ET on UTC timestamp → stale cache appears fresh | — | — |
+| ✅ | 12.C-2 | `app/analytics/cooldown_tracker.py` | tz-aware vs naive timestamp — expired cooldowns never cleaned on Railway/Postgres | — | — |
+| ✅ | 43.M-9 | `app/signals/signal_generator_cooldown.py` | DELETE expired cooldowns on every read query — adds write load in hot path. Fix: scheduled cleanup task | — | — |
+| ✅ | 43.M-12 | `app/signals/signal_generator_cooldown.py` | `expires_at` uses `datetime.utcnow()` without explicit TZ in SQL — drift risk on TIMESTAMPTZ columns | — | — |
 
 ---
 
