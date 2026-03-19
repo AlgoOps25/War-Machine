@@ -1078,30 +1078,6 @@ def process_ticker(ticker: str):
             )
             return
 
-        if _is_watching:
-            w = _state.get_watching_signal(ticker)
-            if w.get("breakout_idx") is None:
-                bar_dt_target = _strip_tz(w.get("breakout_bar_dt"))
-                resolved_idx = None
-                if bar_dt_target is not None:
-                    for i, bar in enumerate(bars_session):
-                        if _strip_tz(bar["datetime"]) == bar_dt_target:
-                            resolved_idx = i
-                            break
-                if resolved_idx is None:
-                    print(
-                        f"[{ticker}] ⚠️ Watch DB entry: breakout bar "
-                        f"{bar_dt_target} not found in today's session — discarding"
-                    )
-                    _state.remove_watching_signal(ticker)
-                    _remove_watch_from_db(ticker)
-                else:
-                    _state.update_watching_signal_field(ticker, "breakout_idx", resolved_idx)
-                    print(
-                        f"[{ticker}] 📄 Watch restored from DB: "
-                        f"breakout_idx={resolved_idx} ({bar_dt_target})"
-                    )
-
         _is_watching = _state.ticker_is_watching(ticker)
         if _is_watching:
             w = _state.get_watching_signal(ticker)
