@@ -34,7 +34,7 @@ PHASE 3A PATCH 2 (Mar 12, 2026) — Bug Fixes:
     find_best_strike(). Every call with OPTIONS_OPTIMIZER_ENABLED=True was throwing
     NameError and silently falling back to the slow serial EODHD chain fetch.
   - Fix 4 (P2): Removed ghost earnings guard comment. The docstring claimed an
-    earnings guard was active — no such code exists anywhere in the pipeline.
+    earnings guard was active — no such code existed anywhere in the pipeline.
 
 PHASE 1.26a (Mar 13, 2026) — Bug Fix:
   - Fix OPTIONS_OPTIMIZER_ENABLED NameError in find_best_strike().
@@ -68,6 +68,17 @@ PHASE 1.29 (Mar 16, 2026) — Bug Fixes (FULL implementation, closes PR #34):
     'bull'/'bear' pipeline values map correctly to BUY/SELL for all checks.
   - Fix 5 (P2): VPVR rescue boost uses full abs(counter_trend_penalty).
   - Fix 6 (P2): filter_by_dte() uses timezone-aware now_et to avoid UTC drift.
+
+PHASE 47.P2-1 (Mar 19, 2026) — IVR Hard Gate:
+  - validate_signal_for_options() now runs an IVR pre-check BEFORE find_best_strike().
+    This avoids an expensive full chain fetch when IVR is already extreme.
+  - Gate thresholds:
+      IVR > 80  : hard block — "options crush risk" (explosive_mover demotes to warning)
+      IVR 60–80 : loud warning, signal proceeds with ivr_elevated_warning flag
+      IVR-BUILDING: pass-through (< MIN_OBSERVATIONS — don't penalise new tickers)
+  - New private helper _get_ivr_for_gate(ticker) pulls current IV from the
+    greeks_cache ATM snapshot (zero extra API calls) then calls compute_ivr().
+    Falls back gracefully to (None, 0, False) on any error.
 
 VALIDATION CONFIGURATION:
   • Minimum Final Confidence: 50% (configurable via min_final_confidence)
@@ -121,7 +132,7 @@ USAGE:
   if regime_filter.is_favorable_for_explosive_mover(rvol=ticker_rvol):
       process_signal()  # passes if RVOL >= 3x regardless of ADX/regime
   
-  # Options validation (explosive mover — IV gate demoted to warning)
+  # Options validation (explosive mover — IV gate + IVR gate demoted to warning)
   options_filter = get_options_filter()
   is_valid, data, reason = options_filter.validate_signal_for_options(
       ..., explosive_mover=True
@@ -186,6 +197,12 @@ try:
 except ImportError:
     _OPTIMIZER_AVAILABLE = False
 
+# ── P2-1: IVR gate thresholds ─────────────────────────────────────────────────
+# IVR > IVR_HARD_BLOCK  → hard reject (options crush risk)
+# IVR > IVR_WARN        → warning logged, signal proceeds with flag
+# IVR below IVR_WARN or IVR-BUILDING → no action
+IVR_HARD_BLOCK = 80
+IVR_WARN       = 60
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -257,7 +274,6 @@ class RegimeFilter:
         """
         if rvol >= rvol_threshold:
             # PHASE 1.29 FIX 2: read vix/regime from the returned state object.
-            # Previously referenced undefined local names, printing VIX:0.0 / UNKNOWN.
             state = self.get_regime_state()
             print(
                 f"[REGIME] ⚡ EXPLOSIVE MOVER OVERRIDE: RVOL={rvol:.1f}x ≥ {rvol_threshold:.0f}x "
@@ -453,13 +469,6 @@ class RegimeFilter:
         Classify market regime and determine if favorable for trading.
 
         Phase 3A Patch: VIX-aware ADX thresholds replace the hardcoded 25.
-        Elevated VIX environments naturally compress ADX readings — a market
-        moving directionally with VIX=25 will often show ADX=10–14, which is
-        still a tradeable trend. The thresholds scale accordingly:
-
-          VIX > 25  → effective_adx_threshold = 12.0
-          VIX > 20  → effective_adx_threshold = 15.0
-          VIX ≤ 20  → effective_adx_threshold = 20.0
         """
         # Hard blocks: extreme volatility
         if vix >= 35:
@@ -494,13 +503,11 @@ class RegimeFilter:
                         f"Strong {spy_trend} trend (ADX: {adx:.0f} ≥ {effective_adx_threshold:.0f}, VIX: {vix:.1f})"
                     )
                 else:
-                    # PHASE 1.29 FIX 3: favorable based on spy_trend, not hardcoded True
                     favorable = spy_trend != "NEUTRAL"
                     return (
                         "TRENDING", favorable,
                         f"{spy_trend} trend with elevated VIX (ADX: {adx:.0f} >= {effective_adx_threshold:.0f}, VIX: {vix:.1f})"
                     )
-
             else:
                 return (
                     "CHOPPY", False,
@@ -545,6 +552,45 @@ class OptionsFilter:
     def __init__(self):
         self.api_key = config.EODHD_API_KEY
         self.base_url = "https://eodhd.com/api/mp/unicornbay/options/contracts"
+
+    # ── P2-1: IVR pre-gate helper ─────────────────────────────────────────────
+    def _get_ivr_for_gate(self, ticker: str) -> Tuple[Optional[float], int, bool]:
+        """
+        Pull current IV from the greeks_cache ATM snapshot and compute IVR.
+
+        Uses the nearest-ATM call (or put) already cached from the greeks_precheck
+        fetch — zero additional API calls.
+
+        Returns:
+            (ivr, observations, is_reliable)  — same shape as compute_ivr()
+            Falls back to (None, 0, False) on any error so the gate never blocks
+            due to a data-fetch failure.
+        """
+        try:
+            from app.validation.greeks_precheck import greeks_cache
+            cache_data = greeks_cache._cache.get(ticker, {})
+            if not cache_data:
+                return None, 0, False
+
+            # Grab the ATM call delta closest to 0.50 for a clean IV reading
+            best_iv: Optional[float] = None
+            best_diff = 999.0
+            for _strike, opts in cache_data.items():
+                call = opts.get("call")
+                if call and call.iv > 0:
+                    diff = abs(call.delta - 0.50)
+                    if diff < best_diff:
+                        best_diff = diff
+                        best_iv = call.iv
+
+            if not best_iv:
+                return None, 0, False
+
+            return compute_ivr(ticker, best_iv)
+
+        except Exception as e:
+            logger.debug(f"[IVR-GATE] {ticker}: _get_ivr_for_gate error — {e}")
+            return None, 0, False
 
     def _normalize_v2_chain(self, v2_data: List[Dict]) -> Dict:
         """Convert marketplace flat-list format to legacy nested structure."""
@@ -621,7 +667,6 @@ class OptionsFilter:
                 hour=0, minute=0, second=0, microsecond=0, tzinfo=None
             )
             dte = (datetime.strptime(expiration_date, "%Y-%m-%d") - now_et).days
-
             return (config.MIN_DTE <= dte <= config.MAX_DTE), dte
         except Exception:
             return False, 0
@@ -629,11 +674,17 @@ class OptionsFilter:
     def calculate_expected_move(self, price: float, iv: float, dte: int) -> float:
         return round(price * iv * ((dte / 365) ** 0.5), 2)
 
-    def find_best_strike(self, ticker, direction, entry_price, target_price, stop_price=0.0):
+    def find_best_strike(self, ticker, direction, entry_price, target_price, stop_price=0.0, ideal_dte: Optional[int] = None):
         """
         Find optimal option strike with parallel Greeks fetching.
         Uses _OPTIMIZER_AVAILABLE for 5-10x speed improvement.
+
+        Args:
+            ideal_dte: Override for config.IDEAL_DTE (used by P2-3 dynamic DTE selector).
+                       When None, falls back to config.IDEAL_DTE.
         """
+        _ideal_dte = ideal_dte if ideal_dte is not None else config.IDEAL_DTE
+
         if _OPTIMIZER_AVAILABLE:
             try:
                 strikes = get_optimal_strikes_sync(
@@ -653,7 +704,6 @@ class OptionsFilter:
 
             except Exception as e:
                 logger.info(f"[OPTIONS] {ticker}: Optimizer error - {e}, falling back to legacy")
-                # Fall through to legacy code below
 
         chain = self.get_options_chain(ticker)
         if not chain:
@@ -685,11 +735,15 @@ class OptionsFilter:
                 ask = option.get("ask", 0)
                 mid = (bid + ask) / 2 if (bid and ask) else 0
 
-                dte_score = 100 - abs(dte - config.IDEAL_DTE)
+                # P2-2: delta proximity scoring — prefer strike nearest IDEAL_DELTA
+                delta_val = abs(option.get("delta", 0))
+                delta_score = max(0, 50 - abs(delta_val - config.IDEAL_DELTA) * 200)
+
+                dte_score = 100 - abs(dte - _ideal_dte)
                 oi_score = min(option.get("openInterest", 0) / 1000, 100)
                 spread_pct = (ask - bid) / mid if mid > 0 else 999
                 spread_score = max(0, 100 - spread_pct * 1000)
-                total_score = dte_score + oi_score + spread_score
+                total_score = dte_score + oi_score + spread_score + delta_score
 
                 if total_score > best_score:
                     best_score = total_score
@@ -805,27 +859,79 @@ class OptionsFilter:
         target_price,
         stop_price: float = 0.0,
         explosive_mover: bool = False,
+        ideal_dte: Optional[int] = None,
     ) -> Tuple[bool, Optional[Dict], str]:
         """
         Validate signal for options trading.
 
+        Gate order:
+          1. IVR pre-check  (P2-1) — blocks/warns BEFORE chain fetch
+          2. find_best_strike — expensive chain fetch (skipped if IVR hard-blocks)
+          3. Expected-move gate
+          4. IV > 100% gate
+          5. Theta-decay gate
+
         Args:
-            explosive_mover: When True (RVOL >= 3x override fired), the IV > 100%
-                hard-reject is demoted to a loud warning. The signal is allowed
-                through so the operator can evaluate it — but the high IV is
-                prominently flagged in the log and returned in the reason string.
-                All other gates (theta decay, expected move) still apply.
+            explosive_mover: When True (RVOL >= 3x override fired):
+              - IV > 100% hard-reject → loud warning (existing behaviour)
+              - IVR > 80 hard-reject  → loud warning (P2-1 addition)
+            ideal_dte: Dynamic DTE target from P2-3 get_ideal_dte().
+                       Passed through to find_best_strike(). None = use config.IDEAL_DTE.
         """
-        best_strike = self.find_best_strike(ticker, direction, entry_price, target_price, stop_price=stop_price)
+        # ── Gate 1: IVR pre-check (P2-1) ──────────────────────────────────────
+        ivr_gate_val, ivr_obs, ivr_reliable = self._get_ivr_for_gate(ticker)
+
+        if ivr_reliable and ivr_gate_val is not None:
+            if ivr_gate_val > IVR_HARD_BLOCK:
+                msg = (
+                    f"IVR too high ({ivr_gate_val:.0f} > {IVR_HARD_BLOCK}) "
+                    f"— options crush risk ({ivr_obs} obs)"
+                )
+                if explosive_mover:
+                    print(
+                        f"[IVR-GATE] ⚠️  {ticker} HIGH-IVR EXPLOSIVE MOVER: "
+                        f"IVR={ivr_gate_val:.0f} > {IVR_HARD_BLOCK} — proceeding "
+                        f"(explosive override active). Premium elevated; size down."
+                    )
+                    # Tag so Discord can surface the warning
+                    _ivr_warning_flag = True
+                else:
+                    print(f"[IVR-GATE] 🚫 {ticker}: {msg}")
+                    return False, None, msg
+            elif ivr_gate_val > IVR_WARN:
+                print(
+                    f"[IVR-GATE] ⚠️  {ticker}: IVR={ivr_gate_val:.0f} (elevated, "
+                    f"{IVR_WARN}–{IVR_HARD_BLOCK} range) — proceeding with caution"
+                )
+                _ivr_warning_flag = True
+            else:
+                _ivr_warning_flag = False
+        else:
+            # IVR-BUILDING or cache miss — never block
+            _ivr_warning_flag = False
+            if ivr_obs > 0:
+                logger.debug(
+                    f"[IVR-GATE] {ticker}: IVR-BUILDING ({ivr_obs}/{10} obs) — pass-through"
+                )
+
+        # ── Gate 2: find best strike ───────────────────────────────────────────
+        best_strike = self.find_best_strike(
+            ticker, direction, entry_price, target_price,
+            stop_price=stop_price, ideal_dte=ideal_dte
+        )
         if not best_strike:
             return False, None, "No suitable options found"
 
+        # Attach IVR warning flag so downstream / Discord can surface it
+        if _ivr_warning_flag:
+            best_strike["ivr_elevated_warning"] = True
+            best_strike["ivr_gate_val"] = round(ivr_gate_val, 1) if ivr_gate_val else None
+
+        # ── Gate 3: expected move ──────────────────────────────────────────────
         if abs(target_price - entry_price) > best_strike["expected_move"] * 2:
             return False, best_strike, "Target exceeds 2x expected move"
 
-        # PHASE 1.29 FIX 1: IV gate respects explosive_mover override.
-        # When explosive_mover=True, demote hard-reject to a loud warning so the
-        # signal proceeds. The operator sees the ⚠️ HIGH-IV log and can evaluate.
+        # ── Gate 4: IV > 100% ─────────────────────────────────────────────────
         iv = best_strike.get("iv", 0)
         if iv > 1.0:
             iv_pct = iv * 100
@@ -835,12 +941,12 @@ class OptionsFilter:
                     f"IV={iv_pct:.1f}% > 100% — proceeding (explosive override active). "
                     f"Premium is elevated; size accordingly."
                 )
-                # Tag the data so downstream / Discord can surface the warning
                 best_strike["high_iv_warning"] = True
                 best_strike["high_iv_pct"] = round(iv_pct, 1)
             else:
                 return False, best_strike, f"IV too high ({iv_pct:.1f}%)"
 
+        # ── Gate 5: theta decay ────────────────────────────────────────────────
         dte = best_strike["dte"]
         mid = (best_strike["bid"] + best_strike["ask"]) / 2 if (best_strike.get("bid") and best_strike.get("ask")) else 0
         theta = abs(best_strike.get("theta", 0))
@@ -850,7 +956,8 @@ class OptionsFilter:
                 return False, best_strike, f"Theta decay too high ({theta_pct:.1%}/day vs max {config.MAX_THETA_DECAY_PCT:.1%})"
 
         iv_warning = " [HIGH-IV]" if best_strike.get("high_iv_warning") else ""
-        return True, best_strike, f"Options signal validated{iv_warning}"
+        ivr_warning = " [HIGH-IVR]" if best_strike.get("ivr_elevated_warning") else ""
+        return True, best_strike, f"Options signal validated{iv_warning}{ivr_warning}"
 
 
 def get_options_recommendation(ticker, direction, entry_price, target_price, stop_price=0.0) -> Optional[Dict]:
@@ -924,7 +1031,6 @@ class SignalValidator:
             'confidence_filtered': 0
         }
         
-        # Production initialization banner
         logger.info("[VALIDATOR] ╔════════════════════════════════════════════════╗")
         logger.info("[VALIDATOR] ║  SIGNAL VALIDATOR - PRODUCTION CONFIG          ║")
         logger.info(f"[VALIDATOR] ║  Min Final Confidence: {int(min_final_confidence*100)}%{' '*(24-len(str(int(min_final_confidence*100))))}║")
@@ -956,16 +1062,13 @@ class SignalValidator:
         self.validation_stats['total_validated'] += 1
         signal_time = datetime.now(ET)
 
-        # PHASE 1.29 FIX 4: Normalize direction — pipeline emits 'bull'/'bear',
-        # but indicator checks expect 'BUY'/'SELL'.
-        # _dir is used for all comparisons; signal_direction preserved for metadata.
         _dir = signal_direction.upper()
         _dir = 'BUY' if _dir in ('BULL', 'BUY', 'LONG') else 'SELL'
 
         metadata = {
             'timestamp': signal_time.isoformat(),
             'ticker': ticker,
-            'direction': signal_direction,   # keep original for logs
+            'direction': signal_direction,
             'base_confidence': base_confidence,
             'checks': {}
         }
@@ -1244,8 +1347,6 @@ class SignalValidator:
                         
                         self.validation_stats['vpvr_scored'] += 1
                         
-                        # VPVR Rescue Logic
-                        # PHASE 1.29 FIX 5: use full abs(counter_trend_penalty) (was *0.80)
                         if needs_vpvr_rescue and entry_score >= 0.85:
                             rescue_boost = abs(counter_trend_penalty)
                             confidence_adjustment += rescue_boost
@@ -1255,7 +1356,6 @@ class SignalValidator:
                             self.validation_stats['vpvr_rescued'] += 1
                             logger.info(f"[VPVR] ✨ {ticker} RESCUED: Excellent entry at {entry_reason} overrides bias penalty (+{rescue_boost:.2%})")
                         
-                        # Standard VPVR scoring
                         if entry_score >= 0.85:
                             if not vpvr_rescue_applied:
                                 confidence_adjustment += 0.08
@@ -1295,7 +1395,6 @@ class SignalValidator:
         else:
             should_pass = len(passed_checks) >= len(failed_checks)
         
-        # Update stats
         if should_pass:
             self.validation_stats['passed'] += 1
             if confidence_adjustment > 0:
@@ -1303,7 +1402,6 @@ class SignalValidator:
         else:
             self.validation_stats['filtered'] += 1
         
-        # Add summary to metadata
         metadata['summary'] = {
             'should_pass': should_pass,
             'adjusted_confidence': round(adjusted_confidence, 3),
@@ -1451,16 +1549,13 @@ def get_options_filter() -> OptionsFilter:
 
 # Export all public APIs
 __all__ = [
-    # Classes
     'SignalValidator',
     'RegimeFilter',
     'RegimeState',
     'OptionsFilter',
-    # Factory functions
     'get_validator',
     'get_regime_filter',
     'get_options_filter',
-    # Helper functions
     'get_time_of_day_quality',
     'get_options_recommendation',
 ]
