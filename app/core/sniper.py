@@ -293,7 +293,14 @@ def _log_fvg_event(ticker: str, direction: str, fvg_low: float, fvg_high: float,
 
 
 from app.ml.metrics_cache import get_ticker_win_rates
-_TICKER_WIN_CACHE = get_ticker_win_rates(days=30)
+_TICKER_WIN_CACHE = None  # lazy-loaded on first use (avoids cold-start DB crash)
+
+def _get_ticker_win_cache():
+    global _TICKER_WIN_CACHE
+    if _TICKER_WIN_CACHE is None:
+        _TICKER_WIN_CACHE = get_ticker_win_rates(days=30)
+    return _TICKER_WIN_CACHE
+
 _orb_classifications = {}  # ticker -> OR classification dict, populated at 9:40
 # BOS watch alert dedup — prevents repeat Discord pings for the same BOS
 # across scanner cycles. Cleared at EOD alongside watching_signals.

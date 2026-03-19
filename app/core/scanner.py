@@ -93,9 +93,6 @@ PHASE 1.34 (MAR 19, 2026):
 """
 from app.core.health_server import start_health_server, health_heartbeat
 
-# ── PHASE 1.27: Start health server immediately at module load ─────────────────────
-start_health_server()
-
 import os
 import time
 import threading
@@ -466,6 +463,7 @@ def subscribe_and_prefetch_tickers(new_tickers: list):
 def start_scanner_loop():
     # ── PHASE 1.28: Validate required env vars before any blocking work ────────────
     validate_required_env_vars()
+    start_health_server()  # PHASE 3B: moved here — after env validation, before blocking work
 
     # ── PHASE 1.30: Hard import — no stubs fallback (sniper_stubs deprecated) ───
     from app.core.sniper import process_ticker, clear_armed_signals, clear_watching_signals, _orb_classifications
