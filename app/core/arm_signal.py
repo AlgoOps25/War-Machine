@@ -12,8 +12,8 @@ All heavy imports are deferred inside the function to avoid circular imports.
 FIXED (Mar 16 2026): Wire record_trade_executed() after position_id > 0 so the
   TRADED stage is recorded in signal_events and get_funnel_stats() shows real counts.
 
-VP BIAS (Mar 19 2026): vp_bias kwarg forwarded to send_options_signal_alert
-  so Discord alert shows CALL/PUT/AVOID volume profile context.
+FEAT (Mar 19 2026): Accept vp_bias kwarg and pass to send_options_signal_alert()
+  so Discord alerts show Volume Profile options bias (CALL/PUT/NEUTRAL/AVOID).
 """
 
 
@@ -22,7 +22,7 @@ def arm_ticker(
     entry_price, stop_price, t1, t2, confidence, grade,
     options_rec=None, signal_type="CFW6_OR", validation_result=None,
     bos_confirmation=None, bos_candle_type=None, mtf_result=None, metadata=None,
-    vp_bias: str = 'NEUTRAL',
+    vp_bias=None,
 ):
     """
     Arm a confirmed signal:
@@ -33,8 +33,8 @@ def arm_ticker(
       5. Record TRADED stage in signal_analytics (FIX Mar 16 2026).
       6. Set per-ticker cooldown.
 
-    vp_bias: Volume Profile options bias ('CALL' | 'PUT' | 'AVOID' | 'NEUTRAL').
-      Forwarded to Discord alert. Defaults to 'NEUTRAL' (no VP data = no badge).
+    vp_bias: Volume Profile options bias string from vp_data['options_bias'].
+             Passed through to Discord alert for display.
     """
     from app.risk.position_manager import position_manager
     from app.core.thread_safe_state import get_state

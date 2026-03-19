@@ -22,8 +22,8 @@ PHASE 1.29 (Mar 16 2026):
 - Falls back to DISCORD_SIGNALS_WEBHOOK_URL if watchlist URL not set.
 
 VP BIAS (Mar 19 2026):
-- send_options_signal_alert() now accepts vp_bias (str).
-  CALL/PUT/AVOID are shown in Signal Quality; NEUTRAL is suppressed.
+- send_options_signal_alert() accepts vp_bias param (CALL/PUT/NEUTRAL/AVOID).
+  Shown as a VP Bias line in Signal Quality field with emoji indicator.
 """
 import requests
 import functools
@@ -210,6 +210,15 @@ def send_equity_bos_fvg_alert(signal: Dict):
 # ══════════════════════════════════════════════════════════════════════════════
 # OPTIONS SIGNAL ALERT (0DTE / Short-term options plays)
 # ══════════════════════════════════════════════════════════════════════════════
+
+# VP bias emoji map
+_VP_BIAS_EMOJI = {
+    'CALL':    '📗',
+    'PUT':     '📕',
+    'NEUTRAL': '📓',
+    'AVOID':   '🚫',
+}
+
 def send_options_signal_alert(
     ticker: str,
     direction: str,
@@ -239,9 +248,8 @@ def send_options_signal_alert(
     ml_adjustment: float in pts (e.g. +9.0 or -5.0).  When |adjustment| >= 1pt,
     a ML Score line is appended showing the direction arrow and base→adjusted conf.
 
-    vp_bias: Volume Profile options bias string from validate_entry().
-      CALL/PUT/AVOID are shown in Signal Quality field.
-      NEUTRAL is suppressed (no noise when there's no strong signal).
+    vp_bias: Volume Profile options bias — 'CALL' | 'PUT' | 'NEUTRAL' | 'AVOID'.
+    Shown in Signal Quality field with emoji indicator.
     """
     # CALL / PUT and colors
     option_side = "CALL" if direction.lower() == "bull" else "PUT"
@@ -297,16 +305,10 @@ def send_options_signal_alert(
         else:
             mtf_label = "Single TF"
         quality_bits.append(f"MTF **{mtf_convergence} TF** ({mtf_label})")
-
-    # VP Bias — show CALL/PUT/AVOID; suppress NEUTRAL to avoid noise
-    _vp = (vp_bias or "").upper()
-    if _vp == "CALL":
-        quality_bits.append("VP Bias: **CALL** 📊✅")
-    elif _vp == "PUT":
-        quality_bits.append("VP Bias: **PUT** 📊✅")
-    elif _vp == "AVOID":
-        quality_bits.append("VP Bias: **AVOID** ⚠️")
-
+    if vp_bias and vp_bias != 'NEUTRAL':
+        vp_emoji = _VP_BIAS_EMOJI.get(vp_bias, '📓')
+        quality_bits.append(f"VP Bias {vp_emoji} **{vp_bias}**")
+    
     if quality_bits:
         fields.append({
             "name": "Signal Quality",
