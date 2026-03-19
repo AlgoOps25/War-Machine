@@ -926,6 +926,7 @@ class SignalValidator:
             'base_confidence': base_confidence,
             'checks': {}
         }
+
         
         confidence_adjustment = 0.0
         failed_checks = []
@@ -1013,25 +1014,33 @@ class SignalValidator:
             except Exception as e:
                 metadata['checks']['time_of_day'] = {'error': str(e)}
         
-        # ── EMA Stack Check ──────────────────────────────────────────────────
+        # EMA Stack Check
         if self.enable_ema_stack:
             try:
-                ema9_data  = ti.fetch_ema(ticker, period=9)
+                ema9_data = ti.fetch_ema(ticker, period=9)
                 ema20_data = ti.fetch_ema(ticker, period=20)
                 ema50_data = ti.fetch_ema(ticker, period=50)
-
+                
                 if all([ema9_data, ema20_data, ema50_data]):
-                    ema9  = ti.get_latest_value(ema9_data,  'ema')
+                    ema9 = ti.get_latest_value(ema9_data, 'ema')
                     ema20 = ti.get_latest_value(ema20_data, 'ema')
                     ema50 = ti.get_latest_value(ema50_data, 'ema')
-
+                    
                     if all([ema9, ema20, ema50]):
-                        if _dir == 'BUY':                              # ← was signal_direction
-                            full_stack    = (current_price > ema9 > ema20 > ema50)
+                        if _dir == 'BUY':
+                            full_stack = (current_price > ema9 > ema20 > ema50)
                             partial_stack = (current_price > ema9 and ema9 > ema20)
                         else:
-                            full_stack    = (current_price < ema9 < ema20 < ema50)
+                            full_stack = (current_price < ema9 < ema20 < ema50)
                             partial_stack = (current_price < ema9 and ema9 < ema20)
+                        
+                        metadata['checks']['ema_stack'] = {
+                            'ema9': round(ema9, 2),
+                            'ema20': round(ema20, 2),
+                            'ema50': round(ema50, 2),
+                            'full_stack': full_stack,
+                            'partial_stack': partial_stack
+                        }
                         
                         if full_stack:
                             confidence_adjustment += 0.07
@@ -1050,23 +1059,31 @@ class SignalValidator:
             except Exception as e:
                 metadata['checks']['ema_stack'] = {'error': str(e)}
         
-        # ── RSI Divergence Check ─────────────────────────────────────────────
-                if div_result == 'BEARISH_DIV':
-                    if _dir == 'SELL':                             # ← was signal_direction
-                        confidence_adjustment += 0.05
-                        passed_checks.append('RSI_DIV_FAVORABLE')
-                    else:
-                        confidence_adjustment -= 0.05
-                        failed_checks.append('RSI_DIV_WARNING')
-                    self.validation_stats['rsi_divergence_detected'] += 1
-                elif div_result == 'BULLISH_DIV':
-                    if _dir == 'BUY':                              # ← was signal_direction
-                        confidence_adjustment += 0.05
-                        passed_checks.append('RSI_DIV_FAVORABLE')
-                    else:
-                        confidence_adjustment -= 0.05
-                        failed_checks.append('RSI_DIV_WARNING')
-        
+        # RSI Divergence Check
+        if self.enable_rsi_divergence:
+            try:
+                div_result, div_details = ti.check_rsi_divergence(ticker, signal_direction, lookback_bars=10)
+                if div_result and div_details:
+                    metadata['checks']['rsi_divergence'] = div_details
+                    if div_result == 'BEARISH_DIV':
+                        if _dir == 'SELL':
+                            confidence_adjustment += 0.05
+                            passed_checks.append('RSI_DIV_FAVORABLE')
+                        else:
+                            confidence_adjustment -= 0.05
+                            failed_checks.append('RSI_DIV_WARNING')
+                        self.validation_stats['rsi_divergence_detected'] += 1
+                    elif div_result == 'BULLISH_DIV':
+                        if _dir == 'BUY':
+                            confidence_adjustment += 0.05
+                            passed_checks.append('RSI_DIV_FAVORABLE')
+                        else:
+                            confidence_adjustment -= 0.05
+                            failed_checks.append('RSI_DIV_WARNING')
+                        self.validation_stats['rsi_divergence_detected'] += 1
+            except Exception as e:
+                metadata['checks']['rsi_divergence'] = {'error': str(e)}
+
         # ADX Check
         try:
             is_trending, adx_value = ti.check_trend_strength(ticker, self.min_adx)
@@ -1108,8 +1125,20 @@ class SignalValidator:
         except Exception as e:
             metadata['checks']['volume'] = {'error': str(e)}
         
-        # ── DMI Check ────────────────────────────────────────────────────────
-            expected_direction = 'BULLISH' if _dir == 'BUY' else 'BEARISH'  # ← was signal_direction
+        # DMI Check
+        try:
+            trend_direction = ti.get_trend_direction(ticker)
+            metadata['checks']['dmi'] = {'direction': trend_direction}
+            if trend_direction:
+                expected_direction = 'BULLISH' if _dir == 'BUY' else 'BEARISH'
+                if trend_direction == expected_direction:
+                    confidence_adjustment += 0.05
+                    passed_checks.append('DMI_ALIGNED')
+                else:
+                    confidence_adjustment -= 0.10
+                    failed_checks.append('DMI_CONFLICT')
+        except Exception as e:
+            metadata['checks']['dmi'] = {'error': str(e)}
         
         # CCI Check
         try:
