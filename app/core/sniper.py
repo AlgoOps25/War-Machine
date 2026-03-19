@@ -93,6 +93,7 @@
 #   - Also fixes silent bug: w["breakout_idx"] local dict was not updated after
 #     state update, causing bars_since to compute against None on same cycle.
 import traceback
+from app.options.dte_selector import get_ideal_dte
 from datetime import datetime, time, timedelta
 from utils.time_helpers import _now_et, _bar_time, _strip_tz
 from app.notifications.discord_helpers import send_simple_message
@@ -516,11 +517,19 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
                 from app.validation.validation import get_options_filter
                 options_filter = get_options_filter()
                 _is_explosive = get_ticker_screener_metadata(ticker).get('qualified', False)
+
+                # P2-3: Dynamic DTE — VIX comes from the regime filter already loaded above
+                try:
+                    _vix = get_regime_filter().get_regime_state().vix
+                except Exception:
+                    _vix = 20.0
+                _ideal_dte = get_ideal_dte(vix=_vix, ticker=ticker)
+
                 _tradeable, _opts_data, _reason = options_filter.validate_signal_for_options(
                     ticker, direction, _proxy_entry, _proxy_entry * 1.05,
-                    explosive_mover=_is_explosive
+                    explosive_mover=_is_explosive,
+                    ideal_dte=_ideal_dte
                 )
-
                 _pre_options_data = _opts_data
                 if OPTIONS_PRE_GATE_MODE == "HARD":
                     if not _tradeable:
@@ -1037,8 +1046,6 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         mtf_result=mtf_result, metadata=_meta,
         vp_bias=vp_bias
     )
-
-    return True
 
 def _get_or_threshold(spy_regime) -> float:
     from app.validation.validation import get_regime_filter
