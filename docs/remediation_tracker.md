@@ -26,7 +26,7 @@
 | Status | ID | File | Description | Commit SHA | Date |
 |--------|----|------|-------------|------------|------|
 | ✅ | 44.H-2 | `utils/time_helpers.py` | `_strip_tz()` drops TZ without converting to ET first — root cause of 15+ tz-naive bugs across 20+ files. Fix: `dt.astimezone(ET).replace(tzinfo=None)` | `5cee401` | 2026-03-18 |
-| ⬜ | 8.C-1 | `app/validation/validation.py` | Direction mismatch `BUY/SELL` vs `bull/bear` — -14% confidence penalty on every bull signal. Fix: normalize direction string before comparison | — | — |
+| ✅ | 8.C-1 | `app/validation/validation.py` | Direction mismatch `BUY/SELL` vs `bull/bear` — -14% confidence penalty on every bull signal. Fix: normalize direction string before comparison | `409b5f6` | 2026-03-18 |
 | ⬜ | 7.C-1 | `app/options/options_intelligence.py` | `get_chain()` always returns `None` — entire options layer is dark. Fix: restore live chain fetch from Tradier | — | — |
 | ⬜ | 14.C-1 | `app/data/db_connection.py` | Pool initialized at module import — Railway cold-start crash if DB unavailable. Fix: lazy pool init with `_get_pool()` accessor | — | — |
 | ⬜ | 15.C-1 | `app/data/data_manager.py` | Destructive migration fires on transient DB error mid-session — can wipe all bars. Fix: require explicit `FORCE_MIGRATION=true` env flag | — | — |
@@ -169,6 +169,7 @@
 
 | Status | ID | File | Description | Commit SHA | Date |
 |--------|----|------|-------------|------------|------|
+| ⬜ | 7.C-1 | `app/options/options_intelligence.py` | `get_chain()` always returns `None` — entire options layer is dark. Fix: restore live chain fetch from Tradier | — | — |
 | ⬜ | 7.C-2 | `app/options/gex_engine.py` | GEX gamma_flip fallback selects wrong strike | — | — |
 | ⬜ | 7.C-3 | `app/options/options_intelligence.py` | UOA score uses circular self-referential averages — fires on every contract | — | — |
 | ⬜ | 16.H-7 | `app/data/unusual_options.py` | Cache key is ticker not (ticker, direction) — all PUT whale alerts return CALL data | — | — |
@@ -235,7 +236,7 @@
 
 | Phase | Total Findings | Fixed | Remaining |
 |-------|---------------|-------|-----------|
-| Phase 1 — Root Causes | 6 | 1 | 5 |
+| Phase 1 — Root Causes | 6 | 2 | 4 |
 | Phase 2A — BOS/FVG Logic | 7 | 0 | 7 |
 | Phase 2B — Confidence Gate | 4 | 0 | 4 |
 | Phase 2C — Race Conditions | 5 | 0 | 5 |
@@ -246,14 +247,14 @@
 | Phase 3C — Scan Cycle Performance | 6 | 0 | 6 |
 | Phase 3D — Threading | 4 | 0 | 4 |
 | Phase 4A — Analytics | 5 | 0 | 5 |
-| Phase 4B — Options Layer | 5 | 0 | 5 |
+| Phase 4B — Options Layer | 6 | 0 | 6 |
 | Phase 4C — Notifications | 6 | 0 | 6 |
 | Phase 4D — Screening | 2 | 0 | 2 |
 | Phase 4E — Indicators | 4 | 0 | 4 |
 | Phase 5 — Code Quality | 10 | 0 | 10 |
-| **TOTAL** | **83** | **1** | **82** |
+| **TOTAL** | **84** | **2** | **82** |
 
-> Note: 83 tracked findings represent the highest-priority subset of ~850 total audit findings.
+> Note: 84 tracked findings represent the highest-priority subset of ~850 total audit findings.
 > Lower-priority L-findings not listed above will be bundled into Phase 5 cleanup commits.
 
 ---
@@ -263,6 +264,7 @@
 | Date | Commit SHA | Files Changed | Findings Fixed |
 |------|------------|---------------|----------------|
 | 2026-03-18 | `5cee401` | `utils/time_helpers.py` | 44.H-2 — `_strip_tz()` ET conversion fix |
+| 2026-03-18 | `409b5f6` | `app/validation/validation.py` | 8.C-1 — Direction normalization `bull/bear` → `BUY/SELL` |
 
 ---
 
