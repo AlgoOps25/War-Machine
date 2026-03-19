@@ -102,7 +102,9 @@ from app.risk.trade_calculator import compute_stop_and_targets, get_adaptive_fvg
 from app.data.data_manager import data_manager
 from utils import config
 from app.mtf.bos_fvg_engine import scan_bos_fvg, is_force_close_time, find_fvg_after_bos
-from app.filters.early_session_disqualifier import should_skip_cfw6_or_early
+from app.core.signal_scorecard import build_scorecard, SCORECARD_GATE_MIN
+from app.filters.dead_zone_suppressor import is_dead_zone
+from app.filters.gex_pin_gate import is_in_gex_pin_zone
 import logging
 logger = logging.getLogger(__name__)
 try:
@@ -997,6 +999,32 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         except Exception as e:
             logger.info(f"[PHASE 4] Armed tracking error: {e}")
 
+    # Dead-zone suppressor (after spy_regime is passed in)
+    _dz_blocked, _dz_reason = is_dead_zone(direction, spy_regime)
+    if _dz_blocked:
+        logger.info(f"[{ticker}] 🚫 DEAD ZONE: {_dz_reason}")
+        return False
+
+    # GEX pin gate (after _pre_options_data is set by Step 6.5)
+    _pin_blocked, _pin_reason = is_in_gex_pin_zone(entry_price, _pre_options_data)
+    if _pin_blocked:
+        logger.info(f"[{ticker}] 🚫 GEX PIN GATE: {_pin_reason}")
+        return False
+
+    # Scorecard gate (after all contributors are computed, before arm_ticker)
+    _sc = build_scorecard(
+        ticker=ticker, direction=direction, grade=final_grade,
+        options_rec=options_rec,
+        mtf_trend_boost=_mtf_trend_boost,
+        smc_delta=_smc_delta,
+        vwap_passed=vwap_passes,
+        sweep_detected=(_sweep_result is not None),
+        ob_detected=(_ob_result is not None),
+        spy_regime=spy_regime,
+    )
+    if _sc.score < SCORECARD_GATE_MIN:
+        logger.info(f"[{ticker}] 🚫 SCORECARD-GATE: {_sc.score:.1f} < {SCORECARD_GATE_MIN} | {_sc.breakdown}")
+        return False
     arm_ticker(
         ticker, direction, zone_low, zone_high,
         or_low_ref, or_high_ref,

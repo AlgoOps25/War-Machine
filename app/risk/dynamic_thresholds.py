@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 from utils import config
 import logging
 logger = logging.getLogger(__name__)
-
+from app.data.intraday_atr import get_atr_for_breakout
 
 def _now_et():
     """Get current time in Eastern timezone."""
