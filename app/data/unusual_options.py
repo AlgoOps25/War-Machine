@@ -71,9 +71,10 @@ class UnusualOptionsDetector:
         Returns:
             Dict with whale detection results and confidence boost
         """
+
         # Check cache first
-        if self._is_cached(ticker):
-            cached = self.cache[ticker]['data']
+        if self._is_cached(ticker, direction):
+            cached = self.cache[(ticker, direction)]['data']
             print(f"[UOA] {ticker} - Using cached whale data")
             return cached
         
@@ -120,7 +121,7 @@ class UnusualOptionsDetector:
         }
         
         # Cache result
-        self._cache_result(ticker, result)
+        self._cache_result(ticker, direction, result)
         
         # Log significant activity
         if is_unusual:
@@ -295,19 +296,21 @@ class UnusualOptionsDetector:
         else:
             return "No unusual activity detected"
     
-    def _is_cached(self, ticker: str) -> bool:
-        """Check if ticker data is in cache and still valid."""
-        if ticker not in self.cache:
+    def _is_cached(self, ticker: str, direction: str) -> bool:
+        """Check if ticker+direction data is in cache and still valid."""
+        cache_key = (ticker, direction)
+        if cache_key not in self.cache:
             return False
         
-        cached_time = datetime.fromisoformat(self.cache[ticker]['data']['timestamp'])
+        cached_time = datetime.fromisoformat(self.cache[cache_key]['data']['timestamp'])
         age_seconds = (datetime.now(ET) - cached_time).total_seconds()
         
         return age_seconds < self.cache_ttl
     
-    def _cache_result(self, ticker: str, result: Dict) -> None:
-        """Cache whale detection result."""
-        self.cache[ticker] = {
+    def _cache_result(self, ticker: str, direction: str, result: Dict) -> None:
+        """Cache whale detection result keyed by (ticker, direction)."""
+        cache_key = (ticker, direction)
+        self.cache[cache_key] = {
             'data': result,
             'timestamp': datetime.now(ET)
         }

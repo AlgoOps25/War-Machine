@@ -673,12 +673,17 @@ class OptionsIntelligence:
                             avg_volume: Optional[float] = None,
                             avg_oi: Optional[float] = None) -> Tuple[float, Dict]:
         """Calculate UOA score for a single option contract."""
-        # Default averages if not provided (conservative estimates)
-        if avg_volume is None:
-            avg_volume = max(volume / 2.0, 1)
-        if avg_oi is None:
-            avg_oi = max(open_interest / 1.5, 1)
-        
+        # No external baseline = cannot compute a meaningful ratio; return 0
+        if avg_volume is None or avg_oi is None:
+            return 0.0, {
+                'volume_ratio': 0.0,
+                'oi_ratio': 0.0,
+                'spread_pct': 0.0,
+                'spread_quality': 0.0,
+                'is_liquid': False,
+                'reason': 'No baseline avg_volume/avg_oi provided'
+            }
+
         # Volume ratio: current vs average
         volume_ratio = volume / avg_volume if avg_volume > 0 else 0
         

@@ -395,6 +395,7 @@ class GreeksCache:
         ticker: str,
         direction: str,
         entry_price: float,
+        next_bar_open: Optional[float] = None,
     ) -> Tuple[bool, str]:
         """
         Quick pre-validation of options availability.
@@ -436,14 +437,20 @@ class GreeksCache:
 
         # Get ATM strikes (wide DTE window via cache)
         atm_strikes = self.get_atm_strikes(ticker, entry_price, num_strikes=7)
+        # Use next-bar open for strike selection if provided (43.H-2 fix)
+        strike_center = next_bar_open if next_bar_open else entry_price
+
+        # Get ATM strikes (wide DTE window via cache)
+        atm_strikes = self.get_atm_strikes(ticker, strike_center, num_strikes=7)
         if not atm_strikes:
             self.stats['quick_fails'] += 1
             return False, "No ATM options data available"
 
         option_type      = "call" if direction == "bull" else "put"
         relevant_options = self.get_atm_strikes(
-            ticker, entry_price, num_strikes=7, option_type=option_type
+            ticker, strike_center, num_strikes=7, option_type=option_type
         )
+
         if not relevant_options:
             self.stats['quick_fails'] += 1
             return False, f"No {option_type}s found near ATM"
@@ -542,7 +549,8 @@ greeks_cache = GreeksCache(cache_ttl=300)
 
 # Convenience functions
 def quick_validate_options(
-    ticker: str, direction: str, entry_price: float
+    ticker: str, direction: str, entry_price: float,
+    next_bar_open: Optional[float] = None,
 ) -> Tuple[bool, str]:
     """
     Quick pre-validation convenience function.
@@ -550,7 +558,7 @@ def quick_validate_options(
     Usage:
         is_valid, reason = quick_validate_options("AAPL", "bull", 175.50)
     """
-    return greeks_cache.quick_validate(ticker, direction, entry_price)
+    return greeks_cache.quick_validate(ticker, direction, entry_price, next_bar_open)
 
 
 def get_cached_greeks(
@@ -577,14 +585,22 @@ def get_cached_greeks(
     for snapshot in snapshots:
         if snapshot.is_liquid() and snapshot.is_valid_delta():
             results.append({
-                'strike':    float(snapshot.strike),
-                'delta':     float(snapshot.delta),
-                'iv':        float(snapshot.iv),
-                'dte':       snapshot.dte,
-                'spread_pct': float(snapshot.spread_pct),
-                'is_liquid': snapshot.is_liquid(),
-                'bid':       float(snapshot.bid),
-                'ask':       float(snapshot.ask),
+                'strike':       float(snapshot.strike),
+                'expiration':   snapshot.expiration,
+                'option_type':  snapshot.option_type,
+                'delta':        float(snapshot.delta),
+                'gamma':        float(snapshot.gamma),
+                'theta':        float(snapshot.theta),
+                'vega':         float(snapshot.vega),
+                'iv':           float(snapshot.iv),
+                'dte':          snapshot.dte,
+                'spread_pct':   float(snapshot.spread_pct),
+                'is_liquid':    snapshot.is_liquid(),
+                'bid':          float(snapshot.bid),
+                'ask':          float(snapshot.ask),
+                'open_interest': snapshot.open_interest,
+                'volume':        snapshot.volume,
+                '_snapshot':    snapshot,   # 43.M-11: full object for downstream multipliers
             })
 
     # Sort by DTE ascending so caller always sees soonest-expiry first
@@ -651,8 +667,14 @@ if __name__ == "__main__":
 # ════════════════════════════════════════════════════════════════════════════════
 
 def validate_signal_greeks(
-    ticker: str, direction: str, entry_price: float
+    ticker: str, direction: str, entry_price: float,
+    next_bar_open: Optional[float] = None,
 ) -> tuple[bool, str]:
+    try:
+        is_valid, reason = quick_validate_options(ticker, direction, entry_price, next_bar_open)
+        return is_valid, reason
+    except Exception as e:
+        return True, f"Validation skipped: {e}"
     """
     Fast pre-validation using cached Greeks data.
     Called from sniper.py Step 6.5 to confirm options exist before alerting.

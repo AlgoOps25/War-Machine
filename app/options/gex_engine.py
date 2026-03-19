@@ -113,10 +113,11 @@ def compute_gex_levels(chain_data: dict, current_price: float) -> dict:
         prev_strike = strike
         prev_cum    = cumulative
 
-    # If no zero-crossing found, use the strike closest to zero GEX
+    # If no zero-crossing found, use the strike closest to current_price
     if gamma_flip is None:
         gamma_flip = min(gex_by_strike.keys(),
-                         key=lambda s: abs(gex_by_strike[s]))
+                         key=lambda s: abs(s - current_price))
+        gamma_flip = round(gamma_flip, 2)
 
     neg_gex_zone = (gamma_flip is not None) and (current_price < gamma_flip)
     total_gex    = sum(gex_by_strike.values())
