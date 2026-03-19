@@ -435,8 +435,6 @@ class GreeksCache:
                     f"(blacklisted, {mins_left}min remaining)"
                 )
 
-        # Get ATM strikes (wide DTE window via cache)
-        atm_strikes = self.get_atm_strikes(ticker, entry_price, num_strikes=7)
         # Use next-bar open for strike selection if provided (43.H-2 fix)
         strike_center = next_bar_open if next_bar_open else entry_price
 
@@ -672,29 +670,6 @@ def validate_signal_greeks(
 ) -> tuple[bool, str]:
     try:
         is_valid, reason = quick_validate_options(ticker, direction, entry_price, next_bar_open)
-        return is_valid, reason
-    except Exception as e:
-        return True, f"Validation skipped: {e}"
-    """
-    Fast pre-validation using cached Greeks data.
-    Called from sniper.py Step 6.5 to confirm options exist before alerting.
-
-    Returns:
-        (is_valid, reason_string)
-
-    Examples:
-        (True,  "Valid calls: $265 strike, Δ=0.50, IV=31%, 3DTE")
-        (False, "No valid calls: poor delta")
-        (False, "No options available for XYZ (blacklisted, 28min remaining)")
-
-    Fix history:
-      Fix 1 (Mar 12): Removed unconditional update_cache() — TTL handled inside
-                      get_atm_strikes() → _is_cache_valid().
-      Fix 4 (Mar 12): DTE no longer used as a gate. Signal fires for any
-                      optionable ticker regardless of nearest expiry cycle.
-    """
-    try:
-        is_valid, reason = quick_validate_options(ticker, direction, entry_price)
         return is_valid, reason
     except Exception as e:
         return True, f"Validation skipped: {e}"
