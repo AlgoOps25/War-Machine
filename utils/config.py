@@ -103,16 +103,27 @@ SECONDARY_RANGE_END   = dtime(10, 30)  # 10:30 AM ET
 SECONDARY_RANGE_MIN_BARS = 20
 SECONDARY_RANGE_MIN_PCT = 0.005
 
-# Options filtering thresholds
+# ========================================
+# OPTIONS FILTERING THRESHOLDS
+# ========================================
+
 MIN_DTE = 0
 MAX_DTE = 7
-IDEAL_DTE = 2
+IDEAL_DTE = 2          # default; overridden dynamically by get_ideal_dte() (P2-3)
+
 MIN_OPTION_OI = 100
 MIN_OPTION_VOLUME = 50
 MAX_BID_ASK_SPREAD_PCT = 0.10
-TARGET_DELTA_MIN = 0.40
-TARGET_DELTA_MAX = 0.70
 MAX_THETA_DECAY_PCT = 0.05
+
+# ── P2-2: Delta range tightened to target 0.35–0.45Δ sweet spot ──────────────
+# Previous: MIN=0.40, MAX=0.70 (too wide — often selected deep ITM contracts)
+# New:      MIN=0.30, MAX=0.55, IDEAL=0.40
+# find_best_strike() scores delta proximity to IDEAL_DELTA so the nearest-ATM
+# contract in the 0.35–0.45Δ range wins vs a 0.55Δ contract with same liquidity.
+TARGET_DELTA_MIN = 0.30
+TARGET_DELTA_MAX = 0.55
+IDEAL_DELTA      = 0.40   # P2-2: target delta for strike proximity scoring
 
 # ========================================
 # MARKET HOURS
@@ -348,6 +359,9 @@ if __name__ == "__main__":
     logger.info(f"  Enabled : {SECONDARY_RANGE_ENABLED}")
     logger.info(f"  Min Bars: {SECONDARY_RANGE_MIN_BARS}")
     logger.info(f"  Min Pct : {SECONDARY_RANGE_MIN_PCT*100:.1f}%")
+    logger.info(f"\nOptions Thresholds (P2-2):")
+    logger.info(f"  Delta Range : {TARGET_DELTA_MIN:.2f} – {TARGET_DELTA_MAX:.2f} (ideal {IDEAL_DELTA:.2f})")
+    logger.info(f"  DTE Range   : {MIN_DTE} – {MAX_DTE} (default ideal {IDEAL_DTE})")
     logger.info(f"\nAdvanced Features:")
     logger.info(f"  Validator: {'Enabled' if VALIDATOR_ENABLED else 'Disabled'}")
     logger.info(f"  Options Filter: {'Enabled (' + OPTIONS_FILTER_MODE + ')' if OPTIONS_FILTER_ENABLED else 'Disabled'}")
