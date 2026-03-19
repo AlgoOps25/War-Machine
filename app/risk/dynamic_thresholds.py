@@ -5,10 +5,12 @@ Optimization #3: Adaptive thresholds based on performance and market conditions
 Replaces static config thresholds with dynamic adjustments based on:
 - Rolling win rate (last 20 trades per signal type/grade)
 - Market volatility (VIX level)
+- Intraday ATR volatility bucket (47.P6-2 Sprint 1)
 - Time of day (morning vs afternoon vs power hour)
 - Recent signal quality (last 5 signals)
 
 FIXED (Mar 10 2026): All get_conn() calls now use try/finally: return_conn(conn) — no leaks.
+UPDATED (Mar 19 2026): get_dynamic_threshold() wires live intraday ATR (47.P6-2).
 """
 
 from datetime import datetime, time, timedelta
@@ -16,7 +18,7 @@ from zoneinfo import ZoneInfo
 from utils import config
 import logging
 logger = logging.getLogger(__name__)
-from app.data.intraday_atr import get_atr_for_breakout
+
 
 def _now_et():
     """Get current time in Eastern timezone."""
@@ -84,7 +86,46 @@ def _get_vix_adjustment():
     except Exception as e:
         logger.info(f"[DYNAMIC-THRESH] VIX lookup error: {e}")
         return 0.00
-    
+
+
+def _get_atr_volatility_adjustment(bars_session: list, ticker: str = "") -> tuple:
+    """
+    47.P6-2: Adjust confidence threshold based on live intraday ATR bucket.
+
+    Uses get_atr_for_breakout() (Wilder ATR on today's 1m bars).
+    Returns (adjustment: float, atr_label: str).
+
+    ATR% > 2.0  -> +0.03  high-vol tape, raise the bar
+    ATR% 1.0-2.0 -> +0.00  normal
+    ATR% < 1.0  -> -0.01  tight tape, be slightly more permissive
+    """
+    try:
+        from app.data.intraday_atr import get_atr_for_breakout
+        if not bars_session:
+            return 0.00, "ATR-NO-BARS"
+
+        atr_val, atr_source = get_atr_for_breakout(bars_session, ticker)
+        if atr_val <= 0:
+            return 0.00, "ATR-ZERO"
+
+        current_price = bars_session[-1].get("close", 0)
+        if current_price <= 0:
+            return 0.00, "ATR-NO-PRICE"
+
+        atr_pct = (atr_val / current_price) * 100
+
+        if atr_pct > 2.0:
+            return +0.03, f"ATR-HIGH({atr_pct:.1f}%/{atr_source})"
+        elif atr_pct >= 1.0:
+            return +0.00, f"ATR-NORMAL({atr_pct:.1f}%/{atr_source})"
+        else:
+            return -0.01, f"ATR-LOW({atr_pct:.1f}%/{atr_source})"
+
+    except Exception as e:
+        logger.info(f"[DYNAMIC-THRESH] ATR adjustment error (non-fatal): {e}")
+        return 0.00, "ATR-ERROR"
+
+
 def _get_winrate_adjustment(signal_type, grade):
     try:
         from app.data.db_connection import get_conn, return_conn, dict_cursor
@@ -128,6 +169,7 @@ def _get_winrate_adjustment(signal_type, grade):
     except Exception as e:
         logger.info(f"[DYNAMIC-THRESH] Win rate lookup error: {e}")
         return 0.00
+
 
 def _get_recent_quality_adjustment():
     """
@@ -174,13 +216,17 @@ def _get_recent_quality_adjustment():
         logger.info(f"[DYNAMIC-THRESH] Recent quality lookup error: {e}")
         return 0.00
 
-def get_dynamic_threshold(signal_type, grade):
+
+def get_dynamic_threshold(signal_type: str, grade: str,
+                          bars_session: list = None, ticker: str = "") -> float:
     """
     Calculate dynamic confidence threshold for a signal.
 
     Args:
-        signal_type: "CFW6_OR" or "CFW6_INTRADAY"
-        grade: "A+", "A", or "A-"
+        signal_type  : "CFW6_OR" or "CFW6_INTRADAY"
+        grade        : "A+", "A", "A-", "B+", "B"
+        bars_session : today's 1m bars (optional — enables intraday ATR adj)
+        ticker       : ticker symbol for logging (optional)
 
     Returns:
         float: Dynamic threshold (typically 0.60-0.85)
@@ -197,14 +243,16 @@ def get_dynamic_threshold(signal_type, grade):
     vix_adj     = _get_vix_adjustment()
     winrate_adj = _get_winrate_adjustment(signal_type, grade)
     quality_adj = _get_recent_quality_adjustment()
+    atr_adj, atr_label = _get_atr_volatility_adjustment(bars_session or [], ticker)
 
-    final_threshold = baseline + time_adj + vix_adj + winrate_adj + quality_adj
+    final_threshold = baseline + time_adj + vix_adj + winrate_adj + quality_adj + atr_adj
     final_threshold = max(config.CONFIDENCE_ABSOLUTE_FLOOR, min(final_threshold, 0.85))
 
     print(
         f"[DYNAMIC-THRESH] {signal_type}/{grade}: "
         f"base={baseline:.2f} + time={time_adj:+.2f} + vix={vix_adj:+.2f} "
-        f"+ wr={winrate_adj:+.2f} + qual={quality_adj:+.2f} = {final_threshold:.2f}"
+        f"+ wr={winrate_adj:+.2f} + qual={quality_adj:+.2f} "
+        f"+ {atr_label}={atr_adj:+.2f} = {final_threshold:.2f}"
     )
 
     return final_threshold
