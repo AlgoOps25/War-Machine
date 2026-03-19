@@ -1,107 +1,106 @@
 """
-eod_reporter.py — End-of-day report dispatcher
-Extracted from sniper.py process_ticker() EOD block.
-Call run_eod_reports() when is_force_close_time() is True.
+EOD Reporter — War Machine End-of-Day Reporting Orchestrator
+
+Single entry point: run_eod_report(session_date=None)
+
+What it does:
+  1. Pulls trade P&L stats from risk_manager.get_session_status()
+  2. Pulls signal funnel + rejection breakdown + hourly funnel from
+     signal_analytics.signal_tracker
+  3. Sends a rich Discord embed (trade summary) via send_daily_summary()
+  4. Sends a compact signal-funnel block via send_simple_message()
+  5. Clears the signal_tracker session cache
+
+Called by scanner.py at EOD (market-closed block, once per day).
+Can also be run standalone: python -m app.core.eod_reporter
+
+ADDED (Phase 1.32 — Mar 17 2026):
+  - Created this module (was referenced in AUDIT_REGISTRY but never built)
+  - Replaces the 30-line inline EOD Discord block in scanner.py
 """
+from __future__ import annotations
+
+import logging
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+from app.risk.risk_manager import get_session_status, get_eod_report
+from app.notifications.discord_helpers import send_daily_summary, send_simple_message
+
+logger = logging.getLogger(__name__)
+ET = ZoneInfo("America/New_York")
 
 
-def run_eod_reports(
-    last_bar,
-    *,
-    validator_enabled=True,
-    validator_test_mode=False,
-    sd_zone_enabled=False,
-    trackers_enabled=False,
-    cooldown_tracker=None,
-    explosive_tracker=None,
-    grade_gate_tracker=None,
-    phase_4_enabled=False,
-    signal_tracker=None,
-    performance_monitor=None,
-    hourly_gate_enabled=False,
-    regime_filter_enabled=False,
-    order_block_enabled=False,
-):
-    """Fire all EOD reports and caches clears. Call once per ticker at force-close time."""
-    from app.risk.position_manager import position_manager
-    from app.core.sniper_log import print_validation_stats, print_validation_call_stats
-    from app.core.gate_stats import print_gate_distribution_stats
+def run_eod_report(session_date: str | None = None) -> None:
+    """
+    Orchestrate all EOD Discord reports for one trading day.
 
-    ticker_price = last_bar["close"]
-    # Use a single-key dict — position_manager.close_all_eod expects {ticker: price}
-    # Caller should pass the full prices dict if available; this is a safe fallback.
-    position_manager.close_all_eod({"__eod__": ticker_price})
+    Args:
+        session_date: YYYY-MM-DD string.  Defaults to today in ET.
+    """
+    if session_date is None:
+        session_date = datetime.now(ET).strftime("%Y-%m-%d")
 
-    print_validation_stats(validator_enabled, validator_test_mode)
-    print_validation_call_stats()
+    logger.info(f"[EOD-REPORTER] Generating EOD report for {session_date}")
 
+    # ── 1. Trade / P&L stats ─────────────────────────────────────────────────
     try:
-        from app.mtf.mtf_integration import print_mtf_stats
-        print_mtf_stats()
-    except Exception as e:
-        print(f"[EOD] MTF stats error: {e}")
+        session     = get_session_status()
+        daily_stats = session.get("daily_stats", {})
 
+        trades   = daily_stats.get("trades",    0)
+        wins     = daily_stats.get("wins",      0)
+        losses   = daily_stats.get("losses",    0)
+        win_rate = daily_stats.get("win_rate",  0.0)
+        total_pnl= daily_stats.get("total_pnl", 0.0)
+
+        # Rich embed — trade summary
+        send_daily_summary({
+            "trades":    trades,
+            "wins":      wins,
+            "losses":    losses,
+            "win_rate":  win_rate,
+            "total_pnl": total_pnl,
+        })
+        logger.info("[EOD-REPORTER] ✅ Trade summary embed sent")
+
+        # Top performers plain-text block
+        try:
+            top = get_eod_report()
+            if top:
+                send_simple_message(f"🏆 **Top Performers — {session_date}**\n{top}")
+        except Exception as e:
+            logger.warning(f"[EOD-REPORTER] top-performers unavailable: {e}")
+
+    except Exception as e:
+        logger.error(f"[EOD-REPORTER] Trade stats error: {e}")
+
+    # ── 2. Signal analytics funnel block ─────────────────────────────────────
     try:
-        from app.mtf.mtf_fvg_priority import print_priority_stats
-        print_priority_stats()
+        from app.signals.signal_analytics import signal_tracker
+
+        discord_msg = signal_tracker.get_discord_eod_summary(session_date)
+        if discord_msg:
+            send_simple_message(discord_msg)
+            logger.info("[EOD-REPORTER] ✅ Signal funnel block sent to Discord")
+
+        # Log full summary to Railway stdout for ops visibility
+        full_summary = signal_tracker.get_daily_summary(session_date)
+        print(full_summary)
+
+        # Clear session cache for next trading day
+        signal_tracker.clear_session_cache()
+        logger.info("[EOD-REPORTER] ✅ Signal tracker session cache cleared")
+
+    except ImportError:
+        logger.warning("[EOD-REPORTER] signal_analytics not available — skipping funnel report")
     except Exception as e:
-        print(f"[EOD] MTF priority stats error: {e}")
+        logger.error(f"[EOD-REPORTER] Signal analytics error: {e}")
 
-    print_gate_distribution_stats()
+    logger.info(f"[EOD-REPORTER] ✅ All EOD reports complete for {session_date}")
 
-    if sd_zone_enabled:
-        try:
-            from app.filters.sd_zone_confluence import clear_sd_cache
-            clear_sd_cache()
-            print("[SD-CACHE] 🧹 EOD clear — all S/D zones flushed")
-        except Exception as e:
-            print(f"[EOD] SD cache clear error: {e}")
 
-    if trackers_enabled:
-        if cooldown_tracker:
-            try:
-                cooldown_tracker.print_eod_report()
-            except Exception as e:
-                print(f"[EOD] Cooldown tracker report error: {e}")
-        if explosive_tracker:
-            try:
-                from app.analytics.explosive_mover_tracker import print_explosive_override_summary
-                print_explosive_override_summary()
-            except Exception as e:
-                print(f"[EOD] Explosive tracker report error: {e}")
-        if grade_gate_tracker:
-            try:
-                grade_gate_tracker.print_eod_report()
-            except Exception as e:
-                print(f"[EOD] Grade gate tracker report error: {e}")
-
-    if phase_4_enabled:
-        try:
-            if signal_tracker:
-                print(signal_tracker.get_daily_summary())
-            if performance_monitor:
-                print(performance_monitor.get_daily_performance_report())
-        except Exception as e:
-            print(f"[PHASE 4] EOD report error: {e}")
-
-    if hourly_gate_enabled:
-        try:
-            from app.validation.hourly_gate import print_hourly_gate_stats
-            print_hourly_gate_stats()
-        except Exception as e:
-            print(f"[HOURLY GATE] EOD stats error: {e}")
-
-    if regime_filter_enabled:
-        try:
-            from app.validation.validation import get_regime_filter
-            get_regime_filter().print_regime_summary()
-        except Exception as e:
-            print(f"[EOD] Regime summary error: {e}")
-
-    if order_block_enabled:
-        try:
-            from app.filters.order_block_cache import clear_ob_cache
-            clear_ob_cache()
-            print("[OB-CACHE] 🧹 EOD clear — all order blocks flushed")
-        except Exception as e:
-            print(f"[EOD] OB cache clear error: {e}")
+if __name__ == "__main__":
+    import sys
+    date_arg = sys.argv[1] if len(sys.argv) > 1 else None
+    run_eod_report(date_arg)

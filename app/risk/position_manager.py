@@ -48,6 +48,26 @@ FIX #7 (MAR 14, 2026) — PY 3.10 F-STRING COMPAT:
   - Python 3.10 (Railway runtime) forbids backslashes inside f-string expressions.
   - Pre-compute circuit_breaker_label variable before the f-string in
     get_risk_summary() to stay compatible with both Py 3.10 and 3.11.
+
+FIX #8 (MAR 15, 2026) — CIRCUIT BREAKER POST-CLOSE USES REAL SESSION P&L:
+  - close_position() was passing a manually-constructed stats dict containing
+    only the current trade's P&L to check_circuit_breaker(). This meant the
+    breaker only saw the last trade's result, not the running session total.
+    Fix: call self.get_daily_stats() (cache already busted at this point) so
+    the breaker evaluates the true accumulated session P&L.
+
+FIX #9 (MAR 15, 2026) — check_exits T1/T2 RACE VIA STALE CACHE:
+  - check_exits() read t1_hit from the cached get_open_positions() result.
+    If _scale_out() ran and a price gap pushed through T2 in the same scan
+    cycle, the stale t1_hit=False could allow close_position(TARGET 2) to fire
+    on the same position in the same loop iteration.
+    Fix: after _scale_out() call, re-fetch t1_hit live from DB before checking
+    the T2 condition, ensuring mutual exclusivity between T1 scale and T2 close.
+
+FIX #10 (MAR 16, 2026) — UNICODE SURROGATE PAIRS:
+  - rotate (🔄) and siren (🚨) were stored as broken
+    surrogate pairs, causing UnicodeEncodeError on Railway stdout.
+    Replaced with correct 4-byte codepoints \U0001f504 and \U0001f6a8.
 """
 from utils import config
 from datetime import datetime, timedelta
@@ -237,7 +257,7 @@ class PositionManager:
             ]
             if self.positions:
                 tickers = ", ".join(p["ticker"] for p in self.positions)
-                print(f"[RISK] \ud83d\udd04 Reloaded {len(self.positions)} open position(s) "
+                print(f"[RISK] \U0001f504 Reloaded {len(self.positions)} open position(s) "
                       f"from DB after restart: {tickers}")
             else:
                 print("[RISK] \u2705 No open positions to reload \u2014 clean session start")
@@ -436,7 +456,7 @@ class PositionManager:
         conn = None
         try:
             today  = datetime.now().strftime("%Y-%m-%d")
-            conn   = get_conn(self.db_path)
+            conn   = get_conn()
             cursor = dict_cursor(conn)
             p      = ph()
             cursor.execute(
@@ -475,7 +495,7 @@ class PositionManager:
         """Create positions table if not exists with options columns."""
         conn = None
         try:
-            conn = get_conn(self.db_path)
+            conn = get_conn()
             cursor = conn.cursor()
             cursor.execute(f"""
                 CREATE TABLE IF NOT EXISTS positions (
@@ -521,7 +541,7 @@ class PositionManager:
         try:
             today  = datetime.now().strftime("%Y-%m-%d")
             p      = ph()
-            conn   = get_conn(self.db_path)
+            conn   = get_conn()
             cursor = dict_cursor(conn)
 
             cursor.execute(f"""
@@ -656,7 +676,7 @@ class PositionManager:
 
         conn   = None
         try:
-            conn   = get_conn(self.db_path)
+            conn   = get_conn()
             cursor = dict_cursor(conn)
 
             if db_connection.USE_POSTGRES:
@@ -762,6 +782,11 @@ class PositionManager:
                     self.close_position(pos_id, current_price, "STOP LOSS")
                 elif current_price >= t1 and not t1_hit:
                     self._scale_out(pos_id, current_price, entry)
+                    # FIX #9: re-read t1_hit from DB after scale_out before
+                    # evaluating T2 — prevents double-fire on a gap-through bar
+                    t1_hit = self._get_t1_hit_from_db(pos_id)
+                    if current_price >= t2 and t1_hit:
+                        self.close_position(pos_id, current_price, "TARGET 2")
                 elif current_price >= t2 and t1_hit:
                     self.close_position(pos_id, current_price, "TARGET 2")
             else:  # bear
@@ -769,8 +794,34 @@ class PositionManager:
                     self.close_position(pos_id, current_price, "STOP LOSS")
                 elif current_price <= t1 and not t1_hit:
                     self._scale_out(pos_id, current_price, entry)
+                    # FIX #9: re-read t1_hit from DB after scale_out before
+                    # evaluating T2 — prevents double-fire on a gap-through bar
+                    t1_hit = self._get_t1_hit_from_db(pos_id)
+                    if current_price <= t2 and t1_hit:
+                        self.close_position(pos_id, current_price, "TARGET 2")
                 elif current_price <= t2 and t1_hit:
                     self.close_position(pos_id, current_price, "TARGET 2")
+
+
+    def _get_t1_hit_from_db(self, position_id: int) -> bool:
+        """FIX #9: Re-read t1_hit directly from DB (bypasses cache) after _scale_out."""
+        conn = None
+        try:
+            p      = ph()
+            conn   = get_conn()
+            cursor = dict_cursor(conn)
+            cursor.execute(
+                f"SELECT t1_hit FROM positions WHERE id = {p}",
+                (position_id,)
+            )
+            row = cursor.fetchone()
+            return bool(row["t1_hit"]) if row else False
+        except Exception as e:
+            print(f"[POSITION] _get_t1_hit_from_db error (non-fatal): {e}")
+            return False
+        finally:
+            if conn:
+                return_conn(conn)
 
 
     def _scale_out(self, position_id: int, exit_price: float, entry_price: float):
@@ -778,7 +829,7 @@ class PositionManager:
         conn = None
         try:
             p      = ph()
-            conn   = get_conn(self.db_path)
+            conn   = get_conn()
             cursor = dict_cursor(conn)
             cursor.execute(f"SELECT * FROM positions WHERE id = {p}", (position_id,))
             pos = cursor.fetchone()
@@ -838,7 +889,7 @@ class PositionManager:
         conn = None
         try:
             p      = ph()
-            conn   = get_conn(self.db_path)
+            conn   = get_conn()
             cursor = dict_cursor(conn)
             cursor.execute(f"SELECT * FROM positions WHERE id = {p}", (position_id,))
             pos = cursor.fetchone()
@@ -918,12 +969,11 @@ class PositionManager:
             except Exception as e:
                 print(f"[POSITION] Discord exit alert failed: {e}")
 
-            # Pass already-known final_pnl to avoid another DB round-trip
-            breached, reason = self.check_circuit_breaker(
-                stats={"total_pnl": final_pnl, "trades": 1, "wins": 0, "losses": 1, "win_rate": 0.0}
-            )
+            # FIX #8: use real session P&L from DB (cache already busted above)
+            session_stats = self.get_daily_stats()
+            breached, reason = self.check_circuit_breaker(stats=session_stats)
             if breached:
-                print(f"\n[RISK] \ud83d\udea8 {reason}")
+                print(f"\n[RISK] \U0001f6a8 {reason}")
                 print("[RISK] No new positions will be opened until next session\n")
         finally:
             if conn:
@@ -942,7 +992,7 @@ class PositionManager:
         self.consecutive_wins = 0
         self.consecutive_losses = 0
         self.performance_multiplier = 1.0
-        print("[POSITION] \ud83d\udd04 EOD streak reset \u2014 performance_multiplier \u2192 1.0x for next session")
+        print("[POSITION] \U0001f504 EOD streak reset \u2014 performance_multiplier \u2192 1.0x for next session")
         # ─────────────────────────────────────────────────────────────────────
 
 
@@ -957,7 +1007,7 @@ class PositionManager:
 
         conn = None
         try:
-            conn   = get_conn(self.db_path)
+            conn   = get_conn()
             cursor = dict_cursor(conn)
             cursor.execute("SELECT * FROM positions WHERE status = 'OPEN'")
             rows   = cursor.fetchall()
@@ -982,7 +1032,7 @@ class PositionManager:
         conn = None
         try:
             p      = ph()
-            conn   = get_conn(self.db_path)
+            conn   = get_conn()
             cursor = dict_cursor(conn)
             today  = datetime.now().strftime("%Y-%m-%d")
             cursor.execute(f"""
@@ -1021,7 +1071,7 @@ class PositionManager:
         conn = None
         try:
             p      = ph()
-            conn   = get_conn(self.db_path)
+            conn   = get_conn()
             cursor = dict_cursor(conn)
             since  = (datetime.now() - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
             cursor.execute(f"""
@@ -1103,7 +1153,7 @@ class PositionManager:
         conn = None
         try:
             p      = ph()
-            conn   = get_conn(self.db_path)
+            conn   = get_conn()
             cursor = dict_cursor(conn)
             today  = datetime.now().strftime("%Y-%m-%d")
             cursor.execute(f"""
@@ -1143,7 +1193,7 @@ class PositionManager:
 
         # FIX #7: pre-compute label — backslashes inside f-string expressions
         # are a SyntaxError on Python 3.10 (Railway runtime).
-        cb_label = "\ud83d\udea8 TRIGGERED" if circuit_breached else "\u2705 OK"
+        cb_label = "\U0001f6a8 TRIGGERED" if circuit_breached else "\u2705 OK"
 
         summary = "\n" + "="*60 + "\n"
         summary += "RISK MANAGEMENT SUMMARY\n"

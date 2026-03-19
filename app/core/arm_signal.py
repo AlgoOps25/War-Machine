@@ -8,6 +8,9 @@ Provides:
                     persists armed signal state, sets cooldown.
 
 All heavy imports are deferred inside the function to avoid circular imports.
+
+FIXED (Mar 16 2026): Wire record_trade_executed() after position_id > 0 so the
+  TRADED stage is recorded in signal_events and get_funnel_stats() shows real counts.
 """
 
 
@@ -23,13 +26,14 @@ def arm_ticker(
       2. Open position via position_manager (risk-gated).
       3. Fire Discord alert only if position_id > 0.
       4. Persist to armed_signals_persist DB table.
-      5. Set per-ticker cooldown.
+      5. Record TRADED stage in signal_analytics (FIX Mar 16 2026).
+      6. Set per-ticker cooldown.
     """
     from app.risk.position_manager import position_manager
     from app.core.thread_safe_state import get_state
     from app.core.armed_signal_store import _persist_armed_signal
     from app.screening.screener_integration import get_ticker_screener_metadata
-    from app.discord_helpers import send_options_signal_alert
+    from app.notifications.discord_helpers import send_options_signal_alert
     from app.core.sniper_log import log_proposed_trade
 
     _state = get_state()
@@ -66,7 +70,16 @@ def arm_ticker(
         print(f"[ARM] ❌ {ticker} position rejected by risk manager — Discord alert suppressed")
         return
 
-    # ── Discord alert (production helper path) ───────────────────────────────
+    # ── FIX (Mar 16 2026): Record TRADED stage in signal_analytics ─────────────────────
+    # Without this call get_funnel_stats()['traded'] was always 0.
+    try:
+        from app.signals.signal_analytics import signal_tracker
+        signal_tracker.record_trade_executed(ticker, position_id)
+        print(f"[ANALYTICS] 📊 {ticker} TRADED stage recorded (position_id={position_id})")
+    except Exception as _analytics_err:
+        print(f"[ANALYTICS] record_trade_executed error (non-fatal): {_analytics_err}")
+
+    # ── Discord alert (production helper path) ──────────────────────────────────────
     try:
         from utils.production_helpers import _send_alert_safe
         PRODUCTION_HELPERS_ENABLED = True
@@ -127,7 +140,7 @@ def arm_ticker(
         except Exception as e:
             print(f"[DISCORD] ❌ Alert failed: {e}")
 
-    # ── Persist armed signal state ────────────────────────────────────────────
+    # ── Persist armed signal state ───────────────────────────────────────────────────
     armed_signal_data = {
         "position_id":  position_id,
         "direction":    direction,
@@ -145,17 +158,17 @@ def arm_ticker(
 
     print(f"[ARMED] {ticker} ID:{position_id}")
 
-    # ── Cooldown ──────────────────────────────────────────────────────────────
+    # ── Cooldown ──────────────────────────────────────────────────────────────────────────────
     try:
         from app.analytics.cooldown_tracker import set_cooldown as _set_cooldown
         _set_cooldown(ticker, direction, signal_type)
     except Exception as e:
         print(f"[COOLDOWN] Warning: could not set cooldown for {ticker}: {e}")
 
-    # ── Phase 4 alert check ───────────────────────────────────────────────────
+    # ── Phase 4 alert check ───────────────────────────────────────────────────────────
     try:
         from app.analytics.performance_monitor import performance_monitor
-        from app.discord_helpers import send_simple_message
+        from app.notifications.discord_helpers import send_simple_message
         # alert_manager not available; skip
     except Exception:
         pass

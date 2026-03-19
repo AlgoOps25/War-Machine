@@ -354,14 +354,14 @@ def print_market_regime(regime: dict, ticker: str = ""):
 
 def send_regime_discord(regime: dict = None, force: bool = False):
     """
-    Posts a visual regime update to REGIME_WEBHOOK_URL.
+    Posts a visual regime update to DISCORD_REGIME_WEBHOOK_URL.
     Rate-limited to REGIME_DISCORD_INTERVAL_MINUTES to avoid spam.
     Call this once per scan cycle from scanner.py — completely non-blocking
     (catches all exceptions internally).
     """
     global _last_discord_post
 
-    webhook_url = os.getenv("REGIME_WEBHOOK_URL", "")
+    webhook_url = os.getenv("DISCORD_REGIME_WEBHOOK_URL", "")
     if not webhook_url:
         return
 

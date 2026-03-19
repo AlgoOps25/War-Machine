@@ -1,41 +1,67 @@
 """
-Database Connection Helper
-Provides database connections for analytics and other modules
-"""
-import os
-import psycopg2
-import logging
+app/data/database.py  — Compatibility shim
 
-_db_connection = None
+This module is a thin re-export wrapper over app.data.db_connection,
+which is the canonical pooled database layer for War Machine.
+
+Why this exists
+---------------
+Two scripts call `get_db_connection()` / `close_db_connection()` from
+this module (train_from_analytics.py, scripts/generate_ml_training_data.py).
+Rather than deleting this file and breaking those callers, it is kept as a
+shim so both import paths resolve to the same production connection pool.
+
+Do NOT add new business logic here.  All logic lives in db_connection.py.
+"""
+
+from app.data.db_connection import (
+    get_conn,
+    return_conn,
+    get_connection,       # context manager  (with get_connection() as conn:)
+    check_pool_health,
+    close_pool,
+    ph,
+    dict_cursor,
+    serial_pk,
+    USE_POSTGRES,
+)
+
 
 def get_db_connection():
     """
-    Get or create database connection
-    Returns: psycopg2 connection object
-    """
-    global _db_connection
-    
-    if _db_connection is not None and not _db_connection.closed:
-        return _db_connection
-    
-    db_url = os.getenv('DATABASE_URL')
-    if not db_url:
-        raise ValueError("DATABASE_URL environment variable not set")
-    
-    try:
-        _db_connection = psycopg2.connect(db_url)
-        logging.info("[DATABASE] Connection established")
-        return _db_connection
-    except Exception as e:
-        logging.error(f"[DATABASE] Connection failed: {e}")
-        raise
+    Compatibility alias for app.data.db_connection.get_conn().
 
-def close_db_connection():
+    Returns a pooled PostgreSQL connection (Railway) or a fresh SQLite
+    connection (local dev).  Caller is responsible for returning the
+    connection via close_db_connection() when finished.
     """
-    Close database connection
+    return get_conn()
+
+
+def close_db_connection(conn=None):
     """
-    global _db_connection
-    if _db_connection is not None and not _db_connection.closed:
-        _db_connection.close()
-        logging.info("[DATABASE] Connection closed")
-        _db_connection = None
+    Compatibility alias for app.data.db_connection.return_conn().
+
+    Returns *conn* to the pool (PostgreSQL) or closes it (SQLite).
+    If called with no argument it is a no-op (legacy usage where the old
+    module held a global singleton and close meant "mark as closed").
+    """
+    if conn is not None:
+        return_conn(conn)
+
+
+__all__ = [
+    # Legacy API
+    "get_db_connection",
+    "close_db_connection",
+    # Full db_connection API re-exported for convenience
+    "get_conn",
+    "return_conn",
+    "get_connection",
+    "check_pool_health",
+    "close_pool",
+    "ph",
+    "dict_cursor",
+    "serial_pk",
+    "USE_POSTGRES",
+]

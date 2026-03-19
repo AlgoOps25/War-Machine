@@ -27,13 +27,22 @@ Design:
     so entries are NEVER blocked by missing quote data.
   - Separate _started guard prevents duplicate threads.
   - Exponential backoff on reconnect: 2^attempt seconds, capped at 60s.
-    Resets to 0 on a clean successful connection so normal brief disconnects
-    recover quickly while repeated 500s from EODHD don't cause a reconnect storm.
+
+500 / entitlement handling (v2):
+  - Consecutive 500s are counted. First one logs normally. Subsequent ones are
+    suppressed (log every 10th) to prevent log spam.
+  - After SERVER_500_BACKOFF_THRESHOLD consecutive 500s (default 3), the feed
+    treats this as a server-side entitlement or outage issue and backs off
+    hard for SERVER_500_HARD_BACKOFF seconds (default 300s = 5 min) before
+    retrying. This prevents a reconnect storm against a degraded endpoint.
+  - If the server sends a non-200 status_code that is NOT 500 (e.g. 401/403),
+    the feed logs a permanent entitlement warning and stops retrying — no
+    point hammering an auth-rejected endpoint.
 
 Primary consumers:
   - sniper.py: is_spread_acceptable(ticker) before arming/entering signals
-  - analytics: get_spread_summary() for logging during market hours (Day 4 testing)
-  - target_discovery: spread data fed into target modeling (Day 5)
+  - analytics: get_spread_summary() for logging during market hours
+  - target_discovery: spread data fed into target modeling
 
 Spread threshold guide (0DTE equity underlying):
   SPY/QQQ:     typical 0.002-0.010%  |  wide > 0.05%
@@ -73,17 +82,23 @@ from utils import config
 
 ET                  = ZoneInfo("America/New_York")
 QUOTE_WS_BASE_URL   = "wss://ws.eodhistoricaldata.com/ws/us-quote"
-RECONNECT_DELAY_MIN = 2      # seconds — base for exponential backoff (2^0 = 1 → floored to 2)
-RECONNECT_DELAY_MAX = 60     # seconds — cap so we never wait more than a minute
+RECONNECT_DELAY_MIN = 2      # seconds — base for exponential backoff
+RECONNECT_DELAY_MAX = 60     # seconds — cap on normal reconnect backoff
 SUBSCRIBE_CHUNK     = 50     # max tickers per subscribe message (EODHD limit)
 SPREAD_HISTORY_LEN  = 20     # rolling window for spread% averaging
+
+# 500 flood control:
+#   After this many consecutive 500s, back off hard before retrying.
+SERVER_500_BACKOFF_THRESHOLD = 3
+#   How long to pause (seconds) after hitting the 500 threshold.
+SERVER_500_HARD_BACKOFF      = 300   # 5 minutes
 
 # Spread gate: block entries when spread_pct exceeds this threshold.
 # Configurable via config.MAX_SPREAD_PCT; default 0.15% (15 bps).
 # Fail-open: if no quote data, returns 0.0 (entry allowed).
 MAX_SPREAD_PCT = getattr(config, "MAX_SPREAD_PCT", 0.15)
 
-# ── Shared state ─────────────────────────────────────────────────────────────────────
+# ── Shared state ─────────────────────────────────────────────────────────────
 _lock              = threading.Lock()
 _quotes            = {}          # ticker → {bid, ask, spread, spread_pct, mid, ...}
 _spread_history    = defaultdict(lambda: deque(maxlen=SPREAD_HISTORY_LEN))
@@ -97,7 +112,7 @@ _ws_connection     = None
 _started           = False
 
 
-# ── Public read API ───────────────────────────────────────────────────────────────────────
+# ── Public read API ───────────────────────────────────────────────────────────
 
 def is_quote_connected() -> bool:
     """Return True if the quote WebSocket is currently connected."""
@@ -155,10 +170,7 @@ def is_spread_acceptable(ticker: str, max_spread_pct: float = None) -> tuple:
 
 
 def get_spread_summary() -> dict:
-    """
-    Return spread snapshot for all tracked tickers.
-    Use during Day 4 testing to monitor spreads live.
-    """
+    """Return spread snapshot for all tracked tickers."""
     with _lock:
         return {
             ticker: {
@@ -171,7 +183,7 @@ def get_spread_summary() -> dict:
         }
 
 
-# ── Quote update handler ──────────────────────────────────────────────────────────────
+# ── Quote update handler ──────────────────────────────────────────────────────
 
 def _on_quote(ticker: str, bid: float, ask: float,
              bid_size: int, ask_size: int, epoch_ms: int):
@@ -203,7 +215,7 @@ def _on_quote(ticker: str, bid: float, ask: float,
         _spread_history[ticker].append(spread_pct)
 
 
-# ── Dynamic subscription ──────────────────────────────────────────────────────────────
+# ── Dynamic subscription ──────────────────────────────────────────────────────
 
 async def _do_subscribe(ws, tickers: list):
     """Send subscribe messages for new tickers. Must be called from WS event loop."""
@@ -224,7 +236,7 @@ async def _do_subscribe(ws, tickers: list):
 def subscribe_quote_tickers(tickers: list):
     """
     Subscribe additional tickers to the quote feed (thread-safe).
-    Call from scanner after premarket watchlist is built — mirrors subscribe_tickers().
+    Call from scanner after premarket watchlist is built.
     """
     global _all_tickers
     with _sub_lock:
@@ -248,43 +260,86 @@ def subscribe_quote_tickers(tickers: list):
         print(f"[QUOTE] subscribe_quote_tickers error: {e}")
 
 
-# ── WebSocket coroutine ───────────────────────────────────────────────────────────────────
+# ── Server message handler ────────────────────────────────────────────────────
+
+def _handle_server_msg(msg: dict, consecutive_500s: list) -> str:
+    """
+    Handle EODHD server status messages received inside the WS message loop.
+
+    Returns an action string:
+        'ok'           — 200 auth, continue normally
+        'count_500'    — 500 error, caller should increment counter + maybe hard-backoff
+        'fatal'        — non-200/non-500 (e.g. 401/403) — stop retrying
+        'ignore'       — informational, no action needed
+    """
+    code = msg.get("status_code") or msg.get("status")
+    text = msg.get("message", "")
+
+    if code == 200:
+        print(f"[QUOTE] Server msg: {msg}")
+        return "ok"
+
+    if code == 500:
+        count = consecutive_500s[0] + 1
+        consecutive_500s[0] = count
+        # Log first occurrence and every 10th after that to suppress spam
+        if count == 1:
+            print(f"[QUOTE] ⚠️  Server 500 (#{count}): {text} — will back off after "
+                  f"{SERVER_500_BACKOFF_THRESHOLD} consecutive errors")
+        elif count % 10 == 0:
+            print(f"[QUOTE] ⚠️  Server 500 (#{count}, suppressed repeats): {text}")
+        return "count_500"
+
+    # Any other non-200 code (401 Unauthorized, 403 Forbidden, 429 rate-limit, etc.)
+    print(f"[QUOTE] 🚫 Server returned status {code}: {text} — "
+          f"quote feed disabled (check EODHD us-quote entitlement)")
+    return "fatal"
+
+
+# ── WebSocket coroutine ───────────────────────────────────────────────────────
 
 async def _ws_run():
     """
     Quote WebSocket coroutine. Runs in a dedicated asyncio event loop thread.
 
-    Reconnect strategy — exponential backoff:
-      delay = min(2 ** attempt, RECONNECT_DELAY_MAX)
-      attempt resets to 0 after a clean successful connection.
-    This prevents a tight reconnect storm when EODHD throws repeated 500s
-    on subscription while still recovering quickly from normal brief drops.
+    Reconnect strategy:
+      Normal disconnect → exponential backoff: min(2^attempt, 60s), resets on clean connect.
+      500 flood (>= SERVER_500_BACKOFF_THRESHOLD consecutive) → hard backoff of
+        SERVER_500_HARD_BACKOFF seconds (300s) before next connect attempt.
+      Fatal auth error (401/403) → stops retrying entirely.
 
-    FIX: 0.5s sleep after connect before subscribing allows EODHD auth
-    handshake to complete. Without this, subscribe messages race ahead of
-    the auth response and trigger 422 'Symbols limit reached' errors.
+    FIX v2 changes vs v1:
+      - _handle_server_msg() deduplicates 500 log spam (log 1st + every 10th).
+      - consecutive_500s counter tracked per-connection; triggers hard backoff
+        when threshold is hit instead of immediately reconnecting (which caused
+        a tight loop of connect → 500 → connect → 500...).
+      - Fatal non-200/non-500 codes (401/403) disable the feed permanently rather
+        than looping forever against an auth-rejected endpoint.
+      - attempt counter is now also incremented on 500-triggered hard backoff so
+        normal backoff math stays coherent.
     """
     global _connected, _ws_connection, _subscribed
 
     url     = f"{QUOTE_WS_BASE_URL}?api_token={config.EODHD_API_KEY}"
-    attempt = 0  # tracks consecutive failed connect/run cycles
+    attempt = 0
 
     while True:
         try:
             print(f"[QUOTE] Connecting -> {QUOTE_WS_BASE_URL}"
                   + (f" (attempt {attempt + 1})" if attempt > 0 else ""))
+
             async with websockets.connect(
                 url, ping_interval=20, ping_timeout=10, close_timeout=5
             ) as ws:
                 _ws_connection = ws
-                attempt = 0  # clean connect — reset backoff counter
+                attempt        = 0  # clean TCP connect — reset normal backoff
 
                 with _sub_lock:
                     _subscribed.clear()
 
-                # Wait for EODHD auth handshake to complete before subscribing.
-                # Without this delay, subscribe messages race ahead of the auth
-                # response and trigger 422 'Symbols limit reached' errors.
+                # Allow EODHD auth handshake to complete before sending subscribe.
+                # Without this, subscribe messages race ahead of auth and trigger
+                # 422 'Symbols limit reached' errors.
                 await asyncio.sleep(0.5)
 
                 with _sub_lock:
@@ -295,19 +350,45 @@ async def _ws_run():
                 print(f"[QUOTE] Live | {len(_subscribed)} tickers | "
                       f"spread gate: {MAX_SPREAD_PCT:.2f}% max")
 
+                # Per-connection 500 counter — reset to [0] on each new connection
+                consecutive_500s = [0]
+                hard_backoff_triggered = False
+
                 async for raw in ws:
                     try:
                         msg = json.loads(raw)
 
                         if "status_code" in msg or "status" in msg:
-                            print(f"[QUOTE] Server msg: {msg}")
+                            action = _handle_server_msg(msg, consecutive_500s)
+
+                            if action == "fatal":
+                                # Auth/entitlement failure — no point retrying
+                                _connected     = False
+                                _ws_connection = None
+                                print("[QUOTE] Feed permanently disabled — "
+                                      "verify EODHD us-quote WebSocket entitlement.")
+                                return  # exits _ws_run entirely
+
+                            if action == "count_500":
+                                if consecutive_500s[0] >= SERVER_500_BACKOFF_THRESHOLD:
+                                    # Too many 500s — break out of message loop,
+                                    # trigger hard backoff below
+                                    hard_backoff_triggered = True
+                                    break
+                            else:
+                                # 200 ok or ignore — reset 500 counter
+                                consecutive_500s[0] = 0
+
                             continue
+
+                        # Reset 500 counter on any valid quote tick
+                        consecutive_500s[0] = 0
 
                         # Quote tick — handle both known EODHD field name variants:
                         #   ask: "a" or "ab"   |   bid: "b" or "bb"
                         ticker   = msg.get("s", "")
-                        ask      = msg.get("a") or msg.get("ab")    # ask price
-                        bid      = msg.get("b") or msg.get("bb")    # bid price
+                        ask      = msg.get("a") or msg.get("ab")
+                        bid      = msg.get("b") or msg.get("bb")
                         ask_size = int(msg.get("av", 0))
                         bid_size = int(msg.get("bv", 0))
                         ts_ms    = msg.get("t")
@@ -315,25 +396,32 @@ async def _ws_run():
                         if ticker and bid is not None and ask is not None and ts_ms:
                             _on_quote(ticker, float(bid), float(ask),
                                       bid_size, ask_size, int(ts_ms))
+
                     except Exception as exc:
                         print(f"[QUOTE] Tick error: {exc}")
 
                 _connected     = False
                 _ws_connection = None
 
+                if hard_backoff_triggered:
+                    attempt += 1
+                    print(f"[QUOTE] 🔴 {consecutive_500s[0]} consecutive 500s — "
+                          f"hard backoff {SERVER_500_HARD_BACKOFF}s before retry "
+                          f"(attempt {attempt})")
+                    await asyncio.sleep(SERVER_500_HARD_BACKOFF)
+
         except Exception as exc:
             _connected     = False
             _ws_connection = None
 
-            # Exponential backoff: 2^attempt seconds, capped at RECONNECT_DELAY_MAX
-            delay = min(2 ** attempt, RECONNECT_DELAY_MAX)
+            delay   = min(2 ** attempt, RECONNECT_DELAY_MAX)
             attempt += 1
             print(f"[QUOTE] Disconnected ({exc}) — reconnecting in {delay}s "
                   f"(attempt {attempt})")
             await asyncio.sleep(delay)
 
 
-# ── Public API ───────────────────────────────────────────────────────────────────────────
+# ── Public API ────────────────────────────────────────────────────────────────
 
 def start_quote_feed(tickers: list):
     """
@@ -378,7 +466,7 @@ def start_quote_feed(tickers: list):
           f"spread gate: {MAX_SPREAD_PCT:.2f}% max")
 
 
-# ── Module self-test ──────────────────────────────────────────────────────────────────────
+# ── Module self-test ──────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     print("=" * 60)

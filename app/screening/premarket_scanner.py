@@ -82,6 +82,20 @@ PHASE 1.28 (MAR 14, 2026) - Gap zero fix + duplicate catalyst call:
     (to derive has_earnings/has_news flags) and again identically in
     Tier 3 for the catalyst score. The Tier 2 result is now reused in
     Tier 3, eliminating one redundant API call per ticker per scan cycle.
+
+PHASE 1.29 (MAR 16, 2026) - Ghost 12.9 score fix:
+  - ROOT CAUSE: When fetch_fundamental_data() fails (EODHD HTTP error,
+    <14 bars, timeout), _get_default_fundamentals() returns avg_daily_volume=0.
+    calculate_relative_volume() with avg_daily_volume=0 returns 0.0, producing
+    rvol_score=20, dollar_score=25, volume_score=21.5, then the early-exit
+    path fires and returns composite_score = 21.5 * 0.60 = 12.9. This ghost
+    score is just above the watchlist_funnel floor, polluting the watchlist
+    with tickers that have no real ADV data.
+  - FIX: After fundamentals fetch, if avg_daily_volume == 0 (failed fetch),
+    return None immediately. scan_watchlist() already handles None gracefully
+    by logging SKIPPED and moving on. No ghost scores enter the watchlist.
+  - SECONDARY: Also return None when price == 0 (bar resolved but no price),
+    which was another silent path to nonsense scores.
 """
 from datetime import datetime, timedelta, time as dt_time
 from typing import List, Dict, Optional, Tuple
@@ -347,12 +361,7 @@ def fetch_fundamental_data(ticker: str) -> Dict:
         avg_volume = int(statistics.mean(volumes)) if volumes else 0
         atr        = _calculate_atr_from_eod(eod_data[-14:])
 
-        # PHASE 1.28: use the second-to-last bar as prev_close so that on
-        # mornings when the EOD feed has already posted today's open bar,
-        # we don't compare today vs today (which gives 0% gap).
-        # eod_data[-1] = most recent completed session (yesterday after close)
-        # eod_data[-2] = the session before that
-        # We always want yesterday's close as the gap reference.
+        # PHASE 1.28: use eod_data[-1] close as prev_close (yesterday's close)
         prev_close = eod_data[-1]['close'] if eod_data else 0
 
         market_cap   = 0
@@ -361,8 +370,8 @@ def fetch_fundamental_data(ticker: str) -> Dict:
             fund_url  = f"https://eodhd.com/api/fundamentals/{ticker}.US?api_token={config.EODHD_API_KEY}&fmt=json"
             fund_resp = requests.get(fund_url, timeout=5)
             if fund_resp.status_code == 200:
-                fund_data   = fund_resp.json()
-                highlights  = fund_data.get('Highlights', {})
+                fund_data    = fund_resp.json()
+                highlights   = fund_data.get('Highlights', {})
                 shares_stats = fund_data.get('SharesStats', {})
                 market_cap   = highlights.get('MarketCapitalization', 0) or 0
                 float_shares = shares_stats.get('SharesFloat', 0) or shares_stats.get('SharesOutstanding', 0) or 0
@@ -412,7 +421,7 @@ def _get_default_fundamentals(ticker: str) -> Dict:
         'market_cap':       0,
         'float_shares':     0,
         'atr':              0,
-        'avg_daily_volume': 0,
+        'avg_daily_volume': 0,  # sentinel — scan_ticker() treats 0 as failed fetch
         'prev_close':       0,
         'timestamp':        datetime.now().isoformat()
     }
@@ -475,12 +484,16 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
 
     PHASE 1.28 changes:
       - REST bar now captures `open` as the pre-market price (gap price) and
-        `previousClose` as the gap reference. Previously both resolved to the
-        same value (EODHD `close` pre-market == previousClose), causing gap=0%.
-      - rest_prev_close stored separately; used in gap analysis when available
-        so we don't rely on the EOD fundamentals prev_close which can lag.
-      - detect_catalyst() result from Tier 2 reused in Tier 3 — eliminates
-        one redundant API call per ticker per scan cycle.
+        `previousClose` as the gap reference.
+      - rest_prev_close stored separately; used in gap analysis when available.
+      - detect_catalyst() result from Tier 2 reused in Tier 3.
+
+    PHASE 1.29 changes:
+      - FIX #8: Return None immediately when avg_daily_volume == 0 (failed
+        fundamentals fetch). Previously this produced a deterministic ghost
+        score of 12.9 (rvol=0 → rvol_score=20 → volume_score=21.5 →
+        composite=21.5*0.60=12.9) which leaked into the watchlist.
+      - FIX #8b: Return None when price == 0 (bar resolved but no price data).
     """
     print(f"[PREMARKET] Scanning {ticker}...")
 
@@ -492,8 +505,19 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
     # fetch_fundamental_data() logs once on first fetch; silent on cache hit
     fundamentals = fetch_fundamental_data(ticker)
 
-    current_bar  = None
-    bar_source   = None
+    # ── PHASE 1.29: FIX #8 — bail out if fundamentals fetch failed ────────────
+    # avg_daily_volume=0 is the sentinel from _get_default_fundamentals().
+    # Without ADV we cannot compute a meaningful RVOL, so any score would be
+    # fabricated. Return None so scan_watchlist() logs SKIPPED and moves on.
+    if fundamentals['avg_daily_volume'] == 0:
+        print(
+            f"[PREMARKET] {ticker}: SKIPPED — fundamentals fetch failed "
+            f"(ADV=0, no EOD data). Returning None to avoid ghost score."
+        )
+        return None
+
+    current_bar     = None
+    bar_source      = None
     rest_prev_close = None  # PHASE 1.28: captured from REST response
 
     if WS_AVAILABLE:
@@ -551,8 +575,14 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
 
     price          = current_bar.get('close', 0)
     single_bar_vol = current_bar.get('volume', 0)
-    volume         = get_intraday_cumulative_volume(ticker, single_bar_vol)
-    time_pct       = calculate_time_elapsed_pct()
+
+    # ── PHASE 1.29: FIX #8b — bail out on zero price ─────────────────────────
+    if not price or price <= 0:
+        print(f"[PREMARKET] {ticker}: SKIPPED — bar resolved but price=0. Returning None.")
+        return None
+
+    volume   = get_intraday_cumulative_volume(ticker, single_bar_vol)
+    time_pct = calculate_time_elapsed_pct()
 
     print(f"[PREMARKET] {ticker}: Bar resolved - price={price:.2f}, volume={volume:,} (cumulative), time_pct={time_pct:.2f}")
 
@@ -568,7 +598,7 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
     if bar_source == "REST" and volume_metrics['rvol'] > REST_BAR_RVOL_MAX:
         print(
             f"[PREMARKET] {ticker}: REST bar RVOL clamped "
-            f"{volume_metrics['rvol']:.1f}x → {REST_BAR_RVOL_MAX:.1f}x "
+            f"{volume_metrics['rvol']:.1f}x \u2192 {REST_BAR_RVOL_MAX:.1f}x "
             f"(prior-day volume artifact)"
         )
         volume_metrics['rvol'] = REST_BAR_RVOL_MAX
@@ -579,7 +609,9 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
     print(f"[PREMARKET] {ticker}: Volume score={volume_score:.1f}, RVOL={volume_metrics['rvol']:.2f}x")
 
     # ──────────────────────────────────────────────────────────────────────────
-    # FIX 1.24: Early RVOL exit gate
+    # Early RVOL exit gate (FIX 1.24)
+    # Note: this path is now only reachable when ADV > 0 (guaranteed above),
+    # so any score produced here reflects real volume data, not a ghost.
     # ──────────────────────────────────────────────────────────────────────────
     if volume_metrics['rvol'] < EARLY_EXIT_RVOL_MIN:
         composite_score = volume_score * 0.60
@@ -611,8 +643,6 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
         return result
 
     # PHASE 1.28: determine best prev_close for gap calculation.
-    # REST bars carry their own previousClose which is more reliable than
-    # the EOD fundamentals value (which may lag by one session on early fetches).
     gap_prev_close = rest_prev_close if rest_prev_close and rest_prev_close > 0 \
                      else fundamentals['prev_close']
 
@@ -620,12 +650,11 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
     # Tier 2: Gap quality (25% weight) + catalyst detection (shared with Tier 3)
     # PHASE 1.28: detect_catalyst() called ONCE here; result reused in Tier 3.
     # ──────────────────────────────────────────────────────────────────────────
-    gap_score    = 0
-    gap_data     = None
-    catalyst     = None  # shared across Tier 2 + Tier 3
+    gap_score = 0
+    gap_data  = None
+    catalyst  = None  # shared across Tier 2 + Tier 3
 
     if V2_ENABLED:
-        # Catalyst detection — single call, result passed to both gap + scoring
         try:
             catalyst = detect_catalyst(ticker)
         except Exception as e:

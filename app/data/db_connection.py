@@ -6,7 +6,7 @@ Automatically uses PostgreSQL on Railway (when DATABASE_URL is set),
 falls back to SQLite for local development.
 
 FIX #2: CONNECTION POOLING
-- PostgreSQL: Uses psycopg2.pool.ThreadedConnectionPool (10-50 connections)
+- PostgreSQL: Uses psycopg2.pool.ThreadedConnectionPool (min/max connections)
 - SQLite: Direct connections (pooling not needed for single-user)
 - Thread-safe connection checkout/return
 
@@ -18,18 +18,73 @@ FIX #4: CONNECTION LIFECYCLE MANAGEMENT
 
 FIX #5: POOL EXHAUSTION PREVENTION
 - Upgraded SimpleConnectionPool → ThreadedConnectionPool (thread-safe internally)
-- Increased pool size from 5-20 to 10-50 connections
 - Added retry logic with exponential backoff (up to 10 attempts, max 2s delay)
-- Removed redundant _pool_lock on getconn/putconn (ThreadedConnectionPool handles this)
+- Removed redundant _pool_lock on getconn/putconn
 - Added retries stat counter for observability
 
 FIX #6: SEMAPHORE GATE (thundering-herd prevention)
-- Added threading.Semaphore(DB_SEMAPHORE_LIMIT=40) wrapping all get_conn() calls
-- Prevents startup burst (scanner + backfill hitting 40+ threads simultaneously)
-  from exceeding pool capacity and crashing with "connection pool exhausted"
+- Added threading.Semaphore wrapping all get_conn() calls
+- Prevents startup burst from exceeding pool capacity
 - Semaphore is acquired BEFORE getconn() and released in return_conn() / error paths
-- Limit set to 40 (below pool max of 50) to leave headroom for health-check queries
-- Adds _semaphore_waiters counter so you can see contention in pool stats
+
+FIX #7 (MAR 16, 2026): RAILWAY POSTGRES LIMIT ALIGNMENT
+- Railway hobby plan caps at ~20 connections total (shared with system connections)
+- POOL_MAX reduced 50 → 15 (leaves headroom for Railway internal connections)
+- DB_SEMAPHORE_LIMIT reduced 40 → 12 (below POOL_MAX, leaves headroom)
+- POOL_MIN reduced 10 → 3 (faster startup, less idle waste)
+- Pool exhaustion was crashing scanner at 9:30 open (backfill + monitor + scan burst)
+
+FIX #8 (MAR 16, 2026): DOUBLE SEMAPHORE RELEASE ON POOL EXHAUSTION
+- When all POOL_RETRY_ATTEMPTS failed, the retry-exhaustion path released the
+  semaphore then raised RuntimeError. The raise caused the outer except block
+  to fire with semaphore_acquired still True, releasing the semaphore a second
+  time and inflating its internal counter above DB_SEMAPHORE_LIMIT.
+- Over time the gate stopped enforcing the cap, allowing >12 concurrent holders
+  to pile up — causing the 30s timeout crash in monitor_open_positions().
+- Fix: set semaphore_acquired = False immediately after release in the
+  retry-exhaustion path so the outer except skips the redundant release.
+
+FIX 14.C-1 (MAR 19, 2026): LAZY POOL INIT — RAILWAY COLD-START CRASH
+- Pool was initialized at module import time via top-level if USE_POSTGRES block.
+- If Railway's DB wasn't ready yet, the import-time psycopg2.connect() call
+  raised OperationalError, crashing the entire process before main() ran.
+- Fix: moved pool init into _init_pool(), called lazily on first get_conn().
+  The module now imports cleanly regardless of DB availability.
+
+FIX 14.C-2 (MAR 19, 2026): STALE SSL CONNECTION — SSL SYSCALL EOF
+- Railway's Postgres TCP proxy silently drops idle connections after ~5 min.
+  psycopg2's ThreadedConnectionPool keeps the dead socket in the pool and
+  returns it on the next getconn() — the caller's first query then raises
+  `psycopg2.OperationalError: SSL SYSCALL error: EOF detected`.
+- Fix: _validate_conn() pings each checked-out connection with a lightweight
+  SELECT 1 query.  If the ping raises OperationalError the connection is
+  discarded (putconn + closed) and a fresh one is requested from the pool.
+  A single reconnect attempt is made; if that also fails the error propagates
+  normally so the scanner loop's existing error handler can restart cleanly.
+- This is deliberately minimal — no infinite loop, no silent swallowing.
+
+FIX 14.C-3 (MAR 19, 2026): TRANSIENT DB BLIP — DOUBLE-VALIDATION RETRY
+- When both the stale connection AND the fresh reconnect failed _validate_conn(),
+  the code immediately raised RuntimeError, crashing the scanner.
+- Fix: replace the immediate raise with a retry loop (DB_RECONNECT_RETRIES=3,
+  delays: 1s / 2s / 3s). Only if all retries are exhausted does the error
+  propagate.
+- Added db_reconnect_failures counter to _pool_stats for observability.
+
+FIX 14.C-4 (MAR 19, 2026): DOUBLE-INIT RACE — USE_POSTGRES FLIPPED TO FALSE
+- Two threads could both pass the pre-lock `_connection_pool is not None` check
+  simultaneously (neither had set it yet). Both entered _init_pool(), both ran
+  psycopg2.connect() test pings. The first succeeded and built the pool. The
+  second ran its test ping 20 s later when Railway had already dropped that
+  transient test socket, got OperationalError, and hit the except branch which
+  sets USE_POSTGRES = False — destroying the working pool mid-startup and
+  causing all subsequent get_conn() calls to fall back to SQLite.
+- Fix: the double-checked `_connection_pool is not None` guard is now INSIDE
+  the lock body (it was only outside before). Once the lock is held, the thread
+  re-checks the pool; if it's already been built it returns immediately without
+  running the test ping. The OperationalError fallback path is also guarded: it
+  only sets USE_POSTGRES = False when _connection_pool is still None (i.e. we
+  truly failed to build one), never when a working pool already exists.
 
 NOTE: Railway provides DATABASE_URL as postgres:// — psycopg2 requires
 postgresql:// — we normalize it automatically here.
@@ -42,6 +97,7 @@ from contextlib import contextmanager
 from typing import Optional
 from datetime import datetime, timedelta
 
+
 # Strip whitespace/newlines, then normalize postgres:// → postgresql://
 _raw_url = os.getenv("DATABASE_URL", "").strip()
 if _raw_url.startswith("postgres://"):
@@ -50,100 +106,172 @@ if _raw_url.startswith("postgres://"):
 DATABASE_URL = _raw_url
 USE_POSTGRES = bool(DATABASE_URL and DATABASE_URL.startswith("postgresql://"))
 
+
 # ==============================================================================
 # POOL CONFIGURATION
 # ==============================================================================
 
-POOL_MIN = 10          # Minimum connections in pool
-POOL_MAX = 50          # Maximum connections in pool
+POOL_MIN = 3
+POOL_MAX = 15
 POOL_RETRY_ATTEMPTS = 10
-POOL_RETRY_BASE_DELAY = 0.1   # seconds; doubles each attempt, capped at 2.0s
-CONNECTION_TIMEOUT_SECONDS = 300  # 5 minutes
+POOL_RETRY_BASE_DELAY = 0.1
+CONNECTION_TIMEOUT_SECONDS = 300
 
-# FIX #6: Semaphore gate — caps concurrent DB checkouts below POOL_MAX
-# so that startup bursts (scanner + backfill running together) never
-# exhaust the pool even when dozens of threads call get_conn() at once.
-DB_SEMAPHORE_LIMIT = 40   # Must be <= POOL_MAX; leave headroom for health queries
+# FIX 14.C-3
+DB_RECONNECT_RETRIES = 3
+DB_RECONNECT_DELAYS  = [1, 2, 3]
+
+DB_SEMAPHORE_LIMIT = 12
 _db_semaphore = threading.Semaphore(DB_SEMAPHORE_LIMIT)
 
 _connection_pool = None
-_pool_lock = threading.Lock()  # Only used for close_pool() shutdown guard
+_pool_lock = threading.Lock()
 _pool_stats = {
     "checkouts": 0,
     "returns": 0,
     "errors": 0,
     "timeouts": 0,
     "retries": 0,
-    "semaphore_waiters": 0,   # FIX #6: tracks semaphore contention
+    "semaphore_waiters": 0,
+    "stale_reconnects": 0,
+    "db_reconnect_failures": 0,
     "last_health_check": None
 }
-_checked_out_connections = {}  # conn_id -> checkout epoch time
+_checked_out_connections = {}
 _stats_lock = threading.Lock()
 
-if USE_POSTGRES:
-    try:
-        import psycopg2
-        import psycopg2.extras
-        from psycopg2 import pool
-
-        print("[DB] Testing PostgreSQL connection...")
-
-        # Test connection with timeout
-        _test = psycopg2.connect(DATABASE_URL, connect_timeout=10)
-        _test.close()
-
-        # FIX #5: ThreadedConnectionPool replaces SimpleConnectionPool
-        # ThreadedConnectionPool is internally thread-safe — no external lock needed
-        # on getconn/putconn calls.
-        print("[DB] Initializing connection pool...")
-        _connection_pool = pool.ThreadedConnectionPool(
-            minconn=POOL_MIN,
-            maxconn=POOL_MAX,
-            dsn=DATABASE_URL,
-            connect_timeout=10
-        )
-
-        print(f"[DB] PostgreSQL mode active with connection pooling ({POOL_MIN}-{POOL_MAX} connections)")
-        print(f"[DB] FIX #6: Semaphore gate active (max {DB_SEMAPHORE_LIMIT} concurrent checkouts)")
-
-    except psycopg2.OperationalError as e:
-        print(f"[DB] PostgreSQL connection timeout or refused: {e}")
-        print("[DB] Falling back to SQLite (database may not be ready)")
-        USE_POSTGRES = False
-    except Exception as e:
-        print(f"[DB] PostgreSQL connection failed: {e}")
-        print("[DB] Falling back to SQLite")
-        USE_POSTGRES = False
-else:
+if not USE_POSTGRES:
     print("[DB] SQLite fallback mode (DATABASE_URL not set)")
 
+
+# ==============================================================================
+# LAZY POOL INIT (FIX 14.C-1, hardened by FIX 14.C-4)
+# ==============================================================================
+
+_pool_init_lock = threading.Lock()
+
+def _init_pool():
+    """
+    Lazy pool initializer — called on first get_conn(), not at module import.
+
+    FIX 14.C-1: Lazy init so module imports cleanly on Railway cold start.
+
+    FIX 14.C-4: The pre-lock fast-path check is retained as a performance
+    optimisation for the hot path (pool already up), but the authoritative
+    guard is the identical check INSIDE the lock.  This prevents a second
+    thread that passed the pre-lock check from re-running the test ping after
+    the first thread already built the pool — which previously caused
+    USE_POSTGRES to be flipped to False when the transient test socket was
+    dropped by Railway's proxy ~20 s later.
+
+    The OperationalError fallback only sets USE_POSTGRES = False when
+    _connection_pool is still None, i.e. we genuinely failed to build a pool.
+    It never tears down a pool that is already healthy.
+    """
+    global _connection_pool, USE_POSTGRES
+
+    # Fast path — no lock needed when pool is already up
+    if _connection_pool is not None:
+        return
+    if not USE_POSTGRES:
+        return
+
+    with _pool_init_lock:
+        # --- Authoritative guard (FIX 14.C-4) ---
+        # Re-check inside the lock. Any thread that was waiting here while
+        # another thread built the pool will now see _connection_pool is not
+        # None and return immediately, skipping the test ping entirely.
+        if _connection_pool is not None:
+            return
+        if not USE_POSTGRES:
+            return
+
+        try:
+            import psycopg2
+            import psycopg2.extras
+            from psycopg2 import pool as pg_pool
+
+            print("[DB] Testing PostgreSQL connection...")
+            _test = psycopg2.connect(DATABASE_URL, connect_timeout=10)
+            _test.close()
+
+            print("[DB] Initializing connection pool...")
+            _connection_pool = pg_pool.ThreadedConnectionPool(
+                minconn=POOL_MIN,
+                maxconn=POOL_MAX,
+                dsn=DATABASE_URL,
+                connect_timeout=10
+            )
+            print(f"[DB] PostgreSQL pool active ({POOL_MIN}-{POOL_MAX} connections)")
+            print(f"[DB] Semaphore gate active (max {DB_SEMAPHORE_LIMIT} concurrent checkouts)")
+
+        except Exception as e:
+            # FIX 14.C-4: Only fall back to SQLite if we have not yet built a
+            # pool. If _connection_pool is already set (built by a concurrent
+            # thread that got here first) we do NOT touch USE_POSTGRES — the
+            # working pool must not be destroyed.
+            if _connection_pool is None:
+                print(f"[DB] PostgreSQL connection failed: {e}")
+                print("[DB] Falling back to SQLite")
+                USE_POSTGRES = False
+            else:
+                # Pool was built by another thread; this exception came from
+                # the redundant test ping — safe to ignore.
+                print(f"[DB] _init_pool() secondary test ping failed (pool already active, ignoring): {e}")
+
+
+# ==============================================================================
+# STALE CONNECTION VALIDATOR (FIX 14.C-2)
+# ==============================================================================
+
+def _validate_conn(conn) -> bool:
+    """
+    Ping conn with SELECT 1. Returns True if alive, False if socket is dead.
+    """
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT 1")
+        cur.close()
+        conn.rollback()
+        return True
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return False
+
+
+def _discard_conn(conn) -> None:
+    """Safely return a known-dead connection to the pool and close the socket."""
+    try:
+        _connection_pool.putconn(conn, close=True)
+    except Exception:
+        pass
+
+
+# ==============================================================================
+# CONNECTION MANAGEMENT
+# ==============================================================================
 
 def get_conn(sqlite_path: str = "war_machine.db"):
     """
     Get a connection from the pool (PostgreSQL) or create new (SQLite).
 
-    FIX #5: Retries up to POOL_RETRY_ATTEMPTS times with exponential backoff
-    when pool is exhausted, instead of raising immediately.
-
-    FIX #6: Acquires a semaphore slot BEFORE calling pool.getconn() to prevent
-    thundering-herd exhaustion during startup when 40+ threads hit the DB
-    simultaneously (scanner backfill burst).
-
-    IMPORTANT: Caller must close the connection when done!
-    Better to use `with get_connection() as conn:` context manager.
-
-    Args:
-        sqlite_path: Path to SQLite database file (used only if not PostgreSQL)
-
-    Returns:
-        Database connection object
+    FIX #5: Retries with exponential backoff on pool exhaustion.
+    FIX #6: Semaphore gate prevents thundering-herd on startup burst.
+    FIX #8: semaphore_acquired flag prevents double-release.
+    FIX 14.C-1: Lazy _init_pool() called here.
+    FIX 14.C-2: _validate_conn() detects stale SSL sockets.
+    FIX 14.C-3: Retry loop on double-validation failure (transient blip).
+    FIX 14.C-4: _init_pool() no longer flips USE_POSTGRES=False on race.
     """
+    _init_pool()
+
     if USE_POSTGRES:
         if _connection_pool is None:
             raise RuntimeError("Connection pool not initialized")
 
-        # FIX #6: Acquire semaphore — blocks if DB_SEMAPHORE_LIMIT threads already
-        # hold connections, preventing pool exhaustion before it happens.
         semaphore_acquired = False
         try:
             if not _db_semaphore.acquire(blocking=True, timeout=30):
@@ -166,7 +294,39 @@ def get_conn(sqlite_path: str = "war_machine.db"):
                     if conn is None:
                         raise RuntimeError("Pool returned None connection")
 
-                    # Track checkout time (FIX #4)
+                    # FIX 14.C-2: validate socket before handing to caller
+                    if not _validate_conn(conn):
+                        print("[DB] ⚠️  Stale connection detected (SSL EOF) — discarding and reconnecting")
+                        _discard_conn(conn)
+                        with _stats_lock:
+                            _pool_stats["stale_reconnects"] += 1
+
+                        # FIX 14.C-3: retry fresh connection up to DB_RECONNECT_RETRIES
+                        reconnected = False
+                        for r_attempt, r_delay in enumerate(DB_RECONNECT_DELAYS, start=1):
+                            conn = _connection_pool.getconn()
+                            if conn is None:
+                                print(f"[DB] ⚠️  Reconnect attempt {r_attempt}/{DB_RECONNECT_RETRIES}: pool returned None")
+                                time.sleep(r_delay)
+                                continue
+                            if _validate_conn(conn):
+                                reconnected = True
+                                break
+                            print(
+                                f"[DB] ⚠️  Reconnect attempt {r_attempt}/{DB_RECONNECT_RETRIES} "
+                                f"failed validation — waiting {r_delay}s before retry"
+                            )
+                            _discard_conn(conn)
+                            with _stats_lock:
+                                _pool_stats["db_reconnect_failures"] += 1
+                            time.sleep(r_delay)
+
+                        if not reconnected:
+                            raise RuntimeError(
+                                f"DB unavailable after {DB_RECONNECT_RETRIES} reconnect attempts "
+                                f"— Railway proxy may be down"
+                            )
+
                     conn_id = id(conn)
                     with _stats_lock:
                         _pool_stats["checkouts"] += 1
@@ -180,7 +340,6 @@ def get_conn(sqlite_path: str = "war_machine.db"):
                     last_error = e
                     error_str = str(e).lower()
 
-                    # Only retry on pool exhaustion — not on auth/network errors
                     if any(k in error_str for k in ("exhausted", "pool", "none")):
                         if attempt < POOL_RETRY_ATTEMPTS - 1:
                             delay = min(POOL_RETRY_BASE_DELAY * (2 ** attempt), 2.0)
@@ -194,7 +353,6 @@ def get_conn(sqlite_path: str = "war_machine.db"):
                             time.sleep(delay)
                             continue
 
-                    # Non-recoverable error — release semaphore before raising
                     with _stats_lock:
                         _pool_stats["errors"] += 1
                     print(f"[DB] Connection checkout failed after {attempt + 1} attempts: {e}")
@@ -203,15 +361,14 @@ def get_conn(sqlite_path: str = "war_machine.db"):
                         semaphore_acquired = False
                     raise
 
-            # All retries exhausted — release semaphore
             if semaphore_acquired:
                 _db_semaphore.release()
+                semaphore_acquired = False
             raise RuntimeError(
                 f"Connection pool exhausted after {POOL_RETRY_ATTEMPTS} retries: {last_error}"
             )
 
         except Exception:
-            # Safety net: release semaphore if we acquired it but something went wrong
             if semaphore_acquired:
                 try:
                     _db_semaphore.release()
@@ -219,7 +376,6 @@ def get_conn(sqlite_path: str = "war_machine.db"):
                     pass
             raise
 
-    # SQLite: Create new connection (no pooling needed)
     conn = sqlite3.connect(sqlite_path)
     conn.row_factory = sqlite3.Row
     return conn
@@ -228,12 +384,7 @@ def get_conn(sqlite_path: str = "war_machine.db"):
 def return_conn(conn):
     """
     Return a connection to the pool (PostgreSQL) or close it (SQLite).
-
-    FIX #4/#5: Tracks checkout duration and warns on connection leaks.
-    FIX #6: Releases the semaphore slot so another waiting thread can proceed.
-
-    Args:
-        conn: Database connection to return/close
+    Releases the semaphore slot.
     """
     if conn is None:
         return
@@ -255,7 +406,6 @@ def return_conn(conn):
                         checkout_duration = time.time() - checkout_time
                     _pool_stats["returns"] += 1
 
-                # Warn about long-held connections (FIX #4)
                 if checkout_duration and checkout_duration > CONNECTION_TIMEOUT_SECONDS:
                     print(
                         f"[DB] Connection held for {checkout_duration:.1f}s "
@@ -273,13 +423,11 @@ def return_conn(conn):
                 except Exception:
                     pass
             finally:
-                # FIX #6: Always release the semaphore slot, even on error
                 try:
                     _db_semaphore.release()
                 except Exception:
                     pass
     else:
-        # SQLite: Just close
         try:
             conn.close()
         except Exception:
@@ -291,18 +439,6 @@ def get_connection(sqlite_path: str = "war_machine.db"):
     """
     Context manager for safe connection handling.
     Always returns the connection to the pool on exit, even on exceptions.
-
-    Usage:
-        with get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM table")
-            conn.commit()
-
-    Args:
-        sqlite_path: Path to SQLite database file (used only if not PostgreSQL)
-
-    Yields:
-        Database connection object
     """
     conn = get_conn(sqlite_path)
     try:
@@ -312,12 +448,7 @@ def get_connection(sqlite_path: str = "war_machine.db"):
 
 
 def check_pool_health() -> dict:
-    """
-    Check connection pool health and detect potential leaks.
-
-    Returns:
-        Dictionary with pool health metrics
-    """
+    """Check connection pool health and detect potential leaks."""
     if not USE_POSTGRES or _connection_pool is None:
         return {"healthy": True, "mode": "SQLite", "pooling": False}
 
@@ -336,8 +467,7 @@ def check_pool_health() -> dict:
         if (now - checkout_time) > CONNECTION_TIMEOUT_SECONDS
     ]
 
-    # FIX #6: Report semaphore headroom
-    semaphore_available = _db_semaphore._value  # approximate, not thread-safe but fine for stats
+    semaphore_available = _db_semaphore._value
 
     health = {
         "healthy": leaked < 5 and len(stale_connections) == 0,
@@ -353,6 +483,8 @@ def check_pool_health() -> dict:
         "retries": stats_copy["retries"],
         "timeouts": stats_copy["timeouts"],
         "semaphore_waiters": stats_copy["semaphore_waiters"],
+        "stale_reconnects": stats_copy["stale_reconnects"],
+        "db_reconnect_failures": stats_copy["db_reconnect_failures"],
         "stale_connections": len(stale_connections),
         "last_check": datetime.now().isoformat()
     }
@@ -392,6 +524,8 @@ def print_pool_stats():
     print(f"Errors:              {health['errors']}")
     print(f"Timeout Warnings:    {health['timeouts']}")
     print(f"Semaphore Waiters:   {health['semaphore_waiters']}")
+    print(f"Stale Reconnects:    {health['stale_reconnects']}")
+    print(f"Reconnect Failures:  {health['db_reconnect_failures']}")
     print(f"Stale Connections:   {health['stale_connections']}")
     print("=" * 60 + "\n")
 
@@ -399,9 +533,7 @@ def print_pool_stats():
 def force_close_stale_connections():
     """
     Emergency function to remove stale connection tracking entries.
-
-    WARNING: This clears the tracking dict only — it does not forcibly
-    close underlying sockets. Use only as a last resort.
+    WARNING: Clears tracking dict only — does not forcibly close sockets.
     """
     if not USE_POSTGRES or _connection_pool is None:
         return 0
@@ -420,8 +552,6 @@ def force_close_stale_connections():
     for conn_id in stale:
         with _stats_lock:
             _checked_out_connections.pop(conn_id, None)
-        # Also release a semaphore slot for each cleared entry so the gate
-        # doesn't stay permanently blocked by leaked connections.
         try:
             _db_semaphore.release()
         except Exception:
@@ -432,10 +562,7 @@ def force_close_stale_connections():
 
 
 def close_pool():
-    """
-    Close all connections in the pool.
-    Call this on application shutdown.
-    """
+    """Close all connections in the pool. Call this on application shutdown."""
     global _connection_pool
 
     if USE_POSTGRES and _connection_pool is not None:
@@ -450,17 +577,12 @@ def close_pool():
 
 
 def get_pool_stats() -> dict:
-    """
-    Get connection pool statistics.
-
-    Returns:
-        Dictionary with pool info (PostgreSQL) or empty dict (SQLite)
-    """
+    """Get connection pool statistics."""
     return check_pool_health()
 
 
 # ==============================================================================
-# DATABASE UTILITY FUNCTIONS (UNCHANGED)
+# DATABASE UTILITY FUNCTIONS
 # ==============================================================================
 
 def ph() -> str:
@@ -471,8 +593,9 @@ def ph() -> str:
 def dict_cursor(conn):
     """Return a dictionary-capable cursor for either engine."""
     if USE_POSTGRES:
+        import psycopg2.extras
         return conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    return conn.cursor()   # row_factory already set on SQLite conn
+    return conn.cursor()
 
 
 def serial_pk() -> str:

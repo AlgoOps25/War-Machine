@@ -29,7 +29,9 @@
 # VOLUME PROFILE (Step 6.6): Price must be near POC or high-volume nodes for valid entries
 # ENTRY TIMING (Step 6.7): Time-based WR adjustment + session quality filtering
 # MTF TREND (Step 8.5): Multi-timeframe trend alignment boost (1m/5m/15m/30m)
+# SMC ENRICHMENT (Step 8.6): CHoCH / Inducement / Order Block / Trend Phase context + conf delta
 # GATE DISTRIBUTION (Issue #23): EOD grade/signal-type/histogram report for gate analytics
+# FUNNEL ANALYTICS: Upstream pre-detection funnel (SCREENED->BOS->FVG->ARMED) via log_bos/log_fvg
 #
 # RESTORE (Mar 10 2026): Full file recovered from commit 6a235067 after accidental truncation
 # FIXED IMPORTS: signal_analytics, dynamic_thresholds, hourly_gate, production_helpers
@@ -49,10 +51,51 @@
 #     across Railway restarts (cooldown persisted to signal_cooldowns DB table).
 #   - set_cooldown(ticker, direction, signal_type) called after arm_ticker() succeeds
 #     so the 30-min same-direction / 15-min reversal window is registered in DB.
+#
+# CLEANUP (Mar 16 2026):
+#   - Removed app.ml.ml_signal_scorer_v2 import + ML_SCORER_ENABLED flag (module deleted,
+#     ml_signal_scorer.py was OFFLINE; scorer was never active in production).
+#   - ml_boost stays hardcoded to 0.0 in confidence formula — no behavior change.
+#
+# IMPORT FIXES (Mar 16 2026):
+#   - app.core.confidence_model -> app.ai.ai_learning (confidence_model.py is now a shim,
+#     canonical compute_confidence lives in ai_learning with full 9-grade support).
+#   - app.discord_helpers -> app.notifications.discord_helpers (root-level copy is legacy).
+#
+# FUNNEL ANALYTICS WIRE-IN (Mar 16 2026):
+#   - app.signals.funnel_analytics: log_bos + log_fvg wired into process_ticker.
+#   - log_bos() called after detect_breakout_after_or() on OR and secondary range paths.
+#   - log_fvg() called after scan_bos_fvg() on INTRADAY_BOS path.
+#
+# FUNNEL ANALYTICS FIX (Mar 17 2026):
+#   - Corrected import path: app.analytics.funnel_analytics (was app.signals.funnel_analytics
+#     which does not exist — caused ImportError + FUNNEL_ANALYTICS_ENABLED = False every boot)
+#   - Replaced log_bos(ticker, direction, price, signal_type=...) calls with thin wrappers
+#     _log_bos_event() / _log_fvg_event() that map to funnel_tracker.record_stage() directly.
+#     The old convenience functions only accept (ticker, passed, reason=None) — wrong sig.
+#
+# IMPORT STUBS (Mar 17 2026):
+#   - app.core.eod_reporter: module deleted — wrapped in try/except, stub no-ops on missing.
+#   - app.screening.screener_integration: module deleted — wrapped in try/except stub.
+#   - app.core.gate_stats: module deleted — wrapped in try/except stub.
+#   - app.core.sniper_log: module deleted — wrapped in try/except stub.
+#
+# SMC ENRICHMENT (Mar 17 2026):
+#   - Step 8.6: enrich_signal_with_smc() wired into _run_signal_pipeline after run_mtf_trend_step.
+#   - Detects CHoCH, Inducement, Order Blocks, OB Retests, Trend Phase.
+#   - Applies confidence_delta from smc_context['total_confidence_delta'] before gate check.
+#   - Non-fatal: ImportError falls back to no-op stub; all internal errors are caught.
+#
+# FIX (Mar 19 2026): UnboundLocalError '_is_watching' referenced before assignment.
+#   - Root cause: orphaned DB-restore block used _is_watching before the assignment.
+#   - Fix: removed orphaned first block; re-inserted DB-restore logic inside the
+#     second _is_watching block, immediately after _is_watching is assigned.
+#   - Also fixes silent bug: w["breakout_idx"] local dict was not updated after
+#     state update, causing bars_since to compute against None on same cycle.
 import traceback
 from datetime import datetime, time, timedelta
 from utils.time_helpers import _now_et, _bar_time, _strip_tz
-from app.discord_helpers import send_simple_message
+from app.notifications.discord_helpers import send_simple_message
 from app.validation.validation import get_validator, get_regime_filter
 from app.validation.cfw6_confirmation import wait_for_confirmation, grade_signal_with_confirmations
 from app.risk.trade_calculator import compute_stop_and_targets, get_adaptive_fvg_threshold
@@ -60,7 +103,13 @@ from app.data.data_manager import data_manager
 from utils import config
 from app.mtf.bos_fvg_engine import scan_bos_fvg, is_force_close_time, find_fvg_after_bos
 from app.filters.early_session_disqualifier import should_skip_cfw6_or_early
-from app.screening.screener_integration import get_ticker_screener_metadata
+try:
+    from app.screening.screener_integration import get_ticker_screener_metadata
+    print("[SNIPER] ✅ screener_integration loaded")
+except ImportError:
+    print("[SNIPER] ⚠️  screener_integration not found — using stub")
+    def get_ticker_screener_metadata(ticker):
+        return {'qualified': False, 'score': 0, 'rvol': 0.0, 'tier': None}
 from app.core.watch_signal_store import (
     _persist_watch, _remove_watch_from_db, _maybe_load_watches,
     send_bos_watch_alert, clear_watching_signals,
@@ -70,12 +119,36 @@ from app.core.armed_signal_store import (
     clear_armed_signals,
 )
 # ── Refactored modules ────────────────────────────────────────────────────────
-from app.core.eod_reporter import run_eod_reports
+try:
+    from app.core.eod_reporter import run_eod_reports
+    print("[SNIPER] ✅ eod_reporter loaded")
+except ImportError:
+    print("[SNIPER] ⚠️  eod_reporter not found — EOD reports disabled")
+    def run_eod_reports(*args, **kwargs):
+        print("[EOD] ⚠️  run_eod_reports stub called — module not installed")
 from app.filters.vwap_gate import compute_vwap, passes_vwap_gate
-from app.core.gate_stats import _track_gate_result
-from app.core.confidence_model import compute_confidence
+try:
+    from app.filters.mtf_bias import mtf_bias_engine
+    MTF_BIAS_ENABLED = True
+    print("[SNIPER] ✅ MTF bias engine enabled (Phase 1.34 — 1H/15m top-down)")
+except ImportError:
+    MTF_BIAS_ENABLED = False
+    print("[SNIPER] ⚠️  MTF bias engine disabled")
+    mtf_bias_engine = None
+try:
+    from app.core.gate_stats import _track_gate_result
+    print("[SNIPER] ✅ gate_stats loaded")
+except ImportError:
+    print("[SNIPER] ⚠️  gate_stats not found — using stub")
+    def _track_gate_result(grade, signal_type, confidence, passed): pass
+from app.ai.ai_learning import compute_confidence
 from app.core.arm_signal import arm_ticker
-from app.core.sniper_log import _track_validation_call
+try:
+    from app.core.sniper_log import _track_validation_call
+    print("[SNIPER] ✅ sniper_log loaded")
+except ImportError:
+    print("[SNIPER] ⚠️  sniper_log not found — using stub")
+    def _track_validation_call(ticker, direction, price): return False
 # ── FIX #15: DB-persisted signal cooldown (survives Railway restarts) ─────────
 from app.analytics.cooldown_tracker import is_on_cooldown, set_cooldown
 print("[SNIPER] ✅ Signal cooldown gate loaded (DB-persisted, restart-safe)")
@@ -153,6 +226,18 @@ except ImportError:
     print("[SNIPER] ⚠️  MTF trend validator disabled")
     def run_mtf_trend_step(ticker, direction, entry_price, confidence, signal_data):
         return confidence, signal_data
+
+# ── Step 8.6: SMC Enrichment — CHoCH / Inducement / OB / Trend Phase ─────────
+try:
+    from app.mtf.smc_engine import enrich_signal_with_smc
+    SMC_ENRICHMENT_ENABLED = True
+    print("[SNIPER] ✅ SMC enrichment enabled (Step 8.6 — CHoCH/Inducement/OB/Phase)")
+except ImportError:
+    SMC_ENRICHMENT_ENABLED = False
+    print("[SNIPER] ⚠️  SMC enrichment disabled")
+    def enrich_signal_with_smc(ticker, bars, signal_data):
+        return signal_data
+
 try:
     from app.filters.sd_zone_confluence import (
         cache_sd_zones, apply_sd_confluence_boost, clear_sd_cache
@@ -166,9 +251,53 @@ except ImportError:
     def apply_sd_confluence_boost(ticker, entry_price, direction, confidence): return confidence, None
     def clear_sd_cache(ticker=None): pass
 
+# ── FUNNEL ANALYTICS: upstream pre-detection funnel visibility ────────────────
+# FIX (Mar 17 2026): correct import path is app.analytics.funnel_analytics.
+# app.signals.funnel_analytics does not exist — was causing ImportError every boot.
+# Also: convenience log_bos/log_fvg only accept (ticker, passed, reason) — wrong
+# for sniper call sites. Use thin wrappers below instead.
+try:
+    from app.analytics.funnel_analytics import funnel_tracker as _funnel_tracker
+    FUNNEL_ANALYTICS_ENABLED = True
+    print("[SNIPER] ✅ Funnel analytics enabled (log_bos + log_fvg)")
+except ImportError:
+    _funnel_tracker = None
+    FUNNEL_ANALYTICS_ENABLED = False
+    print("[SNIPER] ⚠️  Funnel analytics disabled")
+
+
+def _log_bos_event(ticker: str, direction: str, bos_price: float, signal_type: str):
+    """Thin wrapper: translate sniper BOS detection args → funnel_tracker.record_stage()."""
+    if not FUNNEL_ANALYTICS_ENABLED or _funnel_tracker is None:
+        return
+    try:
+        _funnel_tracker.record_stage(
+            ticker, 'BOS', passed=True,
+            reason=f"{direction.upper()} {signal_type} @ ${bos_price:.2f}"
+        )
+    except Exception as _e:
+        print(f"[FUNNEL] _log_bos_event error (non-fatal): {_e}")
+
+
+def _log_fvg_event(ticker: str, direction: str, fvg_low: float, fvg_high: float, signal_type: str):
+    """Thin wrapper: translate sniper FVG detection args → funnel_tracker.record_stage()."""
+    if not FUNNEL_ANALYTICS_ENABLED or _funnel_tracker is None:
+        return
+    try:
+        _funnel_tracker.record_stage(
+            ticker, 'FVG', passed=True,
+            reason=f"{direction.upper()} {signal_type} zone=${fvg_low:.2f}-{fvg_high:.2f}"
+        )
+    except Exception as _e:
+        print(f"[FUNNEL] _log_fvg_event error (non-fatal): {_e}")
+
+
 from app.ml.metrics_cache import get_ticker_win_rates
 _TICKER_WIN_CACHE = get_ticker_win_rates(days=30)
 _orb_classifications = {}  # ticker -> OR classification dict, populated at 9:40
+# BOS watch alert dedup — prevents repeat Discord pings for the same BOS
+# across scanner cycles. Cleared at EOD alongside watching_signals.
+_bos_watch_alerted: set = set()
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SPY EMA CONTEXT — 5m EMA 9/21/50 regime filter
@@ -184,17 +313,6 @@ except ImportError as e:
     print(f"[SNIPER] ⚠️  SPY EMA context disabled: {e}")
     def get_market_regime(force_refresh=False): return {"label": "UNKNOWN", "score_adj": 0}
     def print_market_regime(r, ticker=""): pass
-
-
-# ── ML Signal Scorer V2 ───────────────────────────────────────────────────────
-try:
-    from app.ml.ml_signal_scorer_v2 import get_scorer_v2
-    ML_SCORER_ENABLED = True
-    print("[SNIPER] ✅ ML Signal Scorer V2 enabled")
-except ImportError as e:
-    ML_SCORER_ENABLED = False
-    print(f"[SNIPER] ⚠️  ML scorer disabled: {e}")
-    def get_scorer_v2(): return None
 
 # ══════════════════════════════════════════════════════════════════════════════
 # FIX #1: THREAD-SAFE STATE MANAGEMENT
@@ -220,7 +338,7 @@ except ImportError as e:
     print(f"[SNIPER] ⚠️  Analytics trackers not available: {e}")
 
 print("[SNIPER] ✅ VWAP directional gate enabled (app.filters.vwap_gate)")
-print("[SNIPER] ✅ Confidence model loaded (app.core.confidence_model)")
+print("[SNIPER] ✅ Confidence model loaded (app.ai.ai_learning)")
 print("[SNIPER] ✅ Gate stats tracker loaded (app.core.gate_stats)")
 print("[SNIPER] ✅ arm_ticker loaded (app.core.arm_signal)")
 
@@ -350,9 +468,12 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
             if greeks_valid or OPTIONS_PRE_GATE_MODE == "SOFT":
                 from app.validation.validation import get_options_filter
                 options_filter = get_options_filter()
+                _is_explosive = get_ticker_screener_metadata(ticker).get('qualified', False)
                 _tradeable, _opts_data, _reason = options_filter.validate_signal_for_options(
-                    ticker, direction, _proxy_entry, _proxy_entry * 1.05
+                    ticker, direction, _proxy_entry, _proxy_entry * 1.05,
+                    explosive_mover=_is_explosive
                 )
+
                 _pre_options_data = _opts_data
                 if OPTIONS_PRE_GATE_MODE == "HARD":
                     if not _tradeable:
@@ -365,6 +486,8 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         except Exception as _gate_err:
             print(f"[{ticker}] OPTIONS-GATE error (non-fatal): {_gate_err}")
             _pre_options_data = None
+
+    vp_boost = 0.0
 
     if VOLUME_PROFILE_ENABLED:
         try:
@@ -380,11 +503,15 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
                 vp_emoji = "✅" if is_valid else "❌"
                 print(f"[{ticker}] {vp_emoji} VOLUME PROFILE: {vp_reason}")
                 if vp_data:
+                    vp_boost = vp_data.get('confidence_boost', 0.0)
+                    vp_bias  = vp_data.get('options_bias', 'NEUTRAL')
                     print(
                         f"[{ticker}] VP Details: POC=${vp_data.get('poc', 0):.2f} | "
                         f"Distance={vp_data.get('distance_from_poc_pct', 0):.1%} | "
-                        f"Volume Rank={vp_data.get('volume_rank', 'N/A')}"
+                        f"Volume Rank={vp_data.get('volume_rank', 'N/A')} | "
+                        f"Bias={vp_bias} | Boost={vp_boost:+.2f}"
                     )
+
                 if not is_valid:
                     print(f"[{ticker}] 🚫 Signal dropped: Volume profile validation failed")
                     return False
@@ -392,7 +519,9 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
             print(f"[{ticker}] Volume profile validation error (non-fatal): {vp_err}")
 
     if skip_cfw6_confirmation:
-        entry_price = bars_session[-1]["open"]
+        # FIX #3 (MAR 15, 2026): use close of last confirmed bar, not open.
+        # The bar's open is already stale by the time the signal fires.
+        entry_price = bars_session[-1]["close"]
         base_grade  = bos_confirmation if bos_confirmation in ("A+", "A", "A-", "B+", "B") else "A-"
         confirm_idx = len(bars_session) - 1
         confirm_type = bos_candle_type or "BOS+FVG"
@@ -443,6 +572,59 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         return False
     else:
         print(f"[{ticker}] ✅ VWAP GATE: {vwap_reason}")
+        # ── Phase 1.34: MTF Bias Gate (1H + 15m top-down, Nitro Trades) ──────────
+    # ── Phase 1.34: MTF Bias Gate (1H + 15m top-down, Nitro Trades) ──────────
+    if MTF_BIAS_ENABLED and mtf_bias_engine:
+        try:
+            from app.mtf.mtf_compression import compress_to_1m as _compress_1m
+            def _resample_bars(bars_1m: list, minutes: int) -> list:
+                """Delegate to mtf_compression for 15m/1h aggregation."""
+                from collections import defaultdict
+                buckets = defaultdict(list)
+                for b in bars_1m:
+                    dt = b["datetime"]
+                    floored = dt.replace(
+                        minute=(dt.minute // minutes) * minutes,
+                        second=0, microsecond=0
+                    )
+                    buckets[floored].append(b)
+                result = []
+                for ts in sorted(buckets):
+                    bucket = buckets[ts]
+                    result.append({
+                        "datetime": ts,
+                        "open":     bucket[0]["open"],
+                        "high":     max(b["high"]   for b in bucket),
+                        "low":      min(b["low"]    for b in bucket),
+                        "close":    bucket[-1]["close"],
+                        "volume":   sum(b["volume"] for b in bucket),
+                    })
+                return result
+
+            _bars_1m_raw = data_manager.get_bars_from_memory(ticker, limit=390)
+            _bars_15m = _resample_bars(_bars_1m_raw, 15)
+            _bars_1h  = _resample_bars(_bars_1m_raw, 60)
+
+            _mtf = mtf_bias_engine.evaluate(
+                direction=direction,
+                bars_1h=_bars_1h,
+                bars_15m=_bars_15m,
+                current_price=entry_price,
+            )
+            _mtf_emoji = "✅" if _mtf["pass"] else "🚫"
+            print(f"[{ticker}] {_mtf_emoji} MTF BIAS: {_mtf['reason']}")
+            mtf_bias_engine.record_stat(ticker, direction, _mtf)  # Phase 1.35
+            if not _mtf["pass"]:
+                return False
+            _mtf_bias_adj = _mtf["confidence_adj"]
+
+        except Exception as _mtf_err:
+            print(f"[{ticker}] MTF bias check skipped (non-fatal): {_mtf_err}")
+            _mtf_bias_adj = 0.0
+    else:
+        _mtf_bias_adj = 0.0
+
+    # ─────────────────────────────────────────────────────────────────────────
 
     conf_result = grade_signal_with_confirmations(
         ticker=ticker, direction=direction, bars=bars_session,
@@ -460,6 +642,23 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         base_confidence_pre_mtf_trend, _mtf_trend_signal_data
     )
     _mtf_trend_boost = _mtf_trend_signal_data.get('mtf_trend', {}).get('boost', 0.0)
+
+    # ── Step 8.6: SMC Enrichment ──────────────────────────────────────────────
+    # Enrich signal with CHoCH / Inducement / Order Block / Trend Phase context.
+    # Applies a capped confidence delta (+/- up to 0.10 / -0.05).
+    # ADDITIVE ONLY — never blocks signals.
+    _smc_signal_data = dict(_mtf_trend_signal_data)
+    _smc_signal_data.update({
+        'direction':  direction,
+        'bos_idx':    breakout_idx,
+        'bos_price':  zone_low if direction == 'bull' else zone_high,
+        'entry_type': signal_type,
+    })
+    _smc_signal_data = enrich_signal_with_smc(ticker, bars_session, _smc_signal_data)
+    _smc_delta = _smc_signal_data.get('smc', {}).get('total_confidence_delta', 0.0)
+    _smc_summary = _smc_signal_data.get('smc', {}).get('smc_summary', '')
+    if _smc_summary:
+        print(f"[{ticker}] 🔬 SMC: {_smc_summary} | conf_delta={_smc_delta:+.3f}")
 
     mtf_result = enhance_signal_with_mtf(
         ticker=ticker,
@@ -598,37 +797,6 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
     ml_boost = 0.0
     _meta = get_ticker_screener_metadata(ticker)
 
-    if ML_SCORER_ENABLED:
-        try:
-            scorer = get_scorer_v2()
-            if scorer:
-                _meta = get_ticker_screener_metadata(ticker)
-                ml_signal_data = {
-                    'confidence':            base_confidence,
-                    'rvol':                  _meta.get('rvol', 1.0),
-                    'score':                 _meta.get('score', 50),
-                    'mtf_convergence':       mtf_result.get('convergence', False),
-                    'mtf_convergence_count': len(mtf_result.get('timeframes', [])),
-                    'direction':             direction,
-                    'signal_type':           signal_type,
-                    'entry_price':           entry_price,
-                    'bars':                  bars_session,
-                    'ticker_win_rate':       _TICKER_WIN_CACHE.get(ticker, 0.40),
-                    'spy_regime':            float(spy_regime.get('score_adj', 0)) / 100.0 if spy_regime else 0.0,
-                }
-                ml_prob = scorer.score_signal(ml_signal_data)
-                threshold = scorer.threshold
-                ml_emoji = "✅" if ml_prob >= threshold else ("⏭️" if ml_prob < 0 else "❌")
-                print(f"[{ticker}] {ml_emoji} ML SCORE: {ml_prob:.3f} (threshold={threshold:.3f})")
-                if ml_prob >= 0 and ml_prob < threshold:
-                    print(f"[{ticker}] 🚫 ML GATE: signal dropped (prob={ml_prob:.3f} < {threshold:.3f})")
-                    return False
-                if ml_prob >= threshold:
-                    ml_boost = (ml_prob - 0.50) * 0.10
-                    print(f"[{ticker}] ML CONF BOOST: {ml_boost:+.3f} → {base_confidence + ml_boost:.3f}")
-        except Exception as ml_err:
-            print(f"[{ticker}] ML scorer error (non-fatal): {ml_err}")
-
     options_rec = _pre_options_data
     if _pre_options_data and _pre_options_data.get("gex_data"):
         print(f"[{ticker}] [OPTIONS] GEX data reused from Step 6.5 cache")
@@ -656,7 +824,13 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
     uoa_adj    = mult_to_adjustment(uoa_multiplier, base_confidence)
     gex_adj    = mult_to_adjustment(gex_multiplier, base_confidence)
 
-    final_confidence = base_confidence + ticker_adj + mode_adj + ivr_adj + uoa_adj + gex_adj + mtf_boost + ml_boost
+    final_confidence = (
+        base_confidence
+        + ticker_adj + mode_adj + ivr_adj + uoa_adj + gex_adj
+        + mtf_boost + ml_boost + vp_boost
+        + _smc_delta
+        + _mtf_bias_adj   # Phase 1.34: 1H+15m alignment boost
+    )
     final_confidence = max(0.40, min(final_confidence, 0.95))
 
     if SPY_EMA_CONTEXT_ENABLED and spy_regime:
@@ -705,6 +879,8 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
     print(
         f"[CONFIDENCE-v2] Base:{base_confidence:.2f} "
         f"+ MTF-Trend:{_mtf_trend_boost:+.3f} "
+        f"+ SMC:{_smc_delta:+.3f} "
+        f"+ MTFBias:{_mtf_bias_adj:+.3f} "
         f"+ Ticker:{ticker_adj:+.3f}({ticker_multiplier:.2f}) "
         f"+ Mode:{mode_adj:+.3f}({mode_decay:.2f}) "
         f"+ IVR:{ivr_adj:+.3f}[{ivr_label}] "
@@ -712,6 +888,7 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         f"+ GEX:{gex_adj:+.3f}[{gex_label}] "
         f"+ MTF:{mtf_boost:+.3f} "
         f"+ ML:{ml_boost:+.3f} "
+        f"+ VP:{vp_boost:+.3f} "
         f"+ Sweep:{(_sweep_result['boost'] if _sweep_result else 0.0):+.3f} "
         f"+ OB:{(0.03 if _ob_result else 0.0):+.3f} "
         f"+ SD:{(0.03 if _sd_result else 0.0):+.3f} "
@@ -762,6 +939,15 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
             f"dynamic threshold {eff_min:.2f} "
             f"[{signal_type}/{final_grade}] — signal dropped"
         )
+        if PHASE_4_ENABLED and signal_tracker:
+            try:
+                signal_tracker.record_signal_rejected(
+                    ticker=ticker,
+                    stage='CONFIDENCE_GATE',
+                    reason=f"conf {final_confidence:.2f} < threshold {eff_min:.2f} [{signal_type}/{final_grade}]"
+                )
+            except Exception:
+                pass
         return False
 
     _track_gate_result(final_grade, signal_type, final_confidence, passed=True)
@@ -800,13 +986,6 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         bos_candle_type=bos_candle_type,
         mtf_result=mtf_result, metadata=_meta
     )
-
-    # ── FIX #15: Register cooldown in DB after signal is armed ───────────────
-    # Persisted to signal_cooldowns table so restarts cannot re-fire the same signal.
-    try:
-        set_cooldown(ticker, direction, signal_type)
-    except Exception as _cd_set_err:
-        print(f"[{ticker}] [COOLDOWN] Set error (non-fatal): {_cd_set_err}")
 
     return True
 
@@ -906,8 +1085,14 @@ def process_ticker(ticker: str):
             )
             return
 
-        if _state.ticker_is_watching(ticker):
+        _is_watching = _state.ticker_is_watching(ticker)
+        if _is_watching:
             w = _state.get_watching_signal(ticker)
+
+            # ── DB-restore: resolve breakout_idx from breakout_bar_dt after restart ──
+            # After a Railway restart, watching_signals are loaded from DB but
+            # breakout_idx is not stored — only breakout_bar_dt is. Resolve it
+            # by scanning today's bars for the matching datetime.
             if w.get("breakout_idx") is None:
                 bar_dt_target = _strip_tz(w.get("breakout_bar_dt"))
                 resolved_idx = None
@@ -923,15 +1108,15 @@ def process_ticker(ticker: str):
                     )
                     _state.remove_watching_signal(ticker)
                     _remove_watch_from_db(ticker)
+                    return
                 else:
                     _state.update_watching_signal_field(ticker, "breakout_idx", resolved_idx)
+                    w["breakout_idx"] = resolved_idx  # keep local ref in sync
                     print(
                         f"[{ticker}] 📄 Watch restored from DB: "
                         f"breakout_idx={resolved_idx} ({bar_dt_target})"
                     )
 
-        if _state.ticker_is_watching(ticker):
-            w = _state.get_watching_signal(ticker)
             bars_since = len(bars_session) - w["breakout_idx"]
             if bars_since > MAX_WATCH_BARS:
                 print(f"[{ticker}] ⏰ Watch expired — clearing")
@@ -989,10 +1174,19 @@ def process_ticker(ticker: str):
                 direction, breakout_idx = detect_breakout_after_or(bars_session, or_high, or_low)
 
                 if direction:
+                    # ── FUNNEL ANALYTICS: log BOS detection on OR path ────────
+                    _log_bos_event(ticker, direction,
+                                   bars_session[breakout_idx]["close"],
+                                   signal_type="CFW6_OR")
+
                     zone_low, zone_high = detect_fvg_after_break(
                         bars_session, breakout_idx, direction
                     )
                     if zone_low is not None:
+                        # ── FUNNEL ANALYTICS: log FVG found on OR path ────────
+                        _log_fvg_event(ticker, direction, zone_low, zone_high,
+                                       signal_type="CFW6_OR")
+
                         scan_mode = "OR_ANCHORED"
                         or_high_ref, or_low_ref = or_high, or_low
                     else:
@@ -1006,11 +1200,16 @@ def process_ticker(ticker: str):
                         }
                         _state.set_watching_signal(ticker, w_entry)
                         _persist_watch(ticker, w_entry)
-                        send_bos_watch_alert(
-                            ticker, direction,
-                            bars_session[breakout_idx]["close"],
-                            or_high, or_low, "CFW6_OR"
-                        )
+                        _bos_key = f"{ticker}:{direction}:{bars_session[breakout_idx]['datetime']}"
+                        if _bos_key not in _bos_watch_alerted:
+                            _bos_watch_alerted.add(_bos_key)
+                            send_bos_watch_alert(
+                                ticker, direction,
+                                bars_session[breakout_idx]["close"],
+                                or_high, or_low, "CFW6_OR"
+                            )
+                        else:
+                            print(f"[{ticker}] 🔕 BOS watch alert suppressed (already sent)")
                         return
                 else:
                     print(f"[{ticker}] No ORB")
@@ -1023,10 +1222,19 @@ def process_ticker(ticker: str):
                             bars_session, sr["sr_high"], sr["sr_low"]
                         )
                         if sr_direction:
+                            # ── FUNNEL ANALYTICS: log BOS on secondary range path ──
+                            _log_bos_event(ticker, sr_direction,
+                                           bars_session[sr_idx]["close"],
+                                           signal_type="CFW6_OR")
+
                             zone_low, zone_high = detect_fvg_after_break(
                                 bars_session, sr_idx, sr_direction
                             )
                             if zone_low is not None:
+                                # ── FUNNEL ANALYTICS: log FVG on secondary range path ──
+                                _log_fvg_event(ticker, sr_direction, zone_low, zone_high,
+                                               signal_type="CFW6_OR")
+
                                 scan_mode    = "OR_ANCHORED"
                                 or_high_ref  = sr["sr_high"]
                                 or_low_ref   = sr["sr_low"]
@@ -1043,11 +1251,16 @@ def process_ticker(ticker: str):
                                 }
                                 _state.set_watching_signal(ticker, w_entry)
                                 _persist_watch(ticker, w_entry)
-                                send_bos_watch_alert(
-                                    ticker, sr_direction,
-                                    bars_session[sr_idx]["close"],
-                                    sr["sr_high"], sr["sr_low"], "CFW6_OR"
-                                )
+                                _bos_key = f"{ticker}:{sr_direction}:{bars_session[sr_idx]['datetime']}"
+                                if _bos_key not in _bos_watch_alerted:
+                                    _bos_watch_alerted.add(_bos_key)
+                                    send_bos_watch_alert(
+                                        ticker, sr_direction,
+                                        bars_session[sr_idx]["close"],
+                                        sr["sr_high"], sr["sr_low"], "CFW6_OR"
+                                    )
+                                else:
+                                    print(f"[{ticker}] 🔕 BOS watch alert suppressed (already sent)")
                                 return
 
         else:
@@ -1067,6 +1280,14 @@ def process_ticker(ticker: str):
             breakout_idx = bos_signal["bos_idx"]
             bos_confirmation = bos_signal.get("confirmation")
             bos_candle_type = bos_signal.get("candle_type")
+
+            # ── FUNNEL ANALYTICS: log BOS + FVG on INTRADAY_BOS path ─────────
+            _log_bos_event(ticker, direction,
+                           bos_signal.get("bos_price", bars_session[breakout_idx]["close"]),
+                           signal_type="CFW6_INTRADAY")
+            _log_fvg_event(ticker, direction,
+                           bos_signal["fvg_low"], bos_signal["fvg_high"],
+                           signal_type="CFW6_INTRADAY")
 
             if MTF_PRIORITY_ENABLED:
                 try:
@@ -1135,15 +1356,20 @@ def process_ticker(ticker: str):
             except Exception as orb_err:
                 print(f"[{ticker}] ORB classify error (non-fatal): {orb_err}")
 
+        # AFTER
         if scan_mode is None and VWAP_RECLAIM_ENABLED:
-            vr = detect_vwap_reclaim(bars_session)
+            _vwap_val = compute_vwap(bars_session)
+            for _vr_dir in ("bull", "bear"):
+                vr = detect_vwap_reclaim(ticker, bars_session, _vr_dir, _vwap_val)
+                if vr:
+                    break
             if vr:
                 print(
                     f"[{ticker}] 🔵 VWAP RECLAIM: {vr['direction'].upper()} "
-                    f"@ ${vr['entry_price']:.2f} | VWAP=${vr['vwap_at_reclaim']:.2f}"
+                    f"@ ${vr['entry_price']:.2f} | VWAP=${vr['vwap']:.2f}"
                 )
-                vr_zone_low  = vr["vwap_at_reclaim"] * 0.9985
-                vr_zone_high = vr["vwap_at_reclaim"] * 1.0015
+                vr_zone_low  = vr["zone_low"]
+                vr_zone_high = vr["zone_high"]
                 vr_or_high   = vr["entry_price"] * 1.005
                 vr_or_low    = vr["entry_price"] * 0.995
                 _run_signal_pipeline(

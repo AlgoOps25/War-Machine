@@ -43,6 +43,17 @@ PHASE B1 (MAR 12, 2026):
   - Classifications: SECONDARY_TIGHT / SECONDARY_NORMAL / SECONDARY_WIDE
     (same ATR ratio thresholds as primary OR).
   - Cache is per-session, never expires (window is immutable after 10:30).
+
+PHASE B1 BUG FIX (MAR 17, 2026):
+  BUG #6: _extract_secondary_bars() called dt.time() on tz-aware datetimes without
+           first converting to ET. A UTC-aware bar at 14:05 UTC (= 10:05 ET) read as
+           14:05 and was excluded from the 10:00-10:30 window, allowing outlier/premarket
+           bars with corrupted prices (e.g. $1336.72 for TSEM) to slip through instead.
+           Fix 1: Convert dt to ET before calling .time() in _extract_secondary_bars().
+           Fix 2: Price sanity clamp — reject any bar where high > sr_low_estimate * 5
+                  to guard against future tick/timestamp corruption in price fields.
+           Same ET-coercion fix applied to _extract_or_bars() and _extract_session_bars()
+           for consistency (those paths were less affected due to earlier window times).
 """
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime, time, timedelta
@@ -56,6 +67,32 @@ ET = ZoneInfo("America/New_York")
 # How long (minutes) a DYNAMIC cache entry is valid before re-evaluation.
 # TIGHT/NORMAL/WIDE entries never expire (the true 9:30-9:40 window is immutable).
 OR_CACHE_DYNAMIC_TTL = timedelta(minutes=30)
+
+# Price sanity multiplier for secondary range bars.
+# Any bar whose high exceeds (median_close * SR_PRICE_SANITY_MULT) is discarded
+# as a corrupted tick/timestamp-leaked-into-price value.
+SR_PRICE_SANITY_MULT = 5.0
+
+
+def _to_et_time(dt) -> Optional[time]:
+    """
+    Return the ET wall-clock time for a datetime that may be:
+      - tz-aware (any tz)  → convert to ET first
+      - tz-naive           → assume already ET
+      - a string           → parse via fromisoformat, then convert
+
+    Returns None if dt is None or unparseable.
+    """
+    if dt is None:
+        return None
+    if isinstance(dt, str):
+        try:
+            dt = datetime.fromisoformat(dt)
+        except ValueError:
+            return None
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(ET)
+    return dt.time()
 
 
 class OpeningRangeDetector:
@@ -283,6 +320,33 @@ class OpeningRangeDetector:
         if len(sr_bars) < config.SECONDARY_RANGE_MIN_BARS:
             print(
                 f"[OR-SR] {ticker} — only {len(sr_bars)} bars in 10:00-10:30 "
+                f"(need {config.SECONDARY_RANGE_MIN_BARS}) — skipping secondary range"
+            )
+            return None
+
+        # ── Price sanity clamp (Phase B1 Bug Fix #6) ─────────────────
+        # Estimate a reference price from the median close of valid bars,
+        # then discard any bar whose high exceeds reference * SR_PRICE_SANITY_MULT.
+        # This catches timestamp-leaked-into-price corruption (e.g. $1336 for TSEM).
+        closes = [b["close"] for b in sr_bars if b.get("close") and b["close"] > 0]
+        if closes:
+            ref_price = float(np.median(closes))
+            sane_bars = [
+                b for b in sr_bars
+                if b.get("high", 0) <= ref_price * SR_PRICE_SANITY_MULT
+                and b.get("low",  0) >= ref_price / SR_PRICE_SANITY_MULT
+            ]
+            discarded = len(sr_bars) - len(sane_bars)
+            if discarded > 0:
+                print(
+                    f"[OR-SR] {ticker} ⚠️  Discarded {discarded} bar(s) with "
+                    f"corrupted price (ref=${ref_price:.2f}, mult={SR_PRICE_SANITY_MULT}x)"
+                )
+            sr_bars = sane_bars
+
+        if len(sr_bars) < config.SECONDARY_RANGE_MIN_BARS:
+            print(
+                f"[OR-SR] {ticker} — only {len(sr_bars)} sane bars after price clamp "
                 f"(need {config.SECONDARY_RANGE_MIN_BARS}) — skipping secondary range"
             )
             return None
@@ -619,18 +683,18 @@ class OpeningRangeDetector:
         PHASE 1.17 FIX: data_manager returns bar['datetime'] (datetime object),
         NOT bar['timestamp'] (string). Previous code threw KeyError on every bar
         causing perpetual empty OR.
+
+        PHASE B1 FIX: Use _to_et_time() so tz-aware UTC datetimes are correctly
+        converted to ET before the window comparison.
         """
         if end_time is None:
             end_time = self.or_end_time
 
         or_bars = []
         for bar in bars_1m:
-            dt = bar.get('datetime')
-            if dt is None:
+            bar_time = _to_et_time(bar.get('datetime'))
+            if bar_time is None:
                 continue
-            if isinstance(dt, str):
-                dt = datetime.fromisoformat(dt)
-            bar_time = dt.time()
             if self.or_start_time <= bar_time < end_time:
                 or_bars.append(bar)
 
@@ -642,34 +706,36 @@ class OpeningRangeDetector:
 
         PHASE 1.17: Used as fallback when OR window was missed.
         Returns everything from 9:30 to the most recent bar.
+
+        PHASE B1 FIX: Use _to_et_time() for correct tz handling.
         """
         session_bars = []
         for bar in bars_1m:
-            dt = bar.get('datetime')
-            if dt is None:
+            bar_time = _to_et_time(bar.get('datetime'))
+            if bar_time is None:
                 continue
-            if isinstance(dt, str):
-                dt = datetime.fromisoformat(dt)
-            if dt.time() >= self.or_start_time:
+            if bar_time >= self.or_start_time:
                 session_bars.append(bar)
         return session_bars
 
     def _extract_secondary_bars(self, bars_1m: List[Dict]) -> List[Dict]:
         """
-        Extract bars within the secondary range window (10:00-10:30).
+        Extract bars within the secondary range window (10:00-10:30 ET).
 
-        Phase B1: Same key/datetime fix as _extract_or_bars.
-        Returns all 1-minute bars where 10:00 <= bar_time < 10:30.
+        PHASE B1 BUG FIX (#6): Previously called dt.time() directly on tz-aware
+        datetimes, which returned UTC wall time instead of ET wall time.
+        A 10:05 AM ET bar stored as UTC (14:05) was read as 14:05 and excluded
+        from the 10:00-10:30 filter — allowing out-of-window bars with corrupted
+        prices to remain in sr_bars and produce wildly wrong sr_high values.
+
+        Fix: delegate to _to_et_time() which always converts to ET before .time().
         """
         from utils import config
         sr_bars = []
         for bar in bars_1m:
-            dt = bar.get('datetime')
-            if dt is None:
+            bar_time = _to_et_time(bar.get('datetime'))
+            if bar_time is None:
                 continue
-            if isinstance(dt, str):
-                dt = datetime.fromisoformat(dt)
-            bar_time = dt.time()
             if config.SECONDARY_RANGE_START <= bar_time < config.SECONDARY_RANGE_END:
                 sr_bars.append(bar)
         return sr_bars

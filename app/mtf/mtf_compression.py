@@ -27,6 +27,25 @@ FIX H2 (MAR 10, 2026):
 from typing import List, Dict, Optional
 from datetime import timedelta
 
+def detect_bar_resolution(bars: list) -> int:
+    """
+    Auto-detect bar width in minutes by inspecting timestamps.
+    Returns 1, 2, 3, 5, 15, 30, or 60. Defaults to 5 if unclear.
+    """
+    if len(bars) < 2:
+        return 5
+    deltas = []
+    for i in range(1, min(6, len(bars))):
+        try:
+            diff = (bars[i]['datetime'] - bars[i-1]['datetime']).seconds // 60
+            if diff > 0:
+                deltas.append(diff)
+        except Exception:
+            pass
+    if not deltas:
+        return 5
+    return min(deltas)
+
 # Add these functions to app/mtf/mtf_compression.py
 
 def expand_to_15m(bars_5m: List[dict]) -> List[dict]:
@@ -128,6 +147,7 @@ print("[MTF-COMPRESSION] ✅ Extended compression module loaded")
 print("[MTF-COMPRESSION] Supports: 1m→3m, 5m→15m/30m, all timeframes 1m-1h")
 
 def compress_to_3m(bars_5m: List[dict]) -> List[dict]:
+    
     """
     Compress 5m bars to approximate 3m bars.
     
@@ -140,6 +160,9 @@ def compress_to_3m(bars_5m: List[dict]) -> List[dict]:
     Returns:
         List of approximate 3m bars
     """
+    if detect_bar_resolution(bars_5m) != 5:
+        return bars_5m  # input is not 5m — skip compression, return as-is
+
     bars_3m = []
     
     for bar in bars_5m:
@@ -173,6 +196,9 @@ def compress_to_2m(bars_5m: List[dict]) -> List[dict]:
     Returns:
         List of approximate 2m bars
     """
+    if detect_bar_resolution(bars_5m) != 5:
+        return bars_5m  # input is not 5m — skip compression, return as-is
+
     bars_2m = []
     
     for bar in bars_5m:
@@ -205,6 +231,9 @@ def compress_to_1m(bars_5m: List[dict]) -> List[dict]:
     Returns:
         List of approximate 1m bars (5x the input count)
     """
+    if detect_bar_resolution(bars_5m) != 5:
+        return bars_5m  # input is not 5m — skip compression, return as-is
+
     bars_1m = []
     
     for bar in bars_5m:
