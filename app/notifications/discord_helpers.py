@@ -20,6 +20,10 @@ PHASE 1.29 (Mar 16 2026):
   (separate #watchlist channel) with a rich embed per stage showing
   rank, score, RVOL, gap, catalyst, and price for each ticker.
 - Falls back to DISCORD_SIGNALS_WEBHOOK_URL if watchlist URL not set.
+
+VP BIAS (Mar 19 2026):
+- send_options_signal_alert() now accepts vp_bias param (CALL/PUT/NEUTRAL/AVOID).
+  Shown in Signal Quality field with directional emoji.
 """
 import requests
 import functools
@@ -226,6 +230,7 @@ def send_options_signal_alert(
     mtf_convergence: Optional[int] = None,
     explosive_mover: bool = False,
     ml_adjustment: Optional[float] = None,
+    vp_bias: Optional[str] = None,
 ):
     """
     Options signal alert with CALL/PUT formatting (green/red border).
@@ -233,6 +238,9 @@ def send_options_signal_alert(
 
     ml_adjustment: float in pts (e.g. +9.0 or -5.0).  When |adjustment| >= 1pt,
     a ML Score line is appended showing the direction arrow and base→adjusted conf.
+
+    vp_bias: Volume Profile options bias string — CALL / PUT / NEUTRAL / AVOID.
+             Shown in Signal Quality field when provided.
     """
     # CALL / PUT and colors
     option_side = "CALL" if direction.lower() == "bull" else "PUT"
@@ -288,6 +296,16 @@ def send_options_signal_alert(
         else:
             mtf_label = "Single TF"
         quality_bits.append(f"MTF **{mtf_convergence} TF** ({mtf_label})")
+    # VP Bias — shown when provided and not NEUTRAL
+    if vp_bias:
+        _bias_upper = vp_bias.upper()
+        _bias_emoji = (
+            "📈" if _bias_upper == "CALL"
+            else "📉" if _bias_upper == "PUT"
+            else "⚠️" if _bias_upper == "AVOID"
+            else "➡️"
+        )
+        quality_bits.append(f"VP Bias {_bias_emoji} **{_bias_upper}**")
     
     if quality_bits:
         fields.append({
