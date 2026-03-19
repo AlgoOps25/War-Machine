@@ -1,6 +1,6 @@
 import logging
 logger = logging.getLogger(__name__)
-﻿"""
+"""
 Data Manager - Consolidated Data Fetching, Storage, and Database Management
 
 Design principles:
