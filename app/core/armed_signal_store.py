@@ -204,10 +204,13 @@ def _load_armed_signals_from_db() -> dict:
             return_conn(conn)
 
 
+_armed_load_lock = __import__('threading').Lock()
+
 def _maybe_load_armed_signals():
-    if _state.is_armed_loaded():
-        return
-    _state.set_armed_loaded(True)
+    with _armed_load_lock:
+        if _state.is_armed_loaded():
+            return
+        _state.set_armed_loaded(True)
     _ensure_armed_db()
     loaded = _load_armed_signals_from_db()
     if loaded:

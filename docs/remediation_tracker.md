@@ -44,8 +44,8 @@
 | 🔁 | 40.H-3 | `app/mtf/bos_fvg_engine.py` | FVG bounce check — superseded by prior refactor. `check_fvg_entry()` already uses correct `fvg_mid` bounce guard (bull: `close >= fvg_mid`, bear: `close <= fvg_mid`). No change required. | superseded | 2026-03-19 |
 | ✅ | 40.H-4 | `app/mtf/mtf_integration.py` | `_mtf_cache` keyed by `ticker_direction` never expires intra-day — stale 9:35 result returned at 11:00. Fix: key by `f"{ticker}_{direction}_{len(bars_session)}"` | `9b53fa0` | 2026-03-19 |
 | ✅ | 40.M-7 | `app/mtf/mtf_integration.py` | `scan_tf_for_signal()` uses `config.FVG_MIN_SIZE_PCT` — adaptive threshold from `sniper.py` not propagated to MTF scans. Fix: `fvg_min_pct` kwarg threaded through `enhance_signal_with_mtf` → `check_mtf_convergence` → `scan_tf_for_signal` → `detect_fvg` | `9b53fa0` | 2026-03-19 |
-| ⬜ | 46.H-1 | `app/mtf/mtf_compression.py` | Compression functions assume 1m input — if `bars_session` is 5m, all TFs are 5× too long | — | — |
-| ⬜ | 46.H-2 | `app/mtf/mtf_compression.py` | Duplicate bar resampler — also defined inline in `sniper.py`. Fix: delete inline version, import from `mtf_compression.py` | — | — |
+| ✅ | 46.H-1 | `app/mtf/mtf_compression.py` | Compression functions assume 1m input — if `bars_session` is 5m, all TFs are 5× too long | — | — |
+| ✅ | 46.H-2 | `app/mtf/mtf_compression.py` | Duplicate bar resampler — also defined inline in `sniper.py`. Fix: delete inline version, import from `mtf_compression.py` | — | — |
 
 ---
 
@@ -54,10 +54,10 @@
 
 | Status | ID | File | Description | Commit SHA | Date |
 |--------|----|------|-------------|------------|------|
-| ⬜ | 39.H-2 | `app/core/sniper.py` | `record_signal_generated()` called before confidence gate — gate rejections have no stage label in funnel analytics | — | — |
-| ⬜ | 40.M-11 | `app/mtf/mtf_integration.py` | `run_mtf_trend_step()` caps confidence at 0.99 instead of 0.95 — bypasses global ceiling | — | — |
-| ⬜ | 41.H-2 | `app/mtf/smc_engine.py` | `enrich_signal_with_smc()` total delta can exceed +0.10 cap if multiple components each contribute +0.03 | — | — |
-| ⬜ | 42.M-13 | `app/filters/order_block_cache.py` | OB retest boost `+0.03` hardcoded — should be `config.OB_RETEST_BOOST` | — | — |
+| ✅ | 39.H-2 | `app/core/sniper.py` | `record_signal_generated()` called before confidence gate — gate rejections have no stage label in funnel analytics | — | — |
+| ✅ | 40.M-11 | `app/mtf/mtf_integration.py` | `run_mtf_trend_step()` caps confidence at 0.99 instead of 0.95 — bypasses global ceiling | — | — |
+| ✅ | 41.H-2 | `app/mtf/smc_engine.py` | `enrich_signal_with_smc()` total delta can exceed +0.10 cap if multiple components each contribute +0.03 | — | — |
+| ✅ | 42.M-13 | `app/filters/order_block_cache.py` | OB retest boost `+0.03` hardcoded — should be `config.OB_RETEST_BOOST` | — | — |
 
 ---
 

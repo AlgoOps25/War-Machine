@@ -63,6 +63,8 @@ _mtf_stats = {
     'total_boost': 0.0
 }
 
+_mtf_stats_lock = __import__('threading').Lock()
+
 _cache_date = None
 _mtf_cache = {}
 
@@ -226,6 +228,14 @@ def check_mtf_convergence(ticker: str, direction: str, bars_5m: List[dict],
     convergence    = num_timeframes > 1
     boost_map = {1: 0.00, 2: 0.02, 3: 0.03, 4: 0.05}
     boost = boost_map[num_timeframes]
+    with _mtf_stats_lock:
+        _mtf_stats['convergence_found'] += 1
+        _mtf_stats['total_boost'] += boost
+        _mtf_stats['timeframe_breakdown'][key] += 1
+        _mtf_stats['confirmation_grades'][best_confirmation_grade] += 1
+    else:
+        _mtf_stats['timeframe_breakdown']['5m_only'] += 1
+
     if convergence:
         _mtf_stats['convergence_found'] += 1
         _mtf_stats['total_boost'] += boost
@@ -319,6 +329,7 @@ def reset_daily_stats():
         'total_boost': 0.0
     }
 
+    _mtf_stats_lock = __import__('threading').Lock()
 
 # ── Step 8.5: MTF Trend Validator ────────────────────────────────────────────────
 

@@ -151,6 +151,7 @@ def _run_ticker_with_timeout(process_ticker_fn, ticker: str) -> bool:
 
 ANALYTICS_AVAILABLE = False
 analytics_conn = None
+_analytics_conn_lock = __import__('threading').Lock()
 DATABASE_URL = os.getenv('DATABASE_URL')
 
 print("=" * 50, flush=True)
@@ -171,38 +172,37 @@ else:
     ANALYTICS_AVAILABLE = False
 print("=" * 50, flush=True)
 
-
 def _get_analytics_conn():
     global analytics_conn, ANALYTICS_AVAILABLE
     if not DATABASE_URL:
         return None
-    if analytics_conn is not None:
-        try:
-            cur = analytics_conn.cursor()
-            cur.execute("SELECT 1")
-            cur.close()
-            return analytics_conn
-        except Exception:
+    with _analytics_conn_lock:
+        if analytics_conn is not None:
             try:
-                analytics_conn.close()
+                cur = analytics_conn.cursor()
+                cur.execute("SELECT 1")
+                cur.close()
+                return analytics_conn
             except Exception:
-                pass
-            analytics_conn = None
-    for attempt in range(1, 4):
-        try:
-            import psycopg2
-            analytics_conn = psycopg2.connect(DATABASE_URL, connect_timeout=10)
-            analytics_conn.autocommit = True
-            ANALYTICS_AVAILABLE = True
-            logger.info(f"[DB] Reconnected analytics connection (attempt {attempt})")
-            return analytics_conn
-        except Exception as e:
-            logger.warning(f"[DB] Reconnect attempt {attempt}/3 failed: {e}")
-            time.sleep(1)
-    logger.error("[DB] All reconnect attempts failed — analytics disabled for this cycle")
-    ANALYTICS_AVAILABLE = False
-    return None
-
+                try:
+                    analytics_conn.close()
+                except Exception:
+                    pass
+                analytics_conn = None
+        for attempt in range(1, 4):
+            try:
+                import psycopg2
+                analytics_conn = psycopg2.connect(DATABASE_URL, connect_timeout=10)
+                analytics_conn.autocommit = True
+                ANALYTICS_AVAILABLE = True
+                logger.info(f"[DB] Reconnected analytics connection (attempt {attempt})")
+                return analytics_conn
+            except Exception as e:
+                logger.warning(f"[DB] Reconnect attempt {attempt}/3 failed: {e}")
+                time.sleep(1)
+        logger.error("[DB] All reconnect attempts failed — analytics disabled for this cycle")
+        ANALYTICS_AVAILABLE = False
+        return None
 
 try:
     from app.signals.signal_analytics import signal_tracker
