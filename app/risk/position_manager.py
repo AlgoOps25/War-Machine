@@ -67,7 +67,16 @@ FIX #9 (MAR 15, 2026) — check_exits T1/T2 RACE VIA STALE CACHE:
 FIX #10 (MAR 16, 2026) — UNICODE SURROGATE PAIRS:
   - rotate (🔄) and siren (🚨) were stored as broken
     surrogate pairs, causing UnicodeEncodeError on Railway stdout.
-    Replaced with correct 4-byte codepoints \U0001f504 and \U0001f6a8.
+    Replaced with correct 4-byte codepoints \\U0001f504 and \\U0001f6a8.
+
+FIX #11 (MAR 19, 2026) — SQLITE AT TIME ZONE CRASH (47.P4-1 UNBLOCK):
+  - Four queries used Postgres-only `AT TIME ZONE` syntax, crashing with
+    sqlite3.OperationalError on local dev.  This blocked every local import
+    of sniper.py (position_manager is instantiated at module level).
+  - Fix: branch on db_connection.USE_POSTGRES — Postgres keeps full TZ cast,
+    SQLite uses plain date() (naive-ET timestamps stored locally).
+  - Affected: _close_stale_positions, get_daily_stats, has_loss_streak,
+    get_todays_closed_trades.
 """
 from utils import config
 from datetime import datetime, timedelta
@@ -79,7 +88,7 @@ _ET = ZoneInfo("America/New_York")
 
 from typing import Dict, List, Optional, Tuple
 from app.data import db_connection
-from app.data.db_connection import get_conn, return_conn, ph, dict_cursor, serial_pk
+from app.data.db_connection import get_conn, return_conn, ph, dict_cursor, serial_pk, USE_POSTGRES
 import time
 
 # ── VIX sizing (graceful fallback if module unavailable) ────────────────────
@@ -122,6 +131,34 @@ SECTOR_GROUPS = {
 # ── Cache TTL (seconds) ────────────────────────────────────────────────
 _STATS_CACHE_TTL    = 10  # get_daily_stats() — re-query at most every 10s
 _POSITIONS_CACHE_TTL = 5  # get_open_positions() — re-query at most every 5s
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FIX #11: SQLite-compatible date-filter helper
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _date_eq_today(col: str) -> str:
+    """
+    Return a SQL fragment that compares `col` (a TIMESTAMP) to today's ET date.
+
+    Postgres:  DATE(col AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York') = %s
+    SQLite:    date(col) = ?          (timestamps stored naive-ET locally)
+    """
+    if USE_POSTGRES:
+        return f"DATE({col} AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')"
+    return f"date({col})"
+
+
+def _date_lt_today(col: str) -> str:
+    """
+    Return a SQL fragment that checks `col` is strictly before today's ET date.
+
+    Postgres:  DATE(col AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York') < %s
+    SQLite:    date(col) < ?
+    """
+    if USE_POSTGRES:
+        return f"DATE({col} AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')"
+    return f"date({col})"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -465,12 +502,14 @@ class PositionManager:
             conn   = get_conn()
             cursor = dict_cursor(conn)
             p      = ph()
+            # FIX #11: SQLite-compatible date comparison
+            date_col = _date_eq_today("exit_time")
             cursor.execute(
                 f"""
                 SELECT pnl
                 FROM positions
                 WHERE status = {p}
-                  AND DATE(exit_time AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York') = {p}
+                  AND {date_col} = {p}
                 ORDER BY exit_time ASC
                 """,
                 ("CLOSED", today),
@@ -550,11 +589,13 @@ class PositionManager:
             conn   = get_conn()
             cursor = dict_cursor(conn)
 
+            # FIX #11: SQLite-compatible date comparison
+            date_col = _date_lt_today("entry_time")
             cursor.execute(f"""
                 SELECT id, ticker, direction, entry_price
                 FROM positions
                 WHERE status = 'OPEN'
-                AND DATE(entry_time AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York') < {p}
+                AND {date_col} < {p}
             """, (today,))
             stale = cursor.fetchall()
 
@@ -880,7 +921,7 @@ class PositionManager:
             logger.info(f"  Partial P&L: ${partial_pnl:.2f} | Stop \u2192 BE: {entry_price:.2f}")
 
             try:
-                from app.discord_helpers import send_scaling_alert
+                from app.notifications.discord_helpers import send_scaling_alert
                 send_scaling_alert(ticker, exit_price, contracts_to_close,
                                    contracts_left, partial_pnl, entry_price)
             except Exception as e:
@@ -970,7 +1011,7 @@ class PositionManager:
                     logger.info(f"[POSITION] AI record error: {e}")
 
             try:
-                from app.discord_helpers import send_exit_alert
+                from app.notifications.discord_helpers import send_exit_alert
                 send_exit_alert(ticker, exit_price, exit_reason, final_pnl)
             except Exception as e:
                 logger.info(f"[POSITION] Discord exit alert failed: {e}")
@@ -1041,6 +1082,8 @@ class PositionManager:
             conn   = get_conn()
             cursor = dict_cursor(conn)
             today  = datetime.now(_ET).strftime("%Y-%m-%d")
+            # FIX #11: SQLite-compatible date comparison
+            date_col = _date_eq_today("exit_time")
             cursor.execute(f"""
                 SELECT COUNT(*)                                  AS trades,
                        SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) AS wins,
@@ -1048,7 +1091,7 @@ class PositionManager:
                        SUM(pnl)                                  AS total_pnl
                 FROM positions
                 WHERE status = 'CLOSED'
-                  AND DATE(exit_time AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York') = {p}
+                  AND {date_col} = {p}
             """, (today,))
             row = cursor.fetchone()
 
@@ -1163,11 +1206,13 @@ class PositionManager:
             conn   = get_conn()
             cursor = dict_cursor(conn)
             today  = datetime.now(_ET).strftime("%Y-%m-%d")
+            # FIX #11: SQLite-compatible date comparison
+            date_col = _date_eq_today("exit_time")
             cursor.execute(f"""
                 SELECT ticker, direction, grade, entry_price, exit_price, pnl
                 FROM positions
                 WHERE status = 'CLOSED'
-                  AND DATE(exit_time AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York') = {p}
+                  AND {date_col} = {p}
                   AND exit_reason != 'STALE_EOD'
             """, (today,))
             rows = cursor.fetchall()
