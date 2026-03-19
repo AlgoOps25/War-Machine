@@ -305,7 +305,30 @@ _orb_classifications = {}  # ticker -> OR classification dict, populated at 9:40
 # BOS watch alert dedup — prevents repeat Discord pings for the same BOS
 # across scanner cycles. Cleared at EOD alongside watching_signals.
 _bos_watch_alerted: set = set()
-
+# PHASE 3C FIX 39.H-3: module-level resample — not redefined on every pipeline call
+def _resample_bars(bars_1m: list, minutes: int) -> list:
+    """Resample 1m bars into a higher timeframe bucket."""
+    from collections import defaultdict
+    buckets = defaultdict(list)
+    for b in bars_1m:
+        dt = b["datetime"]
+        floored = dt.replace(
+            minute=(dt.minute // minutes) * minutes,
+            second=0, microsecond=0
+        )
+        buckets[floored].append(b)
+    result = []
+    for ts in sorted(buckets):
+        bucket = buckets[ts]
+        result.append({
+            "datetime": ts,
+            "open":     bucket[0]["open"],
+            "high":     max(b["high"]   for b in bucket),
+            "low":      min(b["low"]    for b in bucket),
+            "close":    bucket[-1]["close"],
+            "volume":   sum(b["volume"] for b in bucket),
+        })
+    return result
 # ══════════════════════════════════════════════════════════════════════════════
 # SPY EMA CONTEXT — 5m EMA 9/21/50 regime filter
 # ══════════════════════════════════════════════════════════════════════════════
@@ -586,31 +609,6 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
     # ── Phase 1.34: MTF Bias Gate (1H + 15m top-down, Nitro Trades) ──────────
     if MTF_BIAS_ENABLED and mtf_bias_engine:
         try:
-            from app.mtf.mtf_compression import compress_to_1m as _compress_1m
-            def _resample_bars(bars_1m: list, minutes: int) -> list:
-                """Delegate to mtf_compression for 15m/1h aggregation."""
-                from collections import defaultdict
-                buckets = defaultdict(list)
-                for b in bars_1m:
-                    dt = b["datetime"]
-                    floored = dt.replace(
-                        minute=(dt.minute // minutes) * minutes,
-                        second=0, microsecond=0
-                    )
-                    buckets[floored].append(b)
-                result = []
-                for ts in sorted(buckets):
-                    bucket = buckets[ts]
-                    result.append({
-                        "datetime": ts,
-                        "open":     bucket[0]["open"],
-                        "high":     max(b["high"]   for b in bucket),
-                        "low":      min(b["low"]    for b in bucket),
-                        "close":    bucket[-1]["close"],
-                        "volume":   sum(b["volume"] for b in bucket),
-                    })
-                return result
-
             _bars_1m_raw = data_manager.get_bars_from_memory(ticker, limit=390)
             _bars_15m = _resample_bars(_bars_1m_raw, 15)
             _bars_1h  = _resample_bars(_bars_1m_raw, 60)
@@ -852,12 +850,11 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
 
     _sweep_result = None
     if LIQUIDITY_SWEEP_ENABLED:
-        _sweep_vwap = compute_vwap(bars_session)
         final_confidence, _sweep_result = apply_sweep_boost(
             ticker, bars_session, direction,
             or_high_ref, or_low_ref,
             final_confidence,
-            vwap=_sweep_vwap
+            vwap=_vwap_val  # PHASE 3C: reuse VWAP already computed above
         )
         if _sweep_result is None:
             print(f"[{ticker}] — No liquidity sweep detected")
