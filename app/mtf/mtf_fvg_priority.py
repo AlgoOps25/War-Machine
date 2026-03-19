@@ -17,6 +17,7 @@ Integration:
 - Marks lower-TF FVGs as "secondary" for confluence tracking only
 """
 
+import logging
 from datetime import datetime, time
 from typing import List, Dict, Optional, Tuple
 from zoneinfo import ZoneInfo
@@ -26,14 +27,14 @@ from utils import config
 # PHASE 3E: Import consolidated timeframe compression + metadata
 ###########################################################################
 from .mtf_compression import (
-import logging
-logger = logging.getLogger(__name__)
     compress_to_3m,
     compress_to_2m,
     compress_to_1m,
     TIMEFRAME_PRIORITY,
     TIMEFRAME_WEIGHTS
 )
+
+logger = logging.getLogger(__name__)
 
 ET = ZoneInfo("America/New_York")
 
@@ -389,7 +390,7 @@ def get_highest_priority_fvg(
     return result['primary_fvg']
 
 
-# ── PHASE 3C: FIX 41.H-5 ─────────────────────────────────────────────────────
+# ── PHASE 3C: FIX 41.H-5 ────────────────────────────────────────────────────────────────────────────────
 # get_full_mtf_analysis now resamples internally from bars_5m (or bars_1m if
 # provided) instead of requiring the caller to build the MTF dict. This
 # eliminates the 3 extra DB reads that occurred when sniper.py passed raw
@@ -406,7 +407,7 @@ def get_full_mtf_analysis(
     """
     Get complete MTF FVG analysis including all detected FVGs and priority logic.
 
-    Builds the full timeframe dict internally — no additional DB reads.
+    Builds the full timeframe dict internally - no additional DB reads.
     Use this for detailed logging or when you need to track secondary FVGs.
     """
     from collections import defaultdict
@@ -465,5 +466,3 @@ def print_priority_stats():
     logger.info("\nPriority Rule: 5m > 3m > 2m > 1m")
     logger.info("Confluence: Lower-TF FVGs overlapping primary FVG zone")
     logger.info("="*80 + "\n")
-
-
