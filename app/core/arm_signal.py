@@ -11,6 +11,9 @@ All heavy imports are deferred inside the function to avoid circular imports.
 
 FIXED (Mar 16 2026): Wire record_trade_executed() after position_id > 0 so the
   TRADED stage is recorded in signal_events and get_funnel_stats() shows real counts.
+
+VP BIAS (Mar 19 2026): vp_bias kwarg forwarded to send_options_signal_alert
+  so Discord alert shows CALL/PUT/AVOID volume profile context.
 """
 
 
@@ -18,7 +21,8 @@ def arm_ticker(
     ticker, direction, zone_low, zone_high, or_low, or_high,
     entry_price, stop_price, t1, t2, confidence, grade,
     options_rec=None, signal_type="CFW6_OR", validation_result=None,
-    bos_confirmation=None, bos_candle_type=None, mtf_result=None, metadata=None
+    bos_confirmation=None, bos_candle_type=None, mtf_result=None, metadata=None,
+    vp_bias: str = 'NEUTRAL',
 ):
     """
     Arm a confirmed signal:
@@ -28,6 +32,9 @@ def arm_ticker(
       4. Persist to armed_signals_persist DB table.
       5. Record TRADED stage in signal_analytics (FIX Mar 16 2026).
       6. Set per-ticker cooldown.
+
+    vp_bias: Volume Profile options bias ('CALL' | 'PUT' | 'AVOID' | 'NEUTRAL').
+      Forwarded to Discord alert. Defaults to 'NEUTRAL' (no VP data = no badge).
     """
     from app.risk.position_manager import position_manager
     from app.core.thread_safe_state import get_state
@@ -98,7 +105,8 @@ def arm_ticker(
             volume_rank=None,
             composite_score=metadata.get('score'),
             mtf_convergence=mtf_convergence_count,
-            explosive_mover=metadata.get('qualified', False)
+            explosive_mover=metadata.get('qualified', False),
+            vp_bias=vp_bias,
         )
     else:
         try:
@@ -135,7 +143,8 @@ def arm_ticker(
                 volume_rank=None,
                 composite_score=metadata.get('score'),
                 mtf_convergence=mtf_convergence_count,
-                explosive_mover=metadata.get('qualified', False)
+                explosive_mover=metadata.get('qualified', False),
+                vp_bias=vp_bias,
             )
         except Exception as e:
             print(f"[DISCORD] ❌ Alert failed: {e}")
