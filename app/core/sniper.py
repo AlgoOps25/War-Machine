@@ -1078,7 +1078,7 @@ def process_ticker(ticker: str):
             )
             return
 
-        if _state.ticker_is_watching(ticker):
+        if _is_watching:
             w = _state.get_watching_signal(ticker)
             if w.get("breakout_idx") is None:
                 bar_dt_target = _strip_tz(w.get("breakout_bar_dt"))
@@ -1102,7 +1102,8 @@ def process_ticker(ticker: str):
                         f"breakout_idx={resolved_idx} ({bar_dt_target})"
                     )
 
-        if _state.ticker_is_watching(ticker):
+        _is_watching = _state.ticker_is_watching(ticker)
+        if _is_watching:
             w = _state.get_watching_signal(ticker)
             bars_since = len(bars_session) - w["breakout_idx"]
             if bars_since > MAX_WATCH_BARS:
