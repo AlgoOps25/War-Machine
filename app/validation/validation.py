@@ -486,10 +486,12 @@ class RegimeFilter:
                         f"Strong {spy_trend} trend (ADX: {adx:.0f} ≥ {effective_adx_threshold:.0f}, VIX: {vix:.1f})"
                     )
                 else:
+                    favorable = spy_trend != "NEUTRAL"
                     return (
-                        "TRENDING", True,
-                        f"{spy_trend} trend with elevated VIX (ADX: {adx:.0f} ≥ {effective_adx_threshold:.0f}, VIX: {vix:.1f})"
+                        "TRENDING", favorable,
+                        f"{spy_trend} trend with elevated VIX (ADX: {adx:.0f} >= {effective_adx_threshold:.0f}, VIX: {vix:.1f})"
                     )
+
             else:
                 return (
                     "CHOPPY", False,
@@ -605,7 +607,12 @@ class OptionsFilter:
 
     def filter_by_dte(self, expiration_date: str) -> Tuple[bool, int]:
         try:
-            dte = (datetime.strptime(expiration_date, "%Y-%m-%d") - datetime.now()).days
+            from zoneinfo import ZoneInfo
+            now_et = datetime.now(ZoneInfo("America/New_York")).replace(
+                hour=0, minute=0, second=0, microsecond=0, tzinfo=None
+            )
+            dte = (datetime.strptime(expiration_date, "%Y-%m-%d") - now_et).days
+
             return (config.MIN_DTE <= dte <= config.MAX_DTE), dte
         except Exception:
             return False, 0
@@ -939,14 +946,21 @@ class SignalValidator:
         """Validate signal with multi-indicator confirmation."""
         self.validation_stats['total_validated'] += 1
         signal_time = datetime.now(ET)
-        
+
+        # Normalize direction: pipeline emits 'bull'/'bear',
+        # but indicator checks expect 'BUY'/'SELL'.
+        # _dir is used for all comparisons; signal_direction preserved for metadata.
+        _dir = signal_direction.upper()
+        _dir = 'BUY' if _dir in ('BULL', 'BUY', 'LONG') else 'SELL'
+
         metadata = {
             'timestamp': signal_time.isoformat(),
             'ticker': ticker,
-            'direction': signal_direction,
+            'direction': signal_direction,   # keep original for logs
             'base_confidence': base_confidence,
             'checks': {}
         }
+
         
         confidence_adjustment = 0.0
         failed_checks = []
@@ -1047,7 +1061,7 @@ class SignalValidator:
                     ema50 = ti.get_latest_value(ema50_data, 'ema')
                     
                     if all([ema9, ema20, ema50]):
-                        if signal_direction == 'BUY':
+                        if _dir == 'BUY':
                             full_stack = (current_price > ema9 > ema20 > ema50)
                             partial_stack = (current_price > ema9 and ema9 > ema20)
                         else:
@@ -1086,7 +1100,7 @@ class SignalValidator:
                 if div_result and div_details:
                     metadata['checks']['rsi_divergence'] = div_details
                     if div_result == 'BEARISH_DIV':
-                        if signal_direction == 'SELL':
+                        if _dir == 'SELL':
                             confidence_adjustment += 0.05
                             passed_checks.append('RSI_DIV_FAVORABLE')
                         else:
@@ -1094,7 +1108,7 @@ class SignalValidator:
                             failed_checks.append('RSI_DIV_WARNING')
                         self.validation_stats['rsi_divergence_detected'] += 1
                     elif div_result == 'BULLISH_DIV':
-                        if signal_direction == 'BUY':
+                        if _dir == 'BUY':
                             confidence_adjustment += 0.05
                             passed_checks.append('RSI_DIV_FAVORABLE')
                         else:
@@ -1103,7 +1117,7 @@ class SignalValidator:
                         self.validation_stats['rsi_divergence_detected'] += 1
             except Exception as e:
                 metadata['checks']['rsi_divergence'] = {'error': str(e)}
-        
+
         # ADX Check
         try:
             is_trending, adx_value = ti.check_trend_strength(ticker, self.min_adx)
@@ -1150,7 +1164,7 @@ class SignalValidator:
             trend_direction = ti.get_trend_direction(ticker)
             metadata['checks']['dmi'] = {'direction': trend_direction}
             if trend_direction:
-                expected_direction = 'BULLISH' if signal_direction == 'BUY' else 'BEARISH'
+                expected_direction = 'BULLISH' if _dir == 'BUY' else 'BEARISH'
                 if trend_direction == expected_direction:
                     confidence_adjustment += 0.05
                     passed_checks.append('DMI_ALIGNED')
@@ -1167,7 +1181,7 @@ class SignalValidator:
                 cci_value = ti.get_latest_value(cci_data, 'cci')
                 metadata['checks']['cci'] = {'value': cci_value}
                 if cci_value is not None:
-                    if signal_direction == 'BUY':
+                    if _dir == 'BUY':
                         if cci_value < -100:
                             confidence_adjustment += 0.05
                             passed_checks.append('CCI_OVERSOLD')
@@ -1224,7 +1238,7 @@ class SignalValidator:
                         
                         # VPVR Rescue Logic
                         if needs_vpvr_rescue and entry_score >= 0.85:
-                            rescue_boost = abs(counter_trend_penalty) * 0.80
+                            rescue_boost = abs(counter_trend_penalty)
                             confidence_adjustment += rescue_boost
                             passed_checks.append('VPVR_RESCUE')
                             failed_checks.remove('BIAS_COUNTER_TREND_STRONG')
