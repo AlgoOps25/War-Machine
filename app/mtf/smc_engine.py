@@ -21,11 +21,14 @@ Public API:
 """
 
 from __future__ import annotations
+import logging
 from datetime  import datetime
 from zoneinfo  import ZoneInfo
 from typing    import Dict, List, Optional, Tuple
 
 _ET = ZoneInfo("America/New_York")
+
+logger = logging.getLogger(__name__)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # CONSTANTS
@@ -160,11 +163,11 @@ def detect_choch(bars: List[Dict], bos_direction: str) -> Dict:
     Logic:
         1. Classify the trend phase using the bars BEFORE the BOS bar.
         2. If the BOS direction OPPOSES the current phase trend_bias
-           → this is a CHoCH (reversal signal — highest probability)
+           -> this is a CHoCH (reversal signal — highest probability)
         3. If the BOS direction MATCHES the phase trend_bias
-           → this is a continuation BOS (lower probability, trend already extended)
+           -> this is a continuation BOS (lower probability, trend already extended)
         4. If phase is ACCUMULATION/DISTRIBUTION/UNKNOWN
-           → treat as CHoCH (breakout from range = character change)
+           -> treat as CHoCH (breakout from range = character change)
 
     Returns:
         {
@@ -223,7 +226,7 @@ def detect_inducement(bars: List[Dict], bos_direction: str,
     a genuine structural break.
 
     An inducement is characterized by:
-        - Close breaks beyond the swing level by ≤ INDUCEMENT_MAX_PCT
+        - Close breaks beyond the swing level by <= INDUCEMENT_MAX_PCT
         - The bar's wick extends beyond but the close barely clears the level
         - i.e., the move is a stop-hunt, not a conviction break
 
@@ -265,7 +268,7 @@ def detect_inducement(bars: List[Dict], bos_direction: str,
 
     if is_inducement:
         desc = (
-            f"⚠️ Inducement sweep detected: close broke {sweep_pct*100:.3f}% beyond "
+            f"Inducement sweep detected: close broke {sweep_pct*100:.3f}% beyond "
             f"swing — wick extension {wick_extension*100:.3f}% suggests stop-hunt"
         )
     else:
@@ -370,8 +373,8 @@ def find_order_block(bars: List[Dict], bos_direction: str,
         'mitigated':      mitigated,
         'ob_datetime':    ob_bar.get('datetime'),
         'description':    (
-            f"{'🟢 BULL' if bos_direction == 'bull' else '🔴 BEAR'} OB "
-            f"@ {ob_low:.2f}–{ob_high:.2f} "
+            f"{'BULL' if bos_direction == 'bull' else 'BEAR'} OB "
+            f"@ {ob_low:.2f}-{ob_high:.2f} "
             f"{'[MITIGATED]' if mitigated else '[FRESH]'}"
         )
     }
@@ -463,7 +466,7 @@ def _ensure_smc_table():
         finally:
             return_conn(conn)
     except Exception as e:
-        print(f"[SMC-ENGINE] DB init error (non-fatal): {e}")
+        logger.warning("[SMC-ENGINE] DB init error (non-fatal): %s", e)
 
 
 _ensure_smc_table()
@@ -513,7 +516,7 @@ def _persist_smc_context(ticker: str, smc: Dict):
         finally:
             return_conn(conn)
     except Exception as e:
-        print(f"[SMC-ENGINE] Persist error (non-fatal): {e}")
+        logger.warning("[SMC-ENGINE] Persist error (non-fatal): %s", e)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SESSION CACHE MANAGEMENT
@@ -598,7 +601,7 @@ def enrich_signal_with_smc(
         if choch.get('is_choch'):
             smc_tags.append(f"CHoCH:{choch['choch_type']}")
         if inducement.get('is_inducement'):
-            smc_tags.append("⚠️INDUCEMENT")
+            smc_tags.append("INDUCEMENT")
         if ob and not ob.get('mitigated'):
             smc_tags.append(f"OB@{ob['ob_low']:.2f}-{ob['ob_high']:.2f}")
         if ob_retest.get('is_retest'):
@@ -607,8 +610,7 @@ def enrich_signal_with_smc(
 
         smc_summary = ' | '.join(smc_tags) if smc_tags else 'SMC:NO_CONTEXT'
 
-        _smc_context_cache[ticker] = smc_context
-
+        # FIX: define smc_context BEFORE writing to cache
         smc_context = {
             'choch':                 choch,
             'inducement':            inducement,
@@ -621,22 +623,24 @@ def enrich_signal_with_smc(
             'signal_type':           signal_data.get('entry_type', 'BOS+FVG'),
         }
 
+        _smc_context_cache[ticker] = smc_context
+
         signal_data['smc'] = smc_context
 
         # Log
         delta_str = f"+{total_delta*100:.1f}%" if total_delta >= 0 else f"{total_delta*100:.1f}%"
-        print(
-            f"[SMC] {ticker} {direction.upper()} | {smc_summary} | "
-            f"conf_delta={delta_str}"
+        logger.info(
+            "[SMC] %s %s | %s | conf_delta=%s",
+            ticker, direction.upper(), smc_summary, delta_str
         )
 
         # Persist (non-fatal)
         _persist_smc_context(ticker, smc_context)
 
     except Exception as e:
-        print(f"[SMC-ENGINE] enrich error for {ticker} (non-fatal): {e}")
+        logger.warning("[SMC-ENGINE] enrich error for %s (non-fatal): %s", ticker, e)
 
     return signal_data
 
 
-print("[SMC-ENGINE] ✅ SMC engine initialized — CHoCH, Inducement, OB, Phase active")
+logger.info("[SMC-ENGINE] SMC engine initialized — CHoCH, Inducement, OB, Phase active")

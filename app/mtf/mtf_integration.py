@@ -37,8 +37,8 @@ FIX 40.M-7 (MAR 19, 2026): ADAPTIVE FVG THRESHOLD NOT PROPAGATED TO MTF
     fvg_min_pct from its **kwargs so callers can pass the adaptive value.
 
 FIX 40.M-9 (MAR 19, 2026): MTF OR WINDOW MISMATCHED WITH MAIN OR WINDOW
-  - compute_or() used 9:30–9:40 (10 min) while the main OR window in
-    opening_range.py uses 9:30–9:45 (15 min). MTF was computing a shorter
+  - compute_or() used 9:30-9:40 (10 min) while the main OR window in
+    opening_range.py uses 9:30-9:45 (15 min). MTF was computing a shorter
     OR, producing slightly different high/low levels and misaligned breakout
     detection vs. the main pipeline.
   - Fix: upper bound changed from time(9, 40) to time(9, 45).
@@ -52,6 +52,8 @@ from utils import config
 from .mtf_compression import compress_bars, compress_to_3m, compress_to_2m, compress_to_1m
 
 ET = ZoneInfo("America/New_York")
+
+logger = logging.getLogger(__name__)
 
 GRADE_RANK: Dict[str, int] = {'A+': 0, 'A': 1, 'A-': 2}
 
@@ -307,20 +309,20 @@ def print_mtf_stats():
         return
     conv_rate = (_mtf_stats['convergence_found'] / _mtf_stats['analyzed']) * 100
     avg_boost = _mtf_stats['total_boost'] / _mtf_stats['analyzed']
-    print("\n" + "="*80)
-    print("MTF CONVERGENCE - DAILY STATISTICS")
-    print("="*80)
-    print(f"Session Date:         {_cache_date}")
-    print(f"Signals Analyzed:     {_mtf_stats['analyzed']}")
-    print(f"MTF Convergence:      {_mtf_stats['convergence_found']} ({conv_rate:.1f}%)")
-    print(f"Average Boost:        {avg_boost:.2%}")
-    print("\nTimeframe Breakdown:")
-    for k, label in [('5m_only','5m only'),('5m_3m','5m + 3m'),('5m_3m_2m','5m + 3m + 2m'),('5m_3m_2m_1m','5m + 3m + 2m + 1m')]:
-        print(f"  {label:<22} {_mtf_stats['timeframe_breakdown'][k]}")
-    print("\nConfirmation Grades:")
-    for g, label in [('A+','A+ (Strongest)'),('A','A (Strong)'),('A-','A- (Valid)')]:
-        print(f"  {label:<18} {_mtf_stats['confirmation_grades'][g]}")
-    print("="*80 + "\n")
+    logger.info("=" * 80)
+    logger.info("MTF CONVERGENCE - DAILY STATISTICS")
+    logger.info("=" * 80)
+    logger.info("Session Date:         %s", _cache_date)
+    logger.info("Signals Analyzed:     %d", _mtf_stats['analyzed'])
+    logger.info("MTF Convergence:      %d (%.1f%%)", _mtf_stats['convergence_found'], conv_rate)
+    logger.info("Average Boost:        %.2f%%", avg_boost * 100)
+    logger.info("Timeframe Breakdown:")
+    for k, label in [('5m_only', '5m only'), ('5m_3m', '5m + 3m'),
+                     ('5m_3m_2m', '5m + 3m + 2m'), ('5m_3m_2m_1m', '5m + 3m + 2m + 1m')]:
+        logger.info("  %-22s %d", label, _mtf_stats['timeframe_breakdown'][k])
+    logger.info("Confirmation Grades:")
+    for g, label in [('A+', 'A+ (Strongest)'), ('A', 'A (Strong)'), ('A-', 'A- (Valid)')]:
+        logger.info("  %-18s %d", label, _mtf_stats['confirmation_grades'][g])
 
 
 def reset_daily_stats():
@@ -331,16 +333,24 @@ def reset_daily_stats():
         'confirmation_grades': {'A+': 0, 'A': 0, 'A-': 0},
         'total_boost': 0.0
     }
+    # Clear SMC context cache so stale CHoCH/OB/phase data doesn't bleed
+    # into the next trading session.
+    try:
+        from app.mtf.smc_engine import clear_smc_cache
+        clear_smc_cache()
+    except Exception:
+        pass
+
 
 # ── Step 8.5: MTF Trend Validator ────────────────────────────────────────────────
 
 try:
     from app.mtf.mtf_validator import validate_signal_mtf as _validate_signal_mtf
     _MTF_TREND_ENABLED = True
-    print("[MTF] ✅ MTF trend validator wired (Step 8.5)")
+    logger.info("[MTF] MTF trend validator wired (Step 8.5)")
 except ImportError as e:
     _MTF_TREND_ENABLED = False
-    print(f"[MTF] ⚠️  MTF trend validator not available: {e}")
+    logger.warning("[MTF] MTF trend validator not available: %s", e)
     def _validate_signal_mtf(ticker, direction, entry_price=0.0):
         return {'passes': True, 'confidence_boost': 0.0, 'overall_score': 0.0,
                 'divergences': [], 'summary': 'MTF trend disabled'}
@@ -373,18 +383,24 @@ def run_mtf_trend_step(
         }
         if result.get('passes', True) and boost > 0:
             confidence = min(0.95, confidence + boost)
-            print(f"[STEP-8.5] {ticker} MTF trend ✅ score={result['overall_score']:.1f} "
-                  f"boost=+{boost*100:.0f}% new_conf={confidence:.3f}")
+            logger.info(
+                "[STEP-8.5] %s MTF trend score=%.1f boost=+%.0f%% new_conf=%.3f",
+                ticker, result['overall_score'], boost * 100, confidence
+            )
         elif not result.get('passes', True):
-            print(f"[STEP-8.5] {ticker} MTF trend ⚠️  score={result['overall_score']:.1f} "
-                  f"(below threshold) | {result.get('summary', '')}")
+            logger.info(
+                "[STEP-8.5] %s MTF trend below threshold score=%.1f | %s",
+                ticker, result['overall_score'], result.get('summary', '')
+            )
         else:
-            print(f"[STEP-8.5] {ticker} MTF trend neutral score={result['overall_score']:.1f}")
+            logger.debug(
+                "[STEP-8.5] %s MTF trend neutral score=%.1f",
+                ticker, result['overall_score']
+            )
     except Exception as exc:
-        print(f"[STEP-8.5] {ticker} MTF trend error (non-fatal): {exc}")
+        logger.warning("[STEP-8.5] %s MTF trend error (non-fatal): %s", ticker, exc)
     return confidence, signal_data
 
 
-logger = logging.getLogger(__name__)
-print("[MTF] Strategy: Scans 5m/3m/2m/1m for same OR breakout + FVG pattern")
-print("[MTF] Boost: +2% (2 TFs), +3% (3 TFs), +5% (4 TFs - A+ setup)")
+logger.info("[MTF] Strategy: Scans 5m/3m/2m/1m for same OR breakout + FVG pattern")
+logger.info("[MTF] Boost: +2%% (2 TFs), +3%% (3 TFs), +5%% (4 TFs - A+ setup)")
