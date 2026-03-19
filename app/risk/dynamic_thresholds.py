@@ -144,9 +144,10 @@ def _get_recent_quality_adjustment():
             two_hours_ago = _now_et() - timedelta(hours=2)
 
             cursor.execute("""
-                SELECT confidence FROM proposed_trades
-                WHERE timestamp > ?
-                ORDER BY timestamp DESC
+                SELECT confidence FROM ml_signals
+                WHERE created_at > %s
+                  AND status = 'PENDING'
+                ORDER BY created_at DESC
                 LIMIT 5
             """, (two_hours_ago,))
 
@@ -158,7 +159,7 @@ def _get_recent_quality_adjustment():
         if len(rows) < 3:
             return 0.00
 
-        low_quality = sum(1 for row in rows if row["confidence"] < 0.65)
+        low_quality = sum(1 for row in rows if (row["confidence"] or 1.0) < 0.65)
 
         if low_quality <= 1:
             return 0.00
@@ -170,7 +171,6 @@ def _get_recent_quality_adjustment():
     except Exception as e:
         print(f"[DYNAMIC-THRESH] Recent quality lookup error: {e}")
         return 0.00
-
 
 def get_dynamic_threshold(signal_type, grade):
     """
