@@ -23,13 +23,14 @@ Internal modules wired in:
 """
 
 import os
+import logging
 from typing import Dict, List, Optional, Tuple
 
-# ── Internal risk modules ────────────────────────────────────────────────────
+logger = logging.getLogger(__name__)
+
+# ── Internal risk modules ───────────────────────────────────────────────────
 from app.risk.position_manager import position_manager
 from app.risk.trade_calculator import (
-import logging
-logger = logging.getLogger(__name__)
     compute_stop_and_targets,
     get_adaptive_fvg_threshold,
     get_adaptive_orb_threshold,
@@ -39,7 +40,7 @@ logger = logging.getLogger(__name__)
 from app.risk.vix_sizing import get_vix_regime, get_vix_multiplier
 from app.risk.dynamic_thresholds import get_dynamic_threshold, get_threshold_stats
 
-# ── Kill switch ──────────────────────────────────────────────────────────────
+# ── Kill switch ───────────────────────────────────────────────────────────────
 _KILL_SWITCH_ACTIVE = os.getenv("KILL_SWITCH", "0").strip() == "1"
 
 
@@ -96,7 +97,7 @@ def evaluate_signal(
           threshold  (float)  — Dynamic confidence threshold used
     """
 
-    # ── 1. Kill switch ───────────────────────────────────────────────────────
+    # ── 1. Kill switch ─────────────────────────────────────────────────────────────
     if _KILL_SWITCH_ACTIVE:
         return _reject("KILL SWITCH active — no new positions", confidence, entry_price, or_high, or_low, bars, direction, grade)
 
@@ -111,7 +112,7 @@ def evaluate_signal(
     if breached:
         return _reject(reason, confidence, entry_price, or_high, or_low, bars, direction, grade)
 
-    # ── 4. Position count ────────────────────────────────────────────────────
+    # ── 4. Position count ────────────────────────────────────────────────────────────
     open_positions = position_manager.get_open_positions()
     from utils import config as _cfg
     max_pos = getattr(_cfg, "MAX_OPEN_POSITIONS", 5)
@@ -121,7 +122,7 @@ def evaluate_signal(
             confidence, entry_price, or_high, or_low, bars, direction, grade,
         )
 
-    # ── 5. Duplicate ticker check ────────────────────────────────────────────
+    # ── 5. Duplicate ticker check ────────────────────────────────────────────────────
     for pos in open_positions:
         if pos["ticker"] == ticker:
             return _reject(
@@ -129,10 +130,10 @@ def evaluate_signal(
                 confidence, entry_price, or_high, or_low, bars, direction, grade,
             )
 
-    # ── 6. Confidence decay ──────────────────────────────────────────────────
+    # ── 6. Confidence decay ───────────────────────────────────────────────────────────
     decayed_confidence = apply_confidence_decay(confidence, candles_waited)
 
-    # ── 7. Dynamic confidence threshold ─────────────────────────────────────
+    # ── 7. Dynamic confidence threshold ───────────────────────────────────────────
     threshold = get_dynamic_threshold(signal_type, grade)
     if decayed_confidence < threshold:
         return _reject(
@@ -141,7 +142,7 @@ def evaluate_signal(
             decayed_confidence, entry_price, or_high, or_low, bars, direction, grade,
         )
 
-    # ── 8. VIX crisis block ──────────────────────────────────────────────────
+    # ── 8. VIX crisis block ──────────────────────────────────────────────────────────
     vix_regime = get_vix_regime()
     if vix_regime["regime"] == "crisis":
         return _reject(
@@ -150,7 +151,7 @@ def evaluate_signal(
             vix_regime=vix_regime,
         )
 
-    # ── All checks passed — calculate stop/targets ───────────────────────────
+    # ── All checks passed — calculate stop/targets ────────────────────────────────────
     stop, t1, t2 = compute_stop_and_targets(bars, direction, or_high, or_low, entry_price, grade)
 
     rr_valid, rr_ratio = position_manager.validate_risk_reward(entry_price, stop, t2)
@@ -303,16 +304,13 @@ def get_session_status() -> Dict:
       kill_switch      — True if KILL_SWITCH env var is active
       risk_summary     — formatted string for printing/Discord
     """
-    # Single DB checkout for stats, single for positions
     daily_stats    = position_manager.get_daily_stats()
     open_positions = position_manager.get_open_positions()
 
-    # Reuse fetched stats — no additional DB calls
     circuit_breaker = position_manager.check_circuit_breaker(stats=daily_stats)
     vix_regime_data = get_vix_regime()
     threshold_data  = get_threshold_stats()
 
-    # Pass both pre-fetched datasets into get_risk_summary
     risk_summary = position_manager.get_risk_summary(open_positions=open_positions)
 
     return {
