@@ -9,7 +9,7 @@ the most powerful one. So if you have a few opportunities, a few
 different FVG gaps, you will play the one that's on the highest time frame."
 
 Implementation:
-- Scans 1m, 2m, 3m, 5m charts for 9:30-9:40 OR breakout + FVG
+- Scans 1m, 2m, 3m, 5m charts for 9:30-9:45 OR breakout + FVG
 - Detects when SAME pattern appears across multiple timeframes
 - Prioritizes highest TF (5m strongest)
 - Boosts confidence when lower TFs confirm the 5m signal
@@ -35,6 +35,13 @@ FIX 40.M-7 (MAR 19, 2026): ADAPTIVE FVG THRESHOLD NOT PROPAGATED TO MTF
   - Fix: both functions accept an optional fvg_min_pct kwarg (default:
     config.FVG_MIN_SIZE_PCT). enhance_signal_with_mtf() accepts and forwards
     fvg_min_pct from its **kwargs so callers can pass the adaptive value.
+
+FIX 40.M-9 (MAR 19, 2026): MTF OR WINDOW MISMATCHED WITH MAIN OR WINDOW
+  - compute_or() used 9:30–9:40 (10 min) while the main OR window in
+    opening_range.py uses 9:30–9:45 (15 min). MTF was computing a shorter
+    OR, producing slightly different high/low levels and misaligned breakout
+    detection vs. the main pipeline.
+  - Fix: upper bound changed from time(9, 40) to time(9, 45).
 """
 
 from datetime import datetime, time
@@ -87,7 +94,9 @@ def _bar_time(bar: dict) -> Optional[time]:
 
 
 def compute_or(bars: List[dict]) -> Tuple[Optional[float], Optional[float]]:
-    or_bars = [b for b in bars if _bar_time(b) and time(9, 30) <= _bar_time(b) < time(9, 40)]
+    # FIX 40.M-9: changed upper bound from time(9, 40) → time(9, 45) to match
+    # the main 15-min OR window in opening_range.py (was 5 min shorter).
+    or_bars = [b for b in bars if _bar_time(b) and time(9, 30) <= _bar_time(b) < time(9, 45)]
     if len(or_bars) < 2:
         return None, None
     return max(b["high"] for b in or_bars), min(b["low"] for b in or_bars)
@@ -98,7 +107,7 @@ def compute_or(bars: List[dict]) -> Tuple[Optional[float], Optional[float]]:
 def detect_breakout(bars, or_high, or_low):
     for i, bar in enumerate(bars):
         bt = _bar_time(bar)
-        if bt is None or bt < time(9, 40):
+        if bt is None or bt < time(9, 45):
             continue
         if bar["close"] > or_high * (1 + config.ORB_BREAK_THRESHOLD):
             return "bull", i
@@ -271,12 +280,10 @@ def enhance_signal_with_mtf(ticker, direction, bars_session, **kwargs) -> Dict:
     with _mtf_stats_lock:
         _mtf_stats['analyzed'] += 1
 
-    # FIX 40.H-4: include bar count in key to invalidate stale entries
     cache_key = f"{ticker}_{direction}_{len(bars_session) if bars_session else 0}"
     if cache_key in _mtf_cache:
         return _mtf_cache[cache_key]
 
-    # FIX 40.M-7: forward adaptive threshold if caller provided it
     fvg_min_pct = kwargs.get('fvg_min_pct', None)
 
     if not bars_session or len(bars_session) < 30:
@@ -350,8 +357,6 @@ def run_mtf_trend_step(
     Step 8.5 — MTF trend alignment check.
     Absorbed from app/core/sniper_mtf_trend_patch.py.
     Returns updated (confidence, signal_data). Never raises.
-
-    FIX 40.M-11 (tracked separately): confidence cap corrected to 0.95.
     """
     if not _MTF_TREND_ENABLED:
         return confidence, signal_data
@@ -367,7 +372,6 @@ def run_mtf_trend_step(
             'tf_scores':   result.get('tf_scores', {}),
         }
         if result.get('passes', True) and boost > 0:
-            # FIX 40.M-11 (Phase 2B): cap corrected from 0.99 → 0.95
             confidence = min(0.95, confidence + boost)
             print(f"[STEP-8.5] {ticker} MTF trend ✅ score={result['overall_score']:.1f} "
                   f"boost=+{boost*100:.0f}% new_conf={confidence:.3f}")
