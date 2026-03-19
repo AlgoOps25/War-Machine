@@ -79,7 +79,6 @@ from typing import Dict, List, Optional, Tuple
 from app.data import db_connection
 from app.data.db_connection import get_conn, return_conn, ph, dict_cursor, serial_pk
 import time
-from zoneinfo import ZoneInfo
 
 # ── VIX sizing (graceful fallback if module unavailable) ────────────────────
 try:
@@ -1079,7 +1078,7 @@ class PositionManager:
             p      = ph()
             conn   = get_conn()
             cursor = dict_cursor(conn)
-            since  = (datetime.now() - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+            since  = (datetime.now(_ET) - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
             cursor.execute(f"""
                 SELECT grade,
                        COUNT(*)                                  AS total,
@@ -1127,7 +1126,7 @@ class PositionManager:
             "=" * 50,
             "WAR MACHINE \u2014 END OF DAY REPORT",
             "=" * 50,
-            f"Date:         {datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")}",
+            f"Date:         {datetime.now(_ET).strftime('%Y-%m-%d')}",
             f"Total Trades: {trades}",
             f"Winners:      {wins}",
             f"Losers:       {losses}",
