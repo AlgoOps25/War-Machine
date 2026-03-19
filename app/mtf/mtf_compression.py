@@ -1,29 +1,26 @@
 """
-MTF Timeframe Compression Module
-Unified compression logic for multi-timeframe analysis
+app/mtf/mtf_compression.py — MTF Timeframe Compression
 
-CONSOLIDATION: Single source of truth for deriving 1m, 2m, 3m bars from 5m data.
-Previously duplicated in mtf_integration.py and mtf_fvg_priority.py.
+INPUT ASSUMPTION: All compression functions expect 5-minute bars as input
+unless the function name or parameter explicitly states otherwise.
+compress_to_3m / compress_to_2m / compress_to_1m will return the input
+unchanged if detect_bar_resolution() determines it is not 5m data.
 
-Strategy:
-- Compress 5m bars into lower timeframe approximations
-- Used by MTF convergence detection and FVG priority resolution
-- Maintains temporal alignment for pattern detection across timeframes
+compress_bars(bars, minutes) is the unified entry point. Use it instead of
+calling compress_to_Xm() directly.
 
-From Nitro Trades video:
-"If you have a 1-minute, 2-minute, 3-minute, and 5-minute [signal],
-you will go for the 5-minute. The highest time frame is going to be
-the most powerful one."
-
-This module enables that multi-timeframe scanning capability.
+Supported derivations:
+  5m  → 3m   (synthetic: first 60% of each 5m bar)
+  5m  → 2m   (synthetic: first 40% of each 5m bar)
+  5m  → 1m   (synthetic: 5 equal steps per 5m bar)
+  5m  → 15m  (real aggregation: 3x 5m bars)
+  5m  → 30m  (real aggregation: 6x 5m bars)
 
 FIX H2 (MAR 10, 2026):
-  - Removed duplicate TIMEFRAME_PRIORITY / TIMEFRAME_WEIGHTS assignments.
-    The second (lower) block was silently overwriting the extended 1h/30m/15m
-    entries that were added for higher-timeframe support. The module-level
-    constants now reflect ALL supported timeframes in a single definition.
+  Removed duplicate TIMEFRAME_PRIORITY / TIMEFRAME_WEIGHTS assignments.
+  Single authoritative definition now covers all supported timeframes.
 """
-
+import logging
 from typing import List, Dict, Optional
 from datetime import timedelta
 
@@ -302,6 +299,28 @@ TIMEFRAME_MIN_MINUTES = {
     '1m':  1
 }
 
+def compress_bars(bars: List[dict], minutes: int) -> List[dict]:
+    """
+    Unified compression entry point. Replaces direct calls to compress_to_Xm().
 
-print("[MTF-COMPRESSION] ✅ Unified timeframe compression module loaded")
-print("[MTF-COMPRESSION] Supports: 1m, 2m, 3m derivation from 5m bars")
+    Args:
+        bars:    Input bars (must be 5m resolution for synthetic compression).
+        minutes: Target timeframe in minutes. Supported: 1, 2, 3, 15, 30.
+                 Passing 5 returns bars unchanged.
+
+    Returns:
+        Compressed bar list, or bars unchanged if minutes==5 or unsupported.
+    """
+    dispatch = {
+        1:  compress_to_1m,
+        2:  compress_to_2m,
+        3:  compress_to_3m,
+        15: expand_to_15m,
+        30: expand_to_30m,
+    }
+    fn = dispatch.get(minutes)
+    if fn is None:
+        return bars
+    return fn(bars)
+
+logger = logging.getLogger(__name__)

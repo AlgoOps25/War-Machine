@@ -43,13 +43,13 @@ FIX 40.M-9 (MAR 19, 2026): MTF OR WINDOW MISMATCHED WITH MAIN OR WINDOW
     detection vs. the main pipeline.
   - Fix: upper bound changed from time(9, 40) to time(9, 45).
 """
-
+import logging
 from datetime import datetime, time
 from typing import List, Dict, Optional, Tuple
 from zoneinfo import ZoneInfo
 from utils import config
 
-from .mtf_compression import compress_to_3m, compress_to_2m, compress_to_1m
+from .mtf_compression import compress_bars, compress_to_3m, compress_to_2m, compress_to_1m
 
 ET = ZoneInfo("America/New_York")
 
@@ -223,9 +223,9 @@ def check_mtf_convergence(ticker: str, direction: str, bars_5m: List[dict],
     confirmed_timeframes = ['5m']
     confirmed_signals    = [{'timeframe': '5m', 'direction': direction}]
     best_confirmation_grade = None
-    bars_3m = compress_to_3m(bars_5m)
-    bars_2m = compress_to_2m(bars_5m)
-    bars_1m = compress_to_1m(bars_5m)
+    bars_3m = compress_bars(bars_5m, 3)
+    bars_2m = compress_bars(bars_5m, 2)
+    bars_1m = compress_bars(bars_5m, 1)
     for tf_bars, tf_name in [(bars_3m, '3m'), (bars_2m, '2m'), (bars_1m, '1m')]:
         signal = scan_tf_for_signal(tf_bars, tf_name, fvg_min_pct=fvg_min_pct)
         if signal and signal['direction'] == direction:
@@ -385,6 +385,6 @@ def run_mtf_trend_step(
     return confidence, signal_data
 
 
-print("[MTF] ✅ Multi-timeframe BOS+FVG convergence system enabled")
+logger = logging.getLogger(__name__)
 print("[MTF] Strategy: Scans 5m/3m/2m/1m for same OR breakout + FVG pattern")
 print("[MTF] Boost: +2% (2 TFs), +3% (3 TFs), +5% (4 TFs - A+ setup)")

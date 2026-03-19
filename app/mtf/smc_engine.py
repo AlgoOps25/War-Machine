@@ -515,6 +515,21 @@ def _persist_smc_context(ticker: str, smc: Dict):
     except Exception as e:
         print(f"[SMC-ENGINE] Persist error (non-fatal): {e}")
 
+# ══════════════════════════════════════════════════════════════════════════════
+# SESSION CACHE MANAGEMENT
+# ══════════════════════════════════════════════════════════════════════════════
+
+_smc_context_cache: dict = {}   # ticker -> last smc_context dict
+
+def clear_smc_cache() -> None:
+    """
+    Clear the intra-session SMC context cache.
+    Must be called in the EOD reset path (e.g. scanner.py reset_daily())
+    to prevent stale CHoCH / OB / phase context from the prior session
+    persisting into the next trading day.
+    """
+    global _smc_context_cache
+    _smc_context_cache.clear()
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PUBLIC API — enrich_signal_with_smc()
@@ -591,6 +606,8 @@ def enrich_signal_with_smc(
         smc_tags.append(f"PHASE:{phase['phase']}")
 
         smc_summary = ' | '.join(smc_tags) if smc_tags else 'SMC:NO_CONTEXT'
+
+        _smc_context_cache[ticker] = smc_context
 
         smc_context = {
             'choch':                 choch,

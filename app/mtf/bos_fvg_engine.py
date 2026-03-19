@@ -171,7 +171,6 @@ def find_fvg_after_bos(bars: List[Dict], bos_idx: int,
 
     for i in range(2, len(search_bars)):
         c0 = search_bars[i - 2]
-        c1 = search_bars[i - 1]  # middle candle (unused directly per 40.L-14)
         c2 = search_bars[i]
 
         if direction == "bull":
@@ -526,7 +525,6 @@ def scan_bos_fvg(ticker: str, bars: List[Dict],
         "signal_time":     latest_bar["datetime"],
         "confirmed_at":    entry_trigger["confirmed_at"],
         "entry_at":        entry_trigger["entry_at"],
-        "dte":             0,
         "confirmation":    entry_trigger["confirmation"],
         "conf_score":      entry_trigger["conf_score"],
         "candle_type":     entry_trigger["candle_type"]

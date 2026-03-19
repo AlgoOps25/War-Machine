@@ -5,9 +5,9 @@ creating circular dependencies back into sniper.
 
 IMPORTANT CONVENTION (applies to ALL callers):
 - All datetimes from Postgres TIMESTAMPTZ columns arrive as UTC-aware.
-- _strip_tz() ALWAYS converts to ET before stripping timezone info.
+- strip_tz() ALWAYS converts to ET before stripping timezone info.
 - Never call dt.replace(tzinfo=None) directly on a DB timestamp anywhere
-  in the codebase — always route through _strip_tz() here.
+  in the codebase — always route through strip_tz() here.
 """
 
 from datetime import datetime
@@ -16,12 +16,12 @@ from zoneinfo import ZoneInfo
 ET = ZoneInfo("America/New_York")
 
 
-def _now_et():
+def now_et():
     """Return current datetime in US/Eastern timezone."""
     return datetime.now(ET)
 
 
-def _bar_time(bar):
+def bar_time(bar):
     """Return the time portion of a bar's datetime field, or None."""
     bt = bar.get("datetime")
     if bt is None:
@@ -29,7 +29,7 @@ def _bar_time(bar):
     return bt.time() if hasattr(bt, "time") else bt
 
 
-def _strip_tz(dt):
+def strip_tz(dt):
     """
     Convert a datetime to ET-naive (US/Eastern, timezone stripped).
 
@@ -46,3 +46,9 @@ def _strip_tz(dt):
     if hasattr(dt, "tzinfo") and dt.tzinfo is not None:
         return dt.astimezone(ET).replace(tzinfo=None)
     return dt
+
+
+# Backward-compat aliases — remove once all callers are updated
+_now_et   = now_et
+_bar_time = bar_time
+_strip_tz = strip_tz
