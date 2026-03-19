@@ -220,15 +220,15 @@
 | Status | ID | File | Description | Commit SHA | Date |
 |--------|----|------|-------------|------------|------|
 | ✅ | 43.H-4 | `app/signals/vwap_reclaim.py` | Duplicate VWAP implementation — should import from `vwap_gate.compute_vwap()` | — | — |
-| ⬜ | 46.M-5 | `app/mtf/mtf_compression.py` | Three identical compression functions — consolidate to `compress_bars(bars, minutes)` | — | — |
-| ⬜ | 40.L-14 | `app/mtf/bos_fvg_engine.py` | `c1` (middle candle) assigned but never used in `find_fvg_after_bos()` | — | — |
-| ⬜ | 40.L-15 | `app/mtf/bos_fvg_engine.py` | `"dte": 0` hardcoded in `scan_bos_fvg()` return — dead field | — | — |
-| ⬜ | 40.L-16 | `app/mtf/mtf_integration.py` | `compress_to_1m` imported but is identity transform on 1m input — effectively no-op | — | — |
-| ⬜ | MULTI | ALL modules | ~40 import-time `print("[MODULE] ✅ ...")` statements — replace all with `logger.debug()` | — | — |
+| ✅ | 46.M-5 | `app/mtf/mtf_compression.py` | Three identical compression functions — consolidate to `compress_bars(bars, minutes)` | — | — |
+| ✅ | 40.L-14 | `app/mtf/bos_fvg_engine.py` | `c1` (middle candle) assigned but never used in `find_fvg_after_bos()` | — | — |
+| ✅ | 40.L-15 | `app/mtf/bos_fvg_engine.py` | `"dte": 0` hardcoded in `scan_bos_fvg()` return — dead field | — | — |
+| ✅ | 40.L-16 | `app/mtf/mtf_integration.py` | `compress_to_1m` imported but is identity transform on 1m input — effectively no-op | — | — |
+| ✅ | MULTI | ALL modules | ~40 import-time `print("[MODULE] ✅ ...")` statements — replace all with `logger.debug()` | — | — |
 | ✅ | 45.L-13 | `app/` | Legacy `app/discord_helpers.py` and current `app/notifications/discord_helpers.py` both exist — delete legacy | — | — |
-| ⬜ | 44.L-14 | `utils/time_helpers.py` | `_now_et`, `_bar_time`, `_strip_tz` have `_` private prefix but are public utilities — rename | — | — |
-| ⬜ | 46.L-10 | `app/mtf/mtf_compression.py` | No module docstring — critical given input resolution assumption (46.H-1) | — | — |
-| ⬜ | 41.L-20 | `app/mtf/smc_engine.py` | `clear_smc_cache()` not called in EOD reset path — stale context persists across sessions | — | — |
+| ✅ | 44.L-14 | `utils/time_helpers.py` | `_now_et`, `_bar_time`, `_strip_tz` have `_` private prefix but are public utilities — rename | — | — |
+| ✅ | 46.L-10 | `app/mtf/mtf_compression.py` | No module docstring — critical given input resolution assumption (46.H-1) | — | — |
+| ✅ | 41.L-20 | `app/mtf/smc_engine.py` | `clear_smc_cache()` not called in EOD reset path — stale context persists across sessions | — | — |
 
 ---
 
