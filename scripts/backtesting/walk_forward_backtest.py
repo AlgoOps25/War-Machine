@@ -173,6 +173,10 @@ class EODHDFetcher:
 def split_into_sessions(df: pd.DataFrame) -> List[pd.DataFrame]:
     """Split a multi-day DataFrame into individual session DataFrames."""
     df = df.copy()
+    # Drop bars with NaN in any OHLC column before splitting
+    df = df.dropna(subset=["open", "high", "low", "close"])
+    # Fill NaN volume with 0
+    df["volume"] = df["volume"].fillna(0)
     df["date"] = df["datetime"].dt.date
     sessions = []
     for d, grp in df.groupby("date"):
@@ -191,13 +195,17 @@ def bars_to_sniper_format(df: pd.DataFrame) -> List[Dict]:
     """Convert DataFrame rows to the bar dict format sniper functions expect."""
     bars = []
     for _, row in df.iterrows():
+        # Skip any residual NaN OHLC rows
+        if pd.isna(row["open"]) or pd.isna(row["high"]) or pd.isna(row["low"]) or pd.isna(row["close"]):
+            continue
+        vol = row["volume"]
         bars.append({
             "time":   row["datetime"],
             "open":   float(row["open"]),
             "high":   float(row["high"]),
             "low":    float(row["low"]),
             "close":  float(row["close"]),
-            "volume": int(row["volume"]),
+            "volume": int(vol) if not pd.isna(vol) else 0,
         })
     return bars
 
@@ -221,7 +229,6 @@ def _unpack_or_result(raw) -> Optional[Dict]:
                 result = {"or_high": or_high, "or_low": or_low, "valid": True, **extra}
             else:
                 result = {"or_high": or_high, "or_low": or_low, "valid": True}
-            # A zero range is invalid
             return result if or_high > or_low else None
     return None
 
@@ -393,7 +400,6 @@ def run_session(ticker: str, session_bars: pd.DataFrame) -> Optional[Dict]:
 
     if not breakout:
         return None
-    # Normalize: breakout can be a dict or a truthy non-dict (treat as detected)
     if isinstance(breakout, dict) and not breakout.get("detected", True):
         return None
 
@@ -402,7 +408,6 @@ def run_session(ticker: str, session_bars: pd.DataFrame) -> Optional[Dict]:
         breakout_idx   = breakout.get("bar_index", 0)
         breakout_price = breakout.get("price", or_high if direction == "bull" else or_low)
     else:
-        # Tuple fallback: (direction, bar_index, price)
         direction      = str(breakout[0]) if len(breakout) > 0 else "bull"
         breakout_idx   = int(breakout[1]) if len(breakout) > 1 else 0
         breakout_price = float(breakout[2]) if len(breakout) > 2 else or_high
@@ -424,7 +429,7 @@ def run_session(ticker: str, session_bars: pd.DataFrame) -> Optional[Dict]:
         fvg_size = fvg.get("fvg_size_pct", 0.0)
     else:
         fvg_mid  = breakout_price
-        fvg_size = FVG_MIN_SIZE_PCT  # unknown size — pass threshold
+        fvg_size = FVG_MIN_SIZE_PCT
 
     if fvg_size < FVG_MIN_SIZE_PCT:
         return None
@@ -535,11 +540,9 @@ def build_walk_forward_folds(
     """
     Split sessions into walk-forward folds.
     Each fold: train on `fold_size` days, test on next day.
-    Returns list of {train_start, train_end, test_date, test_idx}.
     """
     folds = []
     for i in range(fold_size, len(sessions)):
-        # Use _session_first_time() — safe iloc-based accessor
         train_start_t = _session_first_time(sessions[i - fold_size])
         train_end_t   = _session_first_time(sessions[i - 1])
         test_t        = _session_first_time(sessions[i])
@@ -606,11 +609,6 @@ def _max_drawdown(rs: List[float]) -> float:
 
 
 def build_hourly_win_rates(trades: List[Dict]) -> Dict:
-    """
-    Build hour -> win_rate map from real trade data.
-    This replaces the fabricated HOURLY_WIN_RATES in entry_timing.py (47.P4-2).
-    Minimum 3 trades per hour required for a non-null entry.
-    """
     by_hour = defaultdict(list)
     for t in trades:
         by_hour[t["entry_hour"]].append(t["win"])
