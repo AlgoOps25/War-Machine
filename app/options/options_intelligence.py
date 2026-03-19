@@ -112,10 +112,15 @@ class OptionsIntelligence:
                 if age < self.cache_ttl:
                     return cached['data']
             
-            # Fetch fresh chain
-            # chain = self.options_filter.get_options_chain(ticker)  # Merged into validation.py
-            chain = None  # TODO: Implement via validation.py if needed
-            
+                # Fetch fresh chain via OptionsFilter (lives in validation.py)
+                try:
+                    from app.validation.validation import OptionsFilter
+                    _filter = OptionsFilter()
+                    chain = _filter.get_options_chain(ticker)
+                except Exception as e:
+                    print(f"[OPTIONS-DM] Chain fetch error for {ticker}: {e}")
+                    chain = None
+
             if chain:
                 # Store previous chain for change detection
                 if ticker in self._chain_cache:
