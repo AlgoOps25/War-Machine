@@ -130,12 +130,12 @@
 
 | Status | ID | File | Description | Commit SHA | Date |
 |--------|----|------|-------------|------------|------|
-| ⬜ | 42.H-1 | `app/filters/vwap_gate.py` | VWAP recomputed 3× per signal — compute once and pass as parameter | — | — |
-| ⬜ | 41.H-5 | `app/mtf/mtf_fvg_priority.py` | `get_full_mtf_analysis()` makes 3 DB reads per call — accept `bars_1m` param, resample internally | — | — |
-| ⬜ | 43.H-1 | `app/validation/greeks_precheck.py` | 50 live options chain fetches per cycle at OR open — add 60s TTL cache per ticker | — | — |
-| ⬜ | 43.H-3 | `app/signals/signal_generator_cooldown.py` | `is_on_cooldown()` makes DB query on every call in hot path — add in-memory cache | — | — |
-| ⬜ | 44.H-3 | `utils/production_helpers.py` | `_fetch_data_safe()` sleeps 1s per retry × 3 retries × 50 tickers = 150s dead time if all fail. Fix: max 0.5s total backoff | — | — |
-| ⬜ | 39.H-3 | `app/core/sniper.py` | `_resample_bars()` redefined inside `_run_signal_pipeline()` on every call — move to module level | — | — |
+| ✅ | 42.H-1 | `app/filters/vwap_gate.py` | VWAP recomputed 3× per signal — compute once and pass as parameter | — | — |
+| ✅ | 41.H-5 | `app/mtf/mtf_fvg_priority.py` | `get_full_mtf_analysis()` makes 3 DB reads per call — accept `bars_1m` param, resample internally | — | — |
+| ✅ | 43.H-1 | `app/validation/greeks_precheck.py` | 50 live options chain fetches per cycle at OR open — add 60s TTL cache per ticker | — | — |
+| ✅ | 43.H-3 | `app/signals/signal_generator_cooldown.py` | `is_on_cooldown()` makes DB query on every call in hot path — add in-memory cache | — | — |
+| ✅ | 44.H-3 | `utils/production_helpers.py` | `_fetch_data_safe()` sleeps 1s per retry × 3 retries × 50 tickers = 150s dead time if all fail. Fix: max 0.5s total backoff | — | — |
+| ✅ | 39.H-3 | `app/core/sniper.py` | `_resample_bars()` redefined inside `_run_signal_pipeline()` on every call — move to module level | — | — |
 
 ---
 
@@ -144,7 +144,7 @@
 
 | Status | ID | File | Description | Commit SHA | Date |
 |--------|----|------|-------------|------------|------|
-| ⬜ | 9.C-1 | `app/core/scanner.py` | Single-worker watchdog executor — OR window scan loop serializes all tickers | — | — |
+| ✅ | 9.C-1 | `app/core/scanner.py` | Single-worker watchdog executor — OR window scan loop serializes all tickers | — | — |
 | ⬜ | 9.C-2 | `app/core/scanner.py` | Circuit breaker operator precedence bug — scanner may halt incorrectly | — | — |
 | ⬜ | 10.C-1 | `app/risk/position_manager.py` | `datetime.now()` UTC — circuit breaker clears after midnight UTC (8 PM ET) | — | — |
 | ⬜ | 10.C-2 | `app/risk/position_manager.py` | Dual timestamps for `exit_time` — positions vs ml_signals drift on DST | — | — |

@@ -720,8 +720,7 @@ def start_scanner_loop():
                 daily_stats = session["daily_stats"]
 
                 _has_loss_streak = (
-                    daily_stats.get("losses", 0) >= 3
-                    and daily_stats.get("wins", 0) == 0
+                    (daily_stats.get("losses", 0) >= 3 and daily_stats.get("wins", 0) == 0)
                     or _pm.has_loss_streak(max_consecutive_losses=3)
                 )
 

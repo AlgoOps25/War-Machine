@@ -71,10 +71,15 @@ FIX #10 (MAR 16, 2026) — UNICODE SURROGATE PAIRS:
 """
 from utils import config
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+
+_ET = ZoneInfo("America/New_York")
+
 from typing import Dict, List, Optional, Tuple
 from app.data import db_connection
 from app.data.db_connection import get_conn, return_conn, ph, dict_cursor, serial_pk
 import time
+from zoneinfo import ZoneInfo
 
 # ── VIX sizing (graceful fallback if module unavailable) ────────────────────
 try:
@@ -455,7 +460,7 @@ class PositionManager:
         """
         conn = None
         try:
-            today  = datetime.now().strftime("%Y-%m-%d")
+            today  = datetime.now(_ET).strftime("%Y-%m-%d")
             conn   = get_conn()
             cursor = dict_cursor(conn)
             p      = ph()
@@ -464,7 +469,7 @@ class PositionManager:
                 SELECT pnl
                 FROM positions
                 WHERE status = {p}
-                  AND DATE(exit_time) = {p}
+                  AND DATE(exit_time AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York') = {p}
                 ORDER BY exit_time ASC
                 """,
                 ("CLOSED", today),
@@ -539,7 +544,7 @@ class PositionManager:
         """
         conn = None
         try:
-            today  = datetime.now().strftime("%Y-%m-%d")
+            today  = datetime.now(_ET).strftime("%Y-%m-%d")
             p      = ph()
             conn   = get_conn()
             cursor = dict_cursor(conn)
@@ -548,7 +553,7 @@ class PositionManager:
                 SELECT id, ticker, direction, entry_price
                 FROM positions
                 WHERE status = 'OPEN'
-                AND DATE(entry_time) < {p}
+                AND DATE(entry_time AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York') < {p}
             """, (today,))
             stale = cursor.fetchall()
 
@@ -909,17 +914,17 @@ class PositionManager:
             )
             final_pnl = prior_pnl + (pnl_per_share * 100 * remaining)
 
-            exit_time = datetime.now()
+            exit_time = datetime.now(_ET)
 
             cursor.execute(f"""
                 UPDATE positions
                 SET exit_price  = {p},
                     exit_reason = {p},
                     pnl         = {p},
-                    exit_time   = CURRENT_TIMESTAMP,
+                    exit_time   = {p},
                     status      = 'CLOSED'
                 WHERE id = {p}
-            """, (exit_price, exit_reason, final_pnl, position_id))
+            """, (exit_price, exit_reason, final_pnl, exit_time, position_id))
             conn.commit()
 
             # Bust caches immediately after write
@@ -1034,14 +1039,15 @@ class PositionManager:
             p      = ph()
             conn   = get_conn()
             cursor = dict_cursor(conn)
-            today  = datetime.now().strftime("%Y-%m-%d")
+            today  = datetime.now(_ET).strftime("%Y-%m-%d")
             cursor.execute(f"""
                 SELECT COUNT(*)                                  AS trades,
                        SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) AS wins,
                        SUM(CASE WHEN pnl <= 0 THEN 1 ELSE 0 END) AS losses,
                        SUM(pnl)                                  AS total_pnl
                 FROM positions
-                WHERE status = 'CLOSED' AND DATE(exit_time) = {p}
+                WHERE status = 'CLOSED'
+                  AND DATE(exit_time AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York') = {p}
             """, (today,))
             row = cursor.fetchone()
 
@@ -1121,7 +1127,7 @@ class PositionManager:
             "=" * 50,
             "WAR MACHINE \u2014 END OF DAY REPORT",
             "=" * 50,
-            f"Date:         {datetime.now().strftime('%A, %B %d, %Y')}",
+            f"Date:         {datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")}",
             f"Total Trades: {trades}",
             f"Winners:      {wins}",
             f"Losers:       {losses}",
@@ -1155,12 +1161,13 @@ class PositionManager:
             p      = ph()
             conn   = get_conn()
             cursor = dict_cursor(conn)
-            today  = datetime.now().strftime("%Y-%m-%d")
+            today  = datetime.now(_ET).strftime("%Y-%m-%d")
             cursor.execute(f"""
                 SELECT ticker, direction, grade, entry_price, exit_price, pnl
                 FROM positions
-                WHERE status = 'CLOSED' AND DATE(exit_time) = {p}
-                AND exit_reason != 'STALE_EOD'
+                WHERE status = 'CLOSED'
+                  AND DATE(exit_time AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York') = {p}
+                  AND exit_reason != 'STALE_EOD'
             """, (today,))
             rows = cursor.fetchall()
             return [dict(row) for row in rows]
