@@ -202,15 +202,35 @@ def bars_to_sniper_format(df: pd.DataFrame) -> List[Dict]:
     return bars
 
 
-def get_or_bars(bars: List[Dict]) -> List[Dict]:
-    """Return only the bars within the 9:30–9:45 opening range window."""
-    or_bars = []
-    for b in bars:
-        t = b["time"]
-        mins = t.hour * 60 + t.minute
-        if 570 <= mins < 570 + OR_END_MINUTE - 15 + 1:  # 9:30 → 9:44 inclusive
-            or_bars.append(b)
-    return or_bars
+def _unpack_or_result(raw) -> Optional[Dict]:
+    """
+    compute_opening_range_from_bars can return either:
+      - a dict: {"or_high": .., "or_low": .., "valid": True, ...}
+      - a tuple: (or_high, or_low)  or  (or_high, or_low, meta_dict)
+    Normalize to dict form. Returns None if the result is falsy or invalid.
+    """
+    if not raw:
+        return None
+    if isinstance(raw, dict):
+        return raw if raw.get("valid", True) else None
+    if isinstance(raw, (tuple, list)):
+        if len(raw) >= 2:
+            or_high, or_low = float(raw[0]), float(raw[1])
+            extra = raw[2] if len(raw) > 2 else {}
+            if isinstance(extra, dict):
+                result = {"or_high": or_high, "or_low": or_low, "valid": True, **extra}
+            else:
+                result = {"or_high": or_high, "or_low": or_low, "valid": True}
+            # A zero range is invalid
+            return result if or_high > or_low else None
+    return None
+
+
+def _session_first_time(session_df: pd.DataFrame) -> Optional[object]:
+    """Safely get the datetime of the first bar in a session DataFrame."""
+    if session_df is None or len(session_df) == 0:
+        return None
+    return session_df.iloc[0]["datetime"]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -268,7 +288,6 @@ def simulate_trade(
             }
 
         if direction == "bull":
-            # Stop check (use breakeven stop after T1)
             if lo <= be_stop:
                 exit_p = be_stop
                 pnl    = exit_p - actual_entry
@@ -282,8 +301,7 @@ def simulate_trade(
                 }
             if not t1_hit and hi >= t1_price:
                 t1_hit  = True
-                be_stop = actual_entry  # move stop to breakeven
-                # partial close at T1 — continue with remainder
+                be_stop = actual_entry
             if t1_hit and hi >= t2_price:
                 exit_p = t2_price
                 pnl    = exit_p - actual_entry
@@ -322,7 +340,6 @@ def simulate_trade(
                     "r_multiple":  round(pnl / risk, 2) if risk else 0.0,
                 }
 
-    # Ran out of bars (shouldn't happen with EOD guard, but safe fallback)
     exit_p = float(bars[-1]["close"])
     pnl    = (exit_p - actual_entry) if direction == "bull" else (actual_entry - exit_p)
     return {
@@ -352,19 +369,20 @@ def run_session(ticker: str, session_bars: pd.DataFrame) -> Optional[Dict]:
 
     # ── Step 1: Opening Range ───────────────────────────────────────────────
     try:
-        or_result = compute_opening_range_from_bars(bars)
+        raw_or = compute_opening_range_from_bars(bars)
+        or_result = _unpack_or_result(raw_or)
     except Exception as e:
         log.debug(f"  OR failed {session_date}: {e}")
         return None
 
-    if not or_result or not or_result.get("valid"):
+    if not or_result:
         return None
 
     or_high = or_result["or_high"]
     or_low  = or_result["or_low"]
     or_range_pct = (or_high - or_low) / or_low
     if or_range_pct < OR_MIN_RANGE_PCT:
-        return None  # OR too tight — skip
+        return None
 
     # ── Step 2: Breakout detection ──────────────────────────────────────────
     try:
@@ -373,12 +391,21 @@ def run_session(ticker: str, session_bars: pd.DataFrame) -> Optional[Dict]:
         log.debug(f"  Breakout failed {session_date}: {e}")
         return None
 
-    if not breakout or not breakout.get("detected"):
+    if not breakout:
+        return None
+    # Normalize: breakout can be a dict or a truthy non-dict (treat as detected)
+    if isinstance(breakout, dict) and not breakout.get("detected", True):
         return None
 
-    direction     = breakout.get("direction", "bull")
-    breakout_idx  = breakout.get("bar_index", 0)
-    breakout_price = breakout.get("price", or_high if direction == "bull" else or_low)
+    if isinstance(breakout, dict):
+        direction      = breakout.get("direction", "bull")
+        breakout_idx   = breakout.get("bar_index", 0)
+        breakout_price = breakout.get("price", or_high if direction == "bull" else or_low)
+    else:
+        # Tuple fallback: (direction, bar_index, price)
+        direction      = str(breakout[0]) if len(breakout) > 0 else "bull"
+        breakout_idx   = int(breakout[1]) if len(breakout) > 1 else 0
+        breakout_price = float(breakout[2]) if len(breakout) > 2 else or_high
 
     # ── Step 3: FVG after breakout ──────────────────────────────────────────
     try:
@@ -387,11 +414,18 @@ def run_session(ticker: str, session_bars: pd.DataFrame) -> Optional[Dict]:
         log.debug(f"  FVG failed {session_date}: {e}")
         fvg = None
 
-    if not fvg or not fvg.get("detected"):
+    if not fvg:
+        return None
+    if isinstance(fvg, dict) and not fvg.get("detected", True):
         return None
 
-    fvg_mid   = fvg.get("fvg_mid", breakout_price)
-    fvg_size  = fvg.get("fvg_size_pct", 0.0)
+    if isinstance(fvg, dict):
+        fvg_mid  = fvg.get("fvg_mid", breakout_price)
+        fvg_size = fvg.get("fvg_size_pct", 0.0)
+    else:
+        fvg_mid  = breakout_price
+        fvg_size = FVG_MIN_SIZE_PCT  # unknown size — pass threshold
+
     if fvg_size < FVG_MIN_SIZE_PCT:
         return None
 
@@ -401,7 +435,7 @@ def run_session(ticker: str, session_bars: pd.DataFrame) -> Optional[Dict]:
         if not passes_vwap_gate(breakout_price, direction, vwap_data):
             return None
     except Exception:
-        pass  # VWAP gate graceful skip
+        pass
 
     # ── Step 5: Stop & targets ──────────────────────────────────────────────
     try:
@@ -415,10 +449,16 @@ def run_session(ticker: str, session_bars: pd.DataFrame) -> Optional[Dict]:
     if not levels:
         return None
 
-    stop  = levels.get("stop")
-    t1    = levels.get("t1")
-    t2    = levels.get("t2")
-    conf  = breakout.get("confidence", 0.5)
+    if isinstance(levels, dict):
+        stop = levels.get("stop")
+        t1   = levels.get("t1")
+        t2   = levels.get("t2")
+    elif isinstance(levels, (tuple, list)) and len(levels) >= 3:
+        stop, t1, t2 = float(levels[0]), float(levels[1]), float(levels[2])
+    else:
+        return None
+
+    conf = breakout.get("confidence", 0.5) if isinstance(breakout, dict) else 0.5
 
     if not all([stop, t1, t2]):
         return None
@@ -441,11 +481,15 @@ def run_session(ticker: str, session_bars: pd.DataFrame) -> Optional[Dict]:
             pass
 
     # ── Step 7: Simulate outcome ────────────────────────────────────────────
-    entry_bar_idx = fvg.get("entry_bar_index", breakout_idx)
+    if isinstance(fvg, dict):
+        entry_bar_idx = fvg.get("entry_bar_index", breakout_idx)
+        entry_price   = fvg.get("entry_price", bars[entry_bar_idx]["close"])
+    else:
+        entry_bar_idx = breakout_idx
+        entry_price   = bars[entry_bar_idx]["close"]
+
     if entry_bar_idx >= len(bars) - 1:
         return None
-
-    entry_price = fvg.get("entry_price", bars[entry_bar_idx]["close"])
 
     outcome = simulate_trade(
         entry_bar_idx, bars, direction,
@@ -495,13 +539,14 @@ def build_walk_forward_folds(
     """
     folds = []
     for i in range(fold_size, len(sessions)):
+        # Use _session_first_time() — safe iloc-based accessor
+        train_start_t = _session_first_time(sessions[i - fold_size])
+        train_end_t   = _session_first_time(sessions[i - 1])
+        test_t        = _session_first_time(sessions[i])
         folds.append({
-            "train_start": sessions[i - fold_size][0]["time"].date()
-                           if len(sessions[i - fold_size]) else None,
-            "train_end":   sessions[i - 1][0]["time"].date()
-                           if len(sessions[i - 1]) else None,
-            "test_date":   sessions[i][0]["time"].date()
-                           if len(sessions[i]) else None,
+            "train_start": train_start_t.date() if train_start_t is not None else None,
+            "train_end":   train_end_t.date()   if train_end_t   is not None else None,
+            "test_date":   test_t.date()         if test_t        is not None else None,
             "test_idx":    i,
         })
     return folds
@@ -643,7 +688,6 @@ def run(tickers: List[str], days: int, out_dir: str, fold_size: int = 30):
             stats = compute_stats(ticker_trades)
             log.info(f"  Win rate: {stats['win_rate_pct']}%  |  Avg R: {stats['avg_r']}  |  PF: {stats['profit_factor']}")
 
-            # Write per-ticker CSV
             csv_path = out_path / f"{ticker}_trades.csv"
             with open(csv_path, "w", newline="") as f:
                 writer = csv.DictWriter(f, fieldnames=ticker_trades[0].keys())
@@ -651,20 +695,17 @@ def run(tickers: List[str], days: int, out_dir: str, fold_size: int = 30):
                 writer.writerows(ticker_trades)
             log.info(f"  Trades saved → {csv_path}")
 
-            # Write per-ticker summary JSON
             summary = {"ticker": ticker, "days": days, **stats}
             json_path = out_path / f"{ticker}_summary.json"
             json_path.write_text(json.dumps(summary, indent=2))
             log.info(f"  Summary saved → {json_path}")
 
-            # Walk-forward fold results
             if wf_fold_results:
                 wf_path = out_path / f"{ticker}_walk_forward_folds.json"
                 wf_path.write_text(json.dumps(wf_fold_results, indent=2))
 
         all_trades.extend(ticker_trades)
 
-    # ── Aggregate outputs ─────────────────────────────────────────────────
     if all_trades:
         agg_stats = compute_stats(all_trades)
         agg_path  = out_path / "aggregate_summary.json"
@@ -673,7 +714,6 @@ def run(tickers: List[str], days: int, out_dir: str, fold_size: int = 30):
         log.info(f"Total trades across all tickers: {agg_stats['total_trades']}")
         log.info(f"Overall win rate: {agg_stats['win_rate_pct']}%  |  Avg R: {agg_stats['avg_r']}")
 
-        # ── Hourly win rate map (feeds 47.P4-2) ──────────────────────────────
         hourly = build_hourly_win_rates(all_trades)
         hourly_path = out_path / "hourly_win_rates.json"
         hourly_path.write_text(json.dumps(hourly, indent=2))
