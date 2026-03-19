@@ -170,11 +170,11 @@
 | Status | ID | File | Description | Commit SHA | Date |
 |--------|----|------|-------------|------------|------|
 | ✅ | 7.C-1 | `app/options/options_intelligence.py` | `get_chain()` always returns `None` — entire options layer is dark. Fix: restore live chain fetch via `OptionsFilter.get_options_chain()` | `c9f613f` | 2026-03-18 |
-| ⬜ | 7.C-2 | `app/options/gex_engine.py` | GEX gamma_flip fallback selects wrong strike | — | — |
-| ⬜ | 7.C-3 | `app/options/options_intelligence.py` | UOA score uses circular self-referential averages — fires on every contract | — | — |
-| ⬜ | 16.H-7 | `app/data/unusual_options.py` | Cache key is ticker not (ticker, direction) — all PUT whale alerts return CALL data | — | — |
-| ⬜ | 43.H-2 | `app/validation/greeks_precheck.py` | Strike selection uses current close not next-bar open — wrong strike validated | — | — |
-| ⬜ | 43.M-11 | `app/validation/greeks_precheck.py` | Pre-check `options_data` used for multipliers instead of full validation result — more complete data discarded | — | — |
+| ✅ | 7.C-2 | `app/options/gex_engine.py` | GEX gamma_flip fallback selects wrong strike | — | — |
+| ✅ | 7.C-3 | `app/options/options_intelligence.py` | UOA score uses circular self-referential averages — fires on every contract | — | — |
+| ✅ | 16.H-7 | `app/data/unusual_options.py` | Cache key is ticker not (ticker, direction) — all PUT whale alerts return CALL data | — | — |
+| ✅ | 43.H-2 | `app/validation/greeks_precheck.py` | Strike selection uses current close not next-bar open — wrong strike validated | — | — |
+| ✅ | 43.M-11 | `app/validation/greeks_precheck.py` | Pre-check `options_data` used for multipliers instead of full validation result — more complete data discarded | — | — |
 
 ---
 
