@@ -387,18 +387,58 @@ def get_highest_priority_fvg(
     return result['primary_fvg']
 
 
+# ── PHASE 3C: FIX 41.H-5 ─────────────────────────────────────────────────────
+# get_full_mtf_analysis now resamples internally from bars_5m (or bars_1m if
+# provided) instead of requiring the caller to build the MTF dict. This
+# eliminates the 3 extra DB reads that occurred when sniper.py passed raw
+# session bars directly to resolve_fvg_priority, which expected a dict.
+# Backward-compatible: existing callers that pass only bars_5m continue to work.
+
 def get_full_mtf_analysis(
     ticker: str,
     direction: str,
     bars_5m: List[dict],
-    min_pct: float = 0.001
+    min_pct: float = 0.001,
+    bars_1m: List[dict] = None,  # optional: pre-fetched 1m bars for sharper resampling
 ) -> Dict:
     """
     Get complete MTF FVG analysis including all detected FVGs and priority logic.
-    
+
+    Builds the full timeframe dict internally — no additional DB reads.
     Use this for detailed logging or when you need to track secondary FVGs.
     """
-    return resolve_fvg_priority(ticker, direction, bars_5m, min_pct)
+    from collections import defaultdict
+
+    def _resample(bars: list, minutes: int) -> list:
+        buckets = defaultdict(list)
+        for b in bars:
+            dt = b["datetime"]
+            floored = dt.replace(
+                minute=(dt.minute // minutes) * minutes,
+                second=0, microsecond=0
+            )
+            buckets[floored].append(b)
+        result = []
+        for ts in sorted(buckets):
+            bucket = buckets[ts]
+            result.append({
+                "datetime": ts,
+                "open":   bucket[0]["open"],
+                "high":   max(b["high"]  for b in bucket),
+                "low":    min(b["low"]   for b in bucket),
+                "close":  bucket[-1]["close"],
+                "volume": sum(b["volume"] for b in bucket),
+            })
+        return result
+
+    src = bars_1m if bars_1m else bars_5m
+    bars_mtf = {
+        "5m": bars_5m,
+        "3m": _resample(src, 3),
+        "2m": _resample(src, 2),
+        "1m": src,
+    }
+    return resolve_fvg_priority(ticker, direction, bars_mtf, min_pct)
 
 
 def print_priority_stats():
