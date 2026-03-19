@@ -5,7 +5,6 @@
 #   - Computes EMA 9/21/50 for BOTH SPY and QQQ on 5m compressed bars
 #   - Combines into a single conviction label + score_adj
 #   - score_adj is a PASSIVE confidence nudge only (no hard blocks)
-#   - Hard is_long_allowed / is_short_allowed removed — regime never kills signals
 #   - send_regime_discord() posts a visual update to a dedicated Discord channel
 #     every REGIME_DISCORD_INTERVAL_MINUTES (default 5 min)
 #   - Cache TTL: 90s
@@ -28,6 +27,10 @@
 #        never subscribed to the WS (e.g. mid-session redeploys before
 #        Phase 1.26 scanner.py is deployed). Result is cached per-symbol
 #        for EODHD_CACHE_SECONDS to avoid hammering the API.
+#
+# FIX (Mar 19 2026):
+#   print_market_regime() and the EODHD-fallback log now use logger.info()
+#   instead of bare print() so output flows through the logging pipeline.
 
 import os
 from datetime import datetime, timedelta
@@ -348,7 +351,7 @@ def print_market_regime(regime: dict, ticker: str = ""):
     else:
         qqq_line = "QQQ N/A"
 
-    print(
+    logger.info(
         f"{prefix}{emoji} REGIME [{label}] adj={adj_str} | "
         f"{spy_line} | {qqq_line} | {reason}"
     )
