@@ -27,14 +27,11 @@ def compute_vwap(bars: list) -> float:
     return cumulative_tpv / cumulative_vol
 
 
-def passes_vwap_gate(bars: list, direction: str, current_price: float) -> tuple:
-    """
-    Returns (passed: bool, reason: str).
-    Bull signals require price > VWAP; bear signals require price < VWAP.
-    """
+def passes_vwap_gate(bars: list, direction: str, current_price: float, vwap: float = None) -> tuple:
     if not VWAP_GATE_ENABLED:
         return True, "VWAP gate disabled"
-    vwap = compute_vwap(bars)
+    if vwap is None:
+        vwap = compute_vwap(bars)  # fallback if not pre-computed
     if vwap == 0.0:
         return True, "VWAP unavailable (insufficient data)"
     if direction == "bull":

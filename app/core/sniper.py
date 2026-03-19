@@ -574,7 +574,9 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
             cache_order_block(ticker, _ob)
             print(f"[{ticker}] 📦 OB cached: ${_ob['ob_low']:.2f}–${_ob['ob_high']:.2f}")
 
-    vwap_passes, vwap_reason = passes_vwap_gate(bars_session, direction, entry_price)
+    _vwap_val = compute_vwap(bars_session)  # PHASE 3C: compute once, reuse everywhere
+    vwap_passes, vwap_reason = passes_vwap_gate(bars_session, direction, entry_price, vwap=_vwap_val)
+
     if not vwap_passes:
         print(f"[{ticker}] 🚫 VWAP GATE: {vwap_reason}")
         return False

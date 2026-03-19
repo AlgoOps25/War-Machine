@@ -119,9 +119,9 @@
 
 | Status | ID | File | Description | Commit SHA | Date |
 |--------|----|------|-------------|------------|------|
-| ⬜ | 39.H-1 | `app/core/sniper.py` | `_TICKER_WIN_CACHE = get_ticker_win_rates(days=30)` at module import — DB query before pool ready crashes on cold start. Fix: lazy init | — | — |
-| ⬜ | 9.C-3 | `app/core/scanner.py` | Health server starts at module import before env validation | — | — |
-| ⬜ | 44.H-1 | `utils/config.py` | `float(os.getenv(...))` raises `ValueError` at import if env var is non-numeric string. Fix: wrap in `try/except` | — | — |
+| ✅ | 39.H-1 | `app/core/sniper.py` | `_TICKER_WIN_CACHE = get_ticker_win_rates(days=30)` at module import — DB query before pool ready crashes on cold start. Fix: lazy init | — | — |
+| ✅ | 9.C-3 | `app/core/scanner.py` | Health server starts at module import before env validation | — | — |
+| ✅ | 44.H-1 | `utils/config.py` | `float(os.getenv(...))` raises `ValueError` at import if env var is non-numeric string. Fix: wrap in `try/except` | — | — |
 
 ---
 
