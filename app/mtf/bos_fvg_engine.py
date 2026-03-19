@@ -4,6 +4,24 @@ Break of Structure → Fair Value Gap → Entry/Exit for same-session options
 
 UPDATED: Proper confirmation-wait-then-enter-next-bar logic
 Based on Nitro Trades video transcript (lines 1238-1255)
+
+FIX 40.H-1 (MAR 19, 2026): FVG SEARCH START CORRECTED
+  - find_fvg_after_bos() previously used `search_start = max(0, bos_idx - 5)`
+    which intentionally looked 5 bars BEFORE the BOS, finding pre-BOS
+    imbalances that are invalid setups (the gap formed before structure broke).
+  - Fix: search_start = bos_idx — only scan bars AT or AFTER the BOS bar.
+
+FIX 40.H-2 (MAR 19, 2026): MULTI-BAR BOS DETECTION
+  - detect_bos() previously only checked bars[-1] — BOS events 1-2 scan
+    cycles old were permanently invisible, causing missed entries.
+  - Fix: scan the last 5 bars and return the most recent valid BOS found.
+    bos_idx is set to the actual bar index in the full bars list so
+    find_fvg_after_bos() searches from the correct position.
+
+FIX 40.H-3 (MAR 19, 2026): SUPERSEDED
+  - FVG bounce check in check_fvg_entry() already uses fvg_high/fvg_low
+    correctly (bull: close >= fvg_mid, bear: close <= fvg_mid). The
+    fvg_mid bounce guard was added in a prior refactor. No change needed.
 """
 from datetime import datetime, time, timedelta
 from typing import List, Dict, Optional, Tuple
@@ -22,6 +40,7 @@ LOOKBACK_SWING   = 10     # bars to look back for swing high/low
 FVG_MIN_PCT      = 0.001  # 0.1% minimum FVG size (tighter for 0DTE) — default
 HARD_CLOSE_TIME  = time(15, 45)  # No new entries after this
 MIN_BARS_SESSION = 5      # Need at least 5 bars before scanning
+BOS_LOOKBACK     = 5      # FIX 40.H-2: scan this many recent bars for BOS
 
 
 # ─────────────────────────────────────────────────────────────
@@ -41,8 +60,6 @@ def find_swing_points(bars: List[Dict], lookback: int = LOOKBACK_SWING) -> Dict:
         return {"swing_high": None, "swing_high_idx": None,
                 "swing_low":  None, "swing_low_idx":  None}
 
-    # 3x lookback gives more scan positions than 2x, critical for
-    # short early-session bar counts (20-30 bars).
     recent = bars[-(lookback * 3):]
 
     swing_high = swing_high_idx = None
@@ -76,42 +93,51 @@ def find_swing_points(bars: List[Dict], lookback: int = LOOKBACK_SWING) -> Dict:
 
 def detect_bos(bars: List[Dict]) -> Optional[Dict]:
     """
-    Detect a Break of Structure on the most recent bar.
+    Detect the most recent Break of Structure within the last BOS_LOOKBACK bars.
 
-    BULL BOS: current close > previous swing high  → market breaking up
-    BEAR BOS: current close < previous swing low   → market breaking down
+    FIX 40.H-2: Previously only checked bars[-1], so BOS events 1-2 scan
+    cycles old were permanently invisible. Now scans the last BOS_LOOKBACK
+    bars (newest first) and returns the first (most recent) BOS found.
+    bos_idx is the absolute index into the full bars list so that
+    find_fvg_after_bos() searches from the correct position.
 
-    Returns BOS dict or None if no BOS on the latest bar.
+    BULL BOS: bar close > previous swing high  → market breaking up
+    BEAR BOS: bar close < previous swing low   → market breaking down
     """
     if len(bars) < LOOKBACK_SWING * 2 + 1:
         return None
 
-    # Compute structure on all bars EXCEPT the last one
-    structure  = find_swing_points(bars[:-1])
-    latest_bar = bars[-1]
+    # Scan from most recent bar backwards, up to BOS_LOOKBACK bars
+    scan_end = len(bars)
+    scan_start = max(LOOKBACK_SWING * 2 + 1, scan_end - BOS_LOOKBACK)
 
-    swing_high = structure["swing_high"]
-    swing_low  = structure["swing_low"]
+    for abs_idx in range(scan_end - 1, scan_start - 1, -1):
+        # Compute structure on all bars before this candidate bar
+        structure = find_swing_points(bars[:abs_idx])
+        candidate = bars[abs_idx]
 
-    if swing_high and latest_bar["close"] > swing_high:
-        return {
-            "direction":   "bull",
-            "bos_price":   swing_high,
-            "break_price": latest_bar["close"],
-            "bos_bar":     latest_bar,
-            "bos_idx":     len(bars) - 1,
-            "strength":    (latest_bar["close"] - swing_high) / swing_high
-        }
+        swing_high = structure["swing_high"]
+        swing_low  = structure["swing_low"]
 
-    if swing_low and latest_bar["close"] < swing_low:
-        return {
-            "direction":   "bear",
-            "bos_price":   swing_low,
-            "break_price": latest_bar["close"],
-            "bos_bar":     latest_bar,
-            "bos_idx":     len(bars) - 1,
-            "strength":    (swing_low - latest_bar["close"]) / swing_low
-        }
+        if swing_high and candidate["close"] > swing_high:
+            return {
+                "direction":   "bull",
+                "bos_price":   swing_high,
+                "break_price": candidate["close"],
+                "bos_bar":     candidate,
+                "bos_idx":     abs_idx,
+                "strength":    (candidate["close"] - swing_high) / swing_high
+            }
+
+        if swing_low and candidate["close"] < swing_low:
+            return {
+                "direction":   "bear",
+                "bos_price":   swing_low,
+                "break_price": candidate["close"],
+                "bos_bar":     candidate,
+                "bos_idx":     abs_idx,
+                "strength":    (swing_low - candidate["close"]) / swing_low
+            }
 
     return None
 
@@ -130,25 +156,30 @@ def find_fvg_after_bos(bars: List[Dict], bos_idx: int,
 
     The FVG zone is the gap between candle[0] and candle[2].
 
+    FIX 40.H-1: Previously used `search_start = max(0, bos_idx - 5)` which
+    scanned 5 bars BEFORE the BOS, returning pre-BOS imbalances as valid
+    setups. Now search_start = bos_idx so only post-BOS gaps are considered.
+
     min_pct: minimum gap size as a fraction of price.
              Pass the adaptive threshold from trade_calculator
              .get_adaptive_fvg_threshold() for volatility-adjusted filtering.
              Defaults to FVG_MIN_PCT (0.1%).
     """
-    search_start = max(0, bos_idx - 5)  # Look back a few bars too
+    # FIX 40.H-1: start search AT the BOS bar, not before it
+    search_start = bos_idx
     search_bars  = bars[search_start:]
 
     for i in range(2, len(search_bars)):
         c0 = search_bars[i - 2]
-        c1 = search_bars[i - 1]  # middle candle (not used directly)
+        c1 = search_bars[i - 1]  # middle candle (unused directly per 40.L-14)
         c2 = search_bars[i]
 
         if direction == "bull":
             gap = c2["low"] - c0["high"]
             if gap > 0 and (gap / c0["high"]) >= min_pct:
                 return {
-                    "fvg_high":     c2["low"],   # Top of gap
-                    "fvg_low":      c0["high"],  # Bottom of gap
+                    "fvg_high":     c2["low"],
+                    "fvg_low":      c0["high"],
                     "fvg_mid":      (c2["low"] + c0["high"]) / 2,
                     "fvg_size":     gap,
                     "fvg_size_pct": round(gap / c0["high"] * 100, 3),
@@ -160,8 +191,8 @@ def find_fvg_after_bos(bars: List[Dict], bos_idx: int,
             gap = c0["low"] - c2["high"]
             if gap > 0 and (gap / c0["low"]) >= min_pct:
                 return {
-                    "fvg_high":     c0["low"],   # Top of gap
-                    "fvg_low":      c2["high"],  # Bottom of gap
+                    "fvg_high":     c0["low"],
+                    "fvg_low":      c2["high"],
                     "fvg_mid":      (c0["low"] + c2["high"]) / 2,
                     "fvg_size":     gap,
                     "fvg_size_pct": round(gap / c0["low"] * 100, 3),
@@ -208,7 +239,6 @@ def classify_confirmation_candle(bar: Dict, fvg: Dict) -> Dict:
     body = abs(c - o)
     total_range = h - l
 
-    # Avoid division by zero
     if total_range == 0:
         return {"grade": None, "score": 0, "candle_type": "Doji (no range)"}
 
@@ -218,7 +248,6 @@ def classify_confirmation_candle(bar: Dict, fvg: Dict) -> Dict:
         is_green = c > o
         is_red = c < o
 
-        # A+ : Strong green candle with minimal lower wick
         if is_green and (lower_wick / total_range) < 0.20:
             return {
                 "grade": "A+",
@@ -226,7 +255,6 @@ def classify_confirmation_candle(bar: Dict, fvg: Dict) -> Dict:
                 "candle_type": "Strong bull push (no wick)"
             }
 
-        # A : Opens red initially, flips to green (strong lower wick)
         if is_green and (lower_wick / total_range) >= 0.30:
             return {
                 "grade": "A",
@@ -234,7 +262,6 @@ def classify_confirmation_candle(bar: Dict, fvg: Dict) -> Dict:
                 "candle_type": "Bull flip (red→green with wick)"
             }
 
-        # A- : Red candle but large lower wick rejection
         if is_red and (lower_wick / total_range) >= 0.50:
             return {
                 "grade": "A-",
@@ -248,7 +275,6 @@ def classify_confirmation_candle(bar: Dict, fvg: Dict) -> Dict:
         is_red = c < o
         is_green = c > o
 
-        # A+ : Strong red candle with minimal upper wick
         if is_red and (upper_wick / total_range) < 0.20:
             return {
                 "grade": "A+",
@@ -256,7 +282,6 @@ def classify_confirmation_candle(bar: Dict, fvg: Dict) -> Dict:
                 "candle_type": "Strong bear push (no wick)"
             }
 
-        # A : Opens green initially, flips to red (strong upper wick)
         if is_red and (upper_wick / total_range) >= 0.30:
             return {
                 "grade": "A",
@@ -264,7 +289,6 @@ def classify_confirmation_candle(bar: Dict, fvg: Dict) -> Dict:
                 "candle_type": "Bear flip (green→red with wick)"
             }
 
-        # A- : Green candle but large upper wick rejection
         if is_green and (upper_wick / total_range) >= 0.50:
             return {
                 "grade": "A-",
@@ -272,7 +296,6 @@ def classify_confirmation_candle(bar: Dict, fvg: Dict) -> Dict:
                 "candle_type": "Bear rejection wick (stayed green)"
             }
 
-    # No valid confirmation pattern
     return {
         "grade": None,
         "score": 0,
@@ -298,7 +321,7 @@ def check_fvg_entry(bars: List[Dict], fvg: Dict,
     This checks the PREVIOUS bar (bars[-2]) for FVG retest + confirmation,
     then triggers entry on the CURRENT bar (bars[-1]) open.
 
-    FVG BOUNCE CHECK (v1.23a fix):
+    FVG BOUNCE CHECK (40.H-3 — already correct, no change needed):
     A valid retest requires the candle to have BOUNCED off the FVG —
     meaning it entered the gap AND closed back in the direction of the trade.
     - Bull: close must be >= fvg_mid (bounced back up)
@@ -313,11 +336,9 @@ def check_fvg_entry(bars: List[Dict], fvg: Dict,
         Dict with entry details if confirmed, None otherwise
     """
     if len(bars) < 2:
-        return None  # Need at least 2 bars (previous + current)
+        return None
 
-    # PREVIOUS bar = the one that just CLOSED (potential confirmation candle)
-    prev_bar = bars[-2]
-    # CURRENT bar = the one that's forming NOW (entry bar)
+    prev_bar    = bars[-2]
     current_bar = bars[-1]
 
     direction = fvg["direction"]
@@ -325,42 +346,33 @@ def check_fvg_entry(bars: List[Dict], fvg: Dict,
     fvg_high  = fvg["fvg_high"]
     fvg_mid   = fvg["fvg_mid"]
 
-    # ── Step 1: Did the PREVIOUS bar retest AND bounce off the FVG? ───
-    # Wick must have touched the FVG zone AND close must confirm bounce.
-    # This rejects candles that blow through the FVG without bouncing.
     price_in_fvg = False
 
     if direction == "bull":
-        # Wick touched into FVG from above AND closed back above fvg_mid
         if prev_bar["low"] <= fvg_high and prev_bar["close"] >= fvg_mid:
             price_in_fvg = True
 
     elif direction == "bear":
-        # Wick touched into FVG from below AND closed back below fvg_mid
         if prev_bar["high"] >= fvg_low and prev_bar["close"] <= fvg_mid:
             price_in_fvg = True
 
     if not price_in_fvg:
-        return None  # No valid FVG bounce — keep scanning
+        return None
 
-    # ── Step 2: Grade the CLOSED confirmation candle ─────────────────
     confirmation = classify_confirmation_candle(prev_bar, fvg)
 
-    # Require valid confirmation grade (A+, A, or A-)
     if require_confirmation and confirmation["grade"] is None:
-        return None  # Candle touched FVG but didn't confirm, keep waiting
+        return None
 
-    # ── Step 3: Trigger entry on NEXT bar open (current bar) ─────────
-    # Entry price = current bar's OPEN (the bar AFTER confirmation closed)
     entry_price = current_bar["open"]
 
     return {
         "entry_price":      entry_price,
         "entry_type":       "FVG_FILL",
         "entry_bar":        current_bar,
-        "confirmation_bar": prev_bar,  # The bar that confirmed
-        "confirmed_at":     prev_bar["datetime"],  # When confirmation closed
-        "entry_at":         current_bar["datetime"],  # When we entered
+        "confirmation_bar": prev_bar,
+        "confirmed_at":     prev_bar["datetime"],
+        "entry_at":         current_bar["datetime"],
         "fvg_low":          fvg_low,
         "fvg_high":         fvg_high,
         "confirmation":     confirmation["grade"],
@@ -388,7 +400,7 @@ def compute_0dte_stops_and_targets(
     Stop buffer = 20% of FVG size (tight but not a tick stop)
     """
     fvg_size = fvg["fvg_high"] - fvg["fvg_low"]
-    buffer   = fvg_size * 0.20   # 20% of gap as buffer
+    buffer   = fvg_size * 0.20
 
     if direction == "bull":
         stop = fvg["fvg_low"] - buffer
@@ -396,7 +408,7 @@ def compute_0dte_stops_and_targets(
         t1   = entry_price + risk * 1.5
         t2   = entry_price + risk * 2.5
 
-    else:  # bear
+    else:
         stop = fvg["fvg_high"] + buffer
         risk = stop - entry_price
         t1   = entry_price - risk * 1.5
@@ -471,27 +483,25 @@ def scan_bos_fvg(ticker: str, bars: List[Dict],
 
     latest_bar = bars[-1]
 
-    # Time filter — watch candles from 9:30 AM; no new signals after 3:45 PM ET
     if not is_valid_entry_time(latest_bar):
         return None
 
-    # ── Step 1: Detect BOS ───────────────────────────────────────
+    # ── Step 1: Detect BOS (last BOS_LOOKBACK bars) ──────────────
     bos = detect_bos(bars)
     if not bos:
         return None
 
-    # ── Step 2: Find FVG after BOS (with adaptive threshold) ───────
+    # ── Step 2: Find FVG at or after BOS (with adaptive threshold)
     fvg = find_fvg_after_bos(bars, bos["bos_idx"], bos["direction"],
                               min_pct=fvg_min_pct)
     if not fvg:
         return None
 
     # ── Step 3: Check if PREVIOUS bar retested FVG + confirmed ────
-    #    Then enter on CURRENT bar open
     entry_trigger = check_fvg_entry(bars, fvg,
                                     require_confirmation=require_confirmation)
     if not entry_trigger:
-        return None  # Either no retest yet, or no valid confirmation
+        return None
 
     # ── Step 4: Compute 0DTE stops and targets ──────────────────
     levels = compute_0dte_stops_and_targets(
