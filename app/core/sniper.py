@@ -31,7 +31,7 @@
 # MTF TREND (Step 8.5): Multi-timeframe trend alignment boost (1m/5m/15m/30m)
 # SMC ENRICHMENT (Step 8.6): CHoCH / Inducement / Order Block / Trend Phase context + conf delta
 # GATE DISTRIBUTION (Issue #23): EOD grade/signal-type/histogram report for gate analytics
-# FUNNEL ANALYTICS: Upstream pre-detection funnel (SCREENED→BOS→FVG→ARMED) via log_bos/log_fvg
+# FUNNEL ANALYTICS: Upstream pre-detection funnel (SCREENED->BOS->FVG->ARMED) via log_bos/log_fvg
 #
 # RESTORE (Mar 10 2026): Full file recovered from commit 6a235067 after accidental truncation
 # FIXED IMPORTS: signal_analytics, dynamic_thresholds, hourly_gate, production_helpers
@@ -85,6 +85,13 @@
 #   - Detects CHoCH, Inducement, Order Blocks, OB Retests, Trend Phase.
 #   - Applies confidence_delta from smc_context['total_confidence_delta'] before gate check.
 #   - Non-fatal: ImportError falls back to no-op stub; all internal errors are caught.
+#
+# FIX (Mar 19 2026): UnboundLocalError '_is_watching' referenced before assignment.
+#   - Root cause: orphaned DB-restore block used _is_watching before the assignment.
+#   - Fix: removed orphaned first block; re-inserted DB-restore logic inside the
+#     second _is_watching block, immediately after _is_watching is assigned.
+#   - Also fixes silent bug: w["breakout_idx"] local dict was not updated after
+#     state update, causing bars_since to compute against None on same cycle.
 import traceback
 from datetime import datetime, time, timedelta
 from utils.time_helpers import _now_et, _bar_time, _strip_tz
@@ -1081,6 +1088,35 @@ def process_ticker(ticker: str):
         _is_watching = _state.ticker_is_watching(ticker)
         if _is_watching:
             w = _state.get_watching_signal(ticker)
+
+            # ── DB-restore: resolve breakout_idx from breakout_bar_dt after restart ──
+            # After a Railway restart, watching_signals are loaded from DB but
+            # breakout_idx is not stored — only breakout_bar_dt is. Resolve it
+            # by scanning today's bars for the matching datetime.
+            if w.get("breakout_idx") is None:
+                bar_dt_target = _strip_tz(w.get("breakout_bar_dt"))
+                resolved_idx = None
+                if bar_dt_target is not None:
+                    for i, bar in enumerate(bars_session):
+                        if _strip_tz(bar["datetime"]) == bar_dt_target:
+                            resolved_idx = i
+                            break
+                if resolved_idx is None:
+                    print(
+                        f"[{ticker}] ⚠️ Watch DB entry: breakout bar "
+                        f"{bar_dt_target} not found in today's session — discarding"
+                    )
+                    _state.remove_watching_signal(ticker)
+                    _remove_watch_from_db(ticker)
+                    return
+                else:
+                    _state.update_watching_signal_field(ticker, "breakout_idx", resolved_idx)
+                    w["breakout_idx"] = resolved_idx  # keep local ref in sync
+                    print(
+                        f"[{ticker}] 📄 Watch restored from DB: "
+                        f"breakout_idx={resolved_idx} ({bar_dt_target})"
+                    )
+
             bars_since = len(bars_session) - w["breakout_idx"]
             if bars_since > MAX_WATCH_BARS:
                 print(f"[{ticker}] ⏰ Watch expired — clearing")
