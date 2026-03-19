@@ -932,6 +932,15 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
             f"dynamic threshold {eff_min:.2f} "
             f"[{signal_type}/{final_grade}] — signal dropped"
         )
+        if PHASE_4_ENABLED and signal_tracker:
+            try:
+                signal_tracker.record_signal_rejected(
+                    ticker=ticker,
+                    stage='CONFIDENCE_GATE',
+                    reason=f"conf {final_confidence:.2f} < threshold {eff_min:.2f} [{signal_type}/{final_grade}]"
+                )
+            except Exception:
+                pass
         return False
 
     _track_gate_result(final_grade, signal_type, final_confidence, passed=True)
