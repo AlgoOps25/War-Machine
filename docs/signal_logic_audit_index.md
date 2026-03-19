@@ -42,8 +42,37 @@ Each batch is maintained in its own file under `docs/`.
 | 9 | [batch9](signal_logic_audit_batch9.md) | Core orchestration (scanner, thread_safe_state, armed_signal_store, watch_signal_store) | ✅ Complete | 23 findings |
 | 10 | batch10 | Risk layer (position_manager, risk_manager, trade_calculator) | ✅ Complete | 20 findings |
 | 11 | batch11 | Risk layer — VIX sizing, dynamic thresholds | ✅ Complete | 18 findings |
+| 12 | batch12 | Analytics layer (cooldown_tracker, performance_monitor, grade_gate_tracker) | ✅ Complete | 17 findings |
+| 13 | batch13 | Analytics layer (funnel_analytics, explosive_mover_tracker, ab_test_framework) | ✅ Complete | 16 findings |
+| 14 | batch14 | Data layer (db_connection, candle_cache) | ✅ Complete | 16 findings |
+| 15 | batch15 | Data layer (data_manager) | ✅ Complete | 18 findings |
+| 16 | batch16 | Real-time feeds (ws_feed, ws_quote_feed, unusual_options) | ✅ Complete | 20 findings |
+| 17 | batch17 | Signal detectors (breakout_detector, opening_range) | ✅ Complete | 21 findings |
+| 18 | batch18 | Signal analytics / lifecycle tracker | ✅ Complete | 17 findings |
+| 19 | batch19 | sniper.py — core signal pipeline | ✅ Complete | 26 findings (2C / 8H / 10M / 6L) |
+| 20 | batch20 | scanner.py — main scan loop | ✅ Complete | 21 findings (1C / 5H / 9M / 6L) |
+| 21 | batch21 | thread_safe_state.py + arm_signal.py + armed_signal_store.py + watch_signal_store.py | ✅ Complete | 19 findings (1C / 4H / 8M / 6L) |
+| 22 | batch22 | analytics_integration.py + eod_reporter.py + health_server.py | ✅ Complete | 16 findings (0C / 4H / 7M / 5L) |
+| 23 | batch23 | ai_learning.py | ✅ Complete | 18 findings (1C / 4H / 8M / 5L) |
+| 24 | batch24 | cooldown_tracker.py + funnel_analytics.py + performance_monitor.py | ✅ Complete | 19 findings (0C / 5H / 8M / 6L) |
+| 25 | batch25 | grade_gate_tracker.py + explosive_mover_tracker.py + ab_test_framework.py | ✅ Complete | 21 findings (1C / 5H / 9M / 6L) |
+| 26 | batch26 | db_connection.py + sql_safe.py | ✅ Complete | 18 findings (0C / 4H / 8M / 6L) |
+| 27 | batch27 | candle_cache.py + database.py + unusual_options.py | ✅ Complete | 20 findings (0C / 4H / 8M / 8L) |
+| 28 | batch28 | ws_feed.py + ws_quote_feed.py | ✅ Complete | 16 findings (0C / 3H / 7M / 6L) |
+| 29 | batch29 | data_manager.py | ✅ Complete | 22 findings (0C / 5H / 10M / 7L) |
+| 30 | batch30 | cooldown_tracker.py + explosive_mover_tracker.py | ✅ Complete | 19 findings (0C / 4H / 8M / 7L) |
+| 31 | batch31 | funnel_analytics.py + performance_monitor.py + grade_gate_tracker.py + stubs | ✅ Complete | 23 findings (0C / 4H / 10M / 9L) |
+| 32 | batch32 | ab_test_framework.py + funnel_tracker.py | ✅ Complete | 18 findings (0C / 4H / 8M / 6L) |
+| 33 | batch33 | breakout_detector.py | ✅ Complete | 20 findings (0C / 5H / 9M / 6L) |
+| 34 | batch34 | opening_range.py | ✅ Complete | 22 findings (0C / 5H / 10M / 7L) |
+| 35 | batch35 | signal_analytics.py | ✅ Complete | 17 findings (0C / 3H / 8M / 6L) |
+| 36 | batch36 | arm_signal.py + armed_signal_store.py | ✅ Complete | 19 findings (0C / 4H / 9M / 6L) |
+| 37 | batch37 | analytics_integration.py + eod_reporter.py + watch_signal_store.py + health_server.py | ✅ Complete | 20 findings (0C / 3H / 9M / 8L) |
+| 38 | batch38 | thread_safe_state.py + scanner.py | ✅ Complete | 24 findings (0C / 5H / 11M / 8L) |
+| 39 | batch39 | sniper.py (CFW6 engine) | ✅ Complete | 28 findings (1C / 6H / 13M / 8L) |
 
 ## Outstanding Criticals — Cross-Batch Summary
+
 
 | Priority | ID | Batch | Module | Issue |
 |----------|----|-------|--------|-------|
@@ -72,4 +101,15 @@ Each batch is maintained in its own file under `docs/`.
 | 🔴 | 10.C-4 | 10 | trade_calculator.py | Stop above entry possible on bull A+ high-vol tight-OR — silent rejection |
 | 🔴 | 11.C-2 | 11 | dynamic_thresholds.py | trades table doesn't exist — win-rate threshold adjustment has never fired |
 | 🔴 | 11.C-3 | 11 | dynamic_thresholds.py | proposed_trades table doesn't exist — quality adjustment has never fired |
+| 🔴 | 12.C-2 | 12 | cooldown_tracker.py | tz-aware vs naive timestamp — expired cooldowns never cleaned on Railway/Postgres |
+| 🔴 | 13.C-1 | 13 | explosive_mover_tracker.py | conn.close() instead of return_conn() — pool exhaustion over session |
+| 🔴 | 13.C-2 | 13 | ab_test_framework.py | get_conn(db_path) raises TypeError at import — crashes Railway startup |
+| 🔴 | 14.H-7 | 14 | candle_cache.py | Stripped TZ on cache rows → naive UTC vs ET boundary → _filter_session_bars() returns zero bars on Railway |
+| 🔴 | 14.H-6 | 14 | candle_cache.py | is_cache_fresh() stamps ET on UTC timestamp → stale cache appears fresh |
+| 🔴 | 14.C-1 | 14 | db_connection.py | Pool init at import — transient Postgres unavailability during Railway deploy crashes process |
+| 🔴 | 15.C-1 | 15 | data_manager.py | Destructive migration fires on transient DB error mid-session — wipes all bars |
+| 🔴 | 15.C-2 | 15 | data_manager.py | Inverted tz logic in startup_backfill_with_cache() → TypeError → full API backfill every startup, cache never used |
+| 🔴 | 16.C-1 | 16 | ws_feed.py | Gate 3 dead code — multi-condition ticks with unknown leading code bypass INVALID_TRADE_CONDITIONS filter |
+| 🔴 | 16.H-7 | 16 | unusual_options.py | Cache key is ticker not (ticker, direction) — all PUT whale alerts return CALL data |
+| 🔴 | 17.C-1 | 17 | breakout_detector.py | session_anchored flag can mislabel entries using rolling resistance; Discord reason string is wrong |
 _This index is updated as each batch is completed._
