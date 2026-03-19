@@ -673,18 +673,19 @@ def _send_to_discord(payload: Dict):
 
 def test_webhook():
     """Call once at startup to verify Discord is working."""
-    webhook_url = (config.DISCORD_SIGNALS_WEBHOOK_URL or "").strip()
+    webhook_url = _SIGNALS_WEBHOOK
     if not webhook_url:
         print("[DISCORD] ❌ DISCORD_SIGNALS_WEBHOOK_URL is empty!")
         return False
-    
+
     print(f"[DISCORD] URL length: {len(webhook_url)} chars")
     print(f"[DISCORD] URL ends with: {repr(webhook_url[-10:])}")
-    
+
     try:
-        r = requests.post(webhook_url, json={"content": "🚀 War Machine Online!"}, timeout=10)
+        r = requests.post(webhook_url, json={"content": "🚀 War Machine Online!"}, timeout=5)
         print(f"[DISCORD] Test result: {r.status_code}")
         return r.status_code in (200, 204)
     except Exception as e:
         print(f"[DISCORD] Test failed: {e}")
         return False
+
