@@ -31,7 +31,10 @@ Log output example:
 
 from datetime import datetime
 from typing import Optional
-from zoneinfo import ZoneInfo
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    from backports.zoneinfo import ZoneInfo
 import logging
 
 logger = logging.getLogger(__name__)
