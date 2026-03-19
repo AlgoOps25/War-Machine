@@ -84,19 +84,7 @@ def _get_vix_adjustment():
         return 0.00
 
 
-def _get_winrate_adjustment(signal_type, grade):
-    """
-    Adjust thresholds based on recent win rate for this signal type + grade combo.
-
-    Win rate > 70%: -0.05 (performing well, be more aggressive)
-    Win rate 60-70%: -0.02 (good performance, slight leniency)
-    Win rate 50-60%: +0.00 (neutral)
-    Win rate 40-50%: +0.03 (underperforming, tighten up)
-    Win rate < 40%: +0.07 (poor performance, very strict)
-
-    Lookback: Last 20 trades for this type+grade combo.
-    Returns 0.00 if insufficient data (<10 trades).
-    """
+def _get_recent_quality_adjustment():
     try:
         from app.data.db_connection import get_conn, return_conn, dict_cursor
 
@@ -106,42 +94,36 @@ def _get_winrate_adjustment(signal_type, grade):
             conn = get_conn()
             cursor = dict_cursor(conn)
 
-            # Get last 20 closed trades for this signal_type + grade
+            two_hours_ago = _now_et() - timedelta(hours=2)
+
             cursor.execute("""
-                SELECT outcome FROM trades
-                WHERE signal_type = ? AND grade = ?
-                AND status = 'CLOSED'
-                ORDER BY id DESC
-                LIMIT 20
-            """, (signal_type, grade))
+                SELECT confidence FROM ml_signals
+                WHERE created_at > %s
+                  AND status = 'PENDING'
+                ORDER BY created_at DESC
+                LIMIT 5
+            """, (two_hours_ago,))
 
             rows = cursor.fetchall()
         finally:
             if conn:
                 return_conn(conn)
 
-        if len(rows) < 10:
+        if len(rows) < 3:
             return 0.00
 
-        wins = sum(1 for row in rows if row["outcome"] in ("WIN", "PARTIAL_WIN"))
-        total = len(rows)
-        winrate = wins / total if total > 0 else 0.0
+        low_quality = sum(1 for row in rows if (row["confidence"] or 1.0) < 0.65)
 
-        if winrate > 0.70:
-            return -0.05
-        elif winrate > 0.60:
-            return -0.02
-        elif winrate > 0.50:
+        if low_quality <= 1:
             return 0.00
-        elif winrate > 0.40:
-            return +0.03
+        elif low_quality <= 3:
+            return +0.02
         else:
-            return +0.07
+            return +0.04
 
     except Exception as e:
-        print(f"[DYNAMIC-THRESH] Win rate lookup error: {e}")
+        print(f"[DYNAMIC-THRESH] Recent quality lookup error: {e}")
         return 0.00
-
 
 def _get_recent_quality_adjustment():
     """

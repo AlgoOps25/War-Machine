@@ -246,8 +246,16 @@ def calculate_stop_loss_by_grade(
                 f"Using ${stop_price:.2f}"
             )
 
-    return stop_price
+    # FIX 10.C-4 (MAR 19 2026): guard against stop at or above entry on bull,
+    # or at or below entry on bear — can happen on A+ high-vol tight-OR tape.
+    if direction == "bull" and stop_price >= entry_price:
+        stop_price = entry_price - (atr * 0.5)
+        print(f"[STOP] ⚠️  Bull stop above entry — forced to ${stop_price:.2f} (0.5x ATR fallback)")
+    elif direction == "bear" and stop_price <= entry_price:
+        stop_price = entry_price + (atr * 0.5)
+        print(f"[STOP] ⚠️  Bear stop below entry — forced to ${stop_price:.2f} (0.5x ATR fallback)")
 
+    return stop_price
 
 def calculate_targets_by_grade(
     entry_price: float,

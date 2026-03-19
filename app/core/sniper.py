@@ -107,9 +107,32 @@ try:
     from app.screening.screener_integration import get_ticker_screener_metadata
     print("[SNIPER] ✅ screener_integration loaded")
 except ImportError:
-    print("[SNIPER] ⚠️  screener_integration not found — using stub")
+    print("[SNIPER] ⚠️  screener_integration not found — using watchlist fallback")
     def get_ticker_screener_metadata(ticker):
+        # FIX 45.H-3 + 45.M-6 (MAR 19 2026): real lookup from locked watchlist
+        # instead of stub always returning qualified=False, rvol=0.0.
+        try:
+            from app.screening.watchlist_funnel import get_watchlist_with_metadata
+            wl = get_watchlist_with_metadata(force_refresh=False)
+            for t in wl.get('all_tickers_with_scores', []):
+                if t.get('ticker') == ticker:
+                    score = t.get('score', 0)
+                    rvol  = t.get('rvol', 0.0)
+                    tier  = t.get('tier', None)
+                    qualified = (
+                        score >= EXPLOSIVE_SCORE_THRESHOLD
+                        and rvol  >= EXPLOSIVE_RVOL_THRESHOLD
+                    )
+                    return {
+                        'qualified': qualified,
+                        'score':     score,
+                        'rvol':      rvol,
+                        'tier':      tier,
+                    }
+        except Exception as _e:
+            print(f"[SNIPER] screener_metadata fallback error ({ticker}): {_e}")
         return {'qualified': False, 'score': 0, 'rvol': 0.0, 'tier': None}
+
 from app.core.watch_signal_store import (
     _persist_watch, _remove_watch_from_db, _maybe_load_watches,
     send_bos_watch_alert, clear_watching_signals,
