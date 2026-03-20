@@ -48,6 +48,13 @@ import numpy as np
 
 # ── Project root on path ────────────────────────────────────────────────────
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+# -- Load .env BEFORE any app.* imports so DATABASE_URL reaches db_connection -
+try:
+    from dotenv import load_dotenv
+    load_dotenv(override=True)
+except ImportError:
+    pass  # rely on shell environment
+
 
 _ET = ZoneInfo("America/New_York")
 
@@ -504,7 +511,7 @@ def compute_stats(trades: List[Dict]) -> Dict:
     win_rate = len(wins) / len(trades) * 100
     profit_f = (
         sum(t["r_multiple"] for t in wins) / abs(sum(t["r_multiple"] for t in losses))
-        if losses else float("inf")
+        if losses and abs(sum(t["r_multiple"] for t in losses)) > 0 else float("inf")
     )
     by_reason = defaultdict(int)
     for t in trades:

@@ -4,6 +4,12 @@ load_dotenv(override=True)
 import requests
 import panda as pd
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# ── Load .env BEFORE any app.* imports so DATABASE_URL reaches db_connection ─
+try:
+    from dotenv import load_dotenv
+    load_dotenv(override=True)
+except ImportError:
+    pass  # rely on shell environment
 print("DATABASE_URL =", os.getenv("DATABASE_URL", "NOT SET")[:40])
 from app.data.db_connection import get_conn, return_conn, dict_cursor
 
