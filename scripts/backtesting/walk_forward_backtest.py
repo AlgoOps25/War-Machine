@@ -305,9 +305,14 @@ def simulate_trade(
                 return {"exit_price": round(be_stop, 4), "exit_reason": "STOP",
                         "exit_time": t, "entry_time": entry_time,
                         "pnl_pts": round(pnl, 4), "r_multiple": round(pnl / risk, 2) if risk else 0.0}
+            if hi >= actual_entry + 2.00:  # $2 fixed profit exit
+                pnl = actual_entry + 2.00 - actual_entry
+                return {"exit_price": round(actual_entry + 2.00, 4), "exit_reason": "PT",
+                        "exit_time": t, "entry_time": entry_time,
+                        "pnl_pts": round(pnl, 4), "r_multiple": round(pnl / risk, 2) if risk else 0.0}
             if not t1_hit and hi >= t1_price:
                 t1_hit  = True
-                be_stop = actual_entry
+                be_stop = actual_entry + risk  # trail to +1R after T1
             if t1_hit and hi >= t2_price:
                 pnl = t2_price - actual_entry
                 return {"exit_price": round(t2_price, 4), "exit_reason": "T2",
@@ -319,9 +324,14 @@ def simulate_trade(
                 return {"exit_price": round(be_stop, 4), "exit_reason": "STOP",
                         "exit_time": t, "entry_time": entry_time,
                         "pnl_pts": round(pnl, 4), "r_multiple": round(pnl / risk, 2) if risk else 0.0}
+            if lo <= actual_entry - 2.00:  # $2 fixed profit exit
+                pnl = actual_entry - (actual_entry - 2.00)
+                return {"exit_price": round(actual_entry - 2.00, 4), "exit_reason": "PT",
+                        "exit_time": t, "entry_time": entry_time,
+                        "pnl_pts": round(pnl, 4), "r_multiple": round(pnl / risk, 2) if risk else 0.0}
             if not t1_hit and lo <= t1_price:
                 t1_hit  = True
-                be_stop = actual_entry
+                be_stop = actual_entry - risk  # trail to +1R after T1
             if t1_hit and lo <= t2_price:
                 pnl = actual_entry - t2_price
                 return {"exit_price": round(t2_price, 4), "exit_reason": "T2",
@@ -451,8 +461,33 @@ def run_session(ticker: str, session_bars: pd.DataFrame) -> Optional[Dict]:
         return None
     if stop is None or t1 is None or t2 is None:
         return None
-    if abs(entry_price - stop) < 0.25:  # min $0.25 risk ? filters stop-fallback garbage
+
+    # Override ATR stop with OR boundary for 5m backtest, hard-capped at $2.50 max loss.
+    # 5m ATR stops (~$0.40) are too tight and get tagged by normal bar noise.
+    # OR high/low is the structural level these entries should respect.
+    # Cap prevents asymmetric risk when OR is unusually wide (>$2.50 from entry).
+    MAX_STOP = 2.50
+    if direction == "bull":
+        or_stop = or_low * 0.999
+        if or_stop < stop:
+            stop = or_stop
+        stop = max(stop, entry_price - MAX_STOP)  # hard floor
+    else:
+        or_stop = or_high * 1.001
+        if or_stop > stop:
+            stop = or_stop
+        stop = min(stop, entry_price + MAX_STOP)  # hard ceiling
+
+    # Recompute targets based on OR-based risk (2R / 3.5R)
+    risk = abs(entry_price - stop)
+    if risk < 0.25:
         return None
+    if direction == "bull":
+        t1 = entry_price + risk * 2.0
+        t2 = entry_price + risk * 3.5
+    else:
+        t1 = entry_price - risk * 2.0
+        t2 = entry_price - risk * 3.5
 
     # ── Step 8: Simulate ─────────────────────────────────────────────────────────
     outcome  = simulate_trade(entry_bar_idx, bars, direction, entry_price, stop, t1, t2)
