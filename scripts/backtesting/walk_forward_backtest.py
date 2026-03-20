@@ -23,6 +23,11 @@ NOTE on 5m bar OR window:
   requires >= 3 bars strictly within 9:30-9:40. With 5m data that window
   holds only 2 bars (09:30, 09:35). We compute OR inline using 9:30-9:45
   (3 bars at 5m: 09:30, 09:35, 09:40) with a minimum of 2 bars.
+
+NOTE on FVG_MIN_SIZE_PCT:
+  production threshold (0.5%) is calibrated for 1m bars. On 5m bars for
+  mega-cap ETFs, bar-to-bar gaps never reach 0.5% (largest seen: 0.115%).
+  Backtest overrides to 0.0001 — any positive gap is a valid 5m FVG.
 """
 
 import sys
@@ -54,9 +59,13 @@ logging.basicConfig(
 log = logging.getLogger("wf_backtest")
 
 # 5m OR window: 9:30-9:45 (3 bars: 09:30, 09:35, 09:40), minimum 2
-OR_5M_START   = dtime(9, 30)
-OR_5M_END     = dtime(9, 45)   # exclusive upper bound
+OR_5M_START    = dtime(9, 30)
+OR_5M_END      = dtime(9, 45)   # exclusive upper bound
 OR_5M_MIN_BARS = 2
+
+# FVG minimum for 5m bars — any positive gap qualifies (float-noise floor only)
+# production 0.5% threshold is 1m-calibrated and never fires on 5m mega-cap data
+FVG_MIN_SIZE_PCT_5M = 0.0001
 
 # ── Production pipeline imports ─────────────────────────────────────────────
 try:
@@ -81,12 +90,10 @@ except Exception:
 
 try:
     from utils import config as cfg
-    FVG_MIN_SIZE_PCT = getattr(cfg, "FVG_MIN_SIZE_PCT", 0.002)
     OR_MIN_RANGE_PCT = getattr(cfg, "OR_MIN_RANGE_PCT", 0.003)
     MIN_CONFIDENCE   = getattr(cfg, "MIN_CONFIDENCE",   0.45)
 except Exception:
     cfg              = None
-    FVG_MIN_SIZE_PCT = 0.002
     OR_MIN_RANGE_PCT = 0.003
     MIN_CONFIDENCE   = 0.45
 
@@ -229,8 +236,6 @@ def compute_or_5m(bars: List[Dict]) -> Tuple[Optional[float], Optional[float]]:
     of OR_5M_MIN_BARS (2). Production compute_opening_range_from_bars()
     requires >= 3 bars within 9:30–9:40 — that window holds only 2 bars
     at 5m resolution so it always returns (None, None).
-
-    Returns (or_high, or_low) or (None, None) if insufficient bars.
     """
     or_bars = [
         b for b in bars
@@ -261,21 +266,14 @@ def simulate_trade(
     t1_price:    float,
     t2_price:    float,
 ) -> Dict:
-    """
-    Replay bars from entry_bar_idx forward.
-    Scale-out: T1 hit → move stop to BE; T2 hit → exit.
-    Stop hit → full loss. EOD (15:55) → close at last bar.
-    """
-    entry_price = float(entry_price)
-    stop_price  = float(stop_price)
-    t1_price    = float(t1_price)
-    t2_price    = float(t2_price)
-    risk        = abs(entry_price - stop_price)
-
-    t1_hit      = False
-    be_stop     = stop_price
-    entry_time  = bars[entry_bar_idx]["datetime"]
-
+    entry_price  = float(entry_price)
+    stop_price   = float(stop_price)
+    t1_price     = float(t1_price)
+    t2_price     = float(t2_price)
+    risk         = abs(entry_price - stop_price)
+    t1_hit       = False
+    be_stop      = stop_price
+    entry_time   = bars[entry_bar_idx]["datetime"]
     slippage     = entry_price * SLIPPAGE_PCT
     actual_entry = entry_price + slippage if direction == "bull" else entry_price - slippage
 
@@ -306,7 +304,7 @@ def simulate_trade(
                 return {"exit_price": round(t2_price, 4), "exit_reason": "T2",
                         "exit_time": t, "entry_time": entry_time,
                         "pnl_pts": round(pnl, 4), "r_multiple": round(pnl / risk, 2) if risk else 0.0}
-        else:  # bear
+        else:
             if hi >= be_stop:
                 pnl = actual_entry - be_stop
                 return {"exit_price": round(be_stop, 4), "exit_reason": "STOP",
@@ -337,10 +335,8 @@ def run_session(ticker: str, session_bars: pd.DataFrame) -> Optional[Dict]:
     Run one trading session through the production pipeline.
 
     OR is computed inline via compute_or_5m() (9:30-9:45, min 2 bars).
-    All other pipeline calls use real production signatures:
-      detect_breakout_after_or(bars, or_high, or_low) -> (direction, idx)
-      detect_fvg_after_break(bars, breakout_idx, direction) -> (fvg_low, fvg_high)
-      compute_stop_and_targets(bars, direction, or_high, or_low, entry, grade=) -> (stop, t1, t2)
+    FVG size gate uses FVG_MIN_SIZE_PCT_5M (0.0001) not production 0.5%.
+    All other pipeline calls use real production signatures.
     """
     bars = bars_to_sniper_format(session_bars)
     if len(bars) < 10:
@@ -350,10 +346,8 @@ def run_session(ticker: str, session_bars: pd.DataFrame) -> Optional[Dict]:
 
     # ── Step 1: Opening Range (5m inline) ──────────────────────────────────
     or_high, or_low = compute_or_5m(bars)
-
     if or_high is None or or_low is None or or_low <= 0:
         return None
-
     or_range_pct = (or_high - or_low) / or_low
     if or_range_pct < OR_MIN_RANGE_PCT:
         return None
@@ -364,7 +358,6 @@ def run_session(ticker: str, session_bars: pd.DataFrame) -> Optional[Dict]:
     except Exception as e:
         log.debug(f"  Breakout failed {session_date}: {e}")
         return None
-
     if direction is None or breakout_idx is None:
         return None
 
@@ -376,12 +369,12 @@ def run_session(ticker: str, session_bars: pd.DataFrame) -> Optional[Dict]:
     except Exception as e:
         log.debug(f"  FVG failed {session_date}: {e}")
         return None
-
     if fvg_low is None or fvg_high is None:
         return None
 
     fvg_size = (fvg_high - fvg_low) / fvg_low if fvg_low > 0 else 0.0
-    if fvg_size < FVG_MIN_SIZE_PCT:
+    # Use 5m-appropriate threshold — production 0.5% never fires on 5m data
+    if fvg_size < FVG_MIN_SIZE_PCT_5M:
         return None
 
     fvg_mid = (fvg_low + fvg_high) / 2.0
@@ -393,16 +386,15 @@ def run_session(ticker: str, session_bars: pd.DataFrame) -> Optional[Dict]:
         if not passed:
             return None
     except Exception:
-        pass  # non-fatal — proceed without VWAP gate in backtest
+        pass
 
     # ── Step 5: Entry ────────────────────────────────────────────────────────────
     entry_bar_idx = breakout_idx
     entry_price   = fvg_mid
-
     if entry_bar_idx >= len(bars) - 1:
         return None
 
-    # ── Step 6: Grade ──────────────────────────────────────────────────────────────
+    # ── Step 6: Grade ────────────────────────────────────────────────────────────
     grade = "A"
     conf  = 0.65
     if GRADE_OK:
@@ -418,7 +410,7 @@ def run_session(ticker: str, session_bars: pd.DataFrame) -> Optional[Dict]:
         except Exception:
             pass
 
-    # ── Step 7: Stop & targets ──────────────────────────────────────────────
+    # ── Step 7: Stop & targets ─────────────────────────────────────────────
     try:
         stop, t1, t2 = compute_stop_and_targets(
             bars, direction, or_high, or_low, entry_price, grade=grade
@@ -426,13 +418,12 @@ def run_session(ticker: str, session_bars: pd.DataFrame) -> Optional[Dict]:
     except Exception as e:
         log.debug(f"  Levels failed {session_date}: {e}")
         return None
-
     if not all([stop, t1, t2]):
         return None
 
-    # ── Step 8: Simulate ──────────────────────────────────────────────────────────
-    outcome    = simulate_trade(entry_bar_idx, bars, direction, entry_price, stop, t1, t2)
-    entry_dt   = bars[entry_bar_idx]["datetime"]
+    # ── Step 8: Simulate ─────────────────────────────────────────────────────────
+    outcome  = simulate_trade(entry_bar_idx, bars, direction, entry_price, stop, t1, t2)
+    entry_dt = bars[entry_bar_idx]["datetime"]
 
     return {
         "ticker":       ticker,
@@ -490,11 +481,9 @@ def build_walk_forward_folds(
 def compute_stats(trades: List[Dict]) -> Dict:
     if not trades:
         return {"total_trades": 0}
-
     wins   = [t for t in trades if t["win"]]
     losses = [t for t in trades if not t["win"]]
     rs     = [t["r_multiple"] for t in trades]
-
     win_rate = len(wins) / len(trades) * 100
     profit_f = (
         sum(t["r_multiple"] for t in wins) / abs(sum(t["r_multiple"] for t in losses))
@@ -503,7 +492,6 @@ def compute_stats(trades: List[Dict]) -> Dict:
     by_reason = defaultdict(int)
     for t in trades:
         by_reason[t["exit_reason"]] += 1
-
     return {
         "total_trades":   len(trades),
         "wins":           len(wins),
@@ -553,7 +541,6 @@ def build_hourly_win_rates(trades: List[Dict]) -> Dict:
 def run(tickers: List[str], days: int, out_dir: str, fold_size: int = 30):
     out_path = Path(out_dir)
     out_path.mkdir(parents=True, exist_ok=True)
-
     fetcher    = EODHDFetcher()
     all_trades: List[Dict] = []
     end_dt   = datetime.now()
@@ -563,12 +550,10 @@ def run(tickers: List[str], days: int, out_dir: str, fold_size: int = 30):
         log.info(f"\n{'='*60}")
         log.info(f"  {ticker}  |  {start_dt.date()} → {end_dt.date()}")
         log.info(f"{'='*60}")
-
         df = fetcher.fetch(ticker, start_dt, end_dt)
         if df.empty:
             log.warning(f"  Skipping {ticker} — no data")
             continue
-
         sessions = split_into_sessions(df)
         log.info(f"  {len(sessions)} trading sessions loaded")
 
@@ -604,19 +589,16 @@ def run(tickers: List[str], days: int, out_dir: str, fold_size: int = 30):
         if ticker_trades:
             stats = compute_stats(ticker_trades)
             log.info(f"  Win rate: {stats['win_rate_pct']}%  |  Avg R: {stats['avg_r']}  |  PF: {stats['profit_factor']}")
-
             csv_path = out_path / f"{ticker}_trades.csv"
             with open(csv_path, "w", newline="") as f:
                 writer = csv.DictWriter(f, fieldnames=ticker_trades[0].keys())
                 writer.writeheader()
                 writer.writerows(ticker_trades)
             log.info(f"  Trades saved → {csv_path}")
-
             summary   = {"ticker": ticker, "days": days, **stats}
             json_path = out_path / f"{ticker}_summary.json"
             json_path.write_text(json.dumps(summary, indent=2))
             log.info(f"  Summary saved → {json_path}")
-
             if wf_fold_results:
                 wf_path = out_path / f"{ticker}_walk_forward_folds.json"
                 wf_path.write_text(json.dumps(wf_fold_results, indent=2))
@@ -629,7 +611,6 @@ def run(tickers: List[str], days: int, out_dir: str, fold_size: int = 30):
         agg_path.write_text(json.dumps({"tickers": tickers, "days": days, **agg_stats}, indent=2))
         log.info(f"\nAggregate summary → {agg_path}")
         log.info(f"Total trades: {agg_stats['total_trades']} | Win rate: {agg_stats['win_rate_pct']}% | Avg R: {agg_stats['avg_r']}")
-
         hourly_path = out_path / "hourly_win_rates.json"
         hourly_path.write_text(json.dumps(build_hourly_win_rates(all_trades), indent=2))
         log.info(f"Hourly win rates → {hourly_path}")
