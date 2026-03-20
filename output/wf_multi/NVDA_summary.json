@@ -5,15 +5,14 @@
   "wins": 13,
   "losses": 10,
   "win_rate_pct": 56.5,
-  "avg_r": 0.182,
+  "avg_r": 0.303,
   "median_r": 0.31,
-  "avg_win_r": 0.796,
+  "avg_win_r": 1.012,
   "avg_loss_r": -0.617,
-  "profit_factor": 1.68,
+  "profit_factor": 2.13,
   "max_drawdown_r": 2.05,
   "exit_reasons": {
-    "PT": 10,
-    "STOP": 6,
-    "EOD": 7
+    "STOP": 10,
+    "EOD": 13
   }
 }

@@ -7,18 +7,18 @@
   ],
   "days": 90,
   "total_trades": 80,
-  "wins": 51,
-  "losses": 29,
-  "win_rate_pct": 63.7,
-  "avg_r": 0.248,
-  "median_r": 0.8,
-  "avg_win_r": 0.796,
-  "avg_loss_r": -0.716,
-  "profit_factor": 1.96,
-  "max_drawdown_r": 2.05,
+  "wins": 44,
+  "losses": 36,
+  "win_rate_pct": 55.0,
+  "avg_r": 0.301,
+  "median_r": 0.315,
+  "avg_win_r": 1.155,
+  "avg_loss_r": -0.742,
+  "profit_factor": 1.9,
+  "max_drawdown_r": 4.17,
   "exit_reasons": {
-    "STOP": 19,
-    "PT": 43,
-    "EOD": 18
+    "STOP": 36,
+    "T2": 3,
+    "EOD": 41
   }
 }

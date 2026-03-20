@@ -235,3 +235,5 @@ results/backtests/*.txt
 
 
 docs\remediation_tracker.md
+
+output/

@@ -2,19 +2,19 @@
   {
     "test_date": "2026-02-03",
     "train_days": 10,
-    "r_multiple": 0.8,
+    "r_multiple": 1.0,
     "win": 1
   },
   {
     "test_date": "2026-02-04",
     "train_days": 10,
-    "r_multiple": 0.82,
+    "r_multiple": 1.0,
     "win": 1
   },
   {
     "test_date": "2026-02-06",
     "train_days": 10,
-    "r_multiple": 0.8,
+    "r_multiple": 2.02,
     "win": 1
   },
   {
@@ -38,7 +38,7 @@
   {
     "test_date": "2026-02-12",
     "train_days": 10,
-    "r_multiple": 0.81,
+    "r_multiple": 1.74,
     "win": 1
   },
   {
@@ -62,7 +62,7 @@
   {
     "test_date": "2026-02-20",
     "train_days": 10,
-    "r_multiple": 1.37,
+    "r_multiple": 1.0,
     "win": 1
   },
   {
@@ -80,7 +80,7 @@
   {
     "test_date": "2026-02-26",
     "train_days": 10,
-    "r_multiple": 0.8,
+    "r_multiple": 1.65,
     "win": 1
   },
   {
@@ -92,13 +92,13 @@
   {
     "test_date": "2026-03-02",
     "train_days": 10,
-    "r_multiple": 0.8,
+    "r_multiple": 0.7,
     "win": 1
   },
   {
     "test_date": "2026-03-04",
     "train_days": 10,
-    "r_multiple": 1.42,
+    "r_multiple": 1.0,
     "win": 1
   },
   {
@@ -116,7 +116,7 @@
   {
     "test_date": "2026-03-13",
     "train_days": 10,
-    "r_multiple": 0.83,
+    "r_multiple": 1.59,
     "win": 1
   },
   {
@@ -134,7 +134,7 @@
   {
     "test_date": "2026-03-19",
     "train_days": 10,
-    "r_multiple": 0.9,
+    "r_multiple": 0.45,
     "win": 1
   }
 ]

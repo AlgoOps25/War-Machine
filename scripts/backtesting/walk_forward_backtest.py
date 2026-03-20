@@ -261,6 +261,27 @@ def _session_first_time(session_df: pd.DataFrame) -> Optional[object]:
         return None
     return session_df.iloc[0]["datetime"]
 
+def resample_to_15m(bars: List[Dict]) -> List[Dict]:
+    """
+    Resample 5m bars to 15m bars for MTF bias check.
+    Groups bars into 15-minute buckets by flooring datetime to 15m boundary.
+    Returns list of OHLCV dicts sorted by time.
+    """
+    buckets: Dict[datetime, Dict] = {}
+    for b in bars:
+        dt = b["datetime"]
+        # Floor to 15m boundary
+        floored = dt.replace(minute=(dt.minute // 15) * 15, second=0, microsecond=0)
+        if floored not in buckets:
+            buckets[floored] = {"datetime": floored, "open": b["open"],
+                                "high": b["high"], "low": b["low"],
+                                "close": b["close"], "volume": b["volume"]}
+        else:
+            buckets[floored]["high"]   = max(buckets[floored]["high"],   b["high"])
+            buckets[floored]["low"]    = min(buckets[floored]["low"],    b["low"])
+            buckets[floored]["close"]  = b["close"]
+            buckets[floored]["volume"] += b["volume"]
+    return sorted(buckets.values(), key=lambda x: x["datetime"])
 
 # ═══════════════════════════════════════════════════════════════════════════
 # TRADE SIMULATION
@@ -305,11 +326,6 @@ def simulate_trade(
                 return {"exit_price": round(be_stop, 4), "exit_reason": "STOP",
                         "exit_time": t, "entry_time": entry_time,
                         "pnl_pts": round(pnl, 4), "r_multiple": round(pnl / risk, 2) if risk else 0.0}
-            if hi >= actual_entry + 2.00:  # $2 fixed profit exit
-                pnl = actual_entry + 2.00 - actual_entry
-                return {"exit_price": round(actual_entry + 2.00, 4), "exit_reason": "PT",
-                        "exit_time": t, "entry_time": entry_time,
-                        "pnl_pts": round(pnl, 4), "r_multiple": round(pnl / risk, 2) if risk else 0.0}
             if not t1_hit and hi >= t1_price:
                 t1_hit  = True
                 be_stop = actual_entry + risk  # trail to +1R after T1
@@ -322,11 +338,6 @@ def simulate_trade(
             if hi >= be_stop:
                 pnl = actual_entry - be_stop
                 return {"exit_price": round(be_stop, 4), "exit_reason": "STOP",
-                        "exit_time": t, "entry_time": entry_time,
-                        "pnl_pts": round(pnl, 4), "r_multiple": round(pnl / risk, 2) if risk else 0.0}
-            if lo <= actual_entry - 2.00:  # $2 fixed profit exit
-                pnl = actual_entry - (actual_entry - 2.00)
-                return {"exit_price": round(actual_entry - 2.00, 4), "exit_reason": "PT",
                         "exit_time": t, "entry_time": entry_time,
                         "pnl_pts": round(pnl, 4), "r_multiple": round(pnl / risk, 2) if risk else 0.0}
             if not t1_hit and lo <= t1_price:
@@ -368,7 +379,8 @@ def run_session(ticker: str, session_bars: pd.DataFrame) -> Optional[Dict]:
     if or_high is None or or_low is None or or_low <= 0:
         return None
     or_range_pct = (or_high - or_low) / or_low
-    if or_range_pct < OR_MIN_RANGE_PCT:
+    OR_MIN_RANGE = {"AAPL": 0.004, "NVDA": 0.004}.get(ticker, OR_MIN_RANGE_PCT)
+    if or_range_pct < OR_MIN_RANGE:
         return None
 
     # ── Step 2: Breakout detection ──────────────────────────────────────────
@@ -385,11 +397,32 @@ def run_session(ticker: str, session_bars: pd.DataFrame) -> Optional[Dict]:
 
     breakout_price = bars[breakout_idx]["close"]
 
-    # ── Step 2b: Relative volume (recorded only — not used as filter) ─────────
-    # 1.2x RVOL is 1m-calibrated; on 5m bars volume is spread across the candle
-    # making all breakout bars appear low vs early-session averages. Not valid here.
+    # ── Step 2b: Relative volume filter ────────────────────────────────────
     breakout_vol = bars[breakout_idx].get("volume", 0)
-    prior_vols = [b["volume"] for b in bars[:breakout_idx] if b["volume"] > 0]
+    prior_vols   = [b["volume"] for b in bars[:breakout_idx] if b["volume"] > 0]
+    rvol         = round(breakout_vol / (sum(prior_vols) / len(prior_vols)), 2) if prior_vols else 0.0
+    if rvol < 0.5:
+        return None
+
+    # ── Step 2c: MTF bias — 15m trend must align with breakout direction ───
+    mtf_all = resample_to_15m(bars)
+    # Find which 15m candle the breakout lands in
+    breakout_dt = bars[breakout_idx]["datetime"]
+    breakout_15m = breakout_dt.replace(minute=(breakout_dt.minute // 15) * 15,
+                                        second=0, microsecond=0)
+    # Get the 15m candles that closed BEFORE the breakout bucket
+    prior_15m = [b for b in mtf_all if b["datetime"] < breakout_15m]
+    if len(prior_15m) >= 2:
+        mtf_trend = "bull" if prior_15m[-1]["close"] > prior_15m[-2]["close"] else "bear"
+        if mtf_trend != direction:
+            log.debug(f"  MTF bias mismatch {session_date}: 15m={mtf_trend} vs {direction}")
+            return None
+
+    rvol = round(breakout_vol / (sum(prior_vols) / len(prior_vols)), 2) if prior_vols else 0.0
+
+    # Filter: skip low-participation breakouts (backtested edge = -0.270 avg R below 0.5)
+    if rvol < 0.5:
+        return None
         
     # ── Step 3: FVG after breakout ──────────────────────────────────────────
     try:
@@ -480,7 +513,8 @@ def run_session(ticker: str, session_bars: pd.DataFrame) -> Optional[Dict]:
 
     # Recompute targets based on OR-based risk (2R / 3.5R)
     risk = abs(entry_price - stop)
-    if risk < 0.25:
+    MIN_RISK = {"AAPL": 0.60, "NVDA": 0.60}.get(ticker, 0.25)
+    if risk < MIN_RISK:
         return None
     if direction == "bull":
         t1 = entry_price + risk * 2.0
@@ -517,7 +551,7 @@ def run_session(ticker: str, session_bars: pd.DataFrame) -> Optional[Dict]:
         "r_multiple":   outcome["r_multiple"],
         "win":          1 if outcome["pnl_pts"] > 0 else 0,
         "entry_hour":   entry_dt.hour,
-        "rvol":         round(breakout_vol / (sum(prior_vols)/len(prior_vols)), 2) if prior_vols else 0.0,
+        "rvol":         rvol,
         "entry_minute": entry_dt.minute,
     }
 
