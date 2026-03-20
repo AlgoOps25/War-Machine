@@ -73,6 +73,7 @@ OR_5M_MIN_BARS = 2
 # FVG minimum for 5m bars — any positive gap qualifies (float-noise floor only)
 # production 0.5% threshold is 1m-calibrated and never fires on 5m mega-cap data
 FVG_MIN_SIZE_PCT_5M = 0.0001
+from utils import config as _cfg; _cfg.FVG_MIN_SIZE_PCT = FVG_MIN_SIZE_PCT_5M  # must run before app imports
 
 # ── Production pipeline imports ─────────────────────────────────────────────
 try:
@@ -374,15 +375,11 @@ def run_session(ticker: str, session_bars: pd.DataFrame) -> Optional[Dict]:
 
     breakout_price = bars[breakout_idx]["close"]
 
-    # ── Step 2b: Relative volume at breakout ───────────────────────────────
-    # Breakout bar must have >= 1.2x the average volume of prior bars
+    # ── Step 2b: Relative volume (recorded only — not used as filter) ─────────
+    # 1.2x RVOL is 1m-calibrated; on 5m bars volume is spread across the candle
+    # making all breakout bars appear low vs early-session averages. Not valid here.
     breakout_vol = bars[breakout_idx].get("volume", 0)
     prior_vols = [b["volume"] for b in bars[:breakout_idx] if b["volume"] > 0]
-    if len(prior_vols) >= 3:
-        avg_vol = sum(prior_vols) / len(prior_vols)
-        if avg_vol > 0 and breakout_vol < avg_vol * 1.2:
-            log.debug(f"  RVOL skip {session_date}: {breakout_vol:.0f} < 1.2x avg {avg_vol:.0f}")
-            return None
         
     # ── Step 3: FVG after breakout ──────────────────────────────────────────
     try:
@@ -576,8 +573,6 @@ def build_hourly_win_rates(trades: List[Dict]) -> Dict:
 # ═══════════════════════════════════════════════════════════════════════════
 
 def run(tickers: List[str], days: int, out_dir: str, fold_size: int = 30):
-    # Monkey-patch FVG threshold for 5m bars — production 0.5% never fires on 5m data
-    from utils import config as _cfg; _cfg.FVG_MIN_SIZE_PCT = FVG_MIN_SIZE_PCT_5M
     out_path = Path(out_dir)
     out_path.mkdir(parents=True, exist_ok=True)
     fetcher    = EODHDFetcher()
