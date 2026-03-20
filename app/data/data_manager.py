@@ -886,15 +886,21 @@ class DataManager:
             logger.info(f"[DATA] Error fetching daily OHLC for {ticker} on {target_date}: {e}")
             return None
 
-    def get_previous_day_ohlc(self, ticker: str) -> Optional[Dict]:
+    def get_previous_day_ohlc(self, ticker: str, as_of_date=None) -> Optional[Dict]:
         """
         Fetch previous trading day's OHLC. Walks back up to 5 days to skip weekends/holidays.
         Returns dict: {"open", "high", "low", "close", "volume"} or None.
+
+        as_of_date: date or datetime to use as "today". Defaults to datetime.now(ET).date().
+                    Pass session_date in backtests so each fold fetches its own prior-day OHLC.
         """
-        now_et = datetime.now(ET)
+        if as_of_date is None:
+            as_of_date = datetime.now(ET).date()
+        elif isinstance(as_of_date, datetime):
+            as_of_date = as_of_date.date()
 
         for days_back in range(1, 6):
-            target_date = now_et.date() - timedelta(days=days_back)
+            target_date = as_of_date - timedelta(days=days_back)
             ohlc = self.get_daily_ohlc(ticker, target_date)
             if ohlc:
                 return ohlc
