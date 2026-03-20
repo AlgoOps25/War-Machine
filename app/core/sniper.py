@@ -104,8 +104,11 @@ from app.data.data_manager import data_manager
 from utils import config
 from app.mtf.bos_fvg_engine import scan_bos_fvg, is_force_close_time, find_fvg_after_bos
 from app.core.signal_scorecard import build_scorecard, SCORECARD_GATE_MIN
+
 from app.filters.dead_zone_suppressor import is_dead_zone
 from app.filters.gex_pin_gate import is_in_gex_pin_zone
+from app.filters.early_session_disqualifier import should_skip_cfw6_or_early
+
 import logging
 logger = logging.getLogger(__name__)
 try:
