@@ -344,6 +344,8 @@ def compute_stop_and_targets(
     stop_price = calculate_stop_loss_by_grade(
         entry_price, grade, direction, or_low, or_high, atr
     )
+    if stop_price is None:
+        return None, None, None
     t1, t2 = calculate_targets_by_grade(entry_price, stop_price, grade, direction)
     return stop_price, t1, t2
 

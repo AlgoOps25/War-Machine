@@ -449,8 +449,6 @@ def run_session(ticker: str, session_bars: pd.DataFrame) -> Optional[Dict]:
         return None
     if abs(entry_price - stop) < 0.25:  # min $0.25 risk ? filters stop-fallback garbage
         return None
-    if abs(entry_price - stop) < 0.25:  # min $0.25 risk ? filters stop-fallback garbage
-        return None
 
     # ── Step 8: Simulate ─────────────────────────────────────────────────────────
     outcome  = simulate_trade(entry_bar_idx, bars, direction, entry_price, stop, t1, t2)
