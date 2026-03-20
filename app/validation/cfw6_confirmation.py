@@ -255,11 +255,12 @@ def check_previous_day_levels(ticker: str, current_price: float, direction: str)
 
 def check_institutional_volume(bars: List[Dict], breakout_idx: int) -> bool:
     """Detect institutional block trades near breakout."""
-    if len(bars) < 20 or breakout_idx < 20:
+    lookback = min(breakout_idx, 10)
+    if len(bars) < 3 or lookback < 3:
         return False
-    avg_volume      = sum(b["volume"] for b in bars[breakout_idx-20:breakout_idx]) / 20
+    avg_volume      = sum(b["volume"] for b in bars[breakout_idx-lookback:breakout_idx]) / lookback
     breakout_volume = bars[breakout_idx]["volume"]
-    return breakout_volume >= avg_volume * 3
+    return breakout_volume >= avg_volume * 1.5
 
 
 def grade_signal_with_confirmations(
