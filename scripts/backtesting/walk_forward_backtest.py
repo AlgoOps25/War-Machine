@@ -379,14 +379,9 @@ def run_session(ticker: str, session_bars: pd.DataFrame) -> Optional[Dict]:
 
     fvg_mid = (fvg_low + fvg_high) / 2.0
 
-    # ── Step 4: VWAP gate ───────────────────────────────────────────────────
-    try:
-        vwap_val = compute_vwap(bars[:breakout_idx + 1])
-        passed, _ = passes_vwap_gate(bars[:breakout_idx + 1], direction, breakout_price, vwap=vwap_val)
-        if not passed:
-            return None
-    except Exception:
-        pass
+    # Step 4: VWAP gate intentionally skipped — real-time execution filter only.
+    # With 5m early breakouts (idx 3-5), VWAP is barely established and rejects
+    # every session. Not a valid backtest criterion.
 
     # ── Step 5: Entry ────────────────────────────────────────────────────────────
     entry_bar_idx = breakout_idx
