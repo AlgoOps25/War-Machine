@@ -534,6 +534,8 @@ def build_hourly_win_rates(trades: List[Dict]) -> Dict:
 # ═══════════════════════════════════════════════════════════════════════════
 
 def run(tickers: List[str], days: int, out_dir: str, fold_size: int = 30):
+    # Monkey-patch FVG threshold for 5m bars — production 0.5% never fires on 5m data
+    from utils import config as _cfg; _cfg.FVG_MIN_SIZE_PCT = FVG_MIN_SIZE_PCT_5M
     out_path = Path(out_dir)
     out_path.mkdir(parents=True, exist_ok=True)
     fetcher    = EODHDFetcher()
