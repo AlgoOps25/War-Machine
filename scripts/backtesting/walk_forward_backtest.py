@@ -364,11 +364,13 @@ def run_session(ticker: str, session_bars: pd.DataFrame) -> Optional[Dict]:
     breakout_price = bars[breakout_idx]["close"]
 
     # ── Step 2b: Relative volume at breakout ───────────────────────────────
+    # Breakout bar must have >= 1.2x the average volume of prior bars
     breakout_vol = bars[breakout_idx].get("volume", 0)
-    prior_vols = [b["volume"] for b in bars[5:breakout_idx] if b["volume"] > 0]
+    prior_vols = [b["volume"] for b in bars[:breakout_idx] if b["volume"] > 0]
     if len(prior_vols) >= 3:
         avg_vol = sum(prior_vols) / len(prior_vols)
-        if avg_vol > 0 and breakout_vol < avg_vol * 1.05:
+        if avg_vol > 0 and breakout_vol < avg_vol * 1.2:
+            log.debug(f"  RVOL skip {session_date}: {breakout_vol:.0f} < 1.2x avg {avg_vol:.0f}")
             return None
         
     # ── Step 3: FVG after breakout ──────────────────────────────────────────
