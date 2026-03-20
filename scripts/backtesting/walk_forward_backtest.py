@@ -375,7 +375,13 @@ def run_session(ticker: str, session_bars: pd.DataFrame) -> Optional[Dict]:
     fvg_size = (fvg_high - fvg_low) / fvg_low if fvg_low > 0 else 0.0
     # Use 5m-appropriate threshold — production 0.5% never fires on 5m data
     if fvg_size < FVG_MIN_SIZE_PCT_5M:
-        return None
+        # Filter 1: FVG too large — oversized gaps fail on 5m data
+        if fvg_size > 0.0015:  # 0.15%
+            return None
+
+        # Filter 2: OR range must be meaningful
+        if or_range_pct < 0.0035:  # 0.35%
+            return None
 
     fvg_mid = (fvg_low + fvg_high) / 2.0
 
@@ -385,6 +391,11 @@ def run_session(ticker: str, session_bars: pd.DataFrame) -> Optional[Dict]:
 
     # ── Step 5: Entry ────────────────────────────────────────────────────────────
     entry_bar_idx = breakout_idx
+     # Filter 3: Skip dead zones — 10:00 sharp and 10:20–10:30 are 0% win rate
+    entry_t = bars[entry_bar_idx]["datetime"]
+    entry_mins = entry_t.hour * 60 + entry_t.minute
+    if entry_mins == 600 or 620 <= entry_mins <= 630:  # 10:00 or 10:20–10:30
+        return None
     entry_price   = fvg_mid
     if entry_bar_idx >= len(bars) - 1:
         return None
