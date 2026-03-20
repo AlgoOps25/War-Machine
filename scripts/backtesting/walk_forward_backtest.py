@@ -404,8 +404,6 @@ def run_session(ticker: str, session_bars: pd.DataFrame) -> Optional[Dict]:
         if or_range_pct < 0.0035:  # 0.35%
             return None
 
-    if (fvg_high - fvg_low) < 0.05:  # min $0.05 FVG width ? sub-nickel gaps are fill noise
-        return None
     fvg_mid = (fvg_low + fvg_high) / 2.0
 
     # Step 4: VWAP gate intentionally skipped — real-time execution filter only.
