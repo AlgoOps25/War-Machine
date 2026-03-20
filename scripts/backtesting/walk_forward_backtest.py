@@ -445,7 +445,7 @@ def run_session(ticker: str, session_bars: pd.DataFrame) -> Optional[Dict]:
     except Exception as e:
         log.debug(f"  Levels failed {session_date}: {e}")
         return None
-    if not all([stop, t1, t2]):
+    if stop is None or t1 is None or t2 is None:
         return None
     if abs(entry_price - stop) < 0.25:  # min $0.25 risk ? filters stop-fallback garbage
         return None
