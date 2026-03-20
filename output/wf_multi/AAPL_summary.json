@@ -1,0 +1,19 @@
+{
+  "ticker": "AAPL",
+  "days": 90,
+  "total_trades": 18,
+  "wins": 9,
+  "losses": 9,
+  "win_rate_pct": 50.0,
+  "avg_r": 0.061,
+  "median_r": 0.2,
+  "avg_win_r": 0.773,
+  "avg_loss_r": -0.651,
+  "profit_factor": 1.19,
+  "max_drawdown_r": 1.84,
+  "exit_reasons": {
+    "STOP": 5,
+    "PT": 8,
+    "EOD": 5
+  }
+}

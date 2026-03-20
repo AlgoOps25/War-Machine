@@ -1,0 +1,19 @@
+{
+  "ticker": "NVDA",
+  "days": 90,
+  "total_trades": 23,
+  "wins": 13,
+  "losses": 10,
+  "win_rate_pct": 56.5,
+  "avg_r": 0.182,
+  "median_r": 0.31,
+  "avg_win_r": 0.796,
+  "avg_loss_r": -0.617,
+  "profit_factor": 1.68,
+  "max_drawdown_r": 2.05,
+  "exit_reasons": {
+    "PT": 10,
+    "STOP": 6,
+    "EOD": 7
+  }
+}

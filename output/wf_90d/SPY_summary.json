@@ -1,0 +1,17 @@
+{
+  "ticker": "SPY",
+  "days": 90,
+  "total_trades": 4,
+  "wins": 0,
+  "losses": 4,
+  "win_rate_pct": 0.0,
+  "avg_r": -0.843,
+  "median_r": -1.095,
+  "avg_win_r": 0.0,
+  "avg_loss_r": -0.843,
+  "profit_factor": 0.0,
+  "max_drawdown_r": 2.29,
+  "exit_reasons": {
+    "STOP": 4
+  }
+}

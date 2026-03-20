@@ -1,0 +1,19 @@
+{
+  "ticker": "IWM",
+  "days": 90,
+  "total_trades": 12,
+  "wins": 10,
+  "losses": 2,
+  "win_rate_pct": 83.3,
+  "avg_r": 0.448,
+  "median_r": 0.8,
+  "avg_win_r": 0.741,
+  "avg_loss_r": -1.02,
+  "profit_factor": 3.63,
+  "max_drawdown_r": 2.04,
+  "exit_reasons": {
+    "PT": 7,
+    "EOD": 3,
+    "STOP": 2
+  }
+}

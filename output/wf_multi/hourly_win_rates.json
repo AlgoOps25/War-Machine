@@ -1,0 +1,30 @@
+{
+  "9": {
+    "win_rate": 62.5,
+    "sample_size": 48
+  },
+  "10": {
+    "win_rate": 65.6,
+    "sample_size": 32
+  },
+  "11": {
+    "win_rate": null,
+    "sample_size": 0
+  },
+  "12": {
+    "win_rate": null,
+    "sample_size": 0
+  },
+  "13": {
+    "win_rate": null,
+    "sample_size": 0
+  },
+  "14": {
+    "win_rate": null,
+    "sample_size": 0
+  },
+  "15": {
+    "win_rate": null,
+    "sample_size": 0
+  }
+}

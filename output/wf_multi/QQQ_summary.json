@@ -1,0 +1,19 @@
+{
+  "ticker": "QQQ",
+  "days": 90,
+  "total_trades": 27,
+  "wins": 19,
+  "losses": 8,
+  "win_rate_pct": 70.4,
+  "avg_r": 0.34,
+  "median_r": 0.8,
+  "avg_win_r": 0.835,
+  "avg_loss_r": -0.836,
+  "profit_factor": 2.37,
+  "max_drawdown_r": 1.4,
+  "exit_reasons": {
+    "STOP": 6,
+    "PT": 18,
+    "EOD": 3
+  }
+}

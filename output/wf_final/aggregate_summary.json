@@ -1,0 +1,21 @@
+{
+  "tickers": [
+    "SPY"
+  ],
+  "days": 90,
+  "total_trades": 19,
+  "wins": 13,
+  "losses": 6,
+  "win_rate_pct": 68.4,
+  "avg_r": 0.155,
+  "median_r": 0.8,
+  "avg_win_r": 0.713,
+  "avg_loss_r": -1.053,
+  "profit_factor": 1.47,
+  "max_drawdown_r": 2.1,
+  "exit_reasons": {
+    "STOP": 6,
+    "PT": 11,
+    "EOD": 2
+  }
+}

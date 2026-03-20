@@ -1,0 +1,116 @@
+[
+  {
+    "test_date": "2026-02-04",
+    "train_days": 10,
+    "r_multiple": 0.46,
+    "win": 1
+  },
+  {
+    "test_date": "2026-02-05",
+    "train_days": 10,
+    "r_multiple": -0.09,
+    "win": 0
+  },
+  {
+    "test_date": "2026-02-06",
+    "train_days": 10,
+    "r_multiple": 0.46,
+    "win": 1
+  },
+  {
+    "test_date": "2026-02-09",
+    "train_days": 10,
+    "r_multiple": 0.42,
+    "win": 1
+  },
+  {
+    "test_date": "2026-02-10",
+    "train_days": 10,
+    "r_multiple": -1.05,
+    "win": 0
+  },
+  {
+    "test_date": "2026-02-17",
+    "train_days": 10,
+    "r_multiple": 0.38,
+    "win": 1
+  },
+  {
+    "test_date": "2026-02-18",
+    "train_days": 10,
+    "r_multiple": 0.44,
+    "win": 1
+  },
+  {
+    "test_date": "2026-02-19",
+    "train_days": 10,
+    "r_multiple": -1.05,
+    "win": 0
+  },
+  {
+    "test_date": "2026-02-20",
+    "train_days": 10,
+    "r_multiple": 0.4,
+    "win": 1
+  },
+  {
+    "test_date": "2026-02-23",
+    "train_days": 10,
+    "r_multiple": 0.47,
+    "win": 1
+  },
+  {
+    "test_date": "2026-02-26",
+    "train_days": 10,
+    "r_multiple": 0.47,
+    "win": 1
+  },
+  {
+    "test_date": "2026-02-27",
+    "train_days": 10,
+    "r_multiple": 0.08,
+    "win": 1
+  },
+  {
+    "test_date": "2026-03-02",
+    "train_days": 10,
+    "r_multiple": 0.34,
+    "win": 1
+  },
+  {
+    "test_date": "2026-03-03",
+    "train_days": 10,
+    "r_multiple": 0.35,
+    "win": 1
+  },
+  {
+    "test_date": "2026-03-04",
+    "train_days": 10,
+    "r_multiple": 0.15,
+    "win": 1
+  },
+  {
+    "test_date": "2026-03-09",
+    "train_days": 10,
+    "r_multiple": 0.55,
+    "win": 1
+  },
+  {
+    "test_date": "2026-03-13",
+    "train_days": 10,
+    "r_multiple": 0.67,
+    "win": 1
+  },
+  {
+    "test_date": "2026-03-16",
+    "train_days": 10,
+    "r_multiple": -0.38,
+    "win": 0
+  },
+  {
+    "test_date": "2026-03-19",
+    "train_days": 10,
+    "r_multiple": 0.47,
+    "win": 1
+  }
+]
