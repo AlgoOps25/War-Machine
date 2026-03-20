@@ -113,6 +113,7 @@ EOD_CLOSE_HOUR = 15
 EOD_CLOSE_MIN  = 55
 COMMISSION     = 1.0         # $ per fill (round-trip = 2x)
 SLIPPAGE_PCT   = 0.0002      # 0.02% per fill
+MAX_BREAKOUT_IDX = 60        # first hour only ? late breakouts have poor win rate
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -366,6 +367,9 @@ def run_session(ticker: str, session_bars: pd.DataFrame) -> Optional[Dict]:
         log.debug(f"  Breakout failed {session_date}: {e}")
         return None
     if direction is None or breakout_idx is None:
+        return None
+    if breakout_idx > MAX_BREAKOUT_IDX:
+        log.debug(f"  Late breakout skip: idx {breakout_idx} > {MAX_BREAKOUT_IDX}")
         return None
 
     breakout_price = bars[breakout_idx]["close"]
