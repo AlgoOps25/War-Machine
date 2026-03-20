@@ -287,9 +287,13 @@ def calculate_stop_loss_by_grade(
     # or at or below entry on bear — can happen on A+ high-vol tight-OR tape.
     if direction == "bull" and stop_price >= entry_price:
         stop_price = entry_price - (atr * 0.5)
+        if abs(entry_price - stop_price) < 0.25:
+            return None
         logger.info(f"[STOP] \u26a0\ufe0f  Bull stop above entry — forced to ${stop_price:.2f} (0.5x ATR fallback)")
     elif direction == "bear" and stop_price <= entry_price:
         stop_price = entry_price + (atr * 0.5)
+        if abs(entry_price - stop_price) < 0.25:
+            return None
         logger.info(f"[STOP] \u26a0\ufe0f  Bear stop below entry — forced to ${stop_price:.2f} (0.5x ATR fallback)")
 
     return stop_price
