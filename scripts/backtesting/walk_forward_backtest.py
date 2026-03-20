@@ -432,7 +432,8 @@ def run_session(ticker: str, session_bars: pd.DataFrame) -> Optional[Dict]:
                 "fvg_mid": fvg_mid, "fvg_size_pct": fvg_size,
             }
             graded = grade_signal_with_confirmations(
-                ticker, direction, bars, entry_price, breakout_idx, grade
+                ticker, direction, bars, entry_price, breakout_idx, grade,
+                session_date=str(session_date)
             )
             final_grade = graded.get("final_grade", "A")
             if final_grade == "reject":

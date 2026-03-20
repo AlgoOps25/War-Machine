@@ -133,17 +133,21 @@ class BreakoutDetector:
     # PDH / PDL
     # =================================================================
 
-    def get_pdh_pdl(self, ticker: str) -> Tuple[Optional[float], Optional[float]]:
-        """Get previous day high/low from data_manager (cached per session)."""
-        if ticker in self._pdh_pdl_cache:
-            return self._pdh_pdl_cache[ticker]
+    def get_pdh_pdl(self, ticker: str, as_of_date=None) -> Tuple[Optional[float], Optional[float]]:
+        """Get previous day high/low from data_manager (cached per ticker+date).
+
+        as_of_date: pass session date in backtests so each fold fetches its own PDH/PDL.
+        """
+        cache_key = (ticker, as_of_date)
+        if cache_key in self._pdh_pdl_cache:
+            return self._pdh_pdl_cache[cache_key]
         try:
             from app.data.data_manager import data_manager
-            prev_day = data_manager.get_previous_day_ohlc(ticker)
+            prev_day = data_manager.get_previous_day_ohlc(ticker, as_of_date=as_of_date)
             if prev_day and 'high' in prev_day and 'low' in prev_day:
                 pdh = prev_day['high']
                 pdl = prev_day['low']
-                self._pdh_pdl_cache[ticker] = (pdh, pdl)
+                self._pdh_pdl_cache[cache_key] = (pdh, pdl)
                 return pdh, pdl
         except Exception as e:
             logger.info(f"[BREAKOUT] PDH/PDL fetch error for {ticker}: {e}")
@@ -158,7 +162,7 @@ class BreakoutDetector:
     # =================================================================
 
     def calculate_support_resistance(
-        self, bars: List[Dict], ticker: str = "unknown"
+        self, bars: List[Dict], ticker: str = "unknown", as_of_date=None
     ) -> Tuple[float, float]:
         """
         Calculate support and resistance levels.
@@ -190,7 +194,7 @@ class BreakoutDetector:
         support    = intraday_support
 
         # Step 3: PDH/PDL confluence (unchanged from Phase 1.8)
-        pdh, pdl = self.get_pdh_pdl(ticker)
+        pdh, pdl = self.get_pdh_pdl(ticker, as_of_date=as_of_date)
         if pdh is not None:
             if abs(pdh - resistance) / resistance < 0.02:
                 resistance = pdh
@@ -219,7 +223,7 @@ class BreakoutDetector:
         except Exception:
             pass
 
-        pdh, pdl = self.get_pdh_pdl(ticker)
+        pdh, pdl = self.get_pdh_pdl(ticker, as_of_date=as_of_date)
         if pdh is not None:
             if abs(pdh - resistance) / resistance < 0.02:
                 resistance        = pdh
@@ -292,7 +296,7 @@ class BreakoutDetector:
     # =================================================================
 
     def detect_breakout(
-        self, bars: List[Dict], ticker: str = "unknown"
+        self, bars: List[Dict], ticker: str = "unknown", as_of_date=None
     ) -> Optional[Dict]:
         """
         Detect breakout/breakdown entry signal.
@@ -306,7 +310,7 @@ class BreakoutDetector:
             return None
 
         latest      = bars[-1]
-        support, resistance, support_source, resistance_source = self.calculate_support_resistance(bars[:-1], ticker)
+        support, resistance, support_source, resistance_source = self.calculate_support_resistance(bars[:-1], ticker, as_of_date=as_of_date)
         ema_volume  = self.calculate_ema_volume(bars[:-1])
         atr         = self.calculate_atr(bars, ticker)
 
@@ -316,7 +320,7 @@ class BreakoutDetector:
         current_volume  = latest['volume']
         volume_ratio    = current_volume / ema_volume
         candle_strength = self.analyze_candle_strength(latest)
-        pdh, pdl        = self.get_pdh_pdl(ticker)
+        pdh, pdl        = self.get_pdh_pdl(ticker, as_of_date=as_of_date)
 
         # Detect whether session levels were used
         session_anchored = (resistance_source == "session" or support_source == "session")

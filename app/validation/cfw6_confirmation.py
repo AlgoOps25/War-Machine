@@ -230,16 +230,19 @@ def wait_for_confirmation(
 #       and passes_vwap_gate (directional alignment check).
 
 
-def check_previous_day_levels(ticker: str, current_price: float, direction: str) -> Dict:
+def check_previous_day_levels(ticker: str, current_price: float, direction: str, session_date=None) -> Dict:
     """
     Check proximity to PDH/PDL using centralized data_manager.
 
     Phase 1.7 refactor: delegates to data_manager.get_previous_day_ohlc()
     for DRY single-source-of-truth PDH/PDL data.
+
+    session_date: pass the simulated session date in backtests so each fold
+                  fetches its own prior-day OHLC instead of today's.
     """
     from app.data.data_manager import data_manager
 
-    prev_day = data_manager.get_previous_day_ohlc(ticker)
+    prev_day = data_manager.get_previous_day_ohlc(ticker, as_of_date=session_date)
     pdh = prev_day["high"]
     pdl = prev_day["low"]
 
@@ -269,7 +272,8 @@ def grade_signal_with_confirmations(
     bars: List[Dict],
     current_price: float,
     breakout_idx: int,
-    base_grade: str
+    base_grade: str,
+    session_date=None
 ) -> Dict:
     """
     Apply 3 active confirmation layers and adjust grade.
@@ -288,7 +292,7 @@ def grade_signal_with_confirmations(
     logger.info(f"[CONFIRM] Checking confirmation layers for {ticker}...")
 
     vwap_ok, vwap_reason = passes_vwap_gate(bars, direction, current_price)
-    pd_result            = check_previous_day_levels(ticker, current_price, direction)
+    pd_result            = check_previous_day_levels(ticker, current_price, direction, session_date=session_date)
     inst_ok              = check_institutional_volume(bars, breakout_idx)
 
     aligned_count = sum([vwap_ok, pd_result["aligned"], inst_ok])
