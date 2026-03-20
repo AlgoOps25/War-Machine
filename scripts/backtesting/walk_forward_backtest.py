@@ -431,11 +431,17 @@ def run_session(ticker: str, session_bars: pd.DataFrame) -> Optional[Dict]:
                 "confidence": conf, "or_high": or_high, "or_low": or_low,
                 "fvg_mid": fvg_mid, "fvg_size_pct": fvg_size,
             }
-            graded = grade_signal_with_confirmations(signal, bars)
-            grade  = graded.get("grade", "A")
-            conf   = graded.get("confidence", conf)
-        except Exception:
-            pass
+            graded = grade_signal_with_confirmations(
+                ticker, direction, bars, entry_price, breakout_idx, grade
+            )
+            final_grade = graded.get("final_grade", "A")
+            if final_grade == "reject":
+                log.debug(f"  Grade REJECT {session_date}: 0/3 confirmations")
+                return None
+            grade = final_grade
+            conf  = {"A+": 0.85, "A": 0.70, "A-": 0.55}.get(grade, 0.65)
+        except Exception as _ge:
+            log.debug(f"  Grade error {session_date}: {_ge}")
 
     # ── Step 7: Stop & targets ─────────────────────────────────────────────
     try:
