@@ -866,7 +866,7 @@ def detect_breakout_after_or(bars, or_high, or_low):
 def detect_fvg_after_break(bars, breakout_idx, direction):
     """Find first FVG after a breakout. Returns (fvg_low, fvg_high) or (None, None)."""
     from utils import config
-    for i in range(breakout_idx + 3, len(bars)):
+    for i in range(breakout_idx + 1, len(bars)):   # was breakout_idx + 3
         if i < 2:
             continue
         c0, c2 = bars[i - 2], bars[i]
