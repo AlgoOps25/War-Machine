@@ -588,7 +588,7 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         logger.info(f"[{ticker}] ✅ BOS CONFIRMATION (pre-confirmed): {base_grade} grade @ ${entry_price:.2f}")
     else:
         result = wait_for_confirmation(
-            bars_session, direction, (zone_low, zone_high), breakout_idx + 1
+            ticker, direction, (zone_low, zone_high), bars_session[breakout_idx]["datetime"]
         )
         found, entry_price, base_grade, confirm_idx, confirm_type = result
         if not found or base_grade == "reject":
