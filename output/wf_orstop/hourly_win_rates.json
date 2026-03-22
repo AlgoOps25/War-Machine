@@ -1,11 +1,11 @@
 {
   "9": {
-    "win_rate": 54.5,
-    "sample_size": 11
+    "win_rate": 83.3,
+    "sample_size": 6
   },
   "10": {
-    "win_rate": 75.0,
-    "sample_size": 8
+    "win_rate": 100.0,
+    "sample_size": 4
   },
   "11": {
     "win_rate": null,

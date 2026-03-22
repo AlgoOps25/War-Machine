@@ -379,11 +379,12 @@ def run_session(ticker: str, session_bars: pd.DataFrame) -> Optional[Dict]:
     if or_high is None or or_low is None or or_low <= 0:
         return None
     or_range_pct = (or_high - or_low) / or_low
-    OR_MIN_RANGE = {"AAPL": 0.004, "NVDA": 0.004}.get(ticker, OR_MIN_RANGE_PCT)
-    if or_range_pct < OR_MIN_RANGE:
+    if or_range_pct < OR_MIN_RANGE_PCT:
+        return None
+    if (or_high - or_low) < 2.00:
         return None
 
-    # ── Step 2: Breakout detection ──────────────────────────────────────────
+     # ── Step 2: Breakout detection ─────────────────────────────────────────
     try:
         direction, breakout_idx = detect_breakout_after_or(bars, or_high, or_low)
     except Exception as e:
@@ -391,40 +392,22 @@ def run_session(ticker: str, session_bars: pd.DataFrame) -> Optional[Dict]:
         return None
     if direction is None or breakout_idx is None:
         return None
+    if direction == "bull":
+        return None
     if breakout_idx > MAX_BREAKOUT_IDX:
         log.debug(f"  Late breakout skip: idx {breakout_idx} > {MAX_BREAKOUT_IDX}")
         return None
 
     breakout_price = bars[breakout_idx]["close"]
 
-    # ── Step 2b: Relative volume filter ────────────────────────────────────
+    # ── Step 2b: Relative volume ────────────────────────────────────────────
     breakout_vol = bars[breakout_idx].get("volume", 0)
     prior_vols   = [b["volume"] for b in bars[:breakout_idx] if b["volume"] > 0]
     rvol         = round(breakout_vol / (sum(prior_vols) / len(prior_vols)), 2) if prior_vols else 0.0
     if rvol < 0.5:
         return None
 
-    # ── Step 2c: MTF bias — 15m trend must align with breakout direction ───
-    mtf_all = resample_to_15m(bars)
-    # Find which 15m candle the breakout lands in
-    breakout_dt = bars[breakout_idx]["datetime"]
-    breakout_15m = breakout_dt.replace(minute=(breakout_dt.minute // 15) * 15,
-                                        second=0, microsecond=0)
-    # Get the 15m candles that closed BEFORE the breakout bucket
-    prior_15m = [b for b in mtf_all if b["datetime"] < breakout_15m]
-    if len(prior_15m) >= 2:
-        mtf_trend = "bull" if prior_15m[-1]["close"] > prior_15m[-2]["close"] else "bear"
-        if mtf_trend != direction:
-            log.debug(f"  MTF bias mismatch {session_date}: 15m={mtf_trend} vs {direction}")
-            return None
-
-    rvol = round(breakout_vol / (sum(prior_vols) / len(prior_vols)), 2) if prior_vols else 0.0
-
-    # Filter: skip low-participation breakouts (backtested edge = -0.270 avg R below 0.5)
-    if rvol < 0.5:
-        return None
-        
-    # ── Step 3: FVG after breakout ──────────────────────────────────────────
+    # ── Step 3: FVG after breakout ─────────────────────────────────────────
     try:
         fvg_low, fvg_high = detect_fvg_after_break(bars, breakout_idx, direction)
     except Exception as e:
@@ -434,32 +417,24 @@ def run_session(ticker: str, session_bars: pd.DataFrame) -> Optional[Dict]:
         return None
 
     fvg_size = (fvg_high - fvg_low) / fvg_low if fvg_low > 0 else 0.0
-    # Use 5m-appropriate threshold — production 0.5% never fires on 5m data
     if fvg_size < FVG_MIN_SIZE_PCT_5M:
-        # Filter 1: FVG too large — oversized gaps fail on 5m data
-        if fvg_size > 0.0015:  # 0.15%
+        if fvg_size > 0.0015:
             return None
-
-        # Filter 2: OR range must be meaningful
-        if or_range_pct < 0.0035:  # 0.35%
+        if or_range_pct < 0.0035:
             return None
 
     fvg_mid = (fvg_low + fvg_high) / 2.0
 
-    # Step 4: VWAP gate intentionally skipped — real-time execution filter only.
-    # With 5m early breakouts (idx 3-5), VWAP is barely established and rejects
-    # every session. Not a valid backtest criterion.
-
-    # ── Step 5: Entry ────────────────────────────────────────────────────────────
-    entry_bar_idx = breakout_idx
-     # Filter 3: Skip dead zones — 10:00 sharp and 10:20–10:30 are 0% win rate
-    entry_t = bars[entry_bar_idx]["datetime"]
-    entry_mins = entry_t.hour * 60 + entry_t.minute
-    if entry_mins == 600 or 620 <= entry_mins <= 630:  # 10:00 or 10:20–10:30
-        return None
-    entry_price   = fvg_mid
+    # ── Step 5: Entry ──────────────────────────────────────────────────────
+    entry_bar_idx = breakout_idx          # enter at breakout bar (NOT +1)
+    entry_price   = fvg_mid               # FVG midpoint as entry
     if entry_bar_idx >= len(bars) - 1:
         return None
+    entry_t    = bars[entry_bar_idx]["datetime"]
+    entry_mins = entry_t.hour * 60 + entry_t.minute
+    if entry_mins == 600 or 620 <= entry_mins <= 630:
+        return None
+
 
     # ── Step 6: Grade ────────────────────────────────────────────────────────────
     grade = "A"
@@ -499,17 +474,20 @@ def run_session(ticker: str, session_bars: pd.DataFrame) -> Optional[Dict]:
     # 5m ATR stops (~$0.40) are too tight and get tagged by normal bar noise.
     # OR high/low is the structural level these entries should respect.
     # Cap prevents asymmetric risk when OR is unusually wide (>$2.50 from entry).
-    MAX_STOP = 2.50
+    # AFTER — use OR boundary only, skip trades where OR stop > $3.00 from entry
+    # Step 7b: OR-based stop — use structural level, skip if too wide
     if direction == "bull":
-        or_stop = or_low * 0.999
-        if or_stop < stop:
-            stop = or_stop
-        stop = max(stop, entry_price - MAX_STOP)  # hard floor
+        stop = or_low * 0.999
     else:
-        or_stop = or_high * 1.001
-        if or_stop > stop:
-            stop = or_stop
-        stop = min(stop, entry_price + MAX_STOP)  # hard ceiling
+        stop = or_high * 1.001
+
+    risk = abs(entry_price - stop)
+
+    # Skip if OR is too wide to risk (no fake cap — just don't take the trade)
+    MAX_RISK = 3.00
+    MIN_RISK = {\"AAPL\": 0.60, \"NVDA\": 0.60}.get(ticker, 0.25)
+    if risk > MAX_RISK or risk < MIN_RISK:
+        return None
 
     # Recompute targets based on OR-based risk (2R / 3.5R)
     risk = abs(entry_price - stop)
