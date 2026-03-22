@@ -321,7 +321,7 @@ def grade_signal_with_confirmations(
         elif base_grade == "A":
             final_grade = "A-"
         else:
-            final_grade = "reject"
+            final_grade = "A-"   # downgrade to A- instead of reject
         logger.info(f"[CONFIRM] Downgraded {base_grade} -> {final_grade} (0/3 alignment)")
 
     else:

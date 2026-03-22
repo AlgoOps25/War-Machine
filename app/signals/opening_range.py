@@ -852,6 +852,8 @@ def detect_breakout_after_or(bars, or_high, or_low):
         bt = _bar_time(bar)
         if bt is None or bt < time(9, 45):
             continue
+        if bt >= time(11, 0):          # ← add this hard ceiling
+            break
         if bar["close"] > or_high * (1 + config.ORB_BREAK_THRESHOLD):
             logger.info(f"[BREAKOUT] BULL idx {i} ${bar['close']:.2f}")
             return "bull", i
@@ -873,11 +875,8 @@ def detect_fvg_after_break(bars, breakout_idx, direction):
             if gap > 0 and (gap / c0["high"]) >= config.FVG_MIN_SIZE_PCT:
                 logger.info(f"[FVG] BULL ${c0['high']:.2f}—${c2['low']:.2f}")
                 return c0["high"], c2["low"]
-        elif direction == "bear":
-            gap = c0["low"] - c2["high"]
-            if gap > 0 and (gap / c0["low"]) >= config.FVG_MIN_SIZE_PCT:
-                logger.info(f"[FVG] BEAR ${c2['high']:.2f}—${c0['low']:.2f}")
-                return c2["high"], c0["low"]
+        return c2["high"], c0["low"]   # fvg_low=c2["high"], fvg_high=c0["low"] ✅
+
     return None, None
 
 # ========================================

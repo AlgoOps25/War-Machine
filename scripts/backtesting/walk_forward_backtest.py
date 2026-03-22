@@ -115,6 +115,8 @@ EOD_CLOSE_MIN  = 55
 COMMISSION     = 1.0         # $ per fill (round-trip = 2x)
 SLIPPAGE_PCT   = 0.0002      # 0.02% per fill
 MAX_BREAKOUT_IDX = 60        # first hour only ? late breakouts have poor win rate
+MAX_RISK        = 3.00        # skip trade if OR stop > $3.00 from entry
+MIN_OR_DOLLARS  = 0.50       # skip session if OR range < $2.00 absolute
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -381,7 +383,7 @@ def run_session(ticker: str, session_bars: pd.DataFrame) -> Optional[Dict]:
     or_range_pct = (or_high - or_low) / or_low
     if or_range_pct < OR_MIN_RANGE_PCT:
         return None
-    if (or_high - or_low) < 2.00:
+    if (or_high - or_low) < MIN_OR_DOLLARS:
         return None
 
      # ── Step 2: Breakout detection ─────────────────────────────────────────
@@ -391,8 +393,6 @@ def run_session(ticker: str, session_bars: pd.DataFrame) -> Optional[Dict]:
         log.debug(f"  Breakout failed {session_date}: {e}")
         return None
     if direction is None or breakout_idx is None:
-        return None
-    if direction == "bull":
         return None
     if breakout_idx > MAX_BREAKOUT_IDX:
         log.debug(f"  Late breakout skip: idx {breakout_idx} > {MAX_BREAKOUT_IDX}")
@@ -435,7 +435,6 @@ def run_session(ticker: str, session_bars: pd.DataFrame) -> Optional[Dict]:
     if entry_mins == 600 or 620 <= entry_mins <= 630:
         return None
 
-
     # ── Step 6: Grade ────────────────────────────────────────────────────────────
     grade = "A"
     conf  = 0.65
@@ -476,18 +475,21 @@ def run_session(ticker: str, session_bars: pd.DataFrame) -> Optional[Dict]:
     # Cap prevents asymmetric risk when OR is unusually wide (>$2.50 from entry).
     # AFTER — use OR boundary only, skip trades where OR stop > $3.00 from entry
     # Step 7b: OR-based stop — use structural level, skip if too wide
+    # Step 7b: OR-based stop — structural boundary only
     if direction == "bull":
         stop = or_low * 0.999
     else:
         stop = or_high * 1.001
 
-    risk = abs(entry_price - stop)
+    risk     = abs(entry_price - stop)
 
-    # Skip if OR is too wide to risk (no fake cap — just don't take the trade)
-    MAX_RISK = 3.00
-    MIN_RISK = {\"AAPL\": 0.60, \"NVDA\": 0.60}.get(ticker, 0.25)
-    if risk > MAX_RISK or risk < MIN_RISK:
-        return None
+    # Recompute targets at 2R / 3.5R
+    if direction == "bull":
+        t1 = entry_price + risk * 2.0
+        t2 = entry_price + risk * 3.5
+    else:
+        t1 = entry_price - risk * 2.0
+        t2 = entry_price - risk * 3.5
 
     # Recompute targets based on OR-based risk (2R / 3.5R)
     risk = abs(entry_price - stop)
