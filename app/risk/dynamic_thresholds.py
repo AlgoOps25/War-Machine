@@ -172,48 +172,6 @@ def _get_winrate_adjustment(signal_type, grade):
 
 
 def _get_recent_quality_adjustment():
-    """
-    Adjust based on quality of last 5 signals (any type/grade).
-    Returns 0.00 if insufficient data.
-    """
-    try:
-        from app.data.db_connection import get_conn, return_conn, dict_cursor
-
-        conn = None
-        rows = []
-        try:
-            conn = get_conn()
-            cursor = dict_cursor(conn)
-
-            two_hours_ago = _now_et() - timedelta(hours=2)
-
-            cursor.execute("""
-                SELECT confidence FROM ml_signals
-                WHERE created_at > %s
-                  AND status = 'PENDING'
-                ORDER BY created_at DESC
-                LIMIT 5
-            """, (two_hours_ago,))
-
-            rows = cursor.fetchall()
-        finally:
-            if conn:
-                return_conn(conn)
-
-        if len(rows) < 3:
-            return 0.00
-
-        low_quality = sum(1 for row in rows if (row["confidence"] or 1.0) < 0.65)
-
-        if low_quality <= 1:
-            return 0.00
-        elif low_quality <= 3:
-            return +0.02
-        else:
-            return +0.04
-
-    except Exception as e:
-        logger.info(f"[DYNAMIC-THRESH] Recent quality lookup error: {e}")
         return 0.00
 
 

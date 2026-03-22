@@ -866,16 +866,22 @@ def detect_breakout_after_or(bars, or_high, or_low):
 def detect_fvg_after_break(bars, breakout_idx, direction):
     """Find first FVG after a breakout. Returns (fvg_low, fvg_high) or (None, None)."""
     from utils import config
-    for i in range(breakout_idx + 1, len(bars)):   # was breakout_idx + 3
-        if i < 2:
-            continue
-        c0, c2 = bars[i - 2], bars[i]
+    min_pct = getattr(config, 'FVG_MIN_PCT', 0.001)
+    search_bars = bars[breakout_idx:]
+
+    for i in range(2, len(search_bars)):
+        c0 = search_bars[i - 2]
+        c2 = search_bars[i]
+
         if direction == "bull":
             gap = c2["low"] - c0["high"]
-            if gap > 0 and (gap / c0["high"]) >= config.FVG_MIN_SIZE_PCT:
-                logger.info(f"[FVG] BULL ${c0['high']:.2f}—${c2['low']:.2f}")
+            if gap > 0 and (gap / c0["high"]) >= min_pct:
                 return c0["high"], c2["low"]
-        return c2["high"], c0["low"]   # fvg_low=c2["high"], fvg_high=c0["low"] ✅
+
+        elif direction == "bear":
+            gap = c0["low"] - c2["high"]
+            if gap > 0 and (gap / c0["low"]) >= min_pct:
+                return c2["high"], c0["low"]
 
     return None, None
 

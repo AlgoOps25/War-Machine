@@ -74,20 +74,17 @@ def compute_confidence(
 
 
 def grade_to_label(confidence: float) -> str:
-    """
-    Convert a numeric confidence back to a readable label.
-    Used for logging and Discord alerts.
-    """
-    if confidence >= 0.80:
-        return "A+"
-    elif confidence >= 0.65:
-        return "A"
-    elif confidence >= 0.50:
-        return "A-"
-    else:
-        return "reject"
-
-
+    if confidence >= 0.88:   return "A+"
+    elif confidence >= 0.83: return "A"
+    elif confidence >= 0.78: return "A-"
+    elif confidence >= 0.72: return "B+"
+    elif confidence >= 0.66: return "B"
+    elif confidence >= 0.60: return "B-"
+    elif confidence >= 0.55: return "C+"
+    elif confidence >= 0.50: return "C"
+    elif confidence >= 0.45: return "C-"
+    else:                    return "reject"
+    
 # =============================================================================
 # AI LEARNING ENGINE
 # =============================================================================
