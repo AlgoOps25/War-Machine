@@ -859,7 +859,7 @@ def detect_breakout_after_or(bars, or_high, or_low):
     return None, None
 
 
-def detect_fvg_after_break(bars, breakout_idx, direction):
+def detect_fvg_after_break(bars, breakout_idx, direction, soft_fvg_pct=None, return_type=False):
     """Find first FVG after a breakout. Returns (fvg_low, fvg_high) or (None, None)."""
     from utils import config
     for i in range(breakout_idx + 3, len(bars)):
@@ -870,13 +870,13 @@ def detect_fvg_after_break(bars, breakout_idx, direction):
             gap = c2["low"] - c0["high"]
             if gap > 0 and (gap / c0["high"]) >= config.FVG_MIN_SIZE_PCT:
                 print(f"[FVG] BULL ${c0['high']:.2f}—${c2['low']:.2f}")
-                return c0["high"], c2["low"]
+                return (c0["high"], c2["low"], "hard") if return_type else (c0["high"], c2["low"])
         elif direction == "bear":
             gap = c0["low"] - c2["high"]
             if gap > 0 and (gap / c0["low"]) >= config.FVG_MIN_SIZE_PCT:
                 print(f"[FVG] BEAR ${c2['high']:.2f}—${c0['low']:.2f}")
-                return c2["high"], c0["low"]
-    return None, None
+                return (c2["high"], c0["low"], "hard") if return_type else (c2["high"], c0["low"])
+    return (None, None, None) if return_type else (None, None)
 
 # ========================================
 # USAGE EXAMPLE

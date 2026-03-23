@@ -87,6 +87,37 @@ except Exception as e:
     log.error(f"❌ Pipeline import failed: {e}")
     sys.exit(1)
 
+def detect_fvg_with_type(bars, breakout_idx, direction):
+    from utils import config
+    min_pct      = getattr(config, 'FVG_MIN_SIZE_PCT', 0.0003)
+    soft_fvg_pct = getattr(config, 'FVG_SOFT_PCT', 0.0015)
+    for i in range(breakout_idx + 3, min(len(bars), breakout_idx + 33)):
+        c0 = bars[i - 2]
+        c1 = bars[i - 1]
+        c2 = bars[i]
+        c1_body = abs(c1["close"] - c1["open"])
+        if direction == "bull":
+            if c1["close"] <= c1["open"]:
+                continue
+            gap = c2["low"] - c0["high"]
+            if gap > 0 and (gap / c0["high"]) >= min_pct:
+                return c0["high"], c2["low"], "hard"
+            if gap < 0 and abs(gap) / c0["high"] <= soft_fvg_pct:
+                if c1_body > 0 and abs(gap) > c1_body * 0.4:
+                    continue
+                return c2["low"], c0["high"], "soft"
+        elif direction == "bear":
+            if c1["close"] >= c1["open"]:
+                continue
+            gap = c0["low"] - c2["high"]
+            if gap > 0 and (gap / c0["low"]) >= min_pct:
+                return c2["high"], c0["low"], "hard"
+            if gap < 0 and abs(gap) / c0["low"] <= soft_fvg_pct:
+                if c1_body > 0 and abs(gap) > c1_body * 0.4:
+                    continue
+                return c0["low"], c2["high"], "soft"
+    return None, None, None
+
 try:
     from app.validation.cfw6_confirmation import grade_signal_with_confirmations
     GRADE_OK = True
@@ -108,7 +139,41 @@ except Exception:
     OR_MIN_RANGE_PCT = 0.003
     MIN_CONFIDENCE   = 0.45
 
+def detect_fvg_with_type(bars, breakout_idx, direction):
+    """Wraps detect_fvg_after_break and also returns 'hard' or 'soft'."""
+    from utils import config
+    min_pct      = getattr(config, 'FVG_MIN_SIZE_PCT', 0.0003)
+    soft_fvg_pct = getattr(config, 'FVG_SOFT_PCT', 0.0015)
 
+    for i in range(breakout_idx + 3, min(len(bars), breakout_idx + 33)):
+        c0 = bars[i - 2]
+        c1 = bars[i - 1]
+        c2 = bars[i]
+        c1_body = abs(c1["close"] - c1["open"])
+
+        if direction == "bull":
+            if c1["close"] <= c1["open"]:
+                continue
+            gap = c2["low"] - c0["high"]
+            if gap > 0 and (gap / c0["high"]) >= min_pct:
+                return c0["high"], c2["low"], "hard"
+            if gap < 0 and abs(gap) / c0["high"] <= soft_fvg_pct:
+                if c1_body > 0 and abs(gap) > c1_body * 0.4:
+                    continue
+                return c2["low"], c0["high"], "soft"
+
+        elif direction == "bear":
+            if c1["close"] >= c1["open"]:
+                continue
+            gap = c0["low"] - c2["high"]
+            if gap > 0 and (gap / c0["low"]) >= min_pct:
+                return c2["high"], c0["low"], "hard"
+            if gap < 0 and abs(gap) / c0["low"] <= soft_fvg_pct:
+                if c1_body > 0 and abs(gap) > c1_body * 0.4:
+                    continue
+                return c0["low"], c2["high"], "soft"
+
+    return None, None, None
 # ═══════════════════════════════════════════════════════════════════════════
 # CONSTANTS
 # ═══════════════════════════════════════════════════════════════════════════
@@ -516,7 +581,7 @@ def run_session(
     # ── Step 3: FVG after breakout ─────────────────────────────────────────
     log.info(f"  [FVG-DEBUG] {ticker} {session_date}: breakout_idx={breakout_idx}, direction={direction}, bars_after={len(bars) - breakout_idx - 1}")
     try:
-        fvg_low, fvg_high = detect_fvg_after_break(bars, breakout_idx, direction)
+        fvg_low, fvg_high, fvg_type = detect_fvg_with_type(bars, breakout_idx, direction)
     except Exception as e:
         log.info(f"  FVG failed {session_date}: {e}")
         return None
@@ -524,8 +589,7 @@ def run_session(
         log.info(f"  [FVG-SKIP] {ticker} {session_date}: no FVG found after breakout")
         return None
 
-    # Block soft FVG entries on A- grade (0/3 confirmation alignment)
-    fvg_is_soft = fvg_low > fvg_high  # soft FVG returns inverted zone
+    fvg_is_soft = (fvg_type == "soft")
 
     fvg_size = (fvg_high - fvg_low) / fvg_low if fvg_low > 0 else 0.0
     if fvg_size < 0.0008:
