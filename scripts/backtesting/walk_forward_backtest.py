@@ -117,7 +117,7 @@ EOD_CLOSE_HOUR = 15
 EOD_CLOSE_MIN  = 55
 COMMISSION     = 1.0         # $ per fill (round-trip = 2x)
 SLIPPAGE_PCT   = 0.0002      # 0.02% per fill
-MAX_BREAKOUT_IDX = 60        # first hour on 1m = bars 0-60 (9:30-10:30 AM)
+MAX_BREAKOUT_IDX = 62        # first hour on 1m = bars 0-60 (9:30-10:30 AM)
 MAX_RISK        = 3.00        # skip trade if OR stop > $3.00 from entry
 MIN_OR_DOLLARS  = 0.50       # skip session if OR range < $2.00 absolute
 # Session-context filter thresholds
@@ -514,6 +514,7 @@ def run_session(
             return None
 
     # ── Step 3: FVG after breakout ─────────────────────────────────────────
+    log.info(f"  [FVG-DEBUG] {ticker} {session_date}: breakout_idx={breakout_idx}, direction={direction}, bars_after={len(bars) - breakout_idx - 1}")
     try:
         fvg_low, fvg_high = detect_fvg_after_break(bars, breakout_idx, direction)
     except Exception as e:
@@ -524,8 +525,8 @@ def run_session(
         return None
 
     fvg_size = (fvg_high - fvg_low) / fvg_low if fvg_low > 0 else 0.0
-    if fvg_size < 0.0015:
-        if or_range_pct < 0.0035:
+    if fvg_size < 0.0008:
+        if or_range_pct < 0.0020:
             log.info(f"  [FVG-SIZE-SKIP] {ticker} {session_date}: fvg_size={fvg_size:.4%} + or_range={or_range_pct:.4%} too tight")
             return None
 
@@ -579,12 +580,13 @@ def run_session(
     # AFTER — use OR boundary only, skip trades where OR stop > $3.00 from entry
     # Step 7b: OR-based stop — use structural level, skip if too wide
     # Step 7b: OR-based stop — structural boundary only
+    # Use ATR stop (tight, realistic), but never wider than OR boundary
     if direction == "bull":
         stop = or_low * 0.999
     else:
         stop = or_high * 1.001
 
-    risk     = abs(entry_price - stop)
+    risk = abs(entry_price - stop)
 
     MIN_RISK = {"AAPL": 0.60, "NVDA": 0.60}.get(ticker, 0.25)
     if risk < MIN_RISK:
@@ -728,7 +730,7 @@ def run(tickers: List[str], days: int, out_dir: str, fold_size: int = 30, use_ct
     fetcher    = EODHDFetcher()
     all_trades: List[Dict] = []
     end_dt   = datetime.now()
-    start_dt = end_dt - timedelta(days=days)
+    start_dt = end_dt - timedelta(days=120)
     ctx_fetcher = fetcher if (use_ctx and fetcher.api_key) else None
     if ctx_fetcher:
         log.info("✅ Session context filter ENABLED (EMA20 / ADX / RSI / ATR + intraday EMA9)")
