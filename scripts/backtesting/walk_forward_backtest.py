@@ -502,36 +502,34 @@ def run_session(
             return None
 
     # EMA20 trend alignment gate
-        if CTX_EMA_ALIGN and ctx_ema20 and ctx_prior_close:
-            ema_gap_pct = abs(ctx_prior_close - ctx_ema20) / ctx_ema20
-            rsi_oversold = ctx_rsi is not None and ctx_rsi < 35
-            rsi_overbought = ctx_rsi is not None and ctx_rsi > 65
-            if direction == "bull" and ctx_prior_close < ctx_ema20 and ema_gap_pct > 0.01 and not rsi_oversold:
-                log.info(f"  [CTX-SKIP] {ticker} {session_date}: BULL close < EMA20 by {ema_gap_pct:.2%}")
-                return None
-            if direction == "bear" and ctx_prior_close > ctx_ema20 and ema_gap_pct > 0.01 and not rsi_overbought:
-                log.info(f"  [CTX-SKIP] {ticker} {session_date}: BEAR close > EMA20 by {ema_gap_pct:.2%}")
-                return None
-
-        # ── Step 3: FVG after breakout ─────────────────────────────────────────
-        try:
-            fvg_low, fvg_high = detect_fvg_after_break(bars, breakout_idx, direction)
-        except Exception as e:
-            log.info(f"  FVG failed {session_date}: {e}")
+    if CTX_EMA_ALIGN and ctx_ema20 and ctx_prior_close:
+        ema_gap_pct = abs(ctx_prior_close - ctx_ema20) / ctx_ema20
+        rsi_oversold = ctx_rsi is not None and ctx_rsi < 35
+        rsi_overbought = ctx_rsi is not None and ctx_rsi > 65
+        if direction == "bull" and ctx_prior_close < ctx_ema20 and ema_gap_pct > 0.01 and not rsi_oversold:
+            log.info(f"  [CTX-SKIP] {ticker} {session_date}: BULL close < EMA20 by {ema_gap_pct:.2%}")
             return None
-        if fvg_low is None or fvg_high is None:
-            log.info(f"  [FVG-SKIP] {ticker} {session_date}: no FVG found after breakout")
+        if direction == "bear" and ctx_prior_close > ctx_ema20 and ema_gap_pct > 0.01 and not rsi_overbought:
+            log.info(f"  [CTX-SKIP] {ticker} {session_date}: BEAR close > EMA20 by {ema_gap_pct:.2%}")
             return None
 
-        fvg_size = (fvg_high - fvg_low) / fvg_low if fvg_low > 0 else 0.0
-        if fvg_size < 0.0015:
-            if or_range_pct < 0.0035:
-                log.info(f"  [FVG-SIZE-SKIP] {ticker} {session_date}: fvg_size={fvg_size:.4%} + or_range={or_range_pct:.4%} too tight")
-                return None
+    # ── Step 3: FVG after breakout ─────────────────────────────────────────
+    try:
+        fvg_low, fvg_high = detect_fvg_after_break(bars, breakout_idx, direction)
+    except Exception as e:
+        log.info(f"  FVG failed {session_date}: {e}")
+        return None
+    if fvg_low is None or fvg_high is None:
+        log.info(f"  [FVG-SKIP] {ticker} {session_date}: no FVG found after breakout")
+        return None
 
-        fvg_mid = (fvg_low + fvg_high) / 2.0
-    else:
-        fvg_mid = None
+    fvg_size = (fvg_high - fvg_low) / fvg_low if fvg_low > 0 else 0.0
+    if fvg_size < 0.0015:
+        if or_range_pct < 0.0035:
+            log.info(f"  [FVG-SIZE-SKIP] {ticker} {session_date}: fvg_size={fvg_size:.4%} + or_range={or_range_pct:.4%} too tight")
+            return None
+
+    fvg_mid = (fvg_low + fvg_high) / 2.0
 
     # ── Step 5: Entry ──────────────────────────────────────────────────────
     entry_bar_idx = breakout_idx          # enter at breakout bar (NOT +1)
