@@ -143,11 +143,6 @@ class EODHDFetcher:
             log.warning("EODHD_API_KEY not set — will try local DB cache only")
         self._ctx_cache: Dict[tuple, Optional[Dict]] = {}
 
-    def __init__(self):
-        self.api_key = os.getenv("EODHD_API_KEY", "")
-        if not self.api_key:
-            log.warning("EODHD_API_KEY not set — will try local DB cache only")
-
     def fetch(self, ticker: str, start: datetime, end: datetime) -> pd.DataFrame:
         df = self._from_cache(ticker, start, end)
         if df.empty and self.api_key:
@@ -682,10 +677,7 @@ def run(tickers: List[str], days: int, out_dir: str, fold_size: int = 30, use_ct
     all_trades: List[Dict] = []
     end_dt   = datetime.now()
     start_dt = end_dt - timedelta(days=days)
-
     ctx_fetcher = fetcher if (use_ctx and fetcher.api_key) else None
-    # ...
-    trade = run_session(ticker, sessions[fold["test_idx"]], fetcher=ctx_fetcher)
     for ticker in tickers:
         log.info(f"\n{'='*60}")
         log.info(f"  {ticker}  |  {start_dt.date()} → {end_dt.date()}")
@@ -709,7 +701,7 @@ def run(tickers: List[str], days: int, out_dir: str, fold_size: int = 30, use_ct
 
         if folds:
             for fold in folds:
-                trade = run_session(ticker, sessions[fold["test_idx"]])
+                trade = run_session(ticker, sessions[fold["test_idx"]], fetcher=ctx_fetcher)
                 if trade:
                     ticker_trades.append(trade)
                     wf_fold_results.append({
@@ -720,7 +712,7 @@ def run(tickers: List[str], days: int, out_dir: str, fold_size: int = 30, use_ct
                     })
         else:
             for session in sessions:
-                trade = run_session(ticker, session)
+                trade = run_session(ticker, session, fetcher=ctx_fetcher)
                 if trade:
                     ticker_trades.append(trade)
 
@@ -764,8 +756,9 @@ def main():
     parser.add_argument("--days",    type=int, default=90, help="Lookback days (default: 90)")
     parser.add_argument("--out",     default="backtests/results", help="Output directory")
     parser.add_argument("--fold",    type=int, default=30, help="Walk-forward fold size in days (default: 30)")
+    parser.add_argument("--no-ctx", action="store_true", help="Disable pre-session context filter")
     args = parser.parse_args()
-    parser.add_argument("--no-ctx", action="store_true",help="Disable pre-session context filter") run(..., use_ctx=not args.no_ctx)
+    run([t.strip().upper() for t in args.tickers.split(",")], args.days, args.out, args.fold, use_ctx=not args.no_ctx)
     run([t.strip().upper() for t in args.tickers.split(",")], args.days, args.out, args.fold)
 
 
