@@ -1,6 +1,7 @@
-﻿import csv, os
-os.environ['DATABASE_URL'] = 'your_railway_url_here'
-import psycopg2
+﻿import csv
+from dotenv import load_dotenv
+load_dotenv()
+import os, psycopg2
 conn = psycopg2.connect(os.environ['DATABASE_URL'])
 cur = conn.cursor()
 cur.execute("SELECT datetime, open, high, low, close, volume FROM intraday_bars_5m WHERE ticker = 'NVDA' ORDER BY datetime ASC")

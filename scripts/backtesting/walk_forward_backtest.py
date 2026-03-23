@@ -1,34 +1,29 @@
 #!/usr/bin/env python3
-"""
+'''
 Walk-Forward Backtest Engine — War Machine (47.P4-1)
 
-Replays 90 days of EODHD 5m bars through the production signal pipeline
-(OR inline for 5m -> detect_breakout_after_or ->
+Replays 90 days of 1m bars through the production signal pipeline
+(compute_opening_range_from_bars -> detect_breakout_after_or ->
  detect_fvg_after_break -> passes_vwap_gate -> compute_stop_and_targets)
 and simulates trade outcomes bar-by-bar.
 
 Outputs:
-  backtests/results/<ticker>_trades.csv       — every trade with full detail
-  backtests/results/<ticker>_summary.json     — aggregate stats
-  backtests/results/hourly_win_rates.json     — feeds 47.P4-2 (replaces fabricated data)
-  backtests/results/walk_forward_folds.json   — per-fold equity curve
+  backtests/results/<ticker>_trades.csv
+  backtests/results/<ticker>_summary.json
+  backtests/results/hourly_win_rates.json
+  backtests/results/walk_forward_folds.json
 
 Usage:
   python scripts/backtesting/walk_forward_backtest.py --tickers SPY,QQQ,AAPL --days 90
-  python scripts/backtesting/walk_forward_backtest.py --tickers SPY --days 90 --out backtests/results
-  python scripts/backtesting/walk_forward_backtest.py --tickers SPY --days 30  # quick smoke test
+  python scripts/backtesting/walk_forward_backtest.py --tickers SPY --days 30
+'''  # quick smoke test
 
-NOTE on 5m bar OR window:
-  production compute_opening_range_from_bars() is tuned for 1m bars and
-  requires >= 3 bars strictly within 9:30-9:40. With 5m data that window
-  holds only 2 bars (09:30, 09:35). We compute OR inline using 9:30-9:45
-  (3 bars at 5m: 09:30, 09:35, 09:40) with a minimum of 2 bars.
+#Walk-Forward Backtest Engine — War Machine (47.P4-1)
 
-NOTE on FVG_MIN_SIZE_PCT:
-  production threshold (0.5%) is calibrated for 1m bars. On 5m bars for
-  mega-cap ETFs, bar-to-bar gaps never reach 0.5% (largest seen: 0.115%).
-  Backtest overrides to 0.0001 — any positive gap is a valid 5m FVG.
-"""
+#Replays 180 days of 1m bars through the production signal pipeline
+#(compute_opening_range_from_bars -> detect_breakout_after_or ->
+# detect_fvg_after_break -> passes_vwap_gate -> compute_stop_and_targets)
+#and simulates trade outcomes bar-by-bar.
 
 import sys
 import os
@@ -36,7 +31,7 @@ import json
 import logging
 import argparse
 import csv
-from datetime import datetime, timedelta, time as dtime
+from datetime import datetime, timedelta, time as dtime, date as ddate
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple
 from collections import defaultdict
@@ -68,14 +63,15 @@ logging.basicConfig(
 log = logging.getLogger("wf_backtest")
 
 # 5m OR window: 9:30-9:45 (3 bars: 09:30, 09:35, 09:40), minimum 2
-OR_5M_START    = dtime(9, 30)
-OR_5M_END      = dtime(9, 45)   # exclusive upper bound
-OR_5M_MIN_BARS = 2
+#OR_5M_START    = dtime(9, 30)
+#OR_5M_END      = dtime(9, 45)   # exclusive upper bound
+#OR_5M_MIN_BARS = 2
+T1_R = 1.25   # T1 target — trails stop to BE on hit
+T2_R = 2.0    # T2 target — full exit
 
 # FVG minimum for 5m bars — any positive gap qualifies (float-noise floor only)
 # production 0.5% threshold is 1m-calibrated and never fires on 5m mega-cap data
-FVG_MIN_SIZE_PCT_5M = 0.0001
-from utils import config as _cfg; _cfg.FVG_MIN_SIZE_PCT = FVG_MIN_SIZE_PCT_5M  # must run before app imports
+FVG_MIN_SIZE_PCT_5M = 0.0001   # kept as local fallback only — production threshold used natively on 1m # must run before app imports
 
 # ── Production pipeline imports ─────────────────────────────────────────────
 try:
@@ -100,7 +96,13 @@ except Exception:
 
 try:
     from utils import config as cfg
-    OR_MIN_RANGE_PCT = getattr(cfg, "OR_MIN_RANGE_PCT", 0.003)
+    _OR_MIN_RANGE_DEFAULT = 0.003
+    OR_MIN_RANGE_BY_TICKER: Dict[str, float] = {
+        "SPY": 0.0008,
+        "QQQ": 0.0008,
+        "IWM": 0.0008,
+        "DIA": 0.0008,
+    }
     MIN_CONFIDENCE   = getattr(cfg, "MIN_CONFIDENCE",   0.45)
 except Exception:
     cfg              = None
@@ -116,19 +118,30 @@ EOD_CLOSE_HOUR = 15
 EOD_CLOSE_MIN  = 55
 COMMISSION     = 1.0         # $ per fill (round-trip = 2x)
 SLIPPAGE_PCT   = 0.0002      # 0.02% per fill
-MAX_BREAKOUT_IDX = 60        # first hour only ? late breakouts have poor win rate
+MAX_BREAKOUT_IDX = 60        # first hour on 1m = bars 0-60 (9:30-10:30 AM)
 MAX_RISK        = 3.00        # skip trade if OR stop > $3.00 from entry
 MIN_OR_DOLLARS  = 0.50       # skip session if OR range < $2.00 absolute
-
+# Session-context filter thresholds
+CTX_ADX_MIN   = 18    # skip session if ADX below this (ranging)
+CTX_RSI_OB    = 74    # reject BULL if RSI >= this (overbought)
+CTX_RSI_OS    = 26    # reject BEAR if RSI <= this (oversold)
+CTX_EMA_ALIGN = True  # require close > EMA20 for BULL, < EMA20 for BEAR
 
 # ═══════════════════════════════════════════════════════════════════════════
 # DATA FETCHING
 # ═══════════════════════════════════════════════════════════════════════════
 
 class EODHDFetcher:
-    """Fetch 5m intraday bars from EODHD (cache-first via PostgreSQL if available)."""
+    '''Fetch 1m intraday bars from EODHD (cache-first via PostgreSQL if available).'''
 
     BASE_URL = "https://eodhd.com/api/intraday/{ticker}.US"
+    TECH_URL = "https://eodhd.com/api/technicals/{ticker}.US"
+
+    def __init__(self):
+        self.api_key = os.getenv("EODHD_API_KEY", "")
+        if not self.api_key:
+            log.warning("EODHD_API_KEY not set — will try local DB cache only")
+        self._ctx_cache: Dict[tuple, Optional[Dict]] = {}
 
     def __init__(self):
         self.api_key = os.getenv("EODHD_API_KEY", "")
@@ -172,7 +185,7 @@ class EODHDFetcher:
         url    = self.BASE_URL.format(ticker=ticker)
         params = {
             "api_token": self.api_key,
-            "interval":  "5m",
+            "interval":  "1m",
             "from":      int(start.timestamp()),
             "to":        int(end.timestamp()),
             "fmt":       "json",
@@ -199,13 +212,69 @@ class EODHDFetcher:
             log.error(f"EODHD fetch error ({ticker}): {e}")
             return pd.DataFrame()
 
+    def fetch_session_context(self, ticker: str, session_date: ddate) -> Optional[Dict]:
+        if not self.api_key:
+            return None
+        cache_key = (ticker, session_date)
+        if cache_key in self._ctx_cache:
+            return self._ctx_cache[cache_key]
+
+        prior_day = session_date - timedelta(days=1)
+        if prior_day.weekday() == 5:
+            prior_day -= timedelta(days=1)
+        elif prior_day.weekday() == 6:
+            prior_day -= timedelta(days=2)
+
+        from_ts = prior_day.strftime("%Y-%m-%d")
+
+        def _fetch_indicator(function: str, period: int) -> Optional[float]:
+            try:
+                r = requests.get(
+                    self.TECH_URL.format(ticker=ticker),
+                    params={"api_token": self.api_key, "function": function,
+                            "period": period, "from": from_ts, "to": from_ts, "fmt": "json"},
+                    timeout=10,
+                )
+                if r.status_code != 200:
+                    return None
+                data = r.json()
+                if not data:
+                    return None
+                last = data[-1]
+                if function == "adx":
+                    return float(last.get("adx", 0) or 0)
+                return float(last.get("value", 0) or 0)
+            except Exception:
+                return None
+
+        ema20 = _fetch_indicator("ema", 20)
+        adx   = _fetch_indicator("adx", 14)
+        rsi   = _fetch_indicator("rsi", 14)
+
+        prior_close = None
+        try:
+            r = requests.get(
+                f"https://eodhd.com/api/eod/{ticker}.US",
+                params={"api_token": self.api_key, "from": from_ts,
+                        "to": from_ts, "fmt": "json"},
+                timeout=10,
+            )
+            if r.status_code == 200 and r.json():
+                prior_close = float(r.json()[-1].get("close", 0) or 0)
+        except Exception:
+            pass
+
+        ctx = {"ema20": ema20, "adx": adx, "rsi": rsi,
+            "prior_close": prior_close, "prior_date": str(prior_day)}
+        self._ctx_cache[cache_key] = ctx
+        return ctx
 
 # ═══════════════════════════════════════════════════════════════════════════
 # BAR UTILITIES
 # ═══════════════════════════════════════════════════════════════════════════
 
 def split_into_sessions(df: pd.DataFrame) -> List[pd.DataFrame]:
-    """Split a multi-day DataFrame into individual session DataFrames."""
+    '''Split a multi-day DataFrame into individual session DataFrames.'''
     df = df.copy()
     df = df.dropna(subset=["open", "high", "low", "close"])
     df["volume"] = df["volume"].fillna(0)
@@ -221,10 +290,7 @@ def split_into_sessions(df: pd.DataFrame) -> List[pd.DataFrame]:
 
 
 def bars_to_sniper_format(df: pd.DataFrame) -> List[Dict]:
-    """
-    Convert DataFrame rows to bar dicts. Key must be "datetime" so
-    _bar_time() in time_helpers.py resolves the time correctly.
-    """
+    '''Convert DataFrame rows to bar dicts. Key must be "datetime" so _bar_time() resolves correctly.'''
     bars = []
     for _, row in df.iterrows():
         if pd.isna(row["open"]) or pd.isna(row["high"]) or pd.isna(row["low"]) or pd.isna(row["close"]):
@@ -239,53 +305,6 @@ def bars_to_sniper_format(df: pd.DataFrame) -> List[Dict]:
             "volume":   int(vol) if not pd.isna(vol) else 0,
         })
     return bars
-
-
-def compute_or_5m(bars: List[Dict]) -> Tuple[Optional[float], Optional[float]]:
-    """
-    Compute Opening Range high/low from 5-minute bars.
-
-    Uses 9:30–9:45 window (3 bars: 09:30, 09:35, 09:40) with a minimum
-    of OR_5M_MIN_BARS (2). Production compute_opening_range_from_bars()
-    requires >= 3 bars within 9:30–9:40 — that window holds only 2 bars
-    at 5m resolution so it always returns (None, None).
-    """
-    or_bars = [
-        b for b in bars
-        if hasattr(b["datetime"], "time")
-        and OR_5M_START <= b["datetime"].time() < OR_5M_END
-    ]
-    if len(or_bars) < OR_5M_MIN_BARS:
-        return None, None
-    return max(b["high"] for b in or_bars), min(b["low"] for b in or_bars)
-
-
-def _session_first_time(session_df: pd.DataFrame) -> Optional[object]:
-    if session_df is None or len(session_df) == 0:
-        return None
-    return session_df.iloc[0]["datetime"]
-
-def resample_to_15m(bars: List[Dict]) -> List[Dict]:
-    """
-    Resample 5m bars to 15m bars for MTF bias check.
-    Groups bars into 15-minute buckets by flooring datetime to 15m boundary.
-    Returns list of OHLCV dicts sorted by time.
-    """
-    buckets: Dict[datetime, Dict] = {}
-    for b in bars:
-        dt = b["datetime"]
-        # Floor to 15m boundary
-        floored = dt.replace(minute=(dt.minute // 15) * 15, second=0, microsecond=0)
-        if floored not in buckets:
-            buckets[floored] = {"datetime": floored, "open": b["open"],
-                                "high": b["high"], "low": b["low"],
-                                "close": b["close"], "volume": b["volume"]}
-        else:
-            buckets[floored]["high"]   = max(buckets[floored]["high"],   b["high"])
-            buckets[floored]["low"]    = min(buckets[floored]["low"],    b["low"])
-            buckets[floored]["close"]  = b["close"]
-            buckets[floored]["volume"] += b["volume"]
-    return sorted(buckets.values(), key=lambda x: x["datetime"])
 
 # ═══════════════════════════════════════════════════════════════════════════
 # TRADE SIMULATION
@@ -364,26 +383,45 @@ def simulate_trade(
 # SESSION RUNNER
 # ═══════════════════════════════════════════════════════════════════════════
 
-def run_session(ticker: str, session_bars: pd.DataFrame) -> Optional[Dict]:
-    """
+def run_session(
+    ticker: str,
+    session_bars: pd.DataFrame,
+    fetcher: Optional["EODHDFetcher"] = None,
+) -> Optional[Dict]:
+    '''
     Run one trading session through the production pipeline.
 
-    OR is computed inline via compute_or_5m() (9:30-9:45, min 2 bars).
-    FVG size gate uses FVG_MIN_SIZE_PCT_5M (0.0001) not production 0.5%.
+    OR is computed inline via compute_opening_range_from_bars() (1m native).
+    FVG size gate uses production threshold natively on 1m bars.
     All other pipeline calls use real production signatures.
-    """
+    '''
     bars = bars_to_sniper_format(session_bars)
     if len(bars) < 10:
         return None
 
     session_date = bars[0]["datetime"].date()
 
-    # ── Step 1: Opening Range (5m inline) ──────────────────────────────────
-    or_high, or_low = compute_or_5m(bars)
+    # ── Step 0: Pre-session context filter ────────────────────────────────
+    ctx = None
+    ctx_rsi = ctx_ema20 = ctx_prior_close = None
+    if fetcher is not None:
+        ctx = fetcher.fetch_session_context(ticker, session_date)
+        if ctx is not None:
+            adx = ctx.get("adx")
+            if adx is not None and adx < CTX_ADX_MIN:
+                log.debug(f"  [CTX-SKIP] {ticker} {session_date}: ADX={adx:.1f} (ranging)")
+                return None
+            ctx_rsi         = ctx.get("rsi")
+            ctx_ema20       = ctx.get("ema20")
+            ctx_prior_close = ctx.get("prior_close")
+    # ── Step 1: Opening Range (production 1m) ──────────────────────────────
+    from app.signals.opening_range import compute_opening_range_from_bars
+    or_high, or_low = compute_opening_range_from_bars(bars)
     if or_high is None or or_low is None or or_low <= 0:
         return None
     or_range_pct = (or_high - or_low) / or_low
-    if or_range_pct < OR_MIN_RANGE_PCT:
+    _min_or = OR_MIN_RANGE_BY_TICKER.get(ticker, _OR_MIN_RANGE_DEFAULT)
+    if or_range_pct < _min_or:
         return None
     if (or_high - or_low) < MIN_OR_DOLLARS:
         return None
@@ -409,6 +447,23 @@ def run_session(ticker: str, session_bars: pd.DataFrame) -> Optional[Dict]:
     if rvol < 0.5:
         return None
 
+    # RSI directional gate
+    if ctx_rsi is not None:
+        if direction == "bull" and ctx_rsi >= CTX_RSI_OB:
+            log.debug(f"  [CTX-SKIP] {ticker} {session_date}: BULL RSI={ctx_rsi:.1f} overbought")
+            return None
+        if direction == "bear" and ctx_rsi <= CTX_RSI_OS:
+            log.debug(f"  [CTX-SKIP] {ticker} {session_date}: BEAR RSI={ctx_rsi:.1f} oversold")
+            return None
+
+    # EMA20 trend alignment gate
+    if CTX_EMA_ALIGN and ctx_ema20 and ctx_prior_close:
+        if direction == "bull" and ctx_prior_close < ctx_ema20:
+            log.debug(f"  [CTX-SKIP] {ticker} {session_date}: BULL close < EMA20")
+            return None
+        if direction == "bear" and ctx_prior_close > ctx_ema20:
+            log.debug(f"  [CTX-SKIP] {ticker} {session_date}: BEAR close > EMA20")
+            return None
     # ── Step 3: FVG after breakout ─────────────────────────────────────────
     try:
         fvg_low, fvg_high = detect_fvg_after_break(bars, breakout_idx, direction)
@@ -485,25 +540,17 @@ def run_session(ticker: str, session_bars: pd.DataFrame) -> Optional[Dict]:
 
     risk     = abs(entry_price - stop)
 
-    # Recompute targets at 2R / 3.5R
-    if direction == "bull":
-        t1 = entry_price + risk * 2.0
-        t2 = entry_price + risk * 3.5
-    else:
-        t1 = entry_price - risk * 2.0
-        t2 = entry_price - risk * 3.5
-
-    # Recompute targets based on OR-based risk (2R / 3.5R)
-    risk = abs(entry_price - stop)
     MIN_RISK = {"AAPL": 0.60, "NVDA": 0.60}.get(ticker, 0.25)
     if risk < MIN_RISK:
         return None
+
+    # T1 = 1.25R (trail stop to BE on hit), T2 = 2.0R (full exit)
     if direction == "bull":
-        t1 = entry_price + risk * 2.0
-        t2 = entry_price + risk * 3.5
+        t1 = entry_price + risk * T1_R
+        t2 = entry_price + risk * T2_R
     else:
-        t1 = entry_price - risk * 2.0
-        t2 = entry_price - risk * 3.5
+        t1 = entry_price - risk * T1_R
+        t2 = entry_price - risk * T2_R
 
     # ── Step 8: Simulate ─────────────────────────────────────────────────────────
     outcome  = simulate_trade(entry_bar_idx, bars, direction, entry_price, stop, t1, t2)
@@ -536,6 +583,11 @@ def run_session(ticker: str, session_bars: pd.DataFrame) -> Optional[Dict]:
         "rvol":         rvol,
         "entry_minute": entry_dt.minute,
     }
+
+def _session_first_time(session_df: pd.DataFrame) -> Optional[object]:
+    if session_df is None or len(session_df) == 0:
+        return None
+    return session_df.iloc[0]["datetime"]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -623,7 +675,7 @@ def build_hourly_win_rates(trades: List[Dict]) -> Dict:
 # MAIN
 # ═══════════════════════════════════════════════════════════════════════════
 
-def run(tickers: List[str], days: int, out_dir: str, fold_size: int = 30):
+def run(tickers: List[str], days: int, out_dir: str, fold_size: int = 30, use_ctx: bool = True):
     out_path = Path(out_dir)
     out_path.mkdir(parents=True, exist_ok=True)
     fetcher    = EODHDFetcher()
@@ -631,6 +683,9 @@ def run(tickers: List[str], days: int, out_dir: str, fold_size: int = 30):
     end_dt   = datetime.now()
     start_dt = end_dt - timedelta(days=days)
 
+    ctx_fetcher = fetcher if (use_ctx and fetcher.api_key) else None
+    # ...
+    trade = run_session(ticker, sessions[fold["test_idx"]], fetcher=ctx_fetcher)
     for ticker in tickers:
         log.info(f"\n{'='*60}")
         log.info(f"  {ticker}  |  {start_dt.date()} → {end_dt.date()}")
@@ -710,6 +765,7 @@ def main():
     parser.add_argument("--out",     default="backtests/results", help="Output directory")
     parser.add_argument("--fold",    type=int, default=30, help="Walk-forward fold size in days (default: 30)")
     args = parser.parse_args()
+    parser.add_argument("--no-ctx", action="store_true",help="Disable pre-session context filter") run(..., use_ctx=not args.no_ctx)
     run([t.strip().upper() for t in args.tickers.split(",")], args.days, args.out, args.fold)
 
 
