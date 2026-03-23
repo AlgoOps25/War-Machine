@@ -872,8 +872,9 @@ def detect_fvg_after_break(bars, breakout_idx, direction, soft_fvg_pct=None):
       c1 = impulse body  (bars[i-1]) — must be directional
       c2 = reaction bar  (bars[i])
 
-    Supports hard gaps AND soft/partial FVGs within soft_fvg_pct tolerance
-    (required for liquid 1m ETF data where clean price gaps are rare).
+    Supports hard gaps AND soft/partial FVGs, but only if the overlap
+    is <= 40% of c1's body size (prevents sloppy candle overlap from
+    being misclassified as an FVG).
     """
     from utils import config
     min_pct      = getattr(config, 'FVG_MIN_SIZE_PCT', 0.0003)
@@ -881,28 +882,34 @@ def detect_fvg_after_break(bars, breakout_idx, direction, soft_fvg_pct=None):
 
     for i in range(breakout_idx + 3, min(len(bars), breakout_idx + 33)):
         c0 = bars[i - 2]
-        c1 = bars[i - 1]   # impulse candle — must be directional
+        c1 = bars[i - 1]
         c2 = bars[i]
 
         if direction == "bull":
-            if c1["close"] <= c1["open"]:   # c1 must be bullish
+            if c1["close"] <= c1["open"]:
                 continue
             gap = c2["low"] - c0["high"]
+            c1_body = abs(c1["close"] - c1["open"])
             if gap > 0 and (gap / c0["high"]) >= min_pct:
                 print(f"[FVG] BULL hard ${c0['high']:.2f}—${c2['low']:.2f}")
                 return c0["high"], c2["low"]
             if gap < 0 and abs(gap) / c0["high"] <= soft_fvg_pct:
+                if c1_body > 0 and abs(gap) > c1_body * 0.4:
+                    continue
                 print(f"[FVG] BULL soft ${c2['low']:.2f}—${c0['high']:.2f} (gap={gap:.4f})")
                 return c2["low"], c0["high"]
 
         elif direction == "bear":
-            if c1["close"] >= c1["open"]:   # c1 must be bearish
+            if c1["close"] >= c1["open"]:
                 continue
             gap = c0["low"] - c2["high"]
+            c1_body = abs(c1["close"] - c1["open"])
             if gap > 0 and (gap / c0["low"]) >= min_pct:
                 print(f"[FVG] BEAR hard ${c2['high']:.2f}—${c0['low']:.2f}")
                 return c2["high"], c0["low"]
             if gap < 0 and abs(gap) / c0["low"] <= soft_fvg_pct:
+                if c1_body > 0 and abs(gap) > c1_body * 0.4:
+                    continue
                 print(f"[FVG] BEAR soft ${c0['low']:.2f}—${c2['high']:.2f} (gap={gap:.4f})")
                 return c0["low"], c2["high"]
 
