@@ -87,37 +87,6 @@ except Exception as e:
     log.error(f"❌ Pipeline import failed: {e}")
     sys.exit(1)
 
-def detect_fvg_with_type(bars, breakout_idx, direction):
-    from utils import config
-    min_pct      = getattr(config, 'FVG_MIN_SIZE_PCT', 0.0003)
-    soft_fvg_pct = getattr(config, 'FVG_SOFT_PCT', 0.0015)
-    for i in range(breakout_idx + 3, min(len(bars), breakout_idx + 33)):
-        c0 = bars[i - 2]
-        c1 = bars[i - 1]
-        c2 = bars[i]
-        c1_body = abs(c1["close"] - c1["open"])
-        if direction == "bull":
-            if c1["close"] <= c1["open"]:
-                continue
-            gap = c2["low"] - c0["high"]
-            if gap > 0 and (gap / c0["high"]) >= min_pct:
-                return c0["high"], c2["low"], "hard"
-            if gap < 0 and abs(gap) / c0["high"] <= soft_fvg_pct:
-                if c1_body > 0 and abs(gap) > c1_body * 0.4:
-                    continue
-                return c2["low"], c0["high"], "soft"
-        elif direction == "bear":
-            if c1["close"] >= c1["open"]:
-                continue
-            gap = c0["low"] - c2["high"]
-            if gap > 0 and (gap / c0["low"]) >= min_pct:
-                return c2["high"], c0["low"], "hard"
-            if gap < 0 and abs(gap) / c0["low"] <= soft_fvg_pct:
-                if c1_body > 0 and abs(gap) > c1_body * 0.4:
-                    continue
-                return c0["low"], c2["high"], "soft"
-    return None, None, None
-
 try:
     from app.validation.cfw6_confirmation import grade_signal_with_confirmations
     GRADE_OK = True
@@ -626,8 +595,8 @@ def run_session(
                 return None
             grade = final_grade
             conf  = {"A+": 0.85, "A": 0.70, "A-": 0.55}.get(grade, 0.65)
-            if fvg_is_soft and grade == "A-":
-                log.info(f"  [FVG-SOFT-SKIP] {ticker} {session_date}: soft FVG rejected on A- grade")
+            if grade == "A-":
+                log.info(f"  [A-SKIP] {ticker} {session_date}: rejected on A- grade (0/3 confirmation)")
                 return None
         except Exception as _ge:
             log.info(f"  Grade error {session_date}: {_ge}")
