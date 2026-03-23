@@ -705,6 +705,7 @@ def run(tickers: List[str], days: int, out_dir: str, fold_size: int = 30, use_ct
 
         if folds:
             for fold in folds:
+                trade = run_session(ticker, sessions[fold["test_idx"]], fetcher=ctx_fetcher)
                 if trade:
                     ticker_trades.append(trade)
                     wf_fold_results.append({
@@ -762,7 +763,6 @@ def main():
     parser.add_argument("--no-ctx", action="store_true", help="Disable pre-session context filter")
     args = parser.parse_args()
     run([t.strip().upper() for t in args.tickers.split(",")], args.days, args.out, args.fold, use_ctx=not args.no_ctx)
-    run([t.strip().upper() for t in args.tickers.split(",")], args.days, args.out, args.fold)
 
 
 if __name__ == "__main__":
