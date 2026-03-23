@@ -125,6 +125,7 @@ CTX_ADX_MIN   = 18    # skip session if ADX below this (ranging)
 CTX_RSI_OB    = 74    # reject BULL if RSI >= this (overbought)
 CTX_RSI_OS    = 26    # reject BEAR if RSI <= this (oversold)
 CTX_EMA_ALIGN = True  # require close > EMA20 for BULL, < EMA20 for BEAR
+CTX_ATR_MIN = 0.50   # skip session if prior day ATR < $0.50 (too compressed for SPY/QQQ)
 
 # ═══════════════════════════════════════════════════════════════════════════
 # DATA FETCHING
@@ -244,6 +245,7 @@ class EODHDFetcher:
         ema20 = _fetch_indicator("ema", 20)
         adx   = _fetch_indicator("adx", 14)
         rsi   = _fetch_indicator("rsi", 14)
+        atr   = _fetch_indicator("atr", 14)
 
         prior_close = None
         try:
@@ -258,7 +260,7 @@ class EODHDFetcher:
         except Exception:
             pass
 
-        ctx = {"ema20": ema20, "adx": adx, "rsi": rsi,
+        ctx = {"ema20": ema20, "adx": adx, "rsi": rsi, "atr": atr,
             "prior_close": prior_close, "prior_date": str(prior_day)}
         self._ctx_cache[cache_key] = ctx
         return ctx
@@ -405,6 +407,10 @@ def run_session(
             if adx is not None and adx < CTX_ADX_MIN:
                 log.debug(f"  [CTX-SKIP] {ticker} {session_date}: ADX={adx:.1f} (ranging)")
                 return None
+            atr = ctx.get("atr")
+            if atr is not None and atr < CTX_ATR_MIN:
+                log.debug(f"  [CTX-SKIP] {ticker} {session_date}: ATR={atr:.2f} (compressed)")
+                return None
             ctx_rsi         = ctx.get("rsi")
             ctx_ema20       = ctx.get("ema20")
             ctx_prior_close = ctx.get("prior_close")
@@ -438,6 +444,21 @@ def run_session(
     rvol         = round(breakout_vol / (sum(prior_vols) / len(prior_vols)), 2) if prior_vols else 0.0
     if rvol < 0.5:
         return None
+
+    # ── Step 2c: Intraday EMA9 trend alignment ─────────────────────────────
+    closes = [b["close"] for b in bars[:breakout_idx + 1]]
+    if len(closes) >= 9:
+        k    = 2 / (9 + 1)
+        ema9 = closes[0]
+        for c in closes[1:]:
+            ema9 = c * k + ema9 * (1 - k)
+        breakout_price = bars[breakout_idx]["close"]
+        if direction == "bull" and breakout_price < ema9:
+            log.debug(f"  [EMA9-SKIP] {ticker} {session_date}: BULL breakout below intraday EMA9")
+            return None
+        if direction == "bear" and breakout_price > ema9:
+            log.debug(f"  [EMA9-SKIP] {ticker} {session_date}: BEAR breakout above intraday EMA9")
+            return None
 
     # RSI directional gate
     if ctx_rsi is not None:
