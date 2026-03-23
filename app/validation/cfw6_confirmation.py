@@ -256,13 +256,15 @@ def check_previous_day_levels(ticker: str, current_price: float, direction: str,
         return {"aligned": breaking_pdl, "level": "PDL", "level_price": pdl, "distance_pct": distance}
 
 
-def check_institutional_volume(bars, breakout_idx):
+def check_institutional_volume(bars, breakout_idx, aligned_so_far=0):
     lookback = min(breakout_idx, 10)
     if len(bars) < 3 or lookback < 3:
         return False
     avg_volume = sum(b["volume"] for b in bars[breakout_idx-lookback:breakout_idx]) / lookback
     breakout_volume = bars[breakout_idx]["volume"]
-    return breakout_volume >= avg_volume * 1.5
+    # Relax threshold when VWAP + PrevDay already aligned
+    threshold = 1.5 if aligned_so_far < 2 else 1.2
+    return breakout_volume >= avg_volume * threshold
 
 
 def grade_signal_with_confirmations(
