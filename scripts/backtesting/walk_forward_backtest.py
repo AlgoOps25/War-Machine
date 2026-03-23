@@ -528,7 +528,10 @@ def run_session(
                 log.info(f"  [FVG-SIZE-SKIP] {ticker} {session_date}: fvg_size={fvg_size:.4%} + or_range={or_range_pct:.4%} too tight")
                 return None
 
-    fvg_mid = (fvg_low + fvg_high) / 2.0
+        if fvg_low is not None and fvg_high is not None:
+            fvg_mid = (fvg_low + fvg_high) / 2.0
+        else:
+            fvg_mid = None
 
     # ── Step 5: Entry ──────────────────────────────────────────────────────
     entry_bar_idx = breakout_idx          # enter at breakout bar (NOT +1)
