@@ -157,7 +157,7 @@ MIN_OR_DOLLARS  = 0.50       # skip session if OR range < $2.00 absolute
 # Session-context filter thresholds
 CTX_ADX_MIN   = 13    # skip session if ADX below this (ranging)
 CTX_RSI_OB    = 74    # reject BULL if RSI >= this (overbought)
-CTX_RSI_OS    = 26    # reject BEAR if RSI <= this (oversold)
+CTX_RSI_OS    = 35    # reject BEAR if RSI <= this (oversold)
 CTX_EMA_ALIGN = True  # require close > EMA20 for BULL, < EMA20 for BEAR
 CTX_ATR_MIN = 0.50   # skip session if prior day ATR < $0.50 (too compressed for SPY/QQQ)
 
@@ -543,7 +543,7 @@ def run_session(
         if direction == "bull" and ctx_prior_close < ctx_ema20 and ema_gap_pct > 0.01 and not rsi_oversold:
             log.info(f"  [CTX-SKIP] {ticker} {session_date}: BULL close < EMA20 by {ema_gap_pct:.2%}")
             return None
-        if direction == "bear" and ctx_prior_close > ctx_ema20 and ema_gap_pct > 0.01 and not rsi_overbought:
+        if direction == "bear" and ctx_prior_close > ctx_ema20 and ema_gap_pct > 0.03 and not rsi_overbought:
             log.info(f"  [CTX-SKIP] {ticker} {session_date}: BEAR close > EMA20 by {ema_gap_pct:.2%}")
             return None
 
