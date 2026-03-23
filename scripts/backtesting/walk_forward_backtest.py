@@ -246,7 +246,7 @@ class EODHDFetcher:
         adx   = _fetch_indicator("adx", 14)
         rsi   = _fetch_indicator("rsi", 14)
         atr   = _fetch_indicator("atr", 14)
-
+        log.info(f"  [CTX-DEBUG] {ticker} {prior_day}: EMA20={ema20} ADX={adx} RSI={rsi} ATR={atr}")
         prior_close = None
         try:
             r = requests.get(
@@ -407,10 +407,10 @@ def run_session(
             if adx is not None and adx < CTX_ADX_MIN:
                 log.debug(f"  [CTX-SKIP] {ticker} {session_date}: ADX={adx:.1f} (ranging)")
                 return None
-            atr = ctx.get("atr")
-            if atr is not None and atr < CTX_ATR_MIN:
-                log.debug(f"  [CTX-SKIP] {ticker} {session_date}: ATR={atr:.2f} (compressed)")
-                return None
+            #atr = ctx.get("atr")
+            #if atr is not None and atr < CTX_ATR_MIN:
+                #log.debug(f"  [CTX-SKIP] {ticker} {session_date}: ATR={atr:.2f} (compressed)")
+                #return None
             ctx_rsi         = ctx.get("rsi")
             ctx_ema20       = ctx.get("ema20")
             ctx_prior_close = ctx.get("prior_close")
@@ -453,10 +453,11 @@ def run_session(
         for c in closes[1:]:
             ema9 = c * k + ema9 * (1 - k)
         breakout_price = bars[breakout_idx]["close"]
-        if direction == "bull" and breakout_price < ema9:
+        tolerance = ema9 * 0.0005   # must be 0.05% below/above to reject
+        if direction == "bull" and breakout_price < ema9 - tolerance:
             log.debug(f"  [EMA9-SKIP] {ticker} {session_date}: BULL breakout below intraday EMA9")
             return None
-        if direction == "bear" and breakout_price > ema9:
+        if direction == "bear" and breakout_price > ema9 + tolerance:
             log.debug(f"  [EMA9-SKIP] {ticker} {session_date}: BEAR breakout above intraday EMA9")
             return None
 
@@ -690,7 +691,7 @@ def run(tickers: List[str], days: int, out_dir: str, fold_size: int = 30, use_ct
     start_dt = end_dt - timedelta(days=days)
     ctx_fetcher = fetcher if (use_ctx and fetcher.api_key) else None
     if ctx_fetcher:
-        log.info("✅ Session context filter ENABLED (EMA20 / ADX / RSI)")
+        log.info("✅ Session context filter ENABLED (EMA20 / ADX / RSI / ATR + intraday EMA9)")
     else:
         log.warning("⚠️  Session context filter DISABLED")
     for ticker in tickers:
