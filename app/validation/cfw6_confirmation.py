@@ -256,14 +256,15 @@ def check_previous_day_levels(ticker: str, current_price: float, direction: str,
         return {"aligned": breaking_pdl, "level": "PDL", "level_price": pdl, "distance_pct": distance}
 
 
-def check_institutional_volume(bars: List[Dict], breakout_idx: int) -> bool:
-    """Detect institutional block trades near breakout."""
+def check_institutional_volume(bars, breakout_idx, aligned_so_far=0):
     lookback = min(breakout_idx, 10)
     if len(bars) < 3 or lookback < 3:
         return False
-    avg_volume      = sum(b["volume"] for b in bars[breakout_idx-lookback:breakout_idx]) / lookback
+    avg_volume = sum(b["volume"] for b in bars[breakout_idx-lookback:breakout_idx]) / lookback
     breakout_volume = bars[breakout_idx]["volume"]
-    return breakout_volume >= avg_volume * 1.5
+    # Relax threshold when VWAP + PrevDay already aligned
+    threshold = 1.5 if aligned_so_far < 2 else 1.2
+    return breakout_volume >= avg_volume * threshold
 
 
 def grade_signal_with_confirmations(
@@ -292,8 +293,9 @@ def grade_signal_with_confirmations(
     logger.info(f"[CONFIRM] Checking confirmation layers for {ticker}...")
 
     vwap_ok, vwap_reason = passes_vwap_gate(bars, direction, current_price)
-    pd_result            = check_previous_day_levels(ticker, current_price, direction, session_date=session_date)
-    inst_ok              = check_institutional_volume(bars, breakout_idx)
+    pd_result = check_previous_day_levels(ticker, current_price, direction, session_date=session_date)
+    aligned_so_far = sum([vwap_ok, pd_result["aligned"]])
+    inst_ok = check_institutional_volume(bars, breakout_idx, aligned_so_far)
 
     aligned_count = sum([vwap_ok, pd_result["aligned"], inst_ok])
 

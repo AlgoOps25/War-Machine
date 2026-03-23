@@ -598,6 +598,12 @@ def run_session(
             if grade == "A-":
                 log.info(f"  [A-SKIP] {ticker} {session_date}: rejected on A- grade (0/3 confirmation)")
                 return None
+            # Require institutional confirmation — blocks high-conviction false breakouts
+            confirmations = graded.get("confirmations", {})
+            inst_ok = confirmations.get("institutional", False)
+            if not inst_ok and grade != "A+":
+                log.info(f"  [INST-SKIP] {ticker} {session_date}: institutional FAIL, grade={grade}")
+                return None
         except Exception as _ge:
             log.info(f"  Grade error {session_date}: {_ge}")
 
