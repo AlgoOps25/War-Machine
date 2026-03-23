@@ -863,25 +863,42 @@ def detect_breakout_after_or(bars, or_high, or_low):
     return None, None
 
 
-def detect_fvg_after_break(bars, breakout_idx, direction):
-    """Find first FVG after a breakout. Returns (fvg_low, fvg_high) or (None, None)."""
+def detect_fvg_after_break(bars, breakout_idx, direction, soft_fvg_pct=None):
+    """
+    Textbook SMC FVG: 3-candle pattern after BOS.
+    Supports hard gaps AND soft/partial FVGs for liquid 1m ETF data.
+    Searches up to 30 bars after the breakout candle only.
+    """
     from utils import config
-    min_pct = getattr(config, 'FVG_MIN_PCT', 0.001)
-    search_bars = bars[breakout_idx:]
+    min_pct      = getattr(config, 'FVG_MIN_SIZE_PCT', 0.0003)
+    soft_fvg_pct = soft_fvg_pct or getattr(config, 'FVG_SOFT_PCT', 0.0015)
 
-    for i in range(2, len(search_bars)):
-        c0 = search_bars[i - 2]
-        c2 = search_bars[i]
+    for i in range(breakout_idx + 3, min(len(bars), breakout_idx + 33)):
+        c0 = bars[i - 2]
+        c1 = bars[i - 1]   # impulse candle — must be directional
+        c2 = bars[i]
 
         if direction == "bull":
+            if c1["close"] <= c1["open"]:   # c1 must be bullish
+                continue
             gap = c2["low"] - c0["high"]
             if gap > 0 and (gap / c0["high"]) >= min_pct:
+                logger.info(f"[FVG] BULL hard ${c0['high']:.2f}—${c2['low']:.2f}")
                 return c0["high"], c2["low"]
+            if gap < 0 and abs(gap) / c0["high"] <= soft_fvg_pct:
+                logger.info(f"[FVG] BULL soft ${c2['low']:.2f}—${c0['high']:.2f} (gap={gap:.4f})")
+                return c2["low"], c0["high"]
 
         elif direction == "bear":
+            if c1["close"] >= c1["open"]:   # c1 must be bearish
+                continue
             gap = c0["low"] - c2["high"]
             if gap > 0 and (gap / c0["low"]) >= min_pct:
+                logger.info(f"[FVG] BEAR hard ${c2['high']:.2f}—${c0['low']:.2f}")
                 return c2["high"], c0["low"]
+            if gap < 0 and abs(gap) / c0["low"] <= soft_fvg_pct:
+                logger.info(f"[FVG] BEAR soft ${c0['low']:.2f}—${c2['high']:.2f} (gap={gap:.4f})")
+                return c0["low"], c2["high"]
 
     return None, None
 

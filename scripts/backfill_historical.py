@@ -3,9 +3,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(r'C:\Dev\War-Machine')))
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
-load_dotenv(Path(r'C:\Dev\War-Machine\.env'))
+load_dotenv(Path(r'C:\Dev\War-Machine\.env'), override=True)
+
 import os, requests
 from app.data.db_connection import get_conn, return_conn
+from psycopg2.extras import execute_values
 
 TICKERS  = ['IWM']
 API_KEY  = os.getenv('EODHD_API_KEY')
@@ -20,25 +22,27 @@ for ticker in TICKERS:
     if resp.status_code != 200 or not resp.text.strip():
         print(f'{ticker}: ERROR - empty or bad response')
         continue
+
     bars = resp.json()
+    if not isinstance(bars, list) or not bars:
+        print(f'{ticker}: ERROR - unexpected response')
+        continue
+
+    rows = [
+        (ticker, b['datetime'], b['open'], b['high'], b['low'], b['close'], int(b.get('volume') or 0))
+        for b in bars
+        if all([b.get('open'), b.get('high'), b.get('low'), b.get('close')])
+    ]
 
     conn = get_conn()
     cur  = conn.cursor()
-    inserted = skipped = 0
-
-    for b in bars:
-        if not all([b.get('open'), b.get('high'), b.get('low'), b.get('close')]):
-            skipped += 1
-            continue
-        cur.execute(
-            "INSERT INTO candles_1m (ticker, datetime, open, high, low, close, volume) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT (ticker, datetime) DO NOTHING",
-            (ticker, b['datetime'], b['open'], b['high'], b['low'], b['close'], int(b.get('volume') or 0))
-        )
-        inserted += 1
-
+    execute_values(cur,
+        "INSERT INTO intraday_bars (ticker, datetime, open, high, low, close, volume) "
+        "VALUES %s ON CONFLICT (ticker, datetime) DO NOTHING",
+        rows
+    )
     conn.commit()
     return_conn(conn)
-    print(f'{ticker}: {inserted} inserted, {skipped} skipped', flush=True)
+    print(f'{ticker}: {len(rows)} inserted (bulk), skipped={len(bars)-len(rows)}', flush=True)
 
 print('Done.')
