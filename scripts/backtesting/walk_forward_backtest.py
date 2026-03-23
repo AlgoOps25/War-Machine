@@ -36,7 +36,6 @@ from pathlib import Path
 from typing import List, Dict, Optional, Tuple
 from collections import defaultdict
 from zoneinfo import ZoneInfo
-from pathlib import Path
 from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 import requests
@@ -433,8 +432,6 @@ def run_session(
         log.debug(f"  Late breakout skip: idx {breakout_idx} > {MAX_BREAKOUT_IDX}")
         return None
 
-    breakout_price = bars[breakout_idx]["close"]
-
     # ── Step 2b: Relative volume ────────────────────────────────────────────
     breakout_vol = bars[breakout_idx].get("volume", 0)
     prior_vols   = [b["volume"] for b in bars[:breakout_idx] if b["volume"] > 0]
@@ -469,10 +466,8 @@ def run_session(
         return None
 
     fvg_size = (fvg_high - fvg_low) / fvg_low if fvg_low > 0 else 0.0
-    if fvg_size < FVG_MIN_SIZE_PCT_5M:
-        if fvg_size > 0.0015:
-            return None
-        if or_range_pct < 0.0035:
+    if fvg_size < 0.0015:          # FVG too small to be meaningful
+        if or_range_pct < 0.0035:  # AND OR range also too tight — skip
             return None
 
     fvg_mid = (fvg_low + fvg_high) / 2.0
@@ -492,11 +487,6 @@ def run_session(
     conf  = 0.65
     if GRADE_OK:
         try:
-            signal = {
-                "ticker": ticker, "direction": direction,
-                "confidence": conf, "or_high": or_high, "or_low": or_low,
-                "fvg_mid": fvg_mid, "fvg_size_pct": fvg_size,
-            }
             graded = grade_signal_with_confirmations(
                 ticker, direction, bars, entry_price, breakout_idx, grade,
                 session_date=str(session_date)
