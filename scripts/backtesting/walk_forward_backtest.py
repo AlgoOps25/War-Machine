@@ -160,7 +160,7 @@ CTX_RSI_OB    = 74    # reject BULL if RSI >= this (overbought)
 CTX_RSI_OS    = 35    # reject BEAR if RSI <= this (oversold)
 CTX_EMA_ALIGN = True  # require close > EMA20 for BULL, < EMA20 for BEAR
 CTX_ATR_MIN = 0.50   # skip session if prior day ATR < $0.50 (too compressed for SPY/QQQ)
-
+BEAR_DISABLED_TICKERS = {"TSLA", "AAPL", "GOOGL"}
 # ═══════════════════════════════════════════════════════════════════════════
 # DATA FETCHING
 # ═══════════════════════════════════════════════════════════════════════════
@@ -498,9 +498,13 @@ def run_session(
         return None
     if direction is None or breakout_idx is None:
         return None
+    if direction == "bear" and ticker in BEAR_DISABLED_TICKERS:
+        log.info(f"  [BEAR-SKIP] {ticker} {session_date}: bear signals disabled for this ticker")
+        return None
     if breakout_idx > MAX_BREAKOUT_IDX:
         log.info(f"  Late breakout skip: idx {breakout_idx} > {MAX_BREAKOUT_IDX}")
         return None
+
 
     # ── Step 2b: Relative volume ────────────────────────────────────────────
     breakout_vol = bars[breakout_idx].get("volume", 0)
