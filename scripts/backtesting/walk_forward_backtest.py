@@ -121,7 +121,7 @@ MAX_BREAKOUT_IDX = 60        # first hour on 1m = bars 0-60 (9:30-10:30 AM)
 MAX_RISK        = 3.00        # skip trade if OR stop > $3.00 from entry
 MIN_OR_DOLLARS  = 0.50       # skip session if OR range < $2.00 absolute
 # Session-context filter thresholds
-CTX_ADX_MIN   = 18    # skip session if ADX below this (ranging)
+CTX_ADX_MIN   = 13    # skip session if ADX below this (ranging)
 CTX_RSI_OB    = 74    # reject BULL if RSI >= this (overbought)
 CTX_RSI_OS    = 26    # reject BEAR if RSI <= this (oversold)
 CTX_EMA_ALIGN = True  # require close > EMA20 for BULL, < EMA20 for BEAR
@@ -135,7 +135,7 @@ class EODHDFetcher:
     '''Fetch 1m intraday bars from EODHD (cache-first via PostgreSQL if available).'''
 
     BASE_URL = "https://eodhd.com/api/intraday/{ticker}.US"
-    TECH_URL = "https://eodhd.com/api/technicals/{ticker}.US"
+    TECH_URL = "https://eodhd.com/api/technical/{ticker}.US"
 
     def __init__(self):
         self.api_key = os.getenv("EODHD_API_KEY", "")
@@ -173,7 +173,7 @@ class EODHDFetcher:
             log.info(f"  cache: {len(df)} bars for {ticker}")
             return df
         except Exception as e:
-            log.debug(f"Cache miss ({ticker}): {e}")
+            log.info(f"Cache miss ({ticker}): {e}")
             return pd.DataFrame()
 
     def _from_eodhd(self, ticker: str, start: datetime, end: datetime) -> pd.DataFrame:
@@ -214,6 +214,25 @@ class EODHDFetcher:
         if cache_key in self._ctx_cache:
             return self._ctx_cache[cache_key]
 
+        # ── Disk cache ────────────────────────────────────────────────────
+        cache_dir  = Path(__file__).resolve().parents[2] / "output" / "ctx_cache"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_file = cache_dir / f"{ticker}_ctx.json"
+
+        disk_cache: Dict = {}
+        if cache_file.exists():
+            try:
+                disk_cache = json.loads(cache_file.read_text())
+            except Exception:
+                disk_cache = {}
+
+        date_key = str(session_date)
+        if date_key in disk_cache:
+            ctx = disk_cache[date_key]
+            self._ctx_cache[cache_key] = ctx
+            return ctx
+        # ─────────────────────────────────────────────────────────────────
+
         prior_day = session_date - timedelta(days=1)
         if prior_day.weekday() == 5:
             prior_day -= timedelta(days=1)
@@ -236,6 +255,7 @@ class EODHDFetcher:
                 if not data:
                     return None
                 last = data[-1]
+                log.info(f"  [CTX-API] {function} raw last record: {last}")
                 if function == "adx":
                     return float(last.get("adx", 0) or 0)
                 return float(last.get("value", 0) or 0)
@@ -247,6 +267,7 @@ class EODHDFetcher:
         rsi   = _fetch_indicator("rsi", 14)
         atr   = _fetch_indicator("atr", 14)
         log.info(f"  [CTX-DEBUG] {ticker} {prior_day}: EMA20={ema20} ADX={adx} RSI={rsi} ATR={atr}")
+
         prior_close = None
         try:
             r = requests.get(
@@ -261,7 +282,16 @@ class EODHDFetcher:
             pass
 
         ctx = {"ema20": ema20, "adx": adx, "rsi": rsi, "atr": atr,
-            "prior_close": prior_close, "prior_date": str(prior_day)}
+                "prior_close": prior_close, "prior_date": str(prior_day)}
+
+        # ── Write back to disk cache ──────────────────────────────────────
+        disk_cache[date_key] = ctx
+        try:
+            cache_file.write_text(json.dumps(disk_cache, indent=2))
+        except Exception:
+            pass
+        # ─────────────────────────────────────────────────────────────────
+
         self._ctx_cache[cache_key] = ctx
         return ctx
 
@@ -405,11 +435,11 @@ def run_session(
         if ctx is not None:
             adx = ctx.get("adx")
             if adx is not None and adx < CTX_ADX_MIN:
-                log.debug(f"  [CTX-SKIP] {ticker} {session_date}: ADX={adx:.1f} (ranging)")
+                log.info(f"  [CTX-SKIP] {ticker} {session_date}: ADX={adx:.1f} (ranging)")
                 return None
             #atr = ctx.get("atr")
             #if atr is not None and atr < CTX_ATR_MIN:
-                #log.debug(f"  [CTX-SKIP] {ticker} {session_date}: ATR={atr:.2f} (compressed)")
+                #log.info(f"  [CTX-SKIP] {ticker} {session_date}: ATR={atr:.2f} (compressed)")
                 #return None
             ctx_rsi         = ctx.get("rsi")
             ctx_ema20       = ctx.get("ema20")
@@ -430,12 +460,12 @@ def run_session(
     try:
         direction, breakout_idx = detect_breakout_after_or(bars, or_high, or_low)
     except Exception as e:
-        log.debug(f"  Breakout failed {session_date}: {e}")
+        log.info(f"  Breakout failed {session_date}: {e}")
         return None
     if direction is None or breakout_idx is None:
         return None
     if breakout_idx > MAX_BREAKOUT_IDX:
-        log.debug(f"  Late breakout skip: idx {breakout_idx} > {MAX_BREAKOUT_IDX}")
+        log.info(f"  Late breakout skip: idx {breakout_idx} > {MAX_BREAKOUT_IDX}")
         return None
 
     # ── Step 2b: Relative volume ────────────────────────────────────────────
@@ -443,6 +473,7 @@ def run_session(
     prior_vols   = [b["volume"] for b in bars[:breakout_idx] if b["volume"] > 0]
     rvol         = round(breakout_vol / (sum(prior_vols) / len(prior_vols)), 2) if prior_vols else 0.0
     if rvol < 0.5:
+        log.info(f"  [RVOL-SKIP] {ticker} {session_date}: rvol={rvol} < 0.5")
         return None
 
     # ── Step 2c: Intraday EMA9 trend alignment ─────────────────────────────
@@ -455,42 +486,47 @@ def run_session(
         breakout_price = bars[breakout_idx]["close"]
         tolerance = ema9 * 0.0005   # must be 0.05% below/above to reject
         if direction == "bull" and breakout_price < ema9 - tolerance:
-            log.debug(f"  [EMA9-SKIP] {ticker} {session_date}: BULL breakout below intraday EMA9")
+            log.info(f"  [EMA9-SKIP] {ticker} {session_date}: BULL breakout below intraday EMA9")
             return None
         if direction == "bear" and breakout_price > ema9 + tolerance:
-            log.debug(f"  [EMA9-SKIP] {ticker} {session_date}: BEAR breakout above intraday EMA9")
+            log.info(f"  [EMA9-SKIP] {ticker} {session_date}: BEAR breakout above intraday EMA9")
             return None
 
     # RSI directional gate
     if ctx_rsi is not None:
         if direction == "bull" and ctx_rsi >= CTX_RSI_OB:
-            log.debug(f"  [CTX-SKIP] {ticker} {session_date}: BULL RSI={ctx_rsi:.1f} overbought")
+            log.info(f"  [CTX-SKIP] {ticker} {session_date}: BULL RSI={ctx_rsi:.1f} overbought")
             return None
         if direction == "bear" and ctx_rsi <= CTX_RSI_OS:
-            log.debug(f"  [CTX-SKIP] {ticker} {session_date}: BEAR RSI={ctx_rsi:.1f} oversold")
+            log.info(f"  [CTX-SKIP] {ticker} {session_date}: BEAR RSI={ctx_rsi:.1f} oversold")
             return None
 
     # EMA20 trend alignment gate
     if CTX_EMA_ALIGN and ctx_ema20 and ctx_prior_close:
-        if direction == "bull" and ctx_prior_close < ctx_ema20:
-            log.debug(f"  [CTX-SKIP] {ticker} {session_date}: BULL close < EMA20")
+        ema_gap_pct = abs(ctx_prior_close - ctx_ema20) / ctx_ema20
+        rsi_oversold = ctx_rsi is not None and ctx_rsi < 35
+        rsi_overbought = ctx_rsi is not None and ctx_rsi > 65
+        if direction == "bull" and ctx_prior_close < ctx_ema20 and ema_gap_pct > 0.01 and not rsi_oversold:
+            log.info(f"  [CTX-SKIP] {ticker} {session_date}: BULL close < EMA20 by {ema_gap_pct:.2%}")
             return None
-        if direction == "bear" and ctx_prior_close > ctx_ema20:
-            log.debug(f"  [CTX-SKIP] {ticker} {session_date}: BEAR close > EMA20")
+        if direction == "bear" and ctx_prior_close > ctx_ema20 and ema_gap_pct > 0.01 and not rsi_overbought:
+            log.info(f"  [CTX-SKIP] {ticker} {session_date}: BEAR close > EMA20 by {ema_gap_pct:.2%}")
             return None
-    # ── Step 3: FVG after breakout ─────────────────────────────────────────
-    try:
-        fvg_low, fvg_high = detect_fvg_after_break(bars, breakout_idx, direction)
-    except Exception as e:
-        log.debug(f"  FVG failed {session_date}: {e}")
-        return None
-    if fvg_low is None or fvg_high is None:
-        return None
+        # ── Step 3: FVG after breakout ─────────────────────────────────────────
+        try:
+            fvg_low, fvg_high = detect_fvg_after_break(bars, breakout_idx, direction)
+        except Exception as e:
+            log.info(f"  FVG failed {session_date}: {e}")
+            return None
+        if fvg_low is None or fvg_high is None:
+            log.info(f"  [FVG-SKIP] {ticker} {session_date}: no FVG found after breakout")
+            return None
 
-    fvg_size = (fvg_high - fvg_low) / fvg_low if fvg_low > 0 else 0.0
-    if fvg_size < 0.0015:          # FVG too small to be meaningful
-        if or_range_pct < 0.0035:  # AND OR range also too tight — skip
-            return None
+        fvg_size = (fvg_high - fvg_low) / fvg_low if fvg_low > 0 else 0.0
+        if fvg_size < 0.0015:
+            if or_range_pct < 0.0035:
+                log.info(f"  [FVG-SIZE-SKIP] {ticker} {session_date}: fvg_size={fvg_size:.4%} + or_range={or_range_pct:.4%} too tight")
+                return None
 
     fvg_mid = (fvg_low + fvg_high) / 2.0
 
@@ -498,10 +534,12 @@ def run_session(
     entry_bar_idx = breakout_idx          # enter at breakout bar (NOT +1)
     entry_price   = fvg_mid               # FVG midpoint as entry
     if entry_bar_idx >= len(bars) - 1:
+        log.info(f"  [ENTRY-SKIP] {ticker} {session_date}: breakout at last bar")
         return None
     entry_t    = bars[entry_bar_idx]["datetime"]
     entry_mins = entry_t.hour * 60 + entry_t.minute
     if entry_mins == 600 or 620 <= entry_mins <= 630:
+        log.info(f"  [TIME-SKIP] {ticker} {session_date}: entry at {entry_t.strftime('%H:%M')} blocked")
         return None
 
     # ── Step 6: Grade ────────────────────────────────────────────────────────────
@@ -511,16 +549,16 @@ def run_session(
         try:
             graded = grade_signal_with_confirmations(
                 ticker, direction, bars, entry_price, breakout_idx, grade,
-                session_date=str(session_date)
+                session_date=session_date  # pass as date object, not string
             )
             final_grade = graded.get("final_grade", "A")
             if final_grade == "reject":
-                log.debug(f"  Grade REJECT {session_date}: 0/3 confirmations")
+                log.info(f"  [GRADE-SKIP] {session_date}: 0/3 confirmations")
                 return None
             grade = final_grade
             conf  = {"A+": 0.85, "A": 0.70, "A-": 0.55}.get(grade, 0.65)
         except Exception as _ge:
-            log.debug(f"  Grade error {session_date}: {_ge}")
+            log.info(f"  Grade error {session_date}: {_ge}")
 
     # ── Step 7: Stop & targets ─────────────────────────────────────────────
     try:
@@ -528,7 +566,7 @@ def run_session(
             bars, direction, or_high, or_low, entry_price, grade=grade
         )
     except Exception as e:
-        log.debug(f"  Levels failed {session_date}: {e}")
+        log.info(f"  Levels failed {session_date}: {e}")
         return None
     if stop is None or t1 is None or t2 is None:
         return None
@@ -549,6 +587,7 @@ def run_session(
 
     MIN_RISK = {"AAPL": 0.60, "NVDA": 0.60}.get(ticker, 0.25)
     if risk < MIN_RISK:
+        log.info(f"  [RISK-SKIP] {ticker} {session_date}: risk=${risk:.2f} < MIN_RISK=${MIN_RISK}")
         return None
 
     # T1 = 1.25R (trail stop to BE on hit), T2 = 2.0R (full exit)
