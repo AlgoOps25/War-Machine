@@ -502,16 +502,17 @@ def run_session(
             return None
 
     # EMA20 trend alignment gate
-    if CTX_EMA_ALIGN and ctx_ema20 and ctx_prior_close:
-        ema_gap_pct = abs(ctx_prior_close - ctx_ema20) / ctx_ema20
-        rsi_oversold = ctx_rsi is not None and ctx_rsi < 35
-        rsi_overbought = ctx_rsi is not None and ctx_rsi > 65
-        if direction == "bull" and ctx_prior_close < ctx_ema20 and ema_gap_pct > 0.01 and not rsi_oversold:
-            log.info(f"  [CTX-SKIP] {ticker} {session_date}: BULL close < EMA20 by {ema_gap_pct:.2%}")
-            return None
-        if direction == "bear" and ctx_prior_close > ctx_ema20 and ema_gap_pct > 0.01 and not rsi_overbought:
-            log.info(f"  [CTX-SKIP] {ticker} {session_date}: BEAR close > EMA20 by {ema_gap_pct:.2%}")
-            return None
+        if CTX_EMA_ALIGN and ctx_ema20 and ctx_prior_close:
+            ema_gap_pct = abs(ctx_prior_close - ctx_ema20) / ctx_ema20
+            rsi_oversold = ctx_rsi is not None and ctx_rsi < 35
+            rsi_overbought = ctx_rsi is not None and ctx_rsi > 65
+            if direction == "bull" and ctx_prior_close < ctx_ema20 and ema_gap_pct > 0.01 and not rsi_oversold:
+                log.info(f"  [CTX-SKIP] {ticker} {session_date}: BULL close < EMA20 by {ema_gap_pct:.2%}")
+                return None
+            if direction == "bear" and ctx_prior_close > ctx_ema20 and ema_gap_pct > 0.01 and not rsi_overbought:
+                log.info(f"  [CTX-SKIP] {ticker} {session_date}: BEAR close > EMA20 by {ema_gap_pct:.2%}")
+                return None
+
         # ── Step 3: FVG after breakout ─────────────────────────────────────────
         try:
             fvg_low, fvg_high = detect_fvg_after_break(bars, breakout_idx, direction)
@@ -528,10 +529,9 @@ def run_session(
                 log.info(f"  [FVG-SIZE-SKIP] {ticker} {session_date}: fvg_size={fvg_size:.4%} + or_range={or_range_pct:.4%} too tight")
                 return None
 
-        if fvg_low is not None and fvg_high is not None:
-            fvg_mid = (fvg_low + fvg_high) / 2.0
-        else:
-            fvg_mid = None
+        fvg_mid = (fvg_low + fvg_high) / 2.0
+    else:
+        fvg_mid = None
 
     # ── Step 5: Entry ──────────────────────────────────────────────────────
     entry_bar_idx = breakout_idx          # enter at breakout bar (NOT +1)
