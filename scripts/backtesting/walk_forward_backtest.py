@@ -678,6 +678,10 @@ def run(tickers: List[str], days: int, out_dir: str, fold_size: int = 30, use_ct
     end_dt   = datetime.now()
     start_dt = end_dt - timedelta(days=days)
     ctx_fetcher = fetcher if (use_ctx and fetcher.api_key) else None
+    if ctx_fetcher:
+        log.info("✅ Session context filter ENABLED (EMA20 / ADX / RSI)")
+    else:
+        log.warning("⚠️  Session context filter DISABLED")
     for ticker in tickers:
         log.info(f"\n{'='*60}")
         log.info(f"  {ticker}  |  {start_dt.date()} → {end_dt.date()}")
@@ -701,7 +705,6 @@ def run(tickers: List[str], days: int, out_dir: str, fold_size: int = 30, use_ct
 
         if folds:
             for fold in folds:
-                trade = run_session(ticker, sessions[fold["test_idx"]], fetcher=ctx_fetcher)
                 if trade:
                     ticker_trades.append(trade)
                     wf_fold_results.append({
