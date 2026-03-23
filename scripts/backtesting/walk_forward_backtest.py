@@ -524,6 +524,9 @@ def run_session(
         log.info(f"  [FVG-SKIP] {ticker} {session_date}: no FVG found after breakout")
         return None
 
+    # Block soft FVG entries on A- grade (0/3 confirmation alignment)
+    fvg_is_soft = fvg_low > fvg_high  # soft FVG returns inverted zone
+
     fvg_size = (fvg_high - fvg_low) / fvg_low if fvg_low > 0 else 0.0
     if fvg_size < 0.0008:
         if or_range_pct < 0.0020:
@@ -559,6 +562,9 @@ def run_session(
                 return None
             grade = final_grade
             conf  = {"A+": 0.85, "A": 0.70, "A-": 0.55}.get(grade, 0.65)
+            if fvg_is_soft and grade == "A-":
+                log.info(f"  [FVG-SOFT-SKIP] {ticker} {session_date}: soft FVG rejected on A- grade")
+                return None
         except Exception as _ge:
             log.info(f"  Grade error {session_date}: {_ge}")
 
