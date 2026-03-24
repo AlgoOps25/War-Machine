@@ -59,6 +59,8 @@ DBPATH = DB_PATH  # Alias used by WatchlistFunnel / VolumeAnalyzer
 MIN_OR_RANGE_PCT = 0.030          # default / BULL
 MIN_OR_RANGE_PCT_BEAR = 0.027     # BEAR regime
 MIN_OR_RANGE_PCT_STRONG_BEAR = 0.025  # STRONG_BEAR regime
+OR_RANGE_MIN_PCT = 0.2   # keep — has zero effect but documents intent
+OR_RANGE_MAX_PCT = 99.0  # was 3.0 — remove the cap
 
 # ── A1: VIX-Scaled OR Threshold ──────────────────────────────────────────────────────────────
 VIX_OR_THRESHOLDS = [
@@ -164,9 +166,9 @@ CONFIRMATION_TIMEOUT_BARS = 5
 # Higher confidence scores → MORE losses. Confidence scoring must be audited.
 # These floors may be over-filtering good setups until confidence is fixed.
 # See: docs/BACKTEST_INTELLIGENCE.md — Feature Significance section.
-MIN_CONFIDENCE_OR = 0.75
-MIN_CONFIDENCE_INTRADAY = 0.70
-CONFIDENCE_ABSOLUTE_FLOOR = 0.65
+MIN_CONFIDENCE_OR = 0.00
+MIN_CONFIDENCE_INTRADAY = 0.00
+CONFIDENCE_ABSOLUTE_FLOOR = 0.00
 
 MIN_CONFIDENCE_BY_GRADE = {
     "A+": 0.75,
