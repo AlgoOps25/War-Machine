@@ -179,6 +179,7 @@ MIN_CONFIDENCE_BY_GRADE = {
     "C":  0.40,
     "C-": 0.35,
 }
+
 # Phase 1.37: Per-grade confidence ceiling — prevents multiplier stack inflation
 # Backtest finding: confidence is inversely correlated with wins (p=0.006)
 CONFIDENCE_CAP_BY_GRADE = {
@@ -193,11 +194,13 @@ CONFIDENCE_CAP_BY_GRADE = {
     "C-": 0.40,
 }
 
-# Phase 1.37: T1/T2 multipliers — tightened from 2.0R/3.5R
-# Backtest finding: 62% of trades exit EOD without hitting T1
-# Tighter T1 (1.3R) increases hit rate on intraday momentum moves
-T1_MULTIPLIER = 1.3   # was 2.0R
-T2_MULTIPLIER = 2.5   # was 3.5R
+# Phase 1.37b: T1/T2 multipliers — grid search optimized (2026-03-24)
+# Grid search over 107 trades (2,512 parameter combinations):
+#   T1=2.0R → Total R=14.1 on RVOL>=1.2 cohort (59.6% WR, avg R=0.300)
+#   T1=1.3R → Total R=11.9 on same cohort — losing trades run through 1.3 anyway
+#   T2: only 1 T2 hit in entire dataset — insensitive, kept at 3.5R for future runners
+T1_MULTIPLIER = 2.0   # grid search optimal (was 1.3 in Phase 1.37)
+T2_MULTIPLIER = 3.5   # restored — no T2 sensitivity in current dataset
 
 MIN_PRICE = 5.0
 MAX_PRICE = 500.0
@@ -208,11 +211,14 @@ MIN_VOLUME = 1_000_000
 #                       2.0x is intentionally strict — high-activity stocks only
 #
 # RVOL_SIGNAL_GATE    : signal-level gate (applied per-signal in scanner.py)
-#                       1.28 derived from backtest analysis (2026-03-24):
-#                       rvol >= 1.276 → WR 48.6% → 60.5% (+11.9pp, 43 trades)
+#                       1.2x from grid search (2026-03-24, 107 trades):
+#                         RVOL >= 1.2 → 59.6% WR, avg R=0.300, Total R=14.1
+#                         RVOL <  1.2 → 40.0% WR, avg R=-0.101 (destroys P&L)
+#                       Note: 1.0x maximizes Total R (15.8) with 62 trades;
+#                       1.2x maximizes avg R and WR with 47 higher-quality trades.
 #                       See: docs/BACKTEST_INTELLIGENCE.md
 MIN_RELATIVE_VOLUME = 2.0
-RVOL_SIGNAL_GATE    = 1.28   # hard gate: skip signal if rvol < this threshold
+RVOL_SIGNAL_GATE    = 1.2   # grid search optimal (was 1.28 — Phase 1.37b)
 
 MIN_ATR_MULTIPLIER = 4.0
 
@@ -403,7 +409,9 @@ if __name__ == "__main__":
     logger.info(f"  DTE Range   : {MIN_DTE} – {MAX_DTE} (default ideal {IDEAL_DTE})")
     logger.info(f"\nRVOL Gates:")
     logger.info(f"  Screener gate  : {MIN_RELATIVE_VOLUME}x (pre-market scan)")
-    logger.info(f"  Signal gate    : {RVOL_SIGNAL_GATE}x (per-signal, from backtest 2026-03-24)")
+    logger.info(f"  Signal gate    : {RVOL_SIGNAL_GATE}x (grid search optimal, 2026-03-24)")
+    logger.info(f"\nTarget Multipliers (Phase 1.37b):")
+    logger.info(f"  T1: {T1_MULTIPLIER}R | T2: {T2_MULTIPLIER}R")
     logger.info(f"\nAdvanced Features:")
     logger.info(f"  Validator: {'Enabled' if VALIDATOR_ENABLED else 'Disabled'}")
     logger.info(f"  Options Filter: {'Enabled (' + OPTIONS_FILTER_MODE + ')' if OPTIONS_FILTER_ENABLED else 'Disabled'}")
