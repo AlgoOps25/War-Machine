@@ -51,6 +51,11 @@ EODHD_BASE_URL = "https://eodhd.com/api/intraday"
 TECH_URL       = "https://eodhd.com/api/technical/{ticker}.US"
 EOD_URL        = "https://eodhd.com/api/eod/{ticker}.US"
 
+# EODHD technical endpoint requires prior history to warm up indicators.
+# We fetch this many extra calendar days before from_date, then discard
+# any rows outside the originally requested range before storing.
+INDICATOR_WARMUP_DAYS = 60
+
 # Default ticker list (original)
 DEFAULT_TICKERS = [
     "AAPL", "NVDA", "TSLA", "SPY", "QQQ",
@@ -137,12 +142,22 @@ def cache_bars_to_database(ticker: str, bars: List[Dict]):
 
 def _fetch_indicator_series(ticker: str, function: str, period: int,
                              from_date: str, to_date: str) -> Dict[str, float]:
-    """Fetch daily indicator values from EODHD. Returns {date_str: value}."""
+    """Fetch daily indicator values from EODHD.
+
+    Sends a wider warmup window (INDICATOR_WARMUP_DAYS extra) so EODHD can
+    compute the indicator for the first requested date. Returns {date_str: value}
+    for ALL dates returned (caller filters to desired range).
+    """
+    # Extend from_date backwards by INDICATOR_WARMUP_DAYS calendar days
+    warmup_from = (
+        datetime.strptime(from_date, "%Y-%m-%d") - timedelta(days=INDICATOR_WARMUP_DAYS)
+    ).strftime("%Y-%m-%d")
+
     try:
         r = requests.get(
             TECH_URL.format(ticker=ticker),
             params={"api_token": EODHD_API_KEY, "function": function,
-                    "period": period, "from": from_date, "to": to_date, "fmt": "json"},
+                    "period": period, "from": warmup_from, "to": to_date, "fmt": "json"},
             timeout=15,
         )
         if r.status_code != 200 or not r.json():
@@ -162,11 +177,15 @@ def _fetch_indicator_series(ticker: str, function: str, period: int,
 
 
 def _fetch_eod_closes(ticker: str, from_date: str, to_date: str) -> Dict[str, float]:
-    """Fetch EOD closes. Returns {date_str: close}."""
+    """Fetch EOD closes. Extends from_date by warmup window to cover prior_close
+    for the first date in the requested range."""
+    warmup_from = (
+        datetime.strptime(from_date, "%Y-%m-%d") - timedelta(days=INDICATOR_WARMUP_DAYS)
+    ).strftime("%Y-%m-%d")
     try:
         r = requests.get(
             EOD_URL.format(ticker=ticker),
-            params={"api_token": EODHD_API_KEY, "from": from_date,
+            params={"api_token": EODHD_API_KEY, "from": warmup_from,
                     "to": to_date, "fmt": "json"},
             timeout=15,
         )
@@ -194,10 +213,13 @@ def _ensure_daily_technicals_table():
 def fetch_and_store_indicators(ticker: str, from_date: str, to_date: str) -> int:
     """
     Fetch EMA20, ADX14, RSI14, ATR14 + prior_close for all WEEKDAY dates
-    in the range and upsert into daily_technicals.
+    in [from_date, to_date] and upsert into daily_technicals.
+
+    The EODHD technical API requires prior history to warm up indicators, so
+    we fetch with a 60-day warmup window but only store rows within the
+    originally requested date range.
 
     prior_close for date D = EOD close of the previous trading day.
-    Only weekday dates with at least one non-null indicator are stored.
     """
     print(f"  {ticker}: fetching indicators {from_date} → {to_date}")
 
@@ -207,17 +229,22 @@ def fetch_and_store_indicators(ticker: str, from_date: str, to_date: str) -> int
     atr   = _fetch_indicator_series(ticker, "atr", 14, from_date, to_date)
     close = _fetch_eod_closes(ticker, from_date, to_date)
 
-    # Build prior_close map from sorted trading days
+    print(f"    EMA rows={len(ema)}  ADX rows={len(adx)}  RSI rows={len(rsi)}  ATR rows={len(atr)}  Close rows={len(close)}")
+
+    # Build prior_close map from ALL fetched trading days (including warmup)
     sorted_days = sorted(close.keys())
     prior_close_map: Dict[str, float] = {}
     for i, d in enumerate(sorted_days):
         if i > 0:
             prior_close_map[d] = close[sorted_days[i - 1]]
 
-    # All dates that have at least one indicator — weekdays only
+    # Only store rows within the originally requested range — weekdays only
     all_dates = set(ema) | set(adx) | set(rsi) | set(atr)
     rows = []
     for d in sorted(all_dates):
+        # Filter to requested range
+        if d < from_date or d > to_date:
+            continue
         try:
             dt = datetime.strptime(d, "%Y-%m-%d")
         except ValueError:
@@ -311,6 +338,7 @@ def main():
     print(f"Range    : {from_str} → {to_str} ({args.days} days)")
     print(f"Candles  : {'YES' if fetch_candles else 'NO'}")
     print(f"Indicators: {'YES' if fetch_indicators else 'NO'}")
+    print(f"Warmup   : {INDICATOR_WARMUP_DAYS} calendar days prepended to indicator fetch")
     print()
 
     # Ensure table exists before writing
