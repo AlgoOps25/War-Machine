@@ -224,18 +224,26 @@ MAX_PRICE = 500.0
 MIN_VOLUME = 1_000_000
 
 # ── RVOL GATES ────────────────────────────────────────────────────────────────
-# MIN_RELATIVE_VOLUME : screener-level gate (wide pre-market scan)
-#                       2.0x is intentionally strict — high-activity stocks only
+# Backtest audit (2026-03-24, 582 trades, 312 tickers × 90 days):
+#   RVOL 1.2–2.0 → 214 trades | 36.9% WR | +0.162 avg R | +34.59 Total R  ← BEST
+#   RVOL 2.0–3.0 → 153 trades | 35.3% WR | +0.056 avg R |  +8.63 Total R
+#   RVOL 3.0–4.0 →  61 trades | 31.1% WR | -0.169 avg R | -10.30 Total R
+#   RVOL >=4.0   → 154 trades | 29.2% WR | -0.142 avg R | -21.93 Total R  ← WORST
+#
+# MIN_RELATIVE_VOLUME : screener-level gate (pre-market scan)
+#   Was 2.0x — this was filtering out the 1.2–2.0x cohort (+34.59R) entirely.
+#   Lowered to 1.2x to capture best-performing RVOL band.
 #
 # RVOL_SIGNAL_GATE    : signal-level gate (applied per-signal in scanner.py)
-#                       1.2x from grid search (2026-03-24, 107 trades):
-#                         RVOL >= 1.2 → 59.6% WR, avg R=0.300, Total R=14.1
-#                         RVOL <  1.2 → 40.0% WR, avg R=-0.101 (destroys P&L)
-#                       Note: 1.0x maximizes Total R (15.8) with 62 trades;
-#                       1.2x maximizes avg R and WR with 47 higher-quality trades.
-#                       See: docs/BACKTEST_INTELLIGENCE.md
-MIN_RELATIVE_VOLUME = 2.0
+#   Kept at 1.2x — minimum viable RVOL for positive expectancy.
+#
+# RVOL_CEILING        : NEW — upper bound added per audit findings.
+#   Signals with RVOL >= 3.0x destroy P&L (-32.23 Total R combined).
+#   3.0x chosen as ceiling: 2.0–3.0 cohort is marginal (+8.63R) but acceptable;
+#   3.0x+ is clearly negative and should be blocked.
+MIN_RELATIVE_VOLUME = 1.2   # was 2.0 — lowered to capture 1.2–2.0x sweet spot
 RVOL_SIGNAL_GATE    = 1.2   # grid search optimal (was 1.28 — Phase 1.37b)
+RVOL_CEILING        = 3.0   # NEW (Phase 1.38b) — RVOL >= 3.0x destroys P&L
 
 MIN_ATR_MULTIPLIER = 4.0
 
@@ -247,8 +255,17 @@ TF_CONFIRM = '1m'
 OR_START_TIME = dtime(9, 30)
 OR_END_TIME = dtime(9, 45)
 TRADING_START = dtime(9, 45)
-TRADING_END = dtime(15, 45)
-FORCE_CLOSE_TIME = dtime(15, 50)
+
+# ── TRADING HOURS (Phase 1.38b) ───────────────────────────────────────────────
+# Time-of-day audit (2026-03-24, 582 trades):
+#   09:45–10:15 → 126 trades | 36.5% WR | +14.31 Total R  ✅
+#   10:15–11:30 → 344 trades | 34.6% WR | +19.01 Total R  ✅
+#   11:30–14:00 → 105 trades | 27.6% WR | -14.54 Total R  ❌
+#   14:00–15:30 →   7 trades | 42.9% WR |  -7.80 Total R  ❌
+# Morning sessions (+33.32R) vs afternoon (-22.34R).
+# TRADING_END moved from 15:45 → 11:30. FORCE_CLOSE_TIME → 11:35.
+TRADING_END      = dtime(11, 30)  # was 15:45 — afternoon is -22R net
+FORCE_CLOSE_TIME = dtime(11, 35)  # was 15:50
 
 # ========================================
 # RISK MANAGEMENT
@@ -258,6 +275,17 @@ STOP_LOSS_MULTIPLIER = 1.5
 TAKE_PROFIT_MULTIPLIER = 3.0
 MAX_LOSS_PER_TRADE_PCT = 2.0
 TRAILING_STOP_ACTIVATION = 1.0
+
+# ========================================
+# DIRECTION FILTER (Phase 1.38b)
+# ========================================
+
+# Direction audit (2026-03-24, 582 trades):
+#   bull → 315 trades | 34.0% WR | +0.035 avg R | +11.14 Total R
+#   bear → 267 trades | 33.7% WR | -0.001 avg R |  -0.15 Total R
+# Bears are statistically worthless over 267 trades. Disabled until
+# a bear-specific edge is identified via dedicated bear signal audit.
+BEAR_SIGNALS_ENABLED = False   # NEW — re-enable only with evidence of bear edge
 
 # ========================================
 # VALIDATION
@@ -295,6 +323,10 @@ EXPLOSIVE_RVOL_THRESHOLD = 4.0
 
 # NOTE (2026-03-24): ORCL removed from champion tickers.
 # Backtest analysis (107 trades): ORCL avg R = -0.67, WR = 0%, 3 trades.
+# NOTE (2026-03-24): Champion ticker list underperforms in 582-trade audit.
+# Champion cohort: 33 trades | 21.2% WR | -0.273 avg R | -9.00 Total R
+# Other tickers:  549 trades | 34.6% WR | +0.036 avg R | +19.99 Total R
+# BACKTEST_CHAMPION reflects prior campaign params — not a live filter.
 # See: docs/BACKTEST_INTELLIGENCE.md — Ticker Tier List.
 BACKTEST_CHAMPION = {
     'bos_strength' : 0.001,
@@ -412,6 +444,7 @@ if __name__ == "__main__":
     logger.info(f"Opening Range Window: {OR_START_TIME} - {OR_END_TIME}")
     logger.info(f"Trading Window: {TRADING_START} - {TRADING_END}")
     logger.info(f"Force Close: {FORCE_CLOSE_TIME}")
+    logger.info(f"Bear Signals: {'Enabled' if BEAR_SIGNALS_ENABLED else 'Disabled (Phase 1.38b)'}")
     logger.info(f"\nVIX-Scaled OR Thresholds:")
     for upper, pct in VIX_OR_THRESHOLDS:
         label = f"VIX < {upper}" if upper < 999 else "VIX ≥ 35"
@@ -427,9 +460,10 @@ if __name__ == "__main__":
     logger.info(f"\nOR Range Gate (Phase 1.38):")
     logger.info(f"  Min : {OR_RANGE_MIN_PCT}% (no practical effect — 0 trades below 1%)")
     logger.info(f"  Max : {OR_RANGE_MAX_PCT}% (no cap — grid search optimal 2026-03-24)")
-    logger.info(f"\nRVOL Gates:")
-    logger.info(f"  Screener gate  : {MIN_RELATIVE_VOLUME}x (pre-market scan)")
+    logger.info(f"\nRVOL Gates (Phase 1.38b):")
+    logger.info(f"  Screener gate  : {MIN_RELATIVE_VOLUME}x (was 2.0x — lowered to capture 1.2–2.0x sweet spot)")
     logger.info(f"  Signal gate    : {RVOL_SIGNAL_GATE}x (grid search optimal, 2026-03-24)")
+    logger.info(f"  Ceiling        : {RVOL_CEILING}x (NEW — RVOL >= 3.0x destroys P&L)")
     logger.info(f"\nTarget Multipliers (Phase 1.37b):")
     logger.info(f"  T1: {T1_MULTIPLIER}R | T2: {T2_MULTIPLIER}R")
     logger.info(f"\nAdvanced Features:")
