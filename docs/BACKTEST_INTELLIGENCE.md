@@ -1,32 +1,68 @@
 # WAR MACHINE — BACKTEST INTELLIGENCE
 > **Auto-generated from `backtests/analysis/`** — overwrite this file each time you run `analyze_trades.py`
-> Last updated: 2026-03-24 | Dataset: 107 trades (119 with duplicates) | Win rate: 48.6%
+> Last updated: 2026-03-24 (Phase 1.37b) | Dataset: 107 trades | Win rate: 48.6% baseline
 
 ---
 
 ## 📊 Core Performance Metrics
 
-| Metric | Value |
-|---|---|
-| Total trades | 107 |
-| Win rate (baseline) | 48.6% |
-| Win rate w/ RVOL ≥ 1.276 filter | **60.5% (+11.9pp)** |
-| Trades retained after RVOL filter | 43 (40%) |
-| EOD exits (no T1/T2 hit) | 74 / 119 (62%) |
-| T1 hits | ~5% |
-| T2 hits | 1 (2.0R) |
+| Metric | Baseline | With RVOL ≥ 1.2 Gate |
+|---|---|---|
+| Total trades | 107 | 47 |
+| Win rate | 48.6% | **59.6% (+11.0pp)** |
+| Avg R | 0.073 | **+0.300** |
+| Total R | 7.85 | **+14.1** |
+| EOD exits | 65 (61%) | — |
+| T1 hits | 1 | — |
+| T2 hits | 1 (2.0R) | — |
 
 ---
 
 ## 🔑 #1 Priority Filter — RVOL Gate
 
-The single most impactful lever identified by the backtest:
+The single most impactful lever in the entire system:
 
 ```
-rvol >= 1.276  →  WR jumps 48.6% → 60.5%  (+11.9pp, 43 trades retained)
+RVOL < 1.2  →  40.0% WR, avg R = -0.101  ← destroying P&L
+RVOL ≥ 1.2  →  59.6% WR, avg R = +0.300  ← the real edge
 ```
 
-**Action:** Enforce `rvol >= 1.28` as a hard gate in signal logic before any other filter.
+**RVOL gate is now set to 1.2x** (`RVOL_SIGNAL_GATE = 1.2` in `utils/config.py`).
+
+For reference, RVOL=1.0 maximizes **Total R** (15.8 on 62 trades) while RVOL=1.2 maximizes
+**Avg R and Win Rate** on a higher-quality 47-trade cohort. Current config uses 1.2x.
+
+---
+
+## 🧮 Grid Search Results (Phase 1.37b — 2026-03-24)
+
+Grid: 13 T1 × 13 T2 × 21 RVOL gates = 3,549 combinations → 2,512 valid.
+
+### RVOL Gate Sweep (T1=2.0, T2=3.5)
+
+| RVOL Gate | Trades | Win Rate | Avg R | Total R |
+|---|---|---|---|---|
+| 0.5 (none) | 107 | 48.6% | 0.077 | 8.22 |
+| 0.8 | 81 | 51.8% | 0.155 | 12.56 |
+| 0.9 | 73 | 54.8% | 0.207 | 15.15 |
+| **1.0** | **62** | **56.5%** | **0.255** | **15.81** ← max Total R |
+| **1.2** | **47** | **59.6%** | **0.300** | **14.10** ← max Avg R / WR |
+| 1.3 | 42 | 59.5% | 0.276 | 11.58 |
+| 1.5 | 27 | 48.1% | 0.082 | 2.20 |
+
+### T1/T2 Multiplier Findings
+
+- **T1=2.0R** outperforms T1=1.3R on RVOL≥1.2 cohort: Total R 14.1 vs 11.85
+- Reason: winning trades run past 1.3R on EOD exits anyway — tighter T1 under-credits them
+- **T2 is insensitive** — only **1 T2 hit** in 107 trades; T2 value doesn't affect simulation
+- T2 kept at 3.5R as aspirational target for future runners
+
+### Config Applied
+```python
+RVOL_SIGNAL_GATE = 1.2   # was 1.28
+T1_MULTIPLIER    = 2.0   # was 1.3
+T2_MULTIPLIER    = 3.5   # was 2.5 (restored)
+```
 
 ---
 
@@ -42,74 +78,75 @@ rvol >= 1.276  →  WR jumps 48.6% → 60.5%  (+11.9pp, 43 trades retained)
 | `fvg_size_pct` | 0.143 | 0.164 | 0.7553 | ❌ no | — |
 | `entry_hour` | 9.385 | 9.364 | 0.8263 | ❌ no | — |
 
-> ⚠️ **CRITICAL FINDING:** `confidence` score is **inversely correlated with wins** (p=0.006). Higher confidence → more losses. The confidence scoring model is miscalibrated and must be audited/inverted.
+> ⚠️ **CRITICAL FINDING:** `confidence` score is **inversely correlated with wins** (p=0.006). Higher confidence → more losses. Confidence scoring must be audited/inverted before raising confidence floors.
 
 ---
 
 ## 🏆 Ticker Performance Tier List
 
-### ✅ Keep (Positive avg R, ≥2 trades)
+### ✅ Keep (Positive avg R)
 
 | Ticker | Avg R | Win Rate | Trades |
 |---|---|---|---|
+| WMT | +0.710 | 100% | 2 |
 | AAOI | +0.615 | 72.7% | 11 |
-| QQQ | +0.350 | — | — |
-| NVDA | +0.295 | — | — |
-| SPY | positive | — | — |
-| MSFT | positive | — | — |
-| FSLY | +0.260 | — | — |
-| HYMC | +0.218 | — | — |
-| BAC | positive | — | — |
+| VG | +0.505 | 100% | 2 |
+| AMD | +0.435 | 100% | 2 |
+| QQQ | +0.350 | 66.7% | 3 |
+| NVDA | +0.295 | 50.0% | 4 |
+| FSLY | +0.260 | 55.6% | 9 |
+| HYMC | +0.218 | 58.3% | 12 |
+| BAC | +0.175 | 50.0% | 2 |
+| SPY | +0.163 | 50.0% | 6 |
+| MSFT | +0.147 | 66.7% | 3 |
 
-### ❌ Remove / Deprioritize (Negative avg R)
+### ❌ Banned (Negative avg R — removed from watchlist)
 
-| Ticker | Avg R | Win Rate | Action |
-|---|---|---|---|
-| ORCL | -0.670 | 0% | 🗑️ Remove from watchlist |
-| MSTR | -0.530 | 0% | 🗑️ Remove from watchlist |
-| LYB | -0.342 | — | 🗑️ Remove |
-| OXY | -0.324 | — | 🗑️ Remove |
-| PYPL | -0.244 | — | 🗑️ Remove |
-| CMCSA | -0.188 | — | 🗑️ Remove |
+| Ticker | Avg R | Win Rate | Trades | Reason |
+|---|---|---|---|---|
+| ORCL | -0.670 | 0% | 3 | 🗑️ 0 wins, worst avg R |
+| MSTR | -0.530 | 0% | 2 | 🗑️ 0 wins |
+| LYB | -0.342 | 25% | 8 | 🗑️ consistent loser |
+| OXY | -0.324 | 30% | 10 | 🗑️ consistent loser |
+| PYPL | -0.244 | 28.6% | 7 | 🗑️ consistent loser |
+| CMCSA | -0.188 | 50% | 4 | 🗑️ negative expectancy |
 
 ---
 
 ## 🚪 Recommended Filter Candidates
 
-Ranked by win rate improvement (from `filter_candidates.txt`):
-
 | Filter | Baseline WR | Filtered WR | Gain | Trades Retained |
 |---|---|---|---|---|
-| `rvol >= 1.276` | 48.6% | **60.5%** | +11.9pp | 43 (40%) |
-| FVG size filter | 48.6% | ~52% | +3pp | — |
-| Minutes-from-open filter | 48.6% | ~51% | +3pp | — |
+| `rvol >= 1.2` ✅ **APPLIED** | 48.6% | **59.6%** | +11.0pp | 47 (44%) |
+| `rvol >= 1.0` (alt — max total R) | 48.6% | 56.5% | +7.9pp | 62 (58%) |
+| FVG size > 0.04% | 48.6% | ~51.8% | +3.2pp | 85 (79%) |
+| Minutes from open > 25 | 48.6% | ~51.7% | +3.1pp | 58 (54%) |
 
 ---
 
 ## ⚠️ EOD Exit Problem
 
-62% of trades exit EOD with no T1 or T2 hit. Root causes to investigate:
+65 of 107 trades (61%) exit EOD with no T1 or T2 hit. This is the primary drag on performance.
 
-- Profit targets (T1/T2) may be too wide relative to intraday momentum
-- Breakout signals may be firing on moves that stall before target
-- Consider tightening T1 to ~1.2–1.5R from current levels
-- The single T2 hit (2.0R) proves target logic works — it just rarely fires
+With T1=2.0R (Phase 1.37b), T1 is now intentionally wide — the system lets winners run to EOD
+rather than forcing premature exits. **This is by design until T2 hits become more frequent.**
+The single T2 hit (2.0R) proves target logic works — it just rarely fires on current setups.
 
 ---
 
-## 🎯 Immediate Action Items
+## 🎯 Current Action Items (Phase 1.37b)
 
-1. **Add `rvol >= 1.28` as a hard gate** in `app/core/scanner.py` or signal scoring
-2. **Audit confidence scoring logic** — it is anticorrelated with wins (p=0.006); likely needs inversion or full rebuild
-3. **Remove ORCL, MSTR, OXY, LYB, PYPL, CMCSA** from static watchlist in `watchlist_funnel.py`
-4. **Tighten T1 target** — investigate EOD exit rate; 62% is too high
-5. **Re-run analysis after each major change** and overwrite this file
+1. ✅ **RVOL gate 1.2x applied** — `RVOL_SIGNAL_GATE = 1.2` in `utils/config.py`
+2. ✅ **T1=2.0R, T2=3.5R applied** — grid search optimal
+3. ✅ **ORCL, MSTR, OXY, LYB, PYPL, CMCSA banned** — removed from `watchlist_funnel.py` and `aggregate_summary.json`
+4. ⏳ **Audit confidence scoring logic** — inversely correlated with wins (p=0.006); likely needs rebuild
+5. ⏳ **Re-run analysis after 50+ live trades** with Phase 1.37b params and regenerate this file
 
 ---
 
 ## 🔄 How to Update This File
 
-After each backtest run, execute:
+After each backtest run:
 
 ```python
 # scripts/generate_backtest_intelligence.py
