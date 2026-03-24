@@ -56,6 +56,17 @@ EOD_URL        = "https://eodhd.com/api/eod/{ticker}.US"
 # any rows outside the originally requested range before storing.
 INDICATOR_WARMUP_DAYS = 60
 
+# EODHD technical API response field names per function.
+# The 'order' parameter is REQUIRED — without it EMA/RSI/ATR return empty.
+# Each function returns its value under a field named after the function itself.
+_TECH_VALUE_KEY = {
+    "ema": "ema",
+    "rsi": "rsi",
+    "atr": "atr",
+    "adx": "adx",
+    "sma": "sma",
+}
+
 # Default ticker list (original)
 DEFAULT_TICKERS = [
     "AAPL", "NVDA", "TSLA", "SPY", "QQQ",
@@ -144,20 +155,32 @@ def _fetch_indicator_series(ticker: str, function: str, period: int,
                              from_date: str, to_date: str) -> Dict[str, float]:
     """Fetch daily indicator values from EODHD.
 
-    Sends a wider warmup window (INDICATOR_WARMUP_DAYS extra) so EODHD can
-    compute the indicator for the first requested date. Returns {date_str: value}
-    for ALL dates returned (caller filters to desired range).
+    Key implementation notes:
+    - REQUIRES order='a' param — without it EODHD returns empty for EMA/RSI/ATR
+    - Sends a wider warmup window (INDICATOR_WARMUP_DAYS extra) so EODHD can
+      seed the indicator before the first requested date
+    - Each function returns its value under a field named after itself
+      e.g. EMA rows have {"date": "...", "ema": 584.12}
+    - Returns {date_str: value} for ALL dates returned (caller filters to range)
     """
-    # Extend from_date backwards by INDICATOR_WARMUP_DAYS calendar days
     warmup_from = (
         datetime.strptime(from_date, "%Y-%m-%d") - timedelta(days=INDICATOR_WARMUP_DAYS)
     ).strftime("%Y-%m-%d")
 
+    value_key = _TECH_VALUE_KEY.get(function, function)
+
     try:
         r = requests.get(
             TECH_URL.format(ticker=ticker),
-            params={"api_token": EODHD_API_KEY, "function": function,
-                    "period": period, "from": warmup_from, "to": to_date, "fmt": "json"},
+            params={
+                "api_token": EODHD_API_KEY,
+                "function":  function,
+                "period":    period,
+                "from":      warmup_from,
+                "to":        to_date,
+                "order":     "a",           # REQUIRED — omitting this causes empty response
+                "fmt":       "json",
+            },
             timeout=15,
         )
         if r.status_code != 200 or not r.json():
@@ -167,7 +190,7 @@ def _fetch_indicator_series(ticker: str, function: str, period: int,
             d = str(row.get("date", ""))[:10]
             if not d:
                 continue
-            val = row.get("adx") if function == "adx" else row.get("value")
+            val = row.get(value_key)
             if val is not None:
                 result[d] = float(val)
         return result
@@ -242,14 +265,13 @@ def fetch_and_store_indicators(ticker: str, from_date: str, to_date: str) -> int
     all_dates = set(ema) | set(adx) | set(rsi) | set(atr)
     rows = []
     for d in sorted(all_dates):
-        # Filter to requested range
         if d < from_date or d > to_date:
             continue
         try:
             dt = datetime.strptime(d, "%Y-%m-%d")
         except ValueError:
             continue
-        if dt.weekday() >= 5:          # skip weekends
+        if dt.weekday() >= 5:
             continue
         rows.append({
             "ticker":      ticker,
@@ -362,9 +384,9 @@ def main():
 
         if fetch_indicators:
             total_rows += fetch_and_store_indicators(ticker, from_str, to_str)
-            time.sleep(0.4)   # 4 indicator calls already done; small pause
+            time.sleep(0.4)
         elif i < len(tickers):
-            time.sleep(3)     # original rate-limit for candles-only
+            time.sleep(3)
 
         print()
 
