@@ -1,2 +1,0 @@
-ticker,date,direction,grade,confidence,or_high,or_low,or_range_pct,fvg_low,fvg_high,fvg_size_pct,entry_price,stop_price,t1_price,t2_price,entry_time,exit_time,exit_price,exit_reason,pnl_pts,r_multiple,win,entry_hour,rvol,entry_minute
-XPEV,2026-03-20,bear,A,0.7,18.7,17.92,4.353,17.84,17.85,0.056,17.845,18.7187,16.7529,16.0976,2026-03-20 09:53:00,2026-03-20 15:55:00,17.545,EOD,0.2964,0.34,1,9,0.84,53
