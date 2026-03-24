@@ -92,6 +92,9 @@
 #     second _is_watching block, immediately after _is_watching is assigned.
 #   - Also fixes silent bug: w["breakout_idx"] local dict was not updated after
 #     state update, causing bars_since to compute against None on same cycle.
+# SCORECARD WIRE-IN (Mar 24 2026):
+#   - rvol=_signal_rvol passed into build_scorecard() to activate
+#     confidence_inversion_warning for A+ grade + RVOL < 1.2x setups.
 import traceback
 from app.options.dte_selector import get_ideal_dte
 from datetime import datetime, time, timedelta
@@ -1053,6 +1056,7 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         sweep_detected=(_sweep_result is not None),
         ob_detected=(_ob_result is not None),
         spy_regime=spy_regime,
+        rvol=_signal_rvol,
     )
     if _sc.score < SCORECARD_GATE_MIN:
         logger.info(f"[{ticker}] 🚫 SCORECARD-GATE: {_sc.score:.1f} < {SCORECARD_GATE_MIN} | {_sc.breakdown}")
