@@ -28,6 +28,7 @@ UPDATED Mar 19 2026 (47.P6-2 Sprint 1):
     compute_stop_and_targets() is unchanged — continues to use
     calculate_atr() for the TR-series stop calculations.
 """
+from utils import config
 import numpy as np
 from datetime import time as dtime
 from typing import List, Dict, Tuple
@@ -303,8 +304,8 @@ def calculate_targets_by_grade(
     T1 = 2R, T2 = 3.5R for all grades (per CFW6 video rules).
     """
     risk        = abs(entry_price - stop_price)
-    t1_distance = risk * 2.0
-    t2_distance = risk * 3.5
+    t1_distance = risk * config.T1_MULTIPLIER
+    t2_distance = risk * config.T2_MULTIPLIER
 
     if direction == "bull":
         t1 = entry_price + t1_distance

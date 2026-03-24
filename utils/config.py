@@ -169,6 +169,19 @@ MIN_CONFIDENCE_INTRADAY = 0.70
 CONFIDENCE_ABSOLUTE_FLOOR = 0.65
 
 MIN_CONFIDENCE_BY_GRADE = {
+    "A+": 0.75,
+    "A":  0.70,
+    "A-": 0.65,
+    "B+": 0.60,
+    "B":  0.55,
+    "B-": 0.50,
+    "C+": 0.45,
+    "C":  0.40,
+    "C-": 0.35,
+}
+# Phase 1.37: Per-grade confidence ceiling — prevents multiplier stack inflation
+# Backtest finding: confidence is inversely correlated with wins (p=0.006)
+CONFIDENCE_CAP_BY_GRADE = {
     "A+": 0.88,
     "A":  0.82,
     "A-": 0.76,
@@ -179,6 +192,12 @@ MIN_CONFIDENCE_BY_GRADE = {
     "C":  0.46,
     "C-": 0.40,
 }
+
+# Phase 1.37: T1/T2 multipliers — tightened from 2.0R/3.5R
+# Backtest finding: 62% of trades exit EOD without hitting T1
+# Tighter T1 (1.3R) increases hit rate on intraday momentum moves
+T1_MULTIPLIER = 1.3   # was 2.0R
+T2_MULTIPLIER = 2.5   # was 3.5R
 
 MIN_PRICE = 5.0
 MAX_PRICE = 500.0

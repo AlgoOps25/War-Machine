@@ -927,8 +927,12 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         final_confidence *= decay
         final_confidence = max(0.40, min(final_confidence, 0.95))
         logger.info(f"[{ticker}] ⏳ POST-3PM DECAY: {decay:.3f}x → confidence={final_confidence:.3f}")
-
-    print(
+        # Phase 1.37: Per-grade confidence ceiling (backtest: higher conf = more losses)
+        _conf_cap = config.CONFIDENCE_CAP_BY_GRADE.get(final_grade, 0.88)
+        if final_confidence > _conf_cap:
+            logger.info(f"[{ticker}] 📉 CONF CAP [{final_grade}]: {final_confidence:.3f} → {_conf_cap:.3f}")
+            final_confidence = _conf_cap
+            print(
         f"[CONFIDENCE-v2] Base:{base_confidence:.2f} "
         f"+ MTF-Trend:{_mtf_trend_boost:+.3f} "
         f"+ SMC:{_smc_delta:+.3f} "
