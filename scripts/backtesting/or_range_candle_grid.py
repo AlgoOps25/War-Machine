@@ -237,7 +237,9 @@ def calc_confidence(bars: List[Dict], direction: str) -> float:
 
 def compute_or_range(session_bars: List[Dict], or_minutes: int = 30) -> Optional[Dict]:
     first  = session_bars[0]["datetime"]
-    cutoff = first.replace(hour=9, minute=30 + or_minutes, second=0, microsecond=0)
+    # Use timedelta to avoid minute overflow (e.g. 9:30 + 30min = 10:00, not minute=60)
+    cutoff = (first.replace(hour=9, minute=30, second=0, microsecond=0)
+              + timedelta(minutes=or_minutes))
     or_bars = [b for b in session_bars if b["datetime"] < cutoff]
     if not or_bars:
         return None
@@ -258,8 +260,9 @@ def detect_signals_in_session(session_bars, or_info, ticker, date) -> List[Dict]
     signals = []
     or_high, or_low = or_info["or_high"], or_info["or_low"]
     or_range_pct    = or_info["or_range_pct"]
-    post_or = [b for b in session_bars
-               if b["datetime"].time() >= dtime(9, 30 + CFG["or_minutes"])]
+    # Use timedelta to compute post-OR start time safely (avoids minute overflow)
+    or_end_dt = (datetime(2000, 1, 1, 9, 30) + timedelta(minutes=CFG["or_minutes"])).time()
+    post_or = [b for b in session_bars if b["datetime"].time() >= or_end_dt]
 
     for i, bar in enumerate(post_or):
         t = bar["datetime"].time()
@@ -401,9 +404,6 @@ def main():
     args = parser.parse_args()
 
     # Wake Railway proxy before doing anything else.
-    # db_connection.get_conn() uses the pool which may have a short default
-    # timeout. We do a direct psycopg2 connect with a long timeout first so
-    # the proxy is warm by the time the pool connects.
     _wait_for_db(os.environ['DATABASE_URL'], retries=3, timeout=60)
 
     end_dt   = datetime.now(ET)
