@@ -4,7 +4,7 @@ or_range_candle_grid.py
 -----------------------
 Candle-driven OR Range grid search for War Machine.
 
-Pulls 1-min bars from candle_cache / intraday_bars in Railway Postgres,
+Pulls 1-min bars from intraday_bars / candle_cache in Railway Postgres,
 computes real OR range from the first 30 minutes of each session, detects
 BOS/FVG breakouts, applies full Phase 1.37 filters, simulates trades with ATR
 stops + multi-R targets, then sweeps or_range_min_pct and or_range_max_pct
@@ -18,16 +18,15 @@ Usage:
 
 import sys
 import os
+import argparse
 sys.path.append('.')
 
-# ── Load .env BEFORE importing db_connection (which reads DATABASE_URL at import time) ──
+# ── Load .env BEFORE importing db_connection (reads DATABASE_URL at import time) ──
 try:
     from dotenv import load_dotenv
-    load_dotenv(override=False)  # won't overwrite vars already set in the shell
+    load_dotenv(override=False)
 except ImportError:
-    # python-dotenv not installed — try reading .env manually
-    _env_path = os.path.join(os.path.dirname(__file__), '..', '..', '.env')
-    _env_path = os.path.normpath(_env_path)
+    _env_path = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', '..', '.env'))
     if os.path.exists(_env_path):
         with open(_env_path) as _f:
             for _line in _f:
@@ -38,15 +37,11 @@ except ImportError:
 
 if not os.environ.get('DATABASE_URL'):
     print("[ERROR] DATABASE_URL not set and .env not found.")
-    print("        Set it in your shell or add it to .env in the project root.")
-    print("        Example:  $env:DATABASE_URL='postgresql://...'")
+    print("        Set it in your shell:  $env:DATABASE_URL='postgresql://...'")
     sys.exit(1)
 
-# Normalize postgres:// → postgresql:// (psycopg2 requires this)
-if os.environ.get('DATABASE_URL', '').startswith('postgres://'):
-    os.environ['DATABASE_URL'] = os.environ['DATABASE_URL'].replace(
-        'postgres://', 'postgresql://', 1
-    )
+if os.environ['DATABASE_URL'].startswith('postgres://'):
+    os.environ['DATABASE_URL'] = os.environ['DATABASE_URL'].replace('postgres://', 'postgresql://', 1)
 
 import numpy as np
 from datetime import datetime, timedelta, time as dtime, timezone
@@ -62,7 +57,7 @@ from app.data.db_connection import get_conn, ph, dict_cursor
 ET = ZoneInfo("America/New_York")
 
 # ---------------------------------------------------------------------------
-# Phase 1.37 baseline config (everything except OR range)
+# Phase 1.37 baseline config
 # ---------------------------------------------------------------------------
 CFG = {
     "rvol_gate":        1.2,
@@ -84,25 +79,20 @@ CURRENT_MIN   = 0.2
 CURRENT_MAX   = 3.0
 
 # ---------------------------------------------------------------------------
-# DB helpers  —  works with both candle_cache and intraday_bars
+# DB helpers
 # ---------------------------------------------------------------------------
 
-CANDLE_TABLE = "intraday_bars"   # primary production table in Railway Postgres
-HAS_TIMEFRAME_COL = False        # intraday_bars has no timeframe column
+CANDLE_TABLE      = "intraday_bars"
+HAS_TIMEFRAME_COL = False
 
 
 def _probe_table(conn) -> None:
-    """
-    Auto-detect which table is available and whether it has a timeframe column.
-    Sets CANDLE_TABLE / HAS_TIMEFRAME_COL globals.
-    """
     global CANDLE_TABLE, HAS_TIMEFRAME_COL
     cur = conn.cursor()
     for table in ("intraday_bars", "candle_cache"):
         try:
             cur.execute(f"SELECT 1 FROM {table} LIMIT 1")
             CANDLE_TABLE = table
-            # Check for timeframe column
             try:
                 cur.execute(f"SELECT timeframe FROM {table} LIMIT 1")
                 HAS_TIMEFRAME_COL = True
@@ -113,8 +103,7 @@ def _probe_table(conn) -> None:
             return
         except Exception:
             conn.rollback()
-            continue
-    print("[ERROR] Neither intraday_bars nor candle_cache found in the database.")
+    print("[ERROR] Neither intraday_bars nor candle_cache found in Postgres.")
     sys.exit(1)
 
 
@@ -146,8 +135,7 @@ def get_bars(ticker: str, start: datetime, end: datetime,
         if HAS_TIMEFRAME_COL:
             cur.execute(
                 f"SELECT datetime,open,high,low,close,volume FROM {CANDLE_TABLE}"
-                f" WHERE ticker={p} AND timeframe={p}"
-                f" AND datetime>={p} AND datetime<={p}"
+                f" WHERE ticker={p} AND timeframe={p} AND datetime>={p} AND datetime<={p}"
                 f" ORDER BY datetime ASC",
                 (ticker, timeframe, start, end)
             )
@@ -165,34 +153,31 @@ def get_bars(ticker: str, start: datetime, end: datetime,
     bars = []
     for r in rows:
         if isinstance(r, dict):
-            dt, o, h, l, c, v = (r["datetime"], r["open"], r["high"],
-                                   r["low"], r["close"], r["volume"])
+            dt, o, h, l, c, v = r["datetime"], r["open"], r["high"], r["low"], r["close"], r["volume"]
         else:
             dt, o, h, l, c, v = r[0], r[1], r[2], r[3], r[4], r[5]
-
         if isinstance(dt, str):
             dt = datetime.fromisoformat(dt)
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc).astimezone(ET)
         else:
             dt = dt.astimezone(ET)
-
         bars.append({"datetime": dt, "open": float(o), "high": float(h),
                      "low": float(l), "close": float(c), "volume": int(v)})
     return bars
 
 
 # ---------------------------------------------------------------------------
-# Indicator helpers
+# Indicators
 # ---------------------------------------------------------------------------
 
 def calc_atr(bars: List[Dict], period: int = 14) -> float:
     if len(bars) < period + 1:
         return bars[-1]["close"] * 0.01 if bars else 0.01
-    trs = []
-    for i in range(1, len(bars)):
-        h, l, pc = bars[i]["high"], bars[i]["low"], bars[i-1]["close"]
-        trs.append(max(h - l, abs(h - pc), abs(l - pc)))
+    trs = [max(bars[i]["high"] - bars[i]["low"],
+               abs(bars[i]["high"] - bars[i-1]["close"]),
+               abs(bars[i]["low"]  - bars[i-1]["close"]))
+           for i in range(1, len(bars))]
     return float(np.mean(trs[-period:]))
 
 
@@ -214,12 +199,9 @@ def calc_confidence(bars: List[Dict], direction: str) -> float:
     avg_l  = np.mean(losses) if losses else 1e-9
     rsi    = 100 - 100 / (1 + avg_g / avg_l)
     score  = 0.5
-    if direction == "bull" and rsi < 40:
-        score += 0.15
-    elif direction == "bear" and rsi > 60:
-        score += 0.15
-    if calc_rvol(bars) >= 1.5:
-        score += 0.10
+    if direction == "bull" and rsi < 40:   score += 0.15
+    elif direction == "bear" and rsi > 60: score += 0.15
+    if calc_rvol(bars) >= 1.5:             score += 0.10
     return min(score, 1.0)
 
 
@@ -255,10 +237,8 @@ def detect_signals_in_session(session_bars, or_info, ticker, date) -> List[Dict]
 
     for i, bar in enumerate(post_or):
         t = bar["datetime"].time()
-        if CFG["dead_zone_start"] <= t < CFG["dead_zone_end"]:
-            continue
-        if t >= CFG["eod_cutoff"]:
-            break
+        if CFG["dead_zone_start"] <= t < CFG["dead_zone_end"]: continue
+        if t >= CFG["eod_cutoff"]: break
 
         try:
             idx_in_session = session_bars.index(bar)
@@ -270,26 +250,22 @@ def detect_signals_in_session(session_bars, or_info, ticker, date) -> List[Dict]
 
         prev = post_or[i - 1] if i > 0 else None
 
-        # Bullish BOS breakout
         if bar["close"] > or_high and (prev is None or prev["close"] <= or_high):
             fvg_size = 0.0
             if i >= 2:
                 fl, fh = post_or[i-2]["high"], bar["low"]
-                if fh > fl:
-                    fvg_size = (fh - fl) / fl * 100
+                if fh > fl: fvg_size = (fh - fl) / fl * 100
             signals.append({"ticker": ticker, "date": date, "direction": "bull",
                              "entry_price": bar["close"], "entry_bar": bar,
                              "entry_idx": idx_in_session, "or_range_pct": or_range_pct,
                              "fvg_size_pct": fvg_size, "bars_so_far": bars_so_far})
             break
 
-        # Bearish BOS breakout
         if bar["close"] < or_low and (prev is None or prev["close"] >= or_low):
             fvg_size = 0.0
             if i >= 2:
                 fh, fl = post_or[i-2]["low"], bar["high"]
-                if fh > fl:
-                    fvg_size = (fh - fl) / fh * 100
+                if fh > fl: fvg_size = (fh - fl) / fh * 100
             signals.append({"ticker": ticker, "date": date, "direction": "bear",
                              "entry_price": bar["close"], "entry_bar": bar,
                              "entry_idx": idx_in_session, "or_range_pct": or_range_pct,
@@ -339,8 +315,7 @@ def simulate_trade(sig: Dict, session_bars: List[Dict]) -> Optional[Dict]:
             if bar["low"] <= t2:    exit_price, exit_reason = t2,   "T2";   break
             if bar["low"] <= t1:    exit_price, exit_reason = t1,   "T1";   break
 
-    r = ((exit_price - entry_price) / stop_dist
-         if direction == "bull"
+    r = ((exit_price - entry_price) / stop_dist if direction == "bull"
          else (entry_price - exit_price) / stop_dist)
 
     return {
@@ -362,21 +337,16 @@ def simulate_trade(sig: Dict, session_bars: List[Dict]) -> Optional[Dict]:
 
 
 # ---------------------------------------------------------------------------
-# Baseline filters (all except OR range)
+# Filters + stats
 # ---------------------------------------------------------------------------
 
 def passes_baseline_filters(trade: Dict) -> bool:
-    if trade["rvol"] < CFG["rvol_gate"]:
-        return False
-    if trade["confidence"] < CFG["confidence_gate"]:
-        return False
-    if trade["fvg_size_pct"] < CFG["fvg_size_min_pct"]:
-        return False
+    if trade["rvol"] < CFG["rvol_gate"]:           return False
+    if trade["confidence"] < CFG["confidence_gate"]: return False
+    if trade["fvg_size_pct"] < CFG["fvg_size_min_pct"]: return False
     t = dtime(trade["entry_hour"], trade["entry_minute"])
-    if CFG["dead_zone_start"] <= t < CFG["dead_zone_end"]:
-        return False
-    if t >= CFG["eod_cutoff"]:
-        return False
+    if CFG["dead_zone_start"] <= t < CFG["dead_zone_end"]: return False
+    if t >= CFG["eod_cutoff"]: return False
     return True
 
 
@@ -404,8 +374,6 @@ def main():
     parser.add_argument("--min-trades", type=int, default=10)
     args = parser.parse_args()
 
-    import argparse  # already imported above, just hoisting the reminder
-
     end_dt   = datetime.now(ET)
     start_dt = end_dt - timedelta(days=args.days)
 
@@ -422,11 +390,9 @@ def main():
         bars = get_bars(ticker, start_dt, end_dt, args.timeframe)
         if not bars:
             continue
-
         by_date: Dict[str, List[Dict]] = defaultdict(list)
         for b in bars:
             by_date[b["datetime"].date().isoformat()].append(b)
-
         for date_str, session in sorted(by_date.items()):
             if len(session) < CFG["or_minutes"] + 30:
                 continue
@@ -439,7 +405,6 @@ def main():
                     all_trades.append(trade)
 
     print(f"Total simulated trades (no filters): {len(all_trades)}")
-
     if not all_trades:
         print("\n[ERROR] No trades found. Check that Postgres has candle data.")
         sys.exit(1)
@@ -455,8 +420,7 @@ def main():
     for or_min, or_max in product(OR_MIN_VALUES, OR_MAX_VALUES):
         if or_min >= or_max:
             continue
-        subset = [t for t in base_filtered
-                  if or_min <= t["or_range_pct"] <= or_max]
+        subset = [t for t in base_filtered if or_min <= t["or_range_pct"] <= or_max]
         s = stats(subset)
         if s["trades"] < args.min_trades:
             continue
@@ -517,6 +481,5 @@ def main():
         print(f"  Results saved to: {args.csv_out}\n")
 
 
-import argparse  # ensure available at module level for edge cases
 if __name__ == "__main__":
     main()
