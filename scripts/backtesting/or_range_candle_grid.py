@@ -19,12 +19,14 @@ Usage:
 import sys
 import os
 import argparse
+import time
+import psycopg2
 sys.path.append('.')
 
 # ── Load .env BEFORE importing db_connection (reads DATABASE_URL at import time) ──
 try:
     from dotenv import load_dotenv
-    load_dotenv(override=False)
+    load_dotenv(override=True)
 except ImportError:
     _env_path = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', '..', '.env'))
     if os.path.exists(_env_path):
@@ -42,6 +44,30 @@ if not os.environ.get('DATABASE_URL'):
 
 if os.environ['DATABASE_URL'].startswith('postgres://'):
     os.environ['DATABASE_URL'] = os.environ['DATABASE_URL'].replace('postgres://', 'postgresql://', 1)
+
+
+def _wait_for_db(url: str, retries: int = 3, timeout: int = 60) -> psycopg2.extensions.connection:
+    """
+    Attempt to connect to Railway Postgres with a long timeout.
+    Railway's proxy sleeps when idle and needs up to 30-60s to wake.
+    Retries 'retries' times before giving up.
+    """
+    for attempt in range(1, retries + 1):
+        try:
+            print(f"[DB] Connecting to Postgres (attempt {attempt}/{retries}, timeout={timeout}s)...")
+            conn = psycopg2.connect(url, connect_timeout=timeout)
+            print("[DB] Connected OK")
+            return conn
+        except psycopg2.OperationalError as e:
+            print(f"[DB] Connection failed: {e}")
+            if attempt < retries:
+                wait = 10 * attempt
+                print(f"[DB] Retrying in {wait}s (Railway proxy may be waking up)...")
+                time.sleep(wait)
+    print("[ERROR] Could not connect to Postgres after all retries.")
+    print("        Check that Railway is running and DATABASE_URL is correct.")
+    sys.exit(1)
+
 
 import numpy as np
 from datetime import datetime, timedelta, time as dtime, timezone
@@ -373,6 +399,12 @@ def main():
     parser.add_argument("--csv-out",    default=None)
     parser.add_argument("--min-trades", type=int, default=10)
     args = parser.parse_args()
+
+    # Wake Railway proxy before doing anything else.
+    # db_connection.get_conn() uses the pool which may have a short default
+    # timeout. We do a direct psycopg2 connect with a long timeout first so
+    # the proxy is warm by the time the pool connects.
+    _wait_for_db(os.environ['DATABASE_URL'], retries=3, timeout=60)
 
     end_dt   = datetime.now(ET)
     start_dt = end_dt - timedelta(days=args.days)
