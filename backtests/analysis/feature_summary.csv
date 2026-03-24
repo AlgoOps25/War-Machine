@@ -1,0 +1,8 @@
+feature,win_mean,loss_mean,win_median,loss_median,diff_mean,p_value,significant
+confidence,0.709,0.738,0.7,0.7,-0.03,0.0057,YES
+grade_num,1.058,1.255,1.0,1.0,-0.197,0.0057,YES
+rvol,1.29,1.209,1.265,0.97,0.081,0.1133,no
+or_range_pct,3.768,4.054,2.593,3.153,-0.286,0.5028,no
+minutes_from_open,28.538,27.873,25.5,25.0,0.666,0.5679,no
+fvg_size_pct,0.143,0.164,0.102,0.086,-0.021,0.7553,no
+entry_hour,9.385,9.364,9.0,9.0,0.021,0.8263,no

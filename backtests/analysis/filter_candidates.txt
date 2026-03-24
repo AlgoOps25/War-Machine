@@ -1,0 +1,48 @@
+======================================================================
+WAR MACHINE - TRADE ANALYSIS REPORT
+Total trades: 107 | Win rate: 48.6% | Avg R: 0.073
+======================================================================
+
+-- EXIT REASON BREAKDOWN --
+exit_reason  count  win_rate  avg_r  median_r
+        EOD     65      50.8  0.171      0.01
+       STOP     41      43.9 -0.129     -1.00
+         T2      1     100.0  2.000      2.00
+
+-- FEATURE SEPARATION (wins vs losses) --
+          feature  win_mean  loss_mean  win_median  loss_median  diff_mean  p_value significant
+       confidence     0.709      0.738       0.700        0.700     -0.030   0.0057         YES
+        grade_num     1.058      1.255       1.000        1.000     -0.197   0.0057         YES
+             rvol     1.290      1.209       1.265        0.970      0.081   0.1133          no
+     or_range_pct     3.768      4.054       2.593        3.153     -0.286   0.5028          no
+minutes_from_open    28.538     27.873      25.500       25.000      0.666   0.5679          no
+     fvg_size_pct     0.143      0.164       0.102        0.086     -0.021   0.7553          no
+       entry_hour     9.385      9.364       9.000        9.000      0.021   0.8263          no
+
+-- FILTER CANDIDATES (threshold scan) --
+  rvol above 1.276: WR 48.6% -> 60.5% (+11.9pp), retains 43 trades (40.2%)
+  fvg_size_pct above 0.04: WR 48.6% -> 51.8% (+3.2pp), retains 85 trades (79.4%)
+  minutes_from_open above 25.0: WR 48.6% -> 51.7% (+3.1pp), retains 58 trades (54.2%)
+
+-- TICKER RANKING (by avg R) --
+ticker  trades  win_rate  avg_r  profit_factor  avg_or_range_pct  avg_rvol  eod_pct
+   WMT       2     100.0  0.710         999.00              0.97      0.81    100.0
+  AAOI      11      72.7  0.615           4.28              5.13      1.80     54.5
+    VG       2     100.0  0.505         999.00              5.59      1.19     50.0
+   AMD       2     100.0  0.435         999.00              1.90      1.02    100.0
+   QQQ       3      66.7  0.350           2.01              0.50      1.07     66.7
+  NVDA       4      50.0  0.295           2.05              1.07      1.02     75.0
+  FSLY       9      55.6  0.260           1.75              5.71      1.30     44.4
+  HYMC      12      58.3  0.218           1.66              6.86      1.35     50.0
+   BAC       2      50.0  0.175           1.54              1.37      0.72     50.0
+   SPY       6      50.0  0.163           1.39              0.37      1.00     33.3
+  MSFT       3      66.7  0.147           3.00              0.96      0.77    100.0
+   PBF       3      66.7  0.040           1.12              3.00      1.60     33.3
+  AXTI      12      33.3  0.020           1.09              9.16      1.17     75.0
+   GLD       2      50.0 -0.010           0.98              0.57      1.98      0.0
+ CMCSA       4      50.0 -0.188           0.42              2.13      0.99     75.0
+  PYPL       7      28.6 -0.244           0.38              2.07      1.19     85.7
+   OXY      10      30.0 -0.324           0.27              1.76      1.14     60.0
+   LYB       8      25.0 -0.342           0.31              2.91      1.19     62.5
+  MSTR       2       0.0 -0.530           0.00              2.86      1.54     50.0
+  ORCL       3       0.0 -0.670           0.00              2.86      1.18     66.7
