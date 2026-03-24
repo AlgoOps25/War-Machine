@@ -477,7 +477,7 @@ REGIME_FILTER_ENABLED = True
 
 EXPLOSIVE_SCORE_THRESHOLD = 80
 EXPLOSIVE_RVOL_THRESHOLD = 3.0
-MIN_RVOL_TO_SIGNAL = 1.5          # PHASE 1.36: hard floor — below this, no signal fired
+MIN_RVOL_TO_SIGNAL        = config.RVOL_SIGNAL_GATE  # Phase 1.36 — from backtest analysis
 MAX_WATCH_BARS = 12
 OPTIONS_PRE_GATE_MODE = "HARD"
 
@@ -520,7 +520,7 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
     except Exception as _rvol_err:
         logger.info(f"[{ticker}] RVOL gate error (non-fatal): {_rvol_err}")
     # ─────────────────────────────────────────────────────────────────────────
-    
+
     _pre_options_data = None
     if OPTIONS_PRE_GATE_ENABLED:
         try:
