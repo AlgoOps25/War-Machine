@@ -159,6 +159,11 @@ FVG_MIN_SIZE_PCT = 0.0003
 FVG_SOFT_PCT      = 0.0015   # soft/partial FVG tolerance (0.8%)
 CONFIRMATION_TIMEOUT_BARS = 5
 
+# ⚠️  BACKTEST INTELLIGENCE WARNING (2026-03-24):
+# confidence is INVERSELY correlated with wins (p=0.006, n=107 trades).
+# Higher confidence scores → MORE losses. Confidence scoring must be audited.
+# These floors may be over-filtering good setups until confidence is fixed.
+# See: docs/BACKTEST_INTELLIGENCE.md — Feature Significance section.
 MIN_CONFIDENCE_OR = 0.75
 MIN_CONFIDENCE_INTRADAY = 0.70
 CONFIDENCE_ABSOLUTE_FLOOR = 0.65
@@ -178,7 +183,18 @@ MIN_CONFIDENCE_BY_GRADE = {
 MIN_PRICE = 5.0
 MAX_PRICE = 500.0
 MIN_VOLUME = 1_000_000
+
+# ── RVOL GATES ────────────────────────────────────────────────────────────────
+# MIN_RELATIVE_VOLUME : screener-level gate (wide pre-market scan)
+#                       2.0x is intentionally strict — high-activity stocks only
+#
+# RVOL_SIGNAL_GATE    : signal-level gate (applied per-signal in scanner.py)
+#                       1.28 derived from backtest analysis (2026-03-24):
+#                       rvol >= 1.276 → WR 48.6% → 60.5% (+11.9pp, 43 trades)
+#                       See: docs/BACKTEST_INTELLIGENCE.md
 MIN_RELATIVE_VOLUME = 2.0
+RVOL_SIGNAL_GATE    = 1.28   # hard gate: skip signal if rvol < this threshold
+
 MIN_ATR_MULTIPLIER = 4.0
 
 MFI_MIN = 60
@@ -235,6 +251,9 @@ EXPLOSIVE_RVOL_THRESHOLD = 4.0
 # BACKTEST CAMPAIGN CHAMPION REFERENCE
 # ========================================
 
+# NOTE (2026-03-24): ORCL removed from champion tickers.
+# Backtest analysis (107 trades): ORCL avg R = -0.67, WR = 0%, 3 trades.
+# See: docs/BACKTEST_INTELLIGENCE.md — Ticker Tier List.
 BACKTEST_CHAMPION = {
     'bos_strength' : 0.001,
     'tf_confirm'   : '1m',
@@ -248,7 +267,7 @@ BACKTEST_CHAMPION = {
     'avg_r'        : 0.44,
     'score'        : 0.3130,
     'trades'       : 34,
-    'tickers'      : 'AAPL,AMD,META,MSFT,NVDA,TSLA,AMZN,ORCL,WMT,BAC,CSCO',
+    'tickers'      : 'AAPL,AMD,META,MSFT,NVDA,TSLA,AMZN,WMT,BAC,CSCO',
 }
 
 # ========================================
@@ -363,6 +382,9 @@ if __name__ == "__main__":
     logger.info(f"\nOptions Thresholds (P2-2):")
     logger.info(f"  Delta Range : {TARGET_DELTA_MIN:.2f} – {TARGET_DELTA_MAX:.2f} (ideal {IDEAL_DELTA:.2f})")
     logger.info(f"  DTE Range   : {MIN_DTE} – {MAX_DTE} (default ideal {IDEAL_DTE})")
+    logger.info(f"\nRVOL Gates:")
+    logger.info(f"  Screener gate  : {MIN_RELATIVE_VOLUME}x (pre-market scan)")
+    logger.info(f"  Signal gate    : {RVOL_SIGNAL_GATE}x (per-signal, from backtest 2026-03-24)")
     logger.info(f"\nAdvanced Features:")
     logger.info(f"  Validator: {'Enabled' if VALIDATOR_ENABLED else 'Disabled'}")
     logger.info(f"  Options Filter: {'Enabled (' + OPTIONS_FILTER_MODE + ')' if OPTIONS_FILTER_ENABLED else 'Disabled'}")
@@ -370,7 +392,7 @@ if __name__ == "__main__":
     logger.info(f"  MTF Convergence: {'Enabled' if MTF_ENABLED else 'Disabled'}")
     logger.info(f"  Hourly Gate: {'Enabled' if HOURLY_GATE_ENABLED else 'Disabled'}")
     logger.info(f"  Correlation Check: {'Enabled' if CORRELATION_CHECK_ENABLED else 'Disabled'}")
-    logger.info(f"\nCampaign Champion (2026-03-10):")
+    logger.info(f"\nCampaign Champion:")
     logger.info(f"  BOS Threshold : {ORB_BREAK_THRESHOLD*100:.2f}%")
     logger.info(f"  Min RVOL      : {MIN_RELATIVE_VOLUME}x")
     logger.info(f"  MFI Floor     : {MFI_MIN}")
