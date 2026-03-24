@@ -23,7 +23,7 @@ import pandas as pd
 from scipy.stats import mannwhitneyu
 
 
-# ── CLI ───────────────────────────────────────────────────────────────────────
+# -- CLI ----------------------------------------------------------------------
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--results", default="backtests/results",
@@ -35,7 +35,7 @@ def parse_args():
     return p.parse_args()
 
 
-# ── LOAD ──────────────────────────────────────────────────────────────────────
+# -- LOAD ---------------------------------------------------------------------
 def load_trades(results_dir: Path, min_trades: int) -> pd.DataFrame:
     frames = []
     for csv in sorted(results_dir.glob("*_trades.csv")):
@@ -49,33 +49,26 @@ def load_trades(results_dir: Path, min_trades: int) -> pd.DataFrame:
     return df
 
 
-# ── FEATURE ENGINEERING ───────────────────────────────────────────────────────
+# -- FEATURE ENGINEERING ------------------------------------------------------
 def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
 
-    # Entry timing
     df["entry_minute_abs"] = df["entry_hour"] * 60 + df["entry_minute"]
     df["minutes_from_open"] = df["entry_minute_abs"] - (9 * 60 + 30)
 
-    # OR characteristics
     df["or_range_pct"] = df["or_range_pct"].astype(float)
     df["or_range_wide"] = (df["or_range_pct"] >= 3.0).astype(int)
 
-    # FVG quality
     df["fvg_size_pct"] = df["fvg_size_pct"].astype(float)
 
-    # RVOL
     df["rvol"] = df["rvol"].astype(float)
     df["rvol_strong"] = (df["rvol"] >= 1.5).astype(int)
 
-    # Grade numeric
     grade_map = {"A+": 2, "A": 1, "B": 0}
     df["grade_num"] = df["grade"].map(grade_map).fillna(0)
 
-    # Entry hour bucket
     df["early_entry"] = (df["entry_hour"] == 9).astype(int)
 
-    # R multiple bins
     df["r_bucket"] = pd.cut(
         df["r_multiple"],
         bins=[-99, -1, 0, 0.5, 1.0, 2.0, 99],
@@ -85,7 +78,7 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-# ── FEATURE ANALYSIS ──────────────────────────────────────────────────────────
+# -- FEATURE ANALYSIS ---------------------------------------------------------
 NUMERIC_FEATURES = [
     "or_range_pct",
     "fvg_size_pct",
@@ -126,12 +119,8 @@ def analyze_features(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows).sort_values("p_value")
 
 
-# ── THRESHOLD SCAN ────────────────────────────────────────────────────────────
+# -- THRESHOLD SCAN -----------------------------------------------------------
 def scan_thresholds(df: pd.DataFrame) -> list[dict]:
-    """
-    For each numeric feature, scan thresholds and find the cutoff
-    that maximises the win rate improvement while retaining >= 30% of trades.
-    """
     candidates = []
     total = len(df)
 
@@ -172,7 +161,7 @@ def scan_thresholds(df: pd.DataFrame) -> list[dict]:
     return sorted(candidates, key=lambda x: -x["improvement_pp"])
 
 
-# ── EXIT REASON BREAKDOWN ─────────────────────────────────────────────────────
+# -- EXIT REASON BREAKDOWN ----------------------------------------------------
 def exit_breakdown(df: pd.DataFrame) -> pd.DataFrame:
     rows = []
     for reason, grp in df.groupby("exit_reason"):
@@ -186,7 +175,7 @@ def exit_breakdown(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows).sort_values("count", ascending=False)
 
 
-# ── TICKER RANKING ────────────────────────────────────────────────────────────
+# -- TICKER RANKING -----------------------------------------------------------
 def ticker_ranking(df: pd.DataFrame) -> pd.DataFrame:
     rows = []
     for ticker, grp in df.groupby("ticker"):
@@ -206,7 +195,7 @@ def ticker_ranking(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows).sort_values("avg_r", ascending=False)
 
 
-# ── REPORT ────────────────────────────────────────────────────────────────────
+# -- REPORT -------------------------------------------------------------------
 def write_report(out_dir: Path, df: pd.DataFrame, feat_df: pd.DataFrame,
                  candidates: list, exit_df: pd.DataFrame, ticker_df: pd.DataFrame):
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -217,39 +206,39 @@ def write_report(out_dir: Path, df: pd.DataFrame, feat_df: pd.DataFrame,
 
     lines = []
     lines.append("=" * 70)
-    lines.append("WAR MACHINE — TRADE ANALYSIS REPORT")
+    lines.append("WAR MACHINE - TRADE ANALYSIS REPORT")
     lines.append(f"Total trades: {len(df)} | Win rate: {df['win'].mean()*100:.1f}% | "
                  f"Avg R: {df['r_multiple'].mean():.3f}")
     lines.append("=" * 70)
 
-    lines.append("\n── EXIT REASON BREAKDOWN ──")
+    lines.append("\n-- EXIT REASON BREAKDOWN --")
     lines.append(exit_df.to_string(index=False))
 
-    lines.append("\n── FEATURE SEPARATION (wins vs losses) ──")
+    lines.append("\n-- FEATURE SEPARATION (wins vs losses) --")
     lines.append(feat_df.to_string(index=False))
 
-    lines.append("\n── FILTER CANDIDATES (threshold scan) ──")
+    lines.append("\n-- FILTER CANDIDATES (threshold scan) --")
     if candidates:
         for c in candidates:
             lines.append(
                 f"  {c['feature']} {c['direction']} {c['threshold']}: "
-                f"WR {c['baseline_wr']}% → {c['win_rate']}% "
+                f"WR {c['baseline_wr']}% -> {c['win_rate']}% "
                 f"(+{c['improvement_pp']}pp), "
                 f"retains {c['trades_retained']} trades ({c['retain_pct']}%)"
             )
     else:
-        lines.append("  No strong single-feature filters found — try combinations.")
+        lines.append("  No strong single-feature filters found - try combinations.")
 
-    lines.append("\n── TICKER RANKING (by avg R) ──")
+    lines.append("\n-- TICKER RANKING (by avg R) --")
     lines.append(ticker_df.to_string(index=False))
 
     report_path = out_dir / "filter_candidates.txt"
-    report_path.write_text("\n".join(lines))
+    report_path.write_text("\n".join(lines), encoding="utf-8")
     print(f"\nReport written to {report_path}")
     print("\n" + "\n".join(lines))
 
 
-# ── MAIN ──────────────────────────────────────────────────────────────────────
+# -- MAIN ---------------------------------------------------------------------
 def main():
     args = parse_args()
     results_dir = Path(args.results)
