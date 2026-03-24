@@ -78,7 +78,7 @@ from collections import defaultdict
 
 import pandas as pd
 
-from app.data.db_connection import get_conn, ph, dict_cursor
+from app.data.db_connection import get_conn, return_conn, ph, dict_cursor
 
 ET = ZoneInfo("America/New_York")
 
@@ -149,7 +149,8 @@ def get_all_tickers(timeframe: str = "1m") -> List[str]:
         rows = cur.fetchall()
         return [r["ticker"] if isinstance(r, dict) else r[0] for r in rows]
     finally:
-        conn.close()
+        # return_conn releases the semaphore — conn.close() does NOT
+        return_conn(conn)
 
 
 def get_bars(ticker: str, start: datetime, end: datetime,
@@ -174,7 +175,8 @@ def get_bars(ticker: str, start: datetime, end: datetime,
             )
         rows = cur.fetchall()
     finally:
-        conn.close()
+        # return_conn releases the semaphore — conn.close() does NOT
+        return_conn(conn)
 
     bars = []
     for r in rows:
