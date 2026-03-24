@@ -1,0 +1,2 @@
+ticker,date,direction,grade,confidence,or_high,or_low,or_range_pct,fvg_low,fvg_high,fvg_size_pct,entry_price,stop_price,t1_price,t2_price,entry_time,exit_time,exit_price,exit_reason,pnl_pts,r_multiple,win,entry_hour,rvol,entry_minute
+FCX,2026-03-23,bull,A,0.7,54.49,53.24,2.348,54.62,54.6999,0.146,54.6599,53.1868,56.5014,57.6063,2026-03-23 09:50:00,2026-03-23 15:55:00,54.77,EOD,0.0991,0.07,1,9,0.86,50

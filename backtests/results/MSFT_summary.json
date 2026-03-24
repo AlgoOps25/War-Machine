@@ -1,0 +1,17 @@
+{
+  "ticker": "MSFT",
+  "days": 90,
+  "total_trades": 3,
+  "wins": 2,
+  "losses": 1,
+  "win_rate_pct": 66.7,
+  "avg_r": 0.147,
+  "median_r": 0.26,
+  "avg_win_r": 0.33,
+  "avg_loss_r": -0.22,
+  "profit_factor": 3.0,
+  "max_drawdown_r": 0.0,
+  "exit_reasons": {
+    "EOD": 3
+  }
+}

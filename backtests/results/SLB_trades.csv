@@ -1,0 +1,2 @@
+ticker,date,direction,grade,confidence,or_high,or_low,or_range_pct,fvg_low,fvg_high,fvg_size_pct,entry_price,stop_price,t1_price,t2_price,entry_time,exit_time,exit_price,exit_reason,pnl_pts,r_multiple,win,entry_hour,rvol,entry_minute
+SLB,2026-03-23,bull,A,0.7,48.715,47.08,3.473,48.84,48.97,0.266,48.905,47.0329,51.2451,52.6492,2026-03-23 09:50:00,2026-03-23 15:55:00,49.125,EOD,0.2102,0.11,1,9,0.56,50

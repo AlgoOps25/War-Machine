@@ -1,0 +1,2 @@
+ticker,date,direction,grade,confidence,or_high,or_low,or_range_pct,fvg_low,fvg_high,fvg_size_pct,entry_price,stop_price,t1_price,t2_price,entry_time,exit_time,exit_price,exit_reason,pnl_pts,r_multiple,win,entry_hour,rvol,entry_minute
+CRM,2026-03-09,bear,A,0.7,203.67,198.05,2.838,197.86,198.0,0.071,197.93,203.8737,190.5004,186.0427,2026-03-09 10:13:00,2026-03-09 15:55:00,198.835,EOD,-0.9446,-0.16,0,10,1.14,13

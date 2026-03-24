@@ -1,0 +1,17 @@
+{
+  "ticker": "UNH",
+  "days": 90,
+  "total_trades": 1,
+  "wins": 0,
+  "losses": 1,
+  "win_rate_pct": 0.0,
+  "avg_r": -1.02,
+  "median_r": -1.02,
+  "avg_win_r": 0.0,
+  "avg_loss_r": -1.02,
+  "profit_factor": 0.0,
+  "max_drawdown_r": 0.0,
+  "exit_reasons": {
+    "STOP": 1
+  }
+}

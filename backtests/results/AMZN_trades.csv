@@ -1,0 +1,2 @@
+ticker,date,direction,grade,confidence,or_high,or_low,or_range_pct,fvg_low,fvg_high,fvg_size_pct,entry_price,stop_price,t1_price,t2_price,entry_time,exit_time,exit_price,exit_reason,pnl_pts,r_multiple,win,entry_hour,rvol,entry_minute
+AMZN,2026-03-09,bear,A+,0.85,212.295,208.65,1.747,207.93,208.58,0.313,208.255,212.5073,202.9396,199.7504,2026-03-09 09:49:00,2026-03-09 15:27:00,212.5073,STOP,-4.2939,-1.01,0,9,1.39,49

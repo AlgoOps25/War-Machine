@@ -1,0 +1,19 @@
+{
+  "ticker": "AAOI",
+  "days": 90,
+  "total_trades": 11,
+  "wins": 8,
+  "losses": 3,
+  "win_rate_pct": 72.7,
+  "avg_r": 0.615,
+  "median_r": 0.75,
+  "avg_win_r": 1.103,
+  "avg_loss_r": -0.687,
+  "profit_factor": 4.28,
+  "max_drawdown_r": 1.0,
+  "exit_reasons": {
+    "EOD": 6,
+    "STOP": 4,
+    "T2": 1
+  }
+}

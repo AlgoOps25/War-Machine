@@ -1,0 +1,17 @@
+{
+  "ticker": "CRM",
+  "days": 90,
+  "total_trades": 1,
+  "wins": 0,
+  "losses": 1,
+  "win_rate_pct": 0.0,
+  "avg_r": -0.16,
+  "median_r": -0.16,
+  "avg_win_r": 0.0,
+  "avg_loss_r": -0.16,
+  "profit_factor": 0.0,
+  "max_drawdown_r": 0.0,
+  "exit_reasons": {
+    "EOD": 1
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "ticker": "HYMC",
+  "days": 90,
+  "total_trades": 12,
+  "wins": 7,
+  "losses": 5,
+  "win_rate_pct": 58.3,
+  "avg_r": 0.218,
+  "median_r": 0.425,
+  "avg_win_r": 0.94,
+  "avg_loss_r": -0.792,
+  "profit_factor": 1.66,
+  "max_drawdown_r": 2.3,
+  "exit_reasons": {
+    "STOP": 6,
+    "EOD": 6
+  }
+}

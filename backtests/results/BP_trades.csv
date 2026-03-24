@@ -1,0 +1,2 @@
+ticker,date,direction,grade,confidence,or_high,or_low,or_range_pct,fvg_low,fvg_high,fvg_size_pct,entry_price,stop_price,t1_price,t2_price,entry_time,exit_time,exit_price,exit_reason,pnl_pts,r_multiple,win,entry_hour,rvol,entry_minute
+BP,2026-02-11,bull,A,0.7,38.25,37.74,1.351,38.175,38.18,0.013,38.1775,37.7023,38.7715,39.128,2026-02-11 09:45:00,2026-02-11 12:25:00,38.6604,STOP,0.4752,1.0,1,9,0.53,45

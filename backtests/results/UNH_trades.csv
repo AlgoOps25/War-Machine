@@ -1,0 +1,2 @@
+ticker,date,direction,grade,confidence,or_high,or_low,or_range_pct,fvg_low,fvg_high,fvg_size_pct,entry_price,stop_price,t1_price,t2_price,entry_time,exit_time,exit_price,exit_reason,pnl_pts,r_multiple,win,entry_hour,rvol,entry_minute
+UNH,2026-03-11,bear,A,0.7,283.95,281.61,0.831,281.25,281.44,0.068,281.345,284.2339,277.7338,275.5671,2026-03-11 09:56:00,2026-03-11 12:59:00,284.2339,STOP,-2.9452,-1.02,0,9,0.87,56

@@ -1,0 +1,18 @@
+{
+  "ticker": "PBF",
+  "days": 90,
+  "total_trades": 3,
+  "wins": 2,
+  "losses": 1,
+  "win_rate_pct": 66.7,
+  "avg_r": 0.04,
+  "median_r": 0.12,
+  "avg_win_r": 0.56,
+  "avg_loss_r": -1.0,
+  "profit_factor": 1.12,
+  "max_drawdown_r": 1.0,
+  "exit_reasons": {
+    "EOD": 1,
+    "STOP": 2
+  }
+}
