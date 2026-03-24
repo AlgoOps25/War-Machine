@@ -15,6 +15,7 @@ Outputs:
 
 Usage:
   python scripts/backtesting/walk_forward_backtest.py --tickers SPY,QQQ,AAPL --days 90
+  python scripts/backtesting/walk_forward_backtest.py --all --days 90
   python scripts/backtesting/walk_forward_backtest.py --tickers SPY --days 30
 '''  # quick smoke test
 
@@ -61,16 +62,10 @@ logging.basicConfig(
 )
 log = logging.getLogger("wf_backtest")
 
-# 5m OR window: 9:30-9:45 (3 bars: 09:30, 09:35, 09:40), minimum 2
-#OR_5M_START    = dtime(9, 30)
-#OR_5M_END      = dtime(9, 45)   # exclusive upper bound
-#OR_5M_MIN_BARS = 2
 T1_R = 1.25   # T1 target — trails stop to BE on hit
 T2_R = 2.0    # T2 target — full exit
 
-# FVG minimum for 5m bars — any positive gap qualifies (float-noise floor only)
-# production 0.5% threshold is 1m-calibrated and never fires on 5m mega-cap data
-FVG_MIN_SIZE_PCT_5M = 0.0001   # kept as local fallback only — production threshold used natively on 1m # must run before app imports
+FVG_MIN_SIZE_PCT_5M = 0.0001
 
 # ── Production pipeline imports ─────────────────────────────────────────────
 try:
@@ -190,6 +185,7 @@ def get_or_end_time(ticker: str) -> dtime:
         return dtime(h, m)
     except Exception:
         return OR_DEFAULT_END
+
 # ═══════════════════════════════════════════════════════════════════════════
 # DATA FETCHING
 # ═══════════════════════════════════════════════════════════════════════════
@@ -271,18 +267,11 @@ class EODHDFetcher:
             return pd.DataFrame()
 
     def fetch_session_context(self, ticker: str, session_date: ddate) -> Optional[Dict]:
-        """Return EMA20/ADX/RSI/ATR/prior_close for the trading day before session_date.
-
-        Priority:
-          1. In-memory cache (fastest)
-          2. PostgreSQL daily_technicals table (populated by load_historical_data.py)
-          3. EODHD API + disk JSON cache (fallback for dates not yet in DB)
-        """
+        """Return EMA20/ADX/RSI/ATR/prior_close for the trading day before session_date."""
         cache_key = (ticker, session_date)
         if cache_key in self._ctx_cache:
             return self._ctx_cache[cache_key]
 
-        # Resolve prior trading day (skip weekends)
         prior_day = session_date - timedelta(days=1)
         while prior_day.weekday() >= 5:
             prior_day -= timedelta(days=1)
@@ -347,15 +336,14 @@ class EODHDFetcher:
                 r = requests.get(
                     self.TECH_URL.format(ticker=ticker),
                     params={"api_token": self.api_key, "function": function,
-                            "period": period, "from": from_ts, "to": from_ts, "fmt": "json"},
+                            "period": period, "from": from_ts, "to": from_ts,
+                            "order": "a", "fmt": "json"},
                     timeout=10,
                 )
                 if r.status_code != 200 or not r.json():
                     return None
                 last = r.json()[-1]
-                if function == "adx":
-                    return float(last.get("adx", 0) or 0)
-                return float(last.get("value", 0) or 0)
+                return float(last.get(function, 0) or 0)
             except Exception:
                 return None
 
@@ -411,7 +399,7 @@ def split_into_sessions(df: pd.DataFrame) -> List[pd.DataFrame]:
 
 
 def bars_to_sniper_format(df: pd.DataFrame) -> List[Dict]:
-    '''Convert DataFrame rows to bar dicts. Key must be "datetime" so _bar_time() resolves correctly.'''
+    '''Convert DataFrame rows to bar dicts.'''
     bars = []
     for _, row in df.iterrows():
         if pd.isna(row["open"]) or pd.isna(row["high"]) or pd.isna(row["low"]) or pd.isna(row["close"]):
@@ -472,7 +460,7 @@ def simulate_trade(
                         "pnl_pts": round(pnl, 4), "r_multiple": round(pnl / risk, 2) if risk else 0.0}
             if not t1_hit and hi >= t1_price:
                 t1_hit  = True
-                be_stop = actual_entry + risk  # trail to +1R after T1
+                be_stop = actual_entry + risk
             if t1_hit and hi >= t2_price:
                 pnl = t2_price - actual_entry
                 return {"exit_price": round(t2_price, 4), "exit_reason": "T2",
@@ -486,7 +474,7 @@ def simulate_trade(
                         "pnl_pts": round(pnl, 4), "r_multiple": round(pnl / risk, 2) if risk else 0.0}
             if not t1_hit and lo <= t1_price:
                 t1_hit  = True
-                be_stop = actual_entry - risk  # trail to +1R after T1
+                be_stop = actual_entry - risk
             if t1_hit and lo <= t2_price:
                 pnl = actual_entry - t2_price
                 return {"exit_price": round(t2_price, 4), "exit_reason": "T2",
@@ -509,26 +497,15 @@ def run_session(
     session_bars: pd.DataFrame,
     fetcher: Optional["EODHDFetcher"] = None,
 ) -> Optional[Dict]:
-    '''
-    Run one trading session through the production pipeline.
-
-    OR is computed inline via compute_opening_range_from_bars() (1m native).
-    FVG size gate uses production threshold natively on 1m bars.
-    All other pipeline calls use real production signatures.
-    '''
     bars = bars_to_sniper_format(session_bars)
     if len(bars) < 10:
         return None
 
     session_date = bars[0]["datetime"].date()
 
-    # ── OR config exclusion (high false-break rate tickers) ───────────────
-
     if ticker in _OR_EXCLUDED:
         log.info(f"  [OR-EXCL] {ticker}: excluded due to high false-break rate")
         return None
-
-    # ── Step 0: Pre-session context filter ────────────────────────────────
 
     ctx = None
     ctx_rsi = ctx_ema20 = ctx_prior_close = None
@@ -539,14 +516,10 @@ def run_session(
             if adx is not None and adx < CTX_ADX_MIN:
                 log.info(f"  [CTX-SKIP] {ticker} {session_date}: ADX={adx:.1f} (ranging)")
                 return None
-            #atr = ctx.get("atr")
-            #if atr is not None and atr < CTX_ATR_MIN:
-                #log.info(f"  [CTX-SKIP] {ticker} {session_date}: ATR={atr:.2f} (compressed)")
-                #return None
             ctx_rsi         = ctx.get("rsi")
             ctx_ema20       = ctx.get("ema20")
             ctx_prior_close = ctx.get("prior_close")
-    # ── Step 1: Opening Range (production 1m) ──────────────────────────────
+
     from app.signals.opening_range import compute_opening_range_from_bars
     or_end = get_or_end_time(ticker)
     or_high, or_low = compute_opening_range_from_bars(bars, or_end_time=or_end)
@@ -559,7 +532,6 @@ def run_session(
     if (or_high - or_low) < MIN_OR_DOLLARS:
         return None
 
-     # ── Step 2: Breakout detection ─────────────────────────────────────────
     try:
         direction, breakout_idx = detect_breakout_after_or(bars, or_high, or_low)
     except Exception as e:
@@ -574,8 +546,6 @@ def run_session(
         log.info(f"  Late breakout skip: idx {breakout_idx} > {MAX_BREAKOUT_IDX}")
         return None
 
-
-    # ── Step 2b: Relative volume ────────────────────────────────────────────
     breakout_vol = bars[breakout_idx].get("volume", 0)
     prior_vols   = [b["volume"] for b in bars[:breakout_idx] if b["volume"] > 0]
     rvol         = round(breakout_vol / (sum(prior_vols) / len(prior_vols)), 2) if prior_vols else 0.0
@@ -583,7 +553,6 @@ def run_session(
         log.info(f"  [RVOL-SKIP] {ticker} {session_date}: rvol={rvol} < 0.5")
         return None
 
-    # ── Step 2c: Intraday EMA9 trend alignment ─────────────────────────────
     closes = [b["close"] for b in bars[:breakout_idx + 1]]
     if len(closes) >= 9:
         k    = 2 / (9 + 1)
@@ -591,7 +560,7 @@ def run_session(
         for c in closes[1:]:
             ema9 = c * k + ema9 * (1 - k)
         breakout_price = bars[breakout_idx]["close"]
-        tolerance = ema9 * 0.0005   # must be 0.05% below/above to reject
+        tolerance = ema9 * 0.0005
         if direction == "bull" and breakout_price < ema9 - tolerance:
             log.info(f"  [EMA9-SKIP] {ticker} {session_date}: BULL breakout below intraday EMA9")
             return None
@@ -599,7 +568,6 @@ def run_session(
             log.info(f"  [EMA9-SKIP] {ticker} {session_date}: BEAR breakout above intraday EMA9")
             return None
 
-    # RSI directional gate
     if ctx_rsi is not None:
         if direction == "bull" and ctx_rsi >= CTX_RSI_OB:
             log.info(f"  [CTX-SKIP] {ticker} {session_date}: BULL RSI={ctx_rsi:.1f} overbought")
@@ -608,7 +576,6 @@ def run_session(
             log.info(f"  [CTX-SKIP] {ticker} {session_date}: BEAR RSI={ctx_rsi:.1f} oversold")
             return None
 
-    # EMA20 trend alignment gate
     if CTX_EMA_ALIGN and ctx_ema20 and ctx_prior_close:
         ema_gap_pct = abs(ctx_prior_close - ctx_ema20) / ctx_ema20
         rsi_oversold = ctx_rsi is not None and ctx_rsi < 35
@@ -620,7 +587,6 @@ def run_session(
             log.info(f"  [CTX-SKIP] {ticker} {session_date}: BEAR close > EMA20 by {ema_gap_pct:.2%}")
             return None
 
-    # ── Step 3: FVG after breakout ─────────────────────────────────────────
     log.info(f"  [FVG-DEBUG] {ticker} {session_date}: breakout_idx={breakout_idx}, direction={direction}, bars_after={len(bars) - breakout_idx - 1}")
     try:
         fvg_low, fvg_high, fvg_type = detect_fvg_with_type(bars, breakout_idx, direction)
@@ -632,7 +598,6 @@ def run_session(
         return None
 
     fvg_is_soft = (fvg_type == "soft")
-
     fvg_size = (fvg_high - fvg_low) / fvg_low if fvg_low > 0 else 0.0
     if fvg_size < 0.0008:
         if or_range_pct < 0.0020:
@@ -641,9 +606,8 @@ def run_session(
 
     fvg_mid = (fvg_low + fvg_high) / 2.0
 
-    # ── Step 5: Entry ──────────────────────────────────────────────────────
-    entry_bar_idx = breakout_idx          # enter at breakout bar (NOT +1)
-    entry_price   = fvg_mid               # FVG midpoint as entry
+    entry_bar_idx = breakout_idx
+    entry_price   = fvg_mid
     if entry_bar_idx >= len(bars) - 1:
         log.info(f"  [ENTRY-SKIP] {ticker} {session_date}: breakout at last bar")
         return None
@@ -653,14 +617,13 @@ def run_session(
         log.info(f"  [TIME-SKIP] {ticker} {session_date}: entry at {entry_t.strftime('%H:%M')} blocked")
         return None
 
-    # ── Step 6: Grade ────────────────────────────────────────────────────────────
     grade = "A"
     conf  = 0.65
     if GRADE_OK:
         try:
             graded = grade_signal_with_confirmations(
                 ticker, direction, bars, entry_price, breakout_idx, grade,
-                session_date=session_date  # pass as date object, not string
+                session_date=session_date
             )
             final_grade = graded.get("final_grade", "A")
             if final_grade == "reject":
@@ -671,12 +634,10 @@ def run_session(
             if grade == "A-":
                 log.info(f"  [A-SKIP] {ticker} {session_date}: rejected on A- grade (0/3 confirmation)")
                 return None
-            # Require institutional confirmation — blocks high-conviction false breakouts
             confirmations = graded.get("confirmations", {})
         except Exception as _ge:
             log.info(f"  Grade error {session_date}: {_ge}")
 
-    # ── Step 7: Stop & targets ─────────────────────────────────────────────
     try:
         stop, t1, t2 = compute_stop_and_targets(
             bars, direction, or_high, or_low, entry_price, grade=grade
@@ -687,14 +648,6 @@ def run_session(
     if stop is None or t1 is None or t2 is None:
         return None
 
-    # Override ATR stop with OR boundary for 5m backtest, hard-capped at $2.50 max loss.
-    # 5m ATR stops (~$0.40) are too tight and get tagged by normal bar noise.
-    # OR high/low is the structural level these entries should respect.
-    # Cap prevents asymmetric risk when OR is unusually wide (>$2.50 from entry).
-    # AFTER — use OR boundary only, skip trades where OR stop > $3.00 from entry
-    # Step 7b: OR-based stop — use structural level, skip if too wide
-    # Step 7b: OR-based stop — structural boundary only
-    # Use ATR stop (tight, realistic), but never wider than OR boundary
     if direction == "bull":
         stop = or_low * 0.999
     else:
@@ -707,7 +660,6 @@ def run_session(
         log.info(f"  [RISK-SKIP] {ticker} {session_date}: risk=${risk:.2f} < MIN_RISK=${MIN_RISK}")
         return None
 
-    # T1 = 1.25R (trail stop to BE on hit), T2 = 2.0R (full exit)
     if direction == "bull":
         t1 = entry_price + risk * T1_R
         t2 = entry_price + risk * T2_R
@@ -715,7 +667,6 @@ def run_session(
         t1 = entry_price - risk * T1_R
         t2 = entry_price - risk * T2_R
 
-    # ── Step 8: Simulate ─────────────────────────────────────────────────────────
     outcome  = simulate_trade(entry_bar_idx, bars, direction, entry_price, stop, t1, t2)
     entry_dt = bars[entry_bar_idx]["datetime"]
 
@@ -924,13 +875,25 @@ def run(tickers: List[str], days: int, out_dir: str, fold_size: int = 30, use_ct
 
 def main():
     parser = argparse.ArgumentParser(description="Walk-Forward Backtest — War Machine")
-    parser.add_argument("--tickers", default="SPY",  help="Comma-separated tickers (default: SPY)")
+    parser.add_argument("--tickers", default="SPY", help="Comma-separated tickers (default: SPY)")
+    parser.add_argument("--all", action="store_true",
+                        help="Run all tickers from ticker_or_config.json (overrides --tickers)")
     parser.add_argument("--days",    type=int, default=90, help="Lookback days (default: 90)")
     parser.add_argument("--out",     default="backtests/results", help="Output directory")
     parser.add_argument("--fold",    type=int, default=30, help="Walk-forward fold size in days (default: 30)")
     parser.add_argument("--no-ctx", action="store_true", help="Disable pre-session context filter")
     args = parser.parse_args()
-    run([t.strip().upper() for t in args.tickers.split(",")], args.days, args.out, args.fold, use_ctx=not args.no_ctx)
+
+    if args.all:
+        if not _OR_CONFIG_PATH.exists():
+            print(f"❌ --all requires ticker_or_config.json at {_OR_CONFIG_PATH}")
+            sys.exit(1)
+        tickers = list(_OR_CONFIG.keys())
+        print(f"--all: loaded {len(tickers)} tickers from ticker_or_config.json")
+    else:
+        tickers = [t.strip().upper() for t in args.tickers.split(",") if t.strip()]
+
+    run(tickers, args.days, args.out, args.fold, use_ctx=not args.no_ctx)
 
 
 if __name__ == "__main__":
