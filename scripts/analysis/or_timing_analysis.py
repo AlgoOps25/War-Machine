@@ -1,29 +1,24 @@
 #!/usr/bin/env python3
 """
 OR Timing Distribution Analysis
-Queries War Machine PostgreSQL DB to find:
-  - Per-ticker distribution of first clean BOS time after 9:30 open
-  - False breakout rate by time bucket (breakout reversed within N bars)
-  - First valid FVG formation time after BOS
-  - Per-ticker recommended OR end time
 """
 
 import os
 import sys
 import json
 import logging
-import asyncio
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mtick
 from collections import defaultdict
-from datetime import datetime, time, date, timedelta
+from datetime import time
 from zoneinfo import ZoneInfo
 
 # ── Path setup ────────────────────────────────────────────────────────────────
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from app.data.db_connection import get_db_pool
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+
+from app.data.db_connection import get_connection   # context manager: with get_connection() as conn
 from utils import config
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -31,57 +26,66 @@ ET = ZoneInfo("America/New_York")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
-TICKERS        = ["SPY", "QQQ", "NVDA", "TSLA", "META", "AMD", "AAPL", "MSTR", "MU", "IWM", "MSFT"]
-SESSION_START  = time(9, 30)
-SESSION_END    = time(16, 0)
-OR_FIXED_END   = time(9, 40)          # current system OR close
-SCAN_UNTIL     = time(11, 0)          # stop looking for first BOS after this
-ATR_PERIOD     = 14                   # bars for ATR
-DISP_MULT      = 0.10                 # body must be >= 10% of ATR to qualify as displacement
-FVG_MIN_PCT    = 0.0005               # min FVG size as fraction of price
-FALSE_BREAK_BARS = 10                 # bars to check for reversal after breakout
-FALSE_BREAK_RETRACE = 0.60           # if price retraces 60% of breakout move → false break
-OUTPUT_DIR     = "output/or_timing"
+TICKERS          = ["SPY", "QQQ", "NVDA", "TSLA", "META", "AMD", "AAPL", "MSTR", "MU", "IWM", "MSFT"]
+SESSION_START    = time(9, 30)
+SESSION_END      = time(16, 0)
+OR_FIXED_END     = time(9, 40)
+SCAN_UNTIL       = time(11, 0)
+ATR_PERIOD       = 14
+DISP_MULT        = 0.10
+FVG_MIN_PCT      = 0.0005
+FALSE_BREAK_BARS = 10
+FALSE_BREAK_RETRACE = 0.60
+OUTPUT_DIR       = "output/or_timing"
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
+
 # ── DB helpers ────────────────────────────────────────────────────────────────
 
-async def fetch_all_sessions(pool, ticker: str) -> dict:
+def fetch_all_sessions(ticker: str) -> dict:
     """
     Returns { date_str: [bar_dict, ...] } sorted by datetime ASC.
-    Each bar: { datetime, open, high, low, close, volume }
     """
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
             """
-            SELECT bar_datetime AT TIME ZONE 'America/New_York' AS dt,
+            SELECT datetime AT TIME ZONE 'America/New_York' AS dt,
                    open, high, low, close, volume
-            FROM   candles_1m
-            WHERE  ticker = $1
-              AND  bar_datetime::time >= '09:25:00'
-              AND  bar_datetime::time <  '16:00:00'
-            ORDER  BY bar_datetime ASC
+            FROM   intraday_bars
+            WHERE  ticker = %s
+              AND  datetime::time >= '09:25:00'
+              AND  datetime::time <  '16:00:00'
+            ORDER  BY datetime ASC
             """,
-            ticker,
+            (ticker,),
         )
+        rows = cur.fetchall()
+        cur.close()
 
     sessions = defaultdict(list)
     for r in rows:
-        dt = r["dt"]
+        dt = r[0] if hasattr(r, "__getitem__") else r[0]
+        # RealDictCursor returns dict-like rows
+        if isinstance(r, dict):
+            dt, o, h, l, c, v = r[0], r["open"], r["high"], r["low"], r["close"], r["volume"]
+        else:
+            dt, o, h, l, c, v = r[0], r[1], r[2], r[3], r[4], r[5]
+
         if hasattr(dt, "tzinfo") and dt.tzinfo is None:
             dt = dt.replace(tzinfo=ET)
+
         sessions[dt.date().isoformat()].append({
             "datetime": dt,
-            "open":  float(r["open"]),
-            "high":  float(r["high"]),
-            "low":   float(r["low"]),
-            "close": float(r["close"]),
-            "volume": int(r["volume"]),
+            "open":  float(o),
+            "high":  float(h),
+            "low":   float(l),
+            "close": float(c),
+            "volume": int(v),
         })
 
     return dict(sorted(sessions.items()))
-
 
 def compute_atr(bars: list, period: int = ATR_PERIOD) -> float:
     if len(bars) < 2:
@@ -394,16 +398,15 @@ def plot_false_break_heatmap(summaries: list[dict]):
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-async def main():
-    logger.info("Connecting to DB...")
-    pool = await get_db_pool()
+def main():
+    logger.info("Starting OR timing analysis...")
 
     all_results   = []
     all_summaries = []
 
     for ticker in TICKERS:
         logger.info(f"  Fetching {ticker}...")
-        sessions = await fetch_all_sessions(pool, ticker)
+        sessions = fetch_all_sessions(ticker)
         logger.info(f"  {ticker}: {len(sessions)} sessions loaded")
 
         result  = analyse_ticker(ticker, sessions)
@@ -415,26 +418,22 @@ async def main():
                     f"FB={summary.get('false_break_rate')}%  "
                     f"rec_OR_end={summary.get('recommended_or_end')}")
 
-    await pool.close()
-
     # ── Save CSV ──────────────────────────────────────────────────────────────
     df = pd.DataFrame([s for s in all_summaries if "error" not in s])
     csv_path = os.path.join(OUTPUT_DIR, "or_timing_summary.csv")
     df.to_csv(csv_path, index=False)
     logger.info(f"Summary CSV → {csv_path}")
 
-    # ── Save raw offsets JSON (for further analysis) ──────────────────────────
+    # ── Save raw JSON ─────────────────────────────────────────────────────────
     raw = {r["ticker"]: {"bos_offsets": r["bos_offsets"], "false_breaks": r["false_breaks"]} for r in all_results}
-    json_path = os.path.join(OUTPUT_DIR, "or_timing_raw.json")
-    with open(json_path, "w") as f:
+    with open(os.path.join(OUTPUT_DIR, "or_timing_raw.json"), "w") as f:
         json.dump(raw, f)
-    logger.info(f"Raw JSON → {json_path}")
 
     # ── Charts ────────────────────────────────────────────────────────────────
     plot_distributions(all_results, all_summaries)
     plot_false_break_heatmap(all_summaries)
 
-    # ── Print summary table ───────────────────────────────────────────────────
+    # ── Print table ───────────────────────────────────────────────────────────
     print("\n" + "="*90)
     print(f"{'TICKER':<7} {'SESSIONS':>9} {'BOS_P25':>8} {'BOS_MED':>8} {'BOS_P75':>8} "
           f"{'FB%':>6} {'EARLY_FB%':>10} {'LATE_FB%':>9} {'FVG_MED':>8} {'REC_END':>9}")
@@ -456,4 +455,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()    # no asyncio.run() needed
