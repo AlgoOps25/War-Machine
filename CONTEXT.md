@@ -89,7 +89,7 @@ War-Machine/
 
 **Worst Performers:**
 | Ticker | Trades | Win% | Avg R | PF |
-|--------|--------|------|-------|----|
+|--------|--------|------|-------|-----|
 | OXY    | 10 | 30.0% | -0.324 | 0.27 |
 | AXTI   | 12 | 33.3% | 0.020  | 1.09 |
 
@@ -97,6 +97,35 @@ War-Machine/
 - 9:30–10:00 (hour 9): 49.3% — 75 trades
 - 10:00–11:00 (hour 10): 50.0% — 44 trades
 - 11:00+ : 0 trades (dead zone filter working as intended)
+
+---
+
+## 📊 Grid Search Results (Mar 24 2026) — 107 trades
+
+**Baseline:** 48.6% WR | Avg R: 0.073 | Total R: 7.85
+
+### RVOL Gate Sweep
+| RVOL Gate | Trades | Win Rate | Avg R | Total R |
+|-----------|--------|----------|-------|---------|
+| 0.5 (no gate) | 107 | 48.6% | 0.077 | 8.22 |
+| **1.0** | **62** | **56.5%** | **0.255** | **15.81** ← max total R |
+| **1.2** | **47** | **59.6%** | **0.300** | **14.10** ← max avg R / WR |
+| 1.3 | 42 | 59.5% | 0.276 | 11.58 |
+| 1.5 | 27 | 48.1% | 0.082 | 2.20 |
+
+**Key findings:**
+- RVOL < 1.2x trades: 40% WR, -0.101 avg R — actively destructive
+- RVOL ≥ 1.2x trades: 59.6% WR, +0.300 avg R
+- Phase 1.37 gate of 1.28x validated — sweet spot between 1.0 and 1.2 optima
+- T2 irrelevant: only 1 trade hit T2 in full dataset
+- T1=2.0R > T1=1.3R with RVOL≥1.2 filter (14.1R vs 11.85R total)
+
+### Config changes from grid search (applied Mar 24 2026):
+```python
+RVOL_SIGNAL_GATE = 1.2   # was 1.28
+T1_MULTIPLIER    = 2.0   # revert from 1.3
+T2_MULTIPLIER    = 3.5   # unchanged
+```
 
 ---
 
@@ -164,11 +193,14 @@ War-Machine/
 - Railway deployment pipeline working
 - Discord notification system live
 - EODHD 5m bar backfill complete
+- Grid search backtest complete (107 trades, RVOL gate validated at 1.2x)
+- Scorecard tuning: gate lowered to 60, A+ weight flattened to 15, inversion warning wired
 
 ### 🔄 In Progress
 - ML confidence scoring (`app/ml/`) — training data generation done, model training next
 - MTF bias ablation testing (need per-filter win rate tracking)
 - Dead zone boundary refinement (test 11:30 vs 12:00 cutoff)
+- Monitor Railway logs for `⚠️ CONFIDENCE-INVERSION` entries post-deploy
 
 ### 📋 Next Steps
 1. Run filter ablation: backtest with each filter toggled OFF to measure individual impact
@@ -176,6 +208,7 @@ War-Machine/
 3. Add per-signal R-tracking to live system for real-time filter scoring
 4. Expand high-performing ticker list (AAOI, FSLY, HYMC profiles)
 5. ML model training with generated features
+6. Next backtest cycle: check for `CONFIDENCE-INVERSION` A+ low-RVOL patterns
 
 ---
 
@@ -192,7 +225,35 @@ War-Machine/
 ---
 
 ## 📝 Commit Log (recent)
-| Date | Description |
-|------|-------------|
-| 2026-03-24 | Added CONTEXT.md — persistent AI state file |
-| Prior | 90-day backtest sweep complete, all summaries written |
+| Date | Commit Message | Files Changed |
+|------|---------------|---------------|
+| 2026-03-24 | `fix: wire rvol=_signal_rvol into build_scorecard() call` | `app/core/sniper.py` |
+| 2026-03-24 | `tune: scorecard gate 60, A+ weight 15, inversion warning` | `app/core/signal_scorecard.py` |
+| 2026-03-24 | `config: RVOL_SIGNAL_GATE=1.2, T1_MULTIPLIER=2.0 from grid search` | `utils/config.py` |
+| 2026-03-24 | `docs: add CONTEXT.md — persistent AI state file` | `CONTEXT.md` |
+| Prior | 90-day backtest sweep complete, all summaries written | — |
+
+---
+
+## 💻 Standard Commit Commands
+```powershell
+# Stage specific files
+git add app/core/sniper.py
+
+# Stage all modified tracked files
+git add -u
+
+# Commit
+git commit -m "fix: wire rvol=_signal_rvol into build_scorecard() call"
+
+# Push to main + trigger Railway deploy
+git push origin main
+```
+
+**Commit message conventions:**
+- `fix:` — bug fix or wiring correction
+- `tune:` — parameter/threshold adjustment
+- `config:` — config.py value change
+- `feat:` — new feature/module
+- `docs:` — CONTEXT.md or documentation only
+- `refactor:` — code restructure, no behavior change
