@@ -271,36 +271,74 @@ class EODHDFetcher:
             return pd.DataFrame()
 
     def fetch_session_context(self, ticker: str, session_date: ddate) -> Optional[Dict]:
-        if not self.api_key:
-            return None
+        """Return EMA20/ADX/RSI/ATR/prior_close for the trading day before session_date.
+
+        Priority:
+          1. In-memory cache (fastest)
+          2. PostgreSQL daily_technicals table (populated by load_historical_data.py)
+          3. EODHD API + disk JSON cache (fallback for dates not yet in DB)
+        """
         cache_key = (ticker, session_date)
         if cache_key in self._ctx_cache:
             return self._ctx_cache[cache_key]
 
-        # ── Disk cache ────────────────────────────────────────────────────
+        # Resolve prior trading day (skip weekends)
+        prior_day = session_date - timedelta(days=1)
+        while prior_day.weekday() >= 5:
+            prior_day -= timedelta(days=1)
+
+        # ── 1. PostgreSQL daily_technicals ───────────────────────────────
+        try:
+            from app.data.db_connection import get_conn, return_conn, dict_cursor, ph
+            p    = ph()
+            conn = get_conn()
+            cur  = dict_cursor(conn)
+            cur.execute(
+                f"SELECT ema20, adx14, rsi14, atr14, prior_close "
+                f"FROM daily_technicals WHERE ticker={p} AND date={p}",
+                (ticker, prior_day),
+            )
+            row = cur.fetchone()
+            return_conn(conn)
+            if row and any(row[k] is not None for k in ("ema20", "adx14", "rsi14", "atr14")):
+                ctx = {
+                    "ema20":       float(row["ema20"])       if row["ema20"]       is not None else None,
+                    "adx":         float(row["adx14"])       if row["adx14"]       is not None else None,
+                    "rsi":         float(row["rsi14"])       if row["rsi14"]       is not None else None,
+                    "atr":         float(row["atr14"])       if row["atr14"]       is not None else None,
+                    "prior_close": float(row["prior_close"]) if row["prior_close"] is not None else None,
+                    "prior_date":  str(prior_day),
+                }
+                log.info(
+                    f"  [CTX-DB] {ticker} {prior_day}: "
+                    f"EMA20={ctx['ema20']} ADX={ctx['adx']} "
+                    f"RSI={ctx['rsi']} ATR={ctx['atr']}"
+                )
+                self._ctx_cache[cache_key] = ctx
+                return ctx
+        except Exception as e:
+            log.debug(f"  [CTX-DB-ERR] {ticker}: {e}")
+
+        # ── 2. EODHD API fallback (disk-cached) ──────────────────────────
+        if not self.api_key:
+            log.warning(f"  [CTX-MISS] {ticker} {prior_day}: not in daily_technicals and no API key")
+            return None
+
         cache_dir  = Path(__file__).resolve().parents[2] / "output" / "ctx_cache"
         cache_dir.mkdir(parents=True, exist_ok=True)
         cache_file = cache_dir / f"{ticker}_ctx.json"
-
         disk_cache: Dict = {}
         if cache_file.exists():
             try:
                 disk_cache = json.loads(cache_file.read_text())
             except Exception:
-                disk_cache = {}
+                pass
 
         date_key = str(session_date)
         if date_key in disk_cache:
             ctx = disk_cache[date_key]
             self._ctx_cache[cache_key] = ctx
             return ctx
-        # ─────────────────────────────────────────────────────────────────
-
-        prior_day = session_date - timedelta(days=1)
-        if prior_day.weekday() == 5:
-            prior_day -= timedelta(days=1)
-        elif prior_day.weekday() == 6:
-            prior_day -= timedelta(days=2)
 
         from_ts = prior_day.strftime("%Y-%m-%d")
 
@@ -312,13 +350,9 @@ class EODHDFetcher:
                             "period": period, "from": from_ts, "to": from_ts, "fmt": "json"},
                     timeout=10,
                 )
-                if r.status_code != 200:
+                if r.status_code != 200 or not r.json():
                     return None
-                data = r.json()
-                if not data:
-                    return None
-                last = data[-1]
-                log.info(f"  [CTX-API] {function} raw last record: {last}")
+                last = r.json()[-1]
                 if function == "adx":
                     return float(last.get("adx", 0) or 0)
                 return float(last.get("value", 0) or 0)
@@ -329,7 +363,7 @@ class EODHDFetcher:
         adx   = _fetch_indicator("adx", 14)
         rsi   = _fetch_indicator("rsi", 14)
         atr   = _fetch_indicator("atr", 14)
-        log.info(f"  [CTX-DEBUG] {ticker} {prior_day}: EMA20={ema20} ADX={adx} RSI={rsi} ATR={atr}")
+        log.info(f"  [CTX-API] {ticker} {prior_day}: EMA20={ema20} ADX={adx} RSI={rsi} ATR={atr}")
 
         prior_close = None
         try:
@@ -345,15 +379,13 @@ class EODHDFetcher:
             pass
 
         ctx = {"ema20": ema20, "adx": adx, "rsi": rsi, "atr": atr,
-                "prior_close": prior_close, "prior_date": str(prior_day)}
+               "prior_close": prior_close, "prior_date": str(prior_day)}
 
-        # ── Write back to disk cache ──────────────────────────────────────
         disk_cache[date_key] = ctx
         try:
             cache_file.write_text(json.dumps(disk_cache, indent=2))
         except Exception:
             pass
-        # ─────────────────────────────────────────────────────────────────
 
         self._ctx_cache[cache_key] = ctx
         return ctx
@@ -813,7 +845,7 @@ def run(tickers: List[str], days: int, out_dir: str, fold_size: int = 30, use_ct
     all_trades: List[Dict] = []
     end_dt   = datetime.now()
     start_dt = end_dt - timedelta(days=120)
-    ctx_fetcher = fetcher if (use_ctx and fetcher.api_key) else None
+    ctx_fetcher = fetcher if use_ctx else None
     if ctx_fetcher:
         log.info("✅ Session context filter ENABLED (EMA20 / ADX / RSI / ATR + intraday EMA9)")
     else:
@@ -903,4 +935,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
