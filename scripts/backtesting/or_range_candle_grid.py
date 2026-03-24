@@ -83,7 +83,7 @@ from app.data.db_connection import get_conn, return_conn, ph, dict_cursor
 ET = ZoneInfo("America/New_York")
 
 # ---------------------------------------------------------------------------
-# Phase 1.37 baseline config
+# Phase 1.38 baseline config
 # ---------------------------------------------------------------------------
 CFG = {
     "rvol_gate":        1.2,
@@ -102,7 +102,7 @@ CFG = {
 OR_MIN_VALUES = [0.0, 0.1, 0.2, 0.3, 0.5]
 OR_MAX_VALUES = [1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 99.0]
 CURRENT_MIN   = 0.2
-CURRENT_MAX   = 3.0
+CURRENT_MAX   = 99.0   # Phase 1.38: OR cap removed (was 3.0)
 
 # ---------------------------------------------------------------------------
 # DB helpers
@@ -446,6 +446,23 @@ def main():
     base_filtered = [t for t in all_trades if passes_baseline_filters(t)]
     print(f"After baseline filters (no OR gate):  {len(base_filtered)}\n")
 
+    # ── Dump trade-level CSV for post-hoc analysis ────────────────────────────
+    # Writes <csv_out>_trades.csv alongside the grid results CSV.
+    # Use scripts/backtesting/analyze_backtest_trades.py to run:
+    #   - confidence decile audit
+    #   - RVOL bucket breakdown
+    #   - time-of-day session analysis
+    #   - champion ticker vs rest cohort comparison
+    if args.csv_out and base_filtered:
+        import csv
+        trades_csv = args.csv_out.replace(".csv", "_trades.csv")
+        fieldnames = [k for k in base_filtered[0].keys()]
+        with open(trades_csv, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(base_filtered)
+        print(f"  Trade-level CSV saved to: {trades_csv}\n")
+
     current   = [t for t in base_filtered
                  if CURRENT_MIN <= t["or_range_pct"] <= CURRENT_MAX]
     cur_stats = stats(current)
@@ -473,7 +490,7 @@ def main():
 
     print("=" * 85)
     print(" OR RANGE CANDLE GRID SEARCH  —  sorted by Total R")
-    print(f" {len(tickers)} tickers × {args.days} days | Phase 1.37 filters ON (except OR gate)")
+    print(f" {len(tickers)} tickers × {args.days} days | Phase 1.38 filters ON (except OR gate)")
     print("=" * 85)
     print(f"  Current : or_min={CURRENT_MIN}  or_max={CURRENT_MAX}  →  "
           f"{cur_stats['trades']} trades | {cur_stats['win_rate']:.1f}% WR | "
