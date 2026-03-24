@@ -180,10 +180,14 @@ TODO.txt
 
 # Local test outputs
 test_output/
-backtests/
 
 
-# Backtest cache files (V1 and V2)
+# Backtest scripts cache / scratch — exclude heavy artifacts, keep results
+backtests/.backtest_cache/
+backtests/backtest_cache_v2/
+backtests/*.pkl.gz
+
+# Backtest cache files (legacy patterns)
 *.pkl.gz
 .backtest_cache/
 backtest_cache_v2/
@@ -226,12 +230,9 @@ models/signal_predictor.pkl
 
 
 # === BACKTEST / ANALYSIS RUN OUTPUTS ===
-# These are local execution artifacts — never commit to repo.
-results/
-results/backtests/
-results/backtests/*.json
-results/backtests/*.csv
-results/backtests/*.txt
+# backtests/results/ is intentionally NOT ignored so run outputs can be committed.
+# Use: git add backtests/results/ && git commit -m "backtest results: ..."
+# Heavy cache/scratch files above are still excluded.
 
 
 docs\remediation_tracker.md
