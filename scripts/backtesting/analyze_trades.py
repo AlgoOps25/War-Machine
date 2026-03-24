@@ -16,7 +16,6 @@ Usage:
 """
 
 import argparse
-import json
 import math
 from pathlib import Path
 
@@ -145,7 +144,6 @@ def scan_thresholds(df: pd.DataFrame) -> list[dict]:
 
         for pct in percentiles:
             thresh = col.quantile(pct / 100)
-            # Try both above and below threshold
             for direction, subset in [("above", df[df[feat] >= thresh]),
                                       ("below", df[df[feat] < thresh])]:
                 if len(subset) < 5:
@@ -156,8 +154,8 @@ def scan_thresholds(df: pd.DataFrame) -> list[dict]:
                     continue
                 baseline_wr = df["win"].mean()
                 improvement = wr - baseline_wr
-                if improvement > 0.03:  # at least 3pp improvement
-                    if best is None or improvement > best["improvement"]:
+                if improvement > 0.03:
+                    if best is None or improvement > best["improvement_pp"] / 100:
                         best = {
                             "feature": feat,
                             "direction": direction,
@@ -213,16 +211,10 @@ def write_report(out_dir: Path, df: pd.DataFrame, feat_df: pd.DataFrame,
                  candidates: list, exit_df: pd.DataFrame, ticker_df: pd.DataFrame):
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Full merged dataset
     df.to_csv(out_dir / "trade_data.csv", index=False)
-
-    # Feature summary
     feat_df.to_csv(out_dir / "feature_summary.csv", index=False)
-
-    # Ticker ranking
     ticker_df.to_csv(out_dir / "ticker_ranking.csv", index=False)
 
-    # Text report
     lines = []
     lines.append("=" * 70)
     lines.append("WAR MACHINE — TRADE ANALYSIS REPORT")
