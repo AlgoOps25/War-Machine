@@ -62,6 +62,21 @@ MIN_OR_RANGE_PCT_STRONG_BEAR = 0.025  # STRONG_BEAR regime
 OR_RANGE_MIN_PCT = 0.2   # keep — has zero effect but documents intent
 OR_RANGE_MAX_PCT = 99.0  # was 3.0 — remove the cap
 
+# ── OR Range Upper Cap ────────────────────────────────────────────────────────
+# OR_RANGE_MAX_PCT: upper bound for OR range filter in scanner/sniper.
+#
+# Grid search finding (2026-03-24, 312 tickers × 90 days, 582 filtered trades):
+#   OR range distribution: 0% of trades < 1%, 51.5% of trades > 5%
+#   or_max=3.0  → 130 trades | 33.1% WR | +5.08 Total R  (old cap)
+#   or_max=∞    → 581 trades | 33.7% WR | +8.99 Total R  ← OPTIMAL
+#   or_max=2.5  →  86 trades | 30.2% WR | -6.83 Total R
+#   or_max=2.0  →  43 trades | 25.6% WR | -10.00 Total R
+# Conclusion: wide-range sessions trade at the same quality but provide 4.5x
+# more opportunity. The upper cap was filtering out 77% of valid setups.
+# Set to 99.0 (effectively no cap). or_min is irrelevant (0 trades < 1% OR).
+OR_RANGE_MAX_PCT = 99.0   # grid search optimal — no upper cap (was 3.0)
+OR_RANGE_MIN_PCT = 0.2    # no effect in practice — 0 trades below 1% OR
+
 # ── A1: VIX-Scaled OR Threshold ──────────────────────────────────────────────────────────────
 VIX_OR_THRESHOLDS = [
     (15,  0.030),   # VIX <15  → 3.0%
@@ -409,6 +424,9 @@ if __name__ == "__main__":
     logger.info(f"\nOptions Thresholds (P2-2):")
     logger.info(f"  Delta Range : {TARGET_DELTA_MIN:.2f} – {TARGET_DELTA_MAX:.2f} (ideal {IDEAL_DELTA:.2f})")
     logger.info(f"  DTE Range   : {MIN_DTE} – {MAX_DTE} (default ideal {IDEAL_DTE})")
+    logger.info(f"\nOR Range Gate (Phase 1.38):")
+    logger.info(f"  Min : {OR_RANGE_MIN_PCT}% (no practical effect — 0 trades below 1%)")
+    logger.info(f"  Max : {OR_RANGE_MAX_PCT}% (no cap — grid search optimal 2026-03-24)")
     logger.info(f"\nRVOL Gates:")
     logger.info(f"  Screener gate  : {MIN_RELATIVE_VOLUME}x (pre-market scan)")
     logger.info(f"  Signal gate    : {RVOL_SIGNAL_GATE}x (grid search optimal, 2026-03-24)")
