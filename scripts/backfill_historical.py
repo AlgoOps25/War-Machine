@@ -9,7 +9,7 @@ import os, requests
 from app.data.db_connection import get_conn, return_conn
 from psycopg2.extras import execute_values
 
-TICKERS  = ['IWM']
+TICKERS  = ['IWM','GLD', 'JPM', 'GOOGL']
 API_KEY  = os.getenv('EODHD_API_KEY')
 end_dt   = datetime.utcnow()
 start_dt = end_dt - timedelta(days=120)
