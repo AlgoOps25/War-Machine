@@ -4,7 +4,7 @@ or_range_candle_grid.py
 -----------------------
 Candle-driven OR Range grid search for War Machine.
 
-Pulls 1-min bars from the candle_cache table (same DB used by candle_cache.py),
+Pulls 1-min bars from candle_cache / intraday_bars in Railway Postgres,
 computes real OR range from the first 30 minutes of each session, detects
 BOS/FVG breakouts, applies full Phase 1.37 filters, simulates trades with ATR
 stops + multi-R targets, then sweeps or_range_min_pct and or_range_max_pct
@@ -12,15 +12,41 @@ across a grid and ranks all combos by Total R.
 
 Usage:
     python scripts/backtesting/or_range_candle_grid.py
-    python scripts/backtesting/or_range_candle_grid.py --days 90
-    python scripts/backtesting/or_range_candle_grid.py --days 60 --csv-out backtests/results/or_candle_grid.csv
-    python scripts/backtesting/or_range_candle_grid.py --tickers NVDA AAPL TSLA
-    python scripts/backtesting/or_range_candle_grid.py --db market_memory.db --timeframe 1m
+    python scripts/backtesting/or_range_candle_grid.py --days 90 --csv-out backtests/results/or_candle_grid.csv
+    python scripts/backtesting/or_range_candle_grid.py --tickers NVDA AAPL TSLA AMD AMZN SPY QQQ
 """
 
-import argparse
 import sys
+import os
 sys.path.append('.')
+
+# ── Load .env BEFORE importing db_connection (which reads DATABASE_URL at import time) ──
+try:
+    from dotenv import load_dotenv
+    load_dotenv(override=False)  # won't overwrite vars already set in the shell
+except ImportError:
+    # python-dotenv not installed — try reading .env manually
+    _env_path = os.path.join(os.path.dirname(__file__), '..', '..', '.env')
+    _env_path = os.path.normpath(_env_path)
+    if os.path.exists(_env_path):
+        with open(_env_path) as _f:
+            for _line in _f:
+                _line = _line.strip()
+                if _line and not _line.startswith('#') and '=' in _line:
+                    _k, _, _v = _line.partition('=')
+                    os.environ.setdefault(_k.strip(), _v.strip())
+
+if not os.environ.get('DATABASE_URL'):
+    print("[ERROR] DATABASE_URL not set and .env not found.")
+    print("        Set it in your shell or add it to .env in the project root.")
+    print("        Example:  $env:DATABASE_URL='postgresql://...'")
+    sys.exit(1)
+
+# Normalize postgres:// → postgresql:// (psycopg2 requires this)
+if os.environ.get('DATABASE_URL', '').startswith('postgres://'):
+    os.environ['DATABASE_URL'] = os.environ['DATABASE_URL'].replace(
+        'postgres://', 'postgresql://', 1
+    )
 
 import numpy as np
 from datetime import datetime, timedelta, time as dtime, timezone
@@ -58,47 +84,89 @@ CURRENT_MIN   = 0.2
 CURRENT_MAX   = 3.0
 
 # ---------------------------------------------------------------------------
-# DB helpers  (candle_cache table)
+# DB helpers  —  works with both candle_cache and intraday_bars
 # ---------------------------------------------------------------------------
 
-def get_all_tickers(db_path: str, timeframe: str = "1m") -> List[str]:
-    p = ph()
-    conn = get_conn(db_path)
+CANDLE_TABLE = "intraday_bars"   # primary production table in Railway Postgres
+HAS_TIMEFRAME_COL = False        # intraday_bars has no timeframe column
+
+
+def _probe_table(conn) -> None:
+    """
+    Auto-detect which table is available and whether it has a timeframe column.
+    Sets CANDLE_TABLE / HAS_TIMEFRAME_COL globals.
+    """
+    global CANDLE_TABLE, HAS_TIMEFRAME_COL
+    cur = conn.cursor()
+    for table in ("intraday_bars", "candle_cache"):
+        try:
+            cur.execute(f"SELECT 1 FROM {table} LIMIT 1")
+            CANDLE_TABLE = table
+            # Check for timeframe column
+            try:
+                cur.execute(f"SELECT timeframe FROM {table} LIMIT 1")
+                HAS_TIMEFRAME_COL = True
+            except Exception:
+                HAS_TIMEFRAME_COL = False
+                conn.rollback()
+            print(f"[DB] Using table: {CANDLE_TABLE}  (timeframe col: {HAS_TIMEFRAME_COL})")
+            return
+        except Exception:
+            conn.rollback()
+            continue
+    print("[ERROR] Neither intraday_bars nor candle_cache found in the database.")
+    sys.exit(1)
+
+
+def get_all_tickers(timeframe: str = "1m") -> List[str]:
+    conn = get_conn()
     try:
+        _probe_table(conn)
+        p   = ph()
         cur = dict_cursor(conn)
-        cur.execute(
-            f"SELECT DISTINCT ticker FROM candle_cache WHERE timeframe={p} ORDER BY ticker",
-            (timeframe,)
-        )
+        if HAS_TIMEFRAME_COL:
+            cur.execute(
+                f"SELECT DISTINCT ticker FROM {CANDLE_TABLE} WHERE timeframe={p} ORDER BY ticker",
+                (timeframe,)
+            )
+        else:
+            cur.execute(f"SELECT DISTINCT ticker FROM {CANDLE_TABLE} ORDER BY ticker")
         rows = cur.fetchall()
-        # dict_cursor returns Row objects for SQLite — handle both
         return [r["ticker"] if isinstance(r, dict) else r[0] for r in rows]
     finally:
         conn.close()
 
 
 def get_bars(ticker: str, start: datetime, end: datetime,
-             db_path: str, timeframe: str = "1m") -> List[Dict]:
-    p = ph()
-    conn = get_conn(db_path)
+             timeframe: str = "1m") -> List[Dict]:
+    p    = ph()
+    conn = get_conn()
     try:
         cur = dict_cursor(conn)
-        cur.execute(
-            f"SELECT datetime,open,high,low,close,volume FROM candle_cache"
-            f" WHERE ticker={p} AND timeframe={p}"
-            f" AND datetime>={p} AND datetime<={p}"
-            f" ORDER BY datetime ASC",
-            (ticker, timeframe, start, end)
-        )
+        if HAS_TIMEFRAME_COL:
+            cur.execute(
+                f"SELECT datetime,open,high,low,close,volume FROM {CANDLE_TABLE}"
+                f" WHERE ticker={p} AND timeframe={p}"
+                f" AND datetime>={p} AND datetime<={p}"
+                f" ORDER BY datetime ASC",
+                (ticker, timeframe, start, end)
+            )
+        else:
+            cur.execute(
+                f"SELECT datetime,open,high,low,close,volume FROM {CANDLE_TABLE}"
+                f" WHERE ticker={p} AND datetime>={p} AND datetime<={p}"
+                f" ORDER BY datetime ASC",
+                (ticker, start, end)
+            )
         rows = cur.fetchall()
     finally:
         conn.close()
 
     bars = []
     for r in rows:
-        # Support both dict (psycopg2 RealDictCursor) and sqlite3.Row
         if isinstance(r, dict):
-            dt, o, h, l, c, v = r["datetime"], r["open"], r["high"], r["low"], r["close"], r["volume"]
+            dt, o, h, l, c, v = (r["datetime"], r["open"], r["high"],
+                                   r["low"], r["close"], r["volume"])
         else:
             dt, o, h, l, c, v = r[0], r[1], r[2], r[3], r[4], r[5]
 
@@ -160,7 +228,7 @@ def calc_confidence(bars: List[Dict], direction: str) -> float:
 # ---------------------------------------------------------------------------
 
 def compute_or_range(session_bars: List[Dict], or_minutes: int = 30) -> Optional[Dict]:
-    first = session_bars[0]["datetime"]
+    first  = session_bars[0]["datetime"]
     cutoff = first.replace(hour=9, minute=30 + or_minutes, second=0, microsecond=0)
     or_bars = [b for b in session_bars if b["datetime"] < cutoff]
     if not or_bars:
@@ -263,13 +331,13 @@ def simulate_trade(sig: Dict, session_bars: List[Dict]) -> Optional[Dict]:
             exit_price, exit_reason = bar["close"], "EOD"
             break
         if direction == "bull":
-            if bar["low"] <= stop:   exit_price, exit_reason = stop, "STOP"; break
-            if bar["high"] >= t2:    exit_price, exit_reason = t2,   "T2";   break
-            if bar["high"] >= t1:    exit_price, exit_reason = t1,   "T1";   break
+            if bar["low"] <= stop:  exit_price, exit_reason = stop, "STOP"; break
+            if bar["high"] >= t2:   exit_price, exit_reason = t2,   "T2";   break
+            if bar["high"] >= t1:   exit_price, exit_reason = t1,   "T1";   break
         else:
-            if bar["high"] >= stop:  exit_price, exit_reason = stop, "STOP"; break
-            if bar["low"] <= t2:     exit_price, exit_reason = t2,   "T2";   break
-            if bar["low"] <= t1:     exit_price, exit_reason = t1,   "T1";   break
+            if bar["high"] >= stop: exit_price, exit_reason = stop, "STOP"; break
+            if bar["low"] <= t2:    exit_price, exit_reason = t2,   "T2";   break
+            if bar["low"] <= t1:    exit_price, exit_reason = t1,   "T1";   break
 
     r = ((exit_price - entry_price) / stop_dist
          if direction == "bull"
@@ -329,22 +397,21 @@ def stats(trades: List[Dict]) -> Dict:
 
 def main():
     parser = argparse.ArgumentParser(description="Candle-driven OR range grid search")
-    parser.add_argument("--db",         default="market_memory.db")
-    parser.add_argument("--timeframe",  default="1m",
-                        help="Candle timeframe stored in candle_cache (default: 1m)")
+    parser.add_argument("--timeframe",  default="1m")
     parser.add_argument("--days",       type=int, default=CFG["days_back"])
     parser.add_argument("--tickers",    nargs="+", default=None)
     parser.add_argument("--csv-out",    default=None)
     parser.add_argument("--min-trades", type=int, default=10)
     args = parser.parse_args()
 
+    import argparse  # already imported above, just hoisting the reminder
+
     end_dt   = datetime.now(ET)
     start_dt = end_dt - timedelta(days=args.days)
 
-    tickers = args.tickers or get_all_tickers(args.db, args.timeframe)
+    tickers = args.tickers or get_all_tickers(args.timeframe)
     if not tickers:
-        print(f"[ERROR] No tickers found in candle_cache for timeframe='{args.timeframe}'.")
-        print(f"        Check that market_memory.db exists and has data.")
+        print(f"[ERROR] No tickers found for timeframe='{args.timeframe}'.")
         sys.exit(1)
 
     print(f"Scanning {len(tickers)} tickers | {args.days} days | timeframe={args.timeframe}\n")
@@ -352,7 +419,7 @@ def main():
     all_trades: List[Dict] = []
 
     for ticker in tickers:
-        bars = get_bars(ticker, start_dt, end_dt, args.db, args.timeframe)
+        bars = get_bars(ticker, start_dt, end_dt, args.timeframe)
         if not bars:
             continue
 
@@ -374,8 +441,7 @@ def main():
     print(f"Total simulated trades (no filters): {len(all_trades)}")
 
     if not all_trades:
-        print("\n[ERROR] No trades found. Is candle_cache populated?")
-        print("        Run the main scanner to populate it, then retry.")
+        print("\n[ERROR] No trades found. Check that Postgres has candle data.")
         sys.exit(1)
 
     base_filtered = [t for t in all_trades if passes_baseline_filters(t)]
@@ -402,14 +468,14 @@ def main():
         })
 
     if not results:
-        print("[ERROR] No grid combinations met the min-trades threshold. Try --min-trades 5")
+        print("[ERROR] No grid combos met the min-trades threshold. Try --min-trades 5")
         sys.exit(1)
 
     results_df = pd.DataFrame(results).sort_values("total_r", ascending=False).reset_index(drop=True)
 
     print("=" * 85)
     print(" OR RANGE CANDLE GRID SEARCH  —  sorted by Total R")
-    print(f" {len(tickers)} tickers × {args.days} days | all Phase 1.37 filters ON (except OR gate)")
+    print(f" {len(tickers)} tickers × {args.days} days | Phase 1.37 filters ON (except OR gate)")
     print("=" * 85)
     print(f"  Current : or_min={CURRENT_MIN}  or_max={CURRENT_MAX}  →  "
           f"{cur_stats['trades']} trades | {cur_stats['win_rate']:.1f}% WR | "
@@ -451,5 +517,6 @@ def main():
         print(f"  Results saved to: {args.csv_out}\n")
 
 
+import argparse  # ensure available at module level for edge cases
 if __name__ == "__main__":
     main()
