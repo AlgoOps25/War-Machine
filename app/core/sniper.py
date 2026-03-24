@@ -477,7 +477,7 @@ REGIME_FILTER_ENABLED = True
 
 EXPLOSIVE_SCORE_THRESHOLD = 80
 EXPLOSIVE_RVOL_THRESHOLD = 3.0
-
+MIN_RVOL_TO_SIGNAL = 1.5          # PHASE 1.36: hard floor — below this, no signal fired
 MAX_WATCH_BARS = 12
 OPTIONS_PRE_GATE_MODE = "HARD"
 
@@ -504,7 +504,23 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
             remaining = cooldown_tracker.get_cooldown_remaining(ticker)
             logger.info(f"[{ticker}] 🚫 ANALYTICS COOLDOWN: {remaining:.0f}s remaining — signal dropped")
             return False
-
+        # ── PHASE 1.36: RVOL Signal Gate ─────────────────────────────────────────
+    # Kills low-volume setups before any expensive Greeks/options calls run.
+    # Explosive movers (rvol >= EXPLOSIVE_RVOL_THRESHOLD) bypass this gate.
+    try:
+        _rvol_meta = get_ticker_screener_metadata(ticker)
+        _signal_rvol = _rvol_meta.get('rvol', 0.0)
+        if _signal_rvol < MIN_RVOL_TO_SIGNAL and _signal_rvol < EXPLOSIVE_RVOL_THRESHOLD:
+            logger.info(
+                f"[{ticker}] 🚫 RVOL GATE: {_signal_rvol:.2f}x < {MIN_RVOL_TO_SIGNAL}x minimum — signal dropped"
+            )
+            return False
+        else:
+            logger.info(f"[{ticker}] ✅ RVOL GATE: {_signal_rvol:.2f}x — passed")
+    except Exception as _rvol_err:
+        logger.info(f"[{ticker}] RVOL gate error (non-fatal): {_rvol_err}")
+    # ─────────────────────────────────────────────────────────────────────────
+    
     _pre_options_data = None
     if OPTIONS_PRE_GATE_ENABLED:
         try:

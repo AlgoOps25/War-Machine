@@ -641,6 +641,7 @@ def start_scanner_loop():
     logger.info("Dead Code:       ✅ REMOVED (_get_eod_summary_metrics deleted — Phase 1.33)")
     logger.info("Funnel Reset:    ✅ FIXED   (reset_funnel() at EOD — daily watchlist — Phase 1.34)")
     logger.info("Health Race Fix: ✅ FIXED   (true module-level health server, DB timeout 3s — Phase 1.35)")
+    logger.info("RVOL Signal Gate: ✅ ENABLED (MIN_RVOL=1.5x hard floor before options — Phase 1.36)")
     logger.info("=" * 60 + "\n")
 
 
