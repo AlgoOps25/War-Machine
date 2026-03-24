@@ -826,14 +826,14 @@ def get_secondary_range_levels(ticker: str) -> Dict:
 # PHASE 5 #24 — OR Scanner Functions
 # (extracted from app/core/sniper.py)
 # ========================================
-def compute_opening_range_from_bars(bars):
-    """Compute OR high/low from 9:30-9:40 bars."""
+def compute_opening_range_from_bars(bars, or_end_time: Optional[time] = None):
+    """Compute OR high/low from 9:30 to or_end_time (default 9:40)."""
     from utils.time_helpers import _bar_time
-    or_bars = [b for b in bars if _bar_time(b) and time(9, 30) <= _bar_time(b) < time(9, 40)]
+    _end = or_end_time if or_end_time is not None else time(9, 40)
+    or_bars = [b for b in bars if _bar_time(b) and time(9, 30) <= _bar_time(b) < _end]
     if len(or_bars) < 3:
         return None, None
     return max(b["high"] for b in or_bars), min(b["low"] for b in or_bars)
-
 
 def compute_premarket_range(bars):
     """Compute premarket high/low from 4:00-9:30 bars."""

@@ -161,6 +161,35 @@ CTX_RSI_OS    = 35    # reject BEAR if RSI <= this (oversold)
 CTX_EMA_ALIGN = True  # require close > EMA20 for BULL, < EMA20 for BEAR
 CTX_ATR_MIN = 0.50   # skip session if prior day ATR < $0.50 (too compressed for SPY/QQQ)
 BEAR_DISABLED_TICKERS = {"TSLA", "AAPL", "GOOGL"}
+
+# ── Per-ticker OR config (from or_timing_analysis.py) ───────────────────
+_OR_CONFIG_PATH = Path(__file__).resolve().parents[2] / "scripts" / "analysis" / "output" / "or_timing" / "ticker_or_config.json"
+_OR_CONFIG: Dict[str, Dict] = {}
+_OR_EXCLUDED: set = set()
+
+if _OR_CONFIG_PATH.exists():
+    try:
+        _OR_CONFIG = json.loads(_OR_CONFIG_PATH.read_text())
+        _OR_EXCLUDED = {t for t, v in _OR_CONFIG.items() if not v.get("tradeable", True)}
+        log.info(f"✅ OR config loaded: {len(_OR_CONFIG)} tickers, {len(_OR_EXCLUDED)} excluded (high FB rate)")
+    except Exception as e:
+        log.warning(f"⚠️  OR config load failed: {e}")
+else:
+    log.warning(f"⚠️  OR config not found at {_OR_CONFIG_PATH} — using fixed 9:40 OR for all tickers")
+
+OR_DEFAULT_END = dtime(9, 40)
+
+def get_or_end_time(ticker: str) -> dtime:
+    """Return per-ticker OR end time, falling back to default 9:40."""
+    cfg_entry = _OR_CONFIG.get(ticker)
+    if not cfg_entry:
+        return OR_DEFAULT_END
+    t_str = cfg_entry.get("or_end_time", "09:40")  # e.g. "09:53"
+    try:
+        h, m = map(int, t_str.split(":"))
+        return dtime(h, m)
+    except Exception:
+        return OR_DEFAULT_END
 # ═══════════════════════════════════════════════════════════════════════════
 # DATA FETCHING
 # ═══════════════════════════════════════════════════════════════════════════
@@ -461,7 +490,14 @@ def run_session(
 
     session_date = bars[0]["datetime"].date()
 
+    # ── OR config exclusion (high false-break rate tickers) ───────────────
+
+    if ticker in _OR_EXCLUDED:
+        log.info(f"  [OR-EXCL] {ticker}: excluded due to high false-break rate")
+        return None
+
     # ── Step 0: Pre-session context filter ────────────────────────────────
+
     ctx = None
     ctx_rsi = ctx_ema20 = ctx_prior_close = None
     if fetcher is not None:
@@ -480,7 +516,8 @@ def run_session(
             ctx_prior_close = ctx.get("prior_close")
     # ── Step 1: Opening Range (production 1m) ──────────────────────────────
     from app.signals.opening_range import compute_opening_range_from_bars
-    or_high, or_low = compute_opening_range_from_bars(bars)
+    or_end = get_or_end_time(ticker)
+    or_high, or_low = compute_opening_range_from_bars(bars, or_end_time=or_end)
     if or_high is None or or_low is None or or_low <= 0:
         return None
     or_range_pct = (or_high - or_low) / or_low

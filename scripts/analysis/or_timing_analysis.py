@@ -26,7 +26,8 @@ ET = ZoneInfo("America/New_York")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
-TICKERS          = ["SPY", "QQQ", "NVDA", "TSLA", "META", "AMD", "AAPL", "MSTR", "MU", "IWM", "MSFT"]
+TICKERS          = None   # auto-discovered from DB (see get_eligible_tickers())
+MIN_SESSIONS     = 30     # minimum trading sessions required for reliable OR config
 SESSION_START    = time(9, 30)
 SESSION_END      = time(16, 0)
 OR_FIXED_END     = time(9, 40)
@@ -42,6 +43,28 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 
 # ── DB helpers ────────────────────────────────────────────────────────────────
+
+def get_eligible_tickers(min_sessions: int = MIN_SESSIONS) -> list[str]:
+    """
+    Query DB for tickers with >= min_sessions distinct trading days.
+    Returns list sorted by session count descending.
+    """
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT ticker, COUNT(DISTINCT datetime::date) AS sessions
+            FROM   intraday_bars
+            WHERE  datetime::time >= '09:30:00'
+              AND  datetime::time <  '16:00:00'
+            GROUP  BY ticker
+            HAVING COUNT(DISTINCT datetime::date) >= %s
+            ORDER  BY sessions DESC
+        """, (min_sessions,))
+        rows = cur.fetchall()
+        cur.close()
+    tickers = [r[0] for r in rows]
+    logger.info(f"Eligible tickers ({min_sessions}+ sessions): {len(tickers)} found")
+    return tickers
 
 def fetch_all_sessions(ticker: str) -> dict:
     """
@@ -404,7 +427,8 @@ def main():
     all_results   = []
     all_summaries = []
 
-    for ticker in TICKERS:
+    tickers = get_eligible_tickers(MIN_SESSIONS)
+    for ticker in tickers:
         logger.info(f"  Fetching {ticker}...")
         sessions = fetch_all_sessions(ticker)
         logger.info(f"  {ticker}: {len(sessions)} sessions loaded")
@@ -428,6 +452,21 @@ def main():
     raw = {r["ticker"]: {"bos_offsets": r["bos_offsets"], "false_breaks": r["false_breaks"]} for r in all_results}
     with open(os.path.join(OUTPUT_DIR, "or_timing_raw.json"), "w") as f:
         json.dump(raw, f)
+        # ── Save per-ticker OR config (for backtest wiring) ──────────────────────
+    or_config = {
+        s["ticker"]: {
+            "or_end_time":       s["recommended_or_end"],
+            "or_end_offset_min": s["recommended_offset"],
+            "sessions":          s["sessions_analysed"],
+            "false_break_rate":  s["false_break_rate"],
+            "tradeable":         s["false_break_rate"] < 95.0,  # flag extreme FB tickers
+        }
+        for s in all_summaries if "error" not in s
+}
+    config_path = os.path.join(OUTPUT_DIR, "ticker_or_config.json")
+    with open(config_path, "w") as f:
+        json.dump(or_config, f, indent=2)
+    logger.info(f"OR config JSON → {config_path}")
 
     # ── Charts ────────────────────────────────────────────────────────────────
     plot_distributions(all_results, all_summaries)
