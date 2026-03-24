@@ -14,8 +14,11 @@
 #       logger.info(f"[{ticker}] 🚫 SCORECARD-GATE: {scorecard.score:.1f} < {SCORECARD_GATE_MIN}")
 #       return False
 #
-# SCORE BREAKDOWN (max 100):
-#   Grade quality          0-25   (A+ = 25, A = 22, A- = 18, B+ = 14, B = 10)
+# SCORE BREAKDOWN (max 85):
+#   Grade quality          0-15   (A+ = 15, A = 13, A- = 11, B+ = 11, B = 10)
+#                          NOTE: grade weight intentionally flattened — backtest shows
+#                          B+ / B grades outperform A+ when RVOL ≥ 1.2x. Old 25pt
+#                          A+ weight was blocking winning setups below the gate.
 #   IVR environment        0-15   (IVR 20-50 = 15, IVR 50-80 = 10, else = 5)
 #   GEX zone               0-15   (neg_gex_zone = 15, pos = 8)
 #   MTF trend alignment    0-15   (boost > 0.05 = 15, boost > 0 = 10, else = 5)
@@ -25,14 +28,15 @@
 #   OB retest              0-5    (detected = 5, else = 0)
 #   SPY regime             0-5    (STRONG_BULL/BEAR aligned = 5, BULL/BEAR = 3, else = 1)
 #
-# GATE: score < 72 → signal dropped.
+# GATE: score < 60 → signal dropped.
+# (Lowered from 72 to pass B-grade setups validated by grid search data.)
 
 from dataclasses import dataclass, field
 from typing import Optional
 import logging
 logger = logging.getLogger(__name__)
 
-SCORECARD_GATE_MIN = 72   # hard minimum score to fire a signal
+SCORECARD_GATE_MIN = 60   # lowered from 72 — grid search shows B-grade setups win at RVOL≥1.2x
 
 
 @dataclass
@@ -85,7 +89,10 @@ class SignalScorecard:
 
 
 def _score_grade(grade: str) -> float:
-    return {"A+": 25, "A": 22, "A-": 18, "B+": 14, "B": 10}.get(grade, 8)
+    # Intentionally flattened — grid search shows grade is NOT a reliable
+    # win predictor. B+ / B outperform A+ when RVOL ≥ 1.2x.
+    # Old mapping: A+=25, A=22, A-=18, B+=14, B=10
+    return {"A+": 15, "A": 13, "A-": 11, "B+": 11, "B": 10}.get(grade, 8)
 
 
 def _score_ivr(options_rec: Optional[dict]) -> float:
@@ -140,6 +147,20 @@ def _score_regime(spy_regime: Optional[dict], direction: str) -> float:
     return 1.0
 
 
+def _check_confidence_inversion(ticker: str, grade: str, rvol: Optional[float]) -> None:
+    """
+    Warn when A+ grade + low RVOL — the exact combo that inverts confidence vs P&L.
+    Grid search finding: RVOL < 1.2x → 40% WR / -0.101 avg R regardless of grade.
+    A+ grade at low RVOL scores 15pts toward the gate but should be treated as noise.
+    """
+    if grade == "A+" and rvol is not None and rvol < 1.2:
+        logger.warning(
+            f"[{ticker}] ⚠️  CONFIDENCE-INVERSION: A+ grade but RVOL={rvol:.2f}x < 1.2x — "
+            f"high scorecard score does NOT predict profitability at this volume level. "
+            f"Consider RVOL gate enforcement upstream."
+        )
+
+
 def build_scorecard(
     ticker: str,
     direction: str,
@@ -151,12 +172,16 @@ def build_scorecard(
     sweep_detected: bool,
     ob_detected: bool,
     spy_regime: Optional[dict],
-) -> SignalScorecard:
+    rvol: Optional[float] = None,   # added for inversion warning
+) -> "SignalScorecard":
     """
     Build and return a computed SignalScorecard from all pipeline contributors.
-    Non-fatal: any exception returns a pass-through scorecard at score=72.
+    Non-fatal: any exception returns a pass-through scorecard at score=60.
     """
     try:
+        # Fire inversion warning before scoring
+        _check_confidence_inversion(ticker, grade, rvol)
+
         sc = SignalScorecard(
             ticker=ticker,
             direction=direction,
