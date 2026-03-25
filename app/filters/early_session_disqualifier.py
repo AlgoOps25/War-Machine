@@ -20,7 +20,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def should_skip_cfw6_or_early(or_range_pct: float, now_et: datetime) -> bool:
+def should_skip_cfw6_or_early(or_range_pct: float, now_et: datetime, or_threshold: float = None) -> bool:
     """
     Determine if a CFW6_OR signal should be blocked based on time and OR range.
     
@@ -49,7 +49,7 @@ def should_skip_cfw6_or_early(or_range_pct: float, now_et: datetime) -> bool:
         return False
     
     # Before 9:40 AM - check OR range threshold
-    if or_range_pct < config.MIN_OR_RANGE_PCT:
+    if or_range_pct < (or_threshold if or_threshold is not None else config.MIN_OR_RANGE_PCT):
         # OR too narrow during gate window - BLOCK
         return True
     
