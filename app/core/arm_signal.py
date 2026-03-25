@@ -1,3 +1,5 @@
+import logging
+logger = logging.getLogger(__name__)
 """
 arm_signal.py — Signal Arming & Discord Alert
 Extracted from sniper.py
@@ -8,6 +10,14 @@ Provides:
                     persists armed signal state, sets cooldown.
 
 All heavy imports are deferred inside the function to avoid circular imports.
+
+FIXED (Mar 16 2026): Wire record_trade_executed() after position_id > 0 so the
+  TRADED stage is recorded in signal_events and get_funnel_stats() shows real counts.
+
+FIX P3 (2026-03-25): vp_bias now passed in the fallback (non-production-helpers)
+  Discord alert path, matching the production-helpers path. Previously the fallback
+  path omitted vp_bias so VP bias data was silently dropped from Discord alerts
+  whenever production_helpers was not available.
 """
 
 
@@ -15,7 +25,8 @@ def arm_ticker(
     ticker, direction, zone_low, zone_high, or_low, or_high,
     entry_price, stop_price, t1, t2, confidence, grade,
     options_rec=None, signal_type="CFW6_OR", validation_result=None,
-    bos_confirmation=None, bos_candle_type=None, mtf_result=None, metadata=None
+    bos_confirmation=None, bos_candle_type=None, mtf_result=None, metadata=None,
+    vp_bias=None
 ):
     """
     Arm a confirmed signal:
@@ -23,19 +34,20 @@ def arm_ticker(
       2. Open position via position_manager (risk-gated).
       3. Fire Discord alert only if position_id > 0.
       4. Persist to armed_signals_persist DB table.
-      5. Set per-ticker cooldown.
+      5. Record TRADED stage in signal_analytics (FIX Mar 16 2026).
+      6. Set per-ticker cooldown.
     """
     from app.risk.position_manager import position_manager
     from app.core.thread_safe_state import get_state
     from app.core.armed_signal_store import _persist_armed_signal
     from app.screening.screener_integration import get_ticker_screener_metadata
-    from app.discord_helpers import send_options_signal_alert
+    from app.notifications.discord_helpers import send_options_signal_alert
     from app.core.sniper_log import log_proposed_trade
 
     _state = get_state()
 
     if abs(entry_price - stop_price) < entry_price * 0.001:
-        print(f"[ARM] ⚠️ {ticker} stop too tight — skipping")
+        logger.info(f"[ARM] ⚠️ {ticker} stop too tight — skipping")
         return
 
     mode_label = " [OR]" if signal_type == "CFW6_OR" else " [INTRADAY]"
@@ -63,10 +75,19 @@ def arm_ticker(
     )
 
     if position_id == -1:
-        print(f"[ARM] ❌ {ticker} position rejected by risk manager — Discord alert suppressed")
+        logger.info(f"[ARM] ❌ {ticker} position rejected by risk manager — Discord alert suppressed")
         return
 
-    # ── Discord alert (production helper path) ───────────────────────────────
+    # ── FIX (Mar 16 2026): Record TRADED stage in signal_analytics ─────────────────────
+    # Without this call get_funnel_stats()['traded'] was always 0.
+    try:
+        from app.signals.signal_analytics import signal_tracker
+        signal_tracker.record_trade_executed(ticker, position_id)
+        logger.info(f"[ANALYTICS] 📊 {ticker} TRADED stage recorded (position_id={position_id})")
+    except Exception as _analytics_err:
+        logger.info(f"[ANALYTICS] record_trade_executed error (non-fatal): {_analytics_err}")
+
+    # ── Discord alert (production helper path) ──────────────────────────────────────
     try:
         from utils.production_helpers import _send_alert_safe
         PRODUCTION_HELPERS_ENABLED = True
@@ -85,9 +106,12 @@ def arm_ticker(
             volume_rank=None,
             composite_score=metadata.get('score'),
             mtf_convergence=mtf_convergence_count,
-            explosive_mover=metadata.get('qualified', False)
+            explosive_mover=metadata.get('qualified', False),
+            vp_bias=vp_bias
         )
     else:
+        # FIX P3 (2026-03-25): vp_bias added to fallback path — was missing, causing
+        # VP bias data to be silently dropped from Discord alerts in this branch.
         try:
             greeks_data = None
             if options_rec:
@@ -109,7 +133,7 @@ def arm_ticker(
                             }
                         }
                 except Exception as greeks_err:
-                    print(f"[ARM] Greeks data extraction error (non-fatal): {greeks_err}")
+                    logger.info(f"[ARM] Greeks data extraction error (non-fatal): {greeks_err}")
 
             send_options_signal_alert(
                 ticker=ticker, direction=direction,
@@ -122,12 +146,13 @@ def arm_ticker(
                 volume_rank=None,
                 composite_score=metadata.get('score'),
                 mtf_convergence=mtf_convergence_count,
-                explosive_mover=metadata.get('qualified', False)
+                explosive_mover=metadata.get('qualified', False),
+                vp_bias=vp_bias  # P3 FIX: was missing from fallback path
             )
         except Exception as e:
-            print(f"[DISCORD] ❌ Alert failed: {e}")
+            logger.info(f"[DISCORD] ❌ Alert failed: {e}")
 
-    # ── Persist armed signal state ────────────────────────────────────────────
+    # ── Persist armed signal state ───────────────────────────────────────────────────
     armed_signal_data = {
         "position_id":  position_id,
         "direction":    direction,
@@ -143,19 +168,19 @@ def arm_ticker(
     _state.set_armed_signal(ticker, armed_signal_data)
     _persist_armed_signal(ticker, armed_signal_data)
 
-    print(f"[ARMED] {ticker} ID:{position_id}")
+    logger.info(f"[ARMED] {ticker} ID:{position_id}")
 
-    # ── Cooldown ──────────────────────────────────────────────────────────────
+    # ── Cooldown ──────────────────────────────────────────────────────────────────────────────
     try:
         from app.analytics.cooldown_tracker import set_cooldown as _set_cooldown
         _set_cooldown(ticker, direction, signal_type)
     except Exception as e:
-        print(f"[COOLDOWN] Warning: could not set cooldown for {ticker}: {e}")
+        logger.info(f"[COOLDOWN] Warning: could not set cooldown for {ticker}: {e}")
 
-    # ── Phase 4 alert check ───────────────────────────────────────────────────
+    # ── Phase 4 alert check ───────────────────────────────────────────────────────────
     try:
         from app.analytics.performance_monitor import performance_monitor
-        from app.discord_helpers import send_simple_message
+        from app.notifications.discord_helpers import send_simple_message
         # alert_manager not available; skip
     except Exception:
         pass

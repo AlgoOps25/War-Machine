@@ -1,4 +1,5 @@
 """
+<<<<<<< HEAD
 ═══════════════════════════════════════════════════════════════════════════════
 UNIFIED VALIDATION MODULE - PRODUCTION
 ═══════════════════════════════════════════════════════════════════════════════
@@ -122,42 +123,34 @@ USAGE:
   )
 
 ═══════════════════════════════════════════════════════════════════════════════
+=======
+validation.py — Unified Validation Interface v1.38b
+Consolidates SignalValidator + RegimeFilter + OptionsFilter.
+RegimeFilter/OptionsFilter now live in their own files to keep each under
+the GitHub API safe-write threshold (~30KB).
+All three are re-exported here — zero breaking changes for importers.
+See CHANGELOG.md for full phase history.
+>>>>>>> origin/main
 """
-
 from typing import Dict, List, Optional, Tuple
-from datetime import datetime, time as dtime, timedelta
+from datetime import datetime, time as dtime
 from zoneinfo import ZoneInfo
-from dataclasses import dataclass
-import time
-import requests
+import logging
 
-# PHASE 1.28 FIX P0: technical_indicators moved to app/indicators/ — updated import path
+# Re-export sub-modules so importers see no change
+from app.validation.regime_filter import RegimeFilter, RegimeState
+from app.validation.options_filter import OptionsFilter, get_options_recommendation
+
 from app.indicators import technical_indicators as ti
 from utils import config
 
-# Import IV/GEX modules for options filter
-from app.options.iv_tracker import store_iv_observation, compute_ivr, ivr_to_confidence_multiplier
-from app.options.gex_engine import compute_gex_levels, get_gex_signal_context
-
-# UOA now comes from options_intelligence (Phase 3C consolidation)
-try:
-    from app.options.options_intelligence import scan_chain_for_uoa
-    from uoa_scanner import format_uoa_summary  # Still in stub for convenience
-except ImportError:
-    # Fallback if options_intelligence not yet available
-    def scan_chain_for_uoa(*args, **kwargs):
-        return {
-            'uoa_multiplier': 1.0, 'uoa_label': 'UOA-UNAVAILABLE',
-            'uoa_detected': False, 'uoa_aligned': False,
-            'uoa_opposing': False, 'uoa_max_score': 0.0,
-            'uoa_top_aligned': [], 'uoa_top_opposing': []
-        }
-    def format_uoa_summary(uoa_data):
-        return "UOA scanner unavailable"
-
+logger = logging.getLogger(__name__)
 ET = ZoneInfo("America/New_York")
 
-# Import dependencies (signal validator needs these)
+# IVR gate constants (forwarded for any code that reads them from this module)
+IVR_HARD_BLOCK = 80
+IVR_WARN       = 60
+
 try:
     from daily_bias_engine import bias_engine
     BIAS_ENGINE_ENABLED = True
@@ -172,6 +165,7 @@ except ImportError:
     VPVR_ENABLED = False
     vpvr_calculator = None
 
+<<<<<<< HEAD
 try:
     from app.options.options_optimizer import get_optimal_strikes_sync
     _OPTIMIZER_AVAILABLE = True
@@ -858,32 +852,23 @@ def get_options_recommendation(ticker, direction, entry_price, target_price, sto
 # ══════════════════════════════════════════════════════════════════════════════
 # SIGNAL VALIDATOR (from signal_validator.py)
 # ══════════════════════════════════════════════════════════════════════════════
+=======
+>>>>>>> origin/main
 
 def get_time_of_day_quality(signal_time: datetime) -> Tuple[str, float]:
-    """
-    Assess signal quality based on time of day.
-    Returns: (zone_label, confidence_adjustment)
-    """
-    current_time = signal_time.time()
-    
-    if dtime(9, 30) <= current_time < dtime(10, 30):
-        return 'MORNING_SESSION', 0.05
-    if dtime(15, 0) <= current_time < dtime(16, 0):
-        return 'POWER_HOUR', 0.05
-    if dtime(10, 30) <= current_time < dtime(11, 30):
-        return 'LATE_MORNING', 0.02
-    if dtime(13, 30) <= current_time < dtime(15, 0):
-        return 'EARLY_AFTERNOON', 0.02
-    if dtime(11, 30) <= current_time < dtime(13, 0):
-        return 'DEAD_ZONE', -0.03
-    if dtime(13, 0) <= current_time < dtime(13, 30):
-        return 'LUNCH_RECOVERY', 0.0
+    t = signal_time.time()
+    if dtime(9, 30)  <= t < dtime(10, 30): return 'MORNING_SESSION',   0.05
+    if dtime(15, 0)  <= t < dtime(16, 0):  return 'POWER_HOUR',        0.05
+    if dtime(10, 30) <= t < dtime(11, 30): return 'LATE_MORNING',      0.02
+    if dtime(13, 30) <= t < dtime(15, 0):  return 'EARLY_AFTERNOON',   0.02
+    if dtime(11, 30) <= t < dtime(13, 0):  return 'DEAD_ZONE',        -0.03
+    if dtime(13, 0)  <= t < dtime(13, 30): return 'LUNCH_RECOVERY',    0.00
     return 'OFF_HOURS', 0.0
 
 
 class SignalValidator:
     """Multi-indicator signal validation engine."""
-    
+
     def __init__(
         self,
         min_final_confidence: float = 0.50,
@@ -898,43 +883,25 @@ class SignalValidator:
         strict_mode: bool = False
     ):
         self.min_final_confidence = min_final_confidence
-        self.min_adx = min_adx
-        self.min_volume_ratio = min_volume_ratio
-        self.enable_vpvr = enable_vpvr and VPVR_ENABLED
-        self.enable_daily_bias = enable_daily_bias and BIAS_ENGINE_ENABLED
-        self.enable_time_filter = enable_time_filter
-        self.enable_ema_stack = enable_ema_stack
+        self.min_adx              = min_adx
+        self.min_volume_ratio     = min_volume_ratio
+        self.enable_vpvr          = enable_vpvr and VPVR_ENABLED
+        self.enable_daily_bias    = enable_daily_bias and BIAS_ENGINE_ENABLED
+        self.enable_time_filter   = enable_time_filter
+        self.enable_ema_stack     = enable_ema_stack
         self.enable_rsi_divergence = enable_rsi_divergence
-        self.min_bias_confidence = min_bias_confidence
-        self.strict_mode = strict_mode
-        
+        self.min_bias_confidence  = min_bias_confidence
+        self.strict_mode          = strict_mode
+
         self.validation_stats = {
             'total_validated': 0, 'passed': 0, 'filtered': 0, 'boosted': 0,
             'bias_penalized': 0, 'vpvr_rescued': 0, 'vpvr_scored': 0,
             'time_zones': {}, 'ema_stack_aligned': 0, 'rsi_divergence_detected': 0,
             'confidence_filtered': 0
         }
-        
-        # Production initialization banner
-        print("[VALIDATOR] ╔════════════════════════════════════════════════╗")
-        print("[VALIDATOR] ║  SIGNAL VALIDATOR - PRODUCTION CONFIG          ║")
-        print(f"[VALIDATOR] ║  Min Final Confidence: {int(min_final_confidence*100)}%{' '*(24-len(str(int(min_final_confidence*100))))}║")
-        print("[VALIDATOR] ╚════════════════════════════════════════════════╝")
-        
-        if self.enable_daily_bias:
-            print(f"[VALIDATOR] Daily bias penalty active (min confidence: {min_bias_confidence*100:.0f}%)")
-            print(f"[VALIDATOR] ⭐ Counter-trend signals penalized but can be rescued by VPVR")
-        if self.enable_time_filter:
-            print(f"[VALIDATOR] Time-of-day quality scoring enabled")
-        if self.enable_ema_stack:
-            print(f"[VALIDATOR] EMA stack confirmation enabled")
-        if self.enable_rsi_divergence:
-            print(f"[VALIDATOR] RSI divergence detection enabled")
-        if self.enable_vpvr:
-            print(f"[VALIDATOR] VPVR entry scoring enabled")
-        print(f"[VALIDATOR] ADX threshold: {min_adx} (VIX-aware dynamic threshold in regime filter)")
-        print(f"[VALIDATOR] Volume ratio: {min_volume_ratio}x")
-    
+
+        logger.info(f"[VALIDATOR] SignalValidator init | min_conf={int(min_final_confidence*100)}% | adx={min_adx} | vol={min_volume_ratio}x")
+
     def validate_signal(
         self,
         ticker: str,
@@ -943,18 +910,21 @@ class SignalValidator:
         current_volume: int,
         base_confidence: float
     ) -> Tuple[bool, float, Dict]:
-        """Validate signal with multi-indicator confirmation."""
         self.validation_stats['total_validated'] += 1
         signal_time = datetime.now(ET)
+<<<<<<< HEAD
 
         # Normalize direction: pipeline emits 'bull'/'bear',
         # but indicator checks expect 'BUY'/'SELL'.
         # _dir is used for all comparisons; signal_direction preserved for metadata.
+=======
+>>>>>>> origin/main
         _dir = signal_direction.upper()
         _dir = 'BUY' if _dir in ('BULL', 'BUY', 'LONG') else 'SELL'
 
         metadata = {
             'timestamp': signal_time.isoformat(),
+<<<<<<< HEAD
             'ticker': ticker,
             'direction': signal_direction,   # keep original for logs
             'base_confidence': base_confidence,
@@ -969,88 +939,83 @@ class SignalValidator:
         needs_vpvr_rescue = False
         
         # Daily Bias Check
+=======
+            'ticker': ticker, 'direction': signal_direction,
+            'base_confidence': base_confidence, 'checks': {}
+        }
+
+        conf_adj               = 0.0
+        failed_checks          = []
+        passed_checks          = []
+        counter_trend_penalty  = 0.0
+        needs_vpvr_rescue      = False
+
+        # ── Daily Bias ────────────────────────────────────────────────────────
+>>>>>>> origin/main
         if self.enable_daily_bias and bias_engine:
             try:
                 should_filter, bias_reason = bias_engine.should_filter_signal(ticker, signal_direction)
                 bias_data = bias_engine._get_bias_dict()
-                
                 metadata['checks']['daily_bias'] = {
-                    'bias': bias_data['bias'],
-                    'confidence': bias_data['confidence'],
-                    'should_filter': should_filter,
-                    'reason': bias_reason
+                    'bias': bias_data['bias'], 'confidence': bias_data['confidence'],
+                    'should_filter': should_filter, 'reason': bias_reason
                 }
-                
                 if should_filter and bias_data['confidence'] >= self.min_bias_confidence:
                     counter_trend_penalty = -0.25
-                    confidence_adjustment += counter_trend_penalty
+                    conf_adj += counter_trend_penalty
                     failed_checks.append('BIAS_COUNTER_TREND_STRONG')
                     needs_vpvr_rescue = True
                     self.validation_stats['bias_penalized'] += 1
-                    print(f"[VALIDATOR] ⚠️  {ticker} counter-trend to {bias_data['bias']} bias (-25%) - VPVR can rescue")
+                    logger.info(f"[VALIDATOR] {ticker} counter-trend to {bias_data['bias']} bias (-25%) — VPVR can rescue")
                 elif bias_data['bias'] != 'NEUTRAL':
                     if not should_filter:
-                        bias_boost = bias_data['confidence'] * 0.10
-                        confidence_adjustment += bias_boost
+                        conf_adj += bias_data['confidence'] * 0.10
                         passed_checks.append(f"BIAS_ALIGNED_{bias_data['bias']}")
                     else:
                         passed_checks.append('BIAS_WEAK')
             except Exception as e:
                 metadata['checks']['daily_bias'] = {'error': str(e)}
-        
-        # Regime Filter Check
+
+        # ── Regime ────────────────────────────────────────────────────────────
         regime_filter = get_regime_filter()
         try:
-            regime_state = regime_filter.get_regime_state()
+            rs = regime_filter.get_regime_state()
             metadata['checks']['regime_filter'] = {
-                'regime': regime_state.regime,
-                'vix': regime_state.vix,
-                'spy_trend': regime_state.spy_trend,
-                'adx': regime_state.adx,
-                'favorable': regime_state.favorable,
-                'reason': regime_state.reason
+                'regime': rs.regime, 'vix': rs.vix, 'spy_trend': rs.spy_trend,
+                'adx': rs.adx, 'favorable': rs.favorable, 'reason': rs.reason
             }
-            
-            if not regime_state.favorable:
-                regime_penalty = -0.30
-                confidence_adjustment += regime_penalty
-                failed_checks.append(f'REGIME_{regime_state.regime}')
-                print(f"[VALIDATOR] WARNING {ticker} in {regime_state.regime} regime (-30%): {regime_state.reason}")
-            elif regime_state.regime == 'TRENDING':
-                regime_boost = 0.05
-                confidence_adjustment += regime_boost
+            if not rs.favorable:
+                conf_adj -= 0.30
+                failed_checks.append(f'REGIME_{rs.regime}')
+                logger.info(f"[VALIDATOR] {ticker} in {rs.regime} regime (-30%): {rs.reason}")
+            elif rs.regime == 'TRENDING':
+                conf_adj += 0.05
                 passed_checks.append('REGIME_TRENDING')
-                print(f"[VALIDATOR] OK {ticker} in TRENDING regime (+5%): {regime_state.reason}")
             else:
                 passed_checks.append('REGIME_NEUTRAL')
         except Exception as e:
             metadata['checks']['regime_filter'] = {'error': str(e)}
-        
-        # Time-of-Day Check
+
+        # ── Time of Day ───────────────────────────────────────────────────────
         if self.enable_time_filter:
             try:
-                time_zone, time_adjustment = get_time_of_day_quality(signal_time)
+                time_zone, time_adj = get_time_of_day_quality(signal_time)
                 metadata['checks']['time_of_day'] = {
-                    'zone': time_zone,
-                    'time': signal_time.strftime('%H:%M:%S'),
-                    'adjustment': time_adjustment
+                    'zone': time_zone, 'time': signal_time.strftime('%H:%M:%S'), 'adjustment': time_adj
                 }
-                confidence_adjustment += time_adjustment
-                if time_zone not in self.validation_stats['time_zones']:
-                    self.validation_stats['time_zones'][time_zone] = 0
+                conf_adj += time_adj
+                self.validation_stats['time_zones'].setdefault(time_zone, 0)
                 self.validation_stats['time_zones'][time_zone] += 1
-                if time_adjustment > 0:
-                    passed_checks.append(f'TIME_{time_zone}')
-                elif time_adjustment < 0:
-                    failed_checks.append(f'TIME_{time_zone}')
-                else:
-                    passed_checks.append(f'TIME_NEUTRAL')
+                if   time_adj > 0: passed_checks.append(f'TIME_{time_zone}')
+                elif time_adj < 0: failed_checks.append(f'TIME_{time_zone}')
+                else:              passed_checks.append('TIME_NEUTRAL')
             except Exception as e:
                 metadata['checks']['time_of_day'] = {'error': str(e)}
-        
-        # EMA Stack Check
+
+        # ── EMA Stack ─────────────────────────────────────────────────────────
         if self.enable_ema_stack:
             try:
+<<<<<<< HEAD
                 ema9_data = ti.fetch_ema(ticker, period=9)
                 ema20_data = ti.fetch_ema(ticker, period=20)
                 ema50_data = ti.fetch_ema(ticker, period=50)
@@ -1064,41 +1029,45 @@ class SignalValidator:
                         if _dir == 'BUY':
                             full_stack = (current_price > ema9 > ema20 > ema50)
                             partial_stack = (current_price > ema9 and ema9 > ema20)
+=======
+                d9, d20, d50 = ti.fetch_ema(ticker, period=9), ti.fetch_ema(ticker, period=20), ti.fetch_ema(ticker, period=50)
+                if all([d9, d20, d50]):
+                    e9  = ti.get_latest_value(d9,  'ema')
+                    e20 = ti.get_latest_value(d20, 'ema')
+                    e50 = ti.get_latest_value(d50, 'ema')
+                    if all([e9, e20, e50]):
+                        if _dir == 'BUY':
+                            full    = current_price > e9 > e20 > e50
+                            partial = current_price > e9 and e9 > e20
+>>>>>>> origin/main
                         else:
-                            full_stack = (current_price < ema9 < ema20 < ema50)
-                            partial_stack = (current_price < ema9 and ema9 < ema20)
-                        
+                            full    = current_price < e9 < e20 < e50
+                            partial = current_price < e9 and e9 < e20
                         metadata['checks']['ema_stack'] = {
-                            'ema9': round(ema9, 2),
-                            'ema20': round(ema20, 2),
-                            'ema50': round(ema50, 2),
-                            'full_stack': full_stack,
-                            'partial_stack': partial_stack
+                            'ema9': round(e9, 2), 'ema20': round(e20, 2), 'ema50': round(e50, 2),
+                            'full_stack': full, 'partial_stack': partial
                         }
-                        
-                        if full_stack:
-                            confidence_adjustment += 0.07
-                            passed_checks.append('EMA_FULL_STACK')
+                        if full:
+                            conf_adj += 0.07; passed_checks.append('EMA_FULL_STACK')
                             self.validation_stats['ema_stack_aligned'] += 1
-                        elif partial_stack:
-                            confidence_adjustment += 0.03
-                            passed_checks.append('EMA_PARTIAL_STACK')
+                        elif partial:
+                            conf_adj += 0.03; passed_checks.append('EMA_PARTIAL_STACK')
                         else:
-                            confidence_adjustment -= 0.04
-                            failed_checks.append('EMA_NO_STACK')
+                            conf_adj -= 0.04; failed_checks.append('EMA_NO_STACK')
                     else:
                         metadata['checks']['ema_stack'] = {'error': 'Missing EMA values'}
                 else:
                     metadata['checks']['ema_stack'] = {'error': 'Failed to fetch EMA data'}
             except Exception as e:
                 metadata['checks']['ema_stack'] = {'error': str(e)}
-        
-        # RSI Divergence Check
+
+        # ── RSI Divergence ────────────────────────────────────────────────────
         if self.enable_rsi_divergence:
             try:
                 div_result, div_details = ti.check_rsi_divergence(ticker, signal_direction, lookback_bars=10)
                 if div_result and div_details:
                     metadata['checks']['rsi_divergence'] = div_details
+<<<<<<< HEAD
                     if div_result == 'BEARISH_DIV':
                         if _dir == 'SELL':
                             confidence_adjustment += 0.05
@@ -1119,48 +1088,42 @@ class SignalValidator:
                 metadata['checks']['rsi_divergence'] = {'error': str(e)}
 
         # ADX Check
+=======
+                    expected = ('BEARISH_DIV' if _dir == 'SELL' else 'BULLISH_DIV')
+                    if div_result == expected:
+                        conf_adj += 0.05; passed_checks.append('RSI_DIV_FAVORABLE')
+                    else:
+                        conf_adj -= 0.05; failed_checks.append('RSI_DIV_WARNING')
+                    self.validation_stats['rsi_divergence_detected'] += 1
+            except Exception as e:
+                metadata['checks']['rsi_divergence'] = {'error': str(e)}
+
+        # ── ADX ───────────────────────────────────────────────────────────────
+>>>>>>> origin/main
         try:
             is_trending, adx_value = ti.check_trend_strength(ticker, self.min_adx)
-            metadata['checks']['adx'] = {
-                'value': adx_value,
-                'passed': is_trending,
-                'threshold': self.min_adx
-            }
+            metadata['checks']['adx'] = {'value': adx_value, 'passed': is_trending, 'threshold': self.min_adx}
             if adx_value:
-                if adx_value >= 40:
-                    confidence_adjustment += 0.05
-                    passed_checks.append('ADX_STRONG')
-                elif adx_value >= self.min_adx:
-                    passed_checks.append('ADX_OK')
-                else:
-                    confidence_adjustment -= 0.05
-                    failed_checks.append('ADX_WEAK')
+                if   adx_value >= 40:          conf_adj += 0.05; passed_checks.append('ADX_STRONG')
+                elif adx_value >= self.min_adx:                   passed_checks.append('ADX_OK')
+                else:                          conf_adj -= 0.05; failed_checks.append('ADX_WEAK')
         except Exception as e:
             metadata['checks']['adx'] = {'error': str(e)}
-        
-        # Volume Check
+
+        # ── Volume ────────────────────────────────────────────────────────────
         try:
-            is_confirmed, volume_ratio = ti.check_volume_confirmation(ticker, current_volume, self.min_volume_ratio)
-            metadata['checks']['volume'] = {
-                'ratio': volume_ratio,
-                'passed': is_confirmed,
-                'threshold': self.min_volume_ratio
-            }
-            if volume_ratio:
-                if volume_ratio >= 2.0:
-                    confidence_adjustment += 0.10
-                    passed_checks.append('VOLUME_STRONG')
-                elif volume_ratio >= self.min_volume_ratio:
-                    confidence_adjustment += 0.03
-                    passed_checks.append('VOLUME_OK')
-                else:
-                    confidence_adjustment -= 0.08
-                    failed_checks.append('VOLUME_WEAK')
+            is_confirmed, vol_ratio = ti.check_volume_confirmation(ticker, current_volume, self.min_volume_ratio)
+            metadata['checks']['volume'] = {'ratio': vol_ratio, 'passed': is_confirmed, 'threshold': self.min_volume_ratio}
+            if vol_ratio:
+                if   vol_ratio >= 2.0:                conf_adj += 0.10; passed_checks.append('VOLUME_STRONG')
+                elif vol_ratio >= self.min_volume_ratio: conf_adj += 0.03; passed_checks.append('VOLUME_OK')
+                else:                                conf_adj -= 0.08; failed_checks.append('VOLUME_WEAK')
         except Exception as e:
             metadata['checks']['volume'] = {'error': str(e)}
-        
-        # DMI Check
+
+        # ── DMI ───────────────────────────────────────────────────────────────
         try:
+<<<<<<< HEAD
             trend_direction = ti.get_trend_direction(ticker)
             metadata['checks']['dmi'] = {'direction': trend_direction}
             if trend_direction:
@@ -1168,16 +1131,24 @@ class SignalValidator:
                 if trend_direction == expected_direction:
                     confidence_adjustment += 0.05
                     passed_checks.append('DMI_ALIGNED')
+=======
+            trend_dir = ti.get_trend_direction(ticker)
+            metadata['checks']['dmi'] = {'direction': trend_dir}
+            if trend_dir:
+                expected = 'BULLISH' if _dir == 'BUY' else 'BEARISH'
+                if trend_dir == expected:
+                    conf_adj += 0.05; passed_checks.append('DMI_ALIGNED')
+>>>>>>> origin/main
                 else:
-                    confidence_adjustment -= 0.10
-                    failed_checks.append('DMI_CONFLICT')
+                    conf_adj -= 0.10; failed_checks.append('DMI_CONFLICT')
         except Exception as e:
             metadata['checks']['dmi'] = {'error': str(e)}
-        
-        # CCI Check
+
+        # ── CCI ───────────────────────────────────────────────────────────────
         try:
             cci_data = ti.fetch_cci(ticker)
             if cci_data:
+<<<<<<< HEAD
                 cci_value = ti.get_latest_value(cci_data, 'cci')
                 metadata['checks']['cci'] = {'value': cci_value}
                 if cci_value is not None:
@@ -1188,82 +1159,71 @@ class SignalValidator:
                         elif cci_value > 100:
                             confidence_adjustment -= 0.05
                             failed_checks.append('CCI_OVERBOUGHT')
+=======
+                cci = ti.get_latest_value(cci_data, 'cci')
+                metadata['checks']['cci'] = {'value': cci}
+                if cci is not None:
+                    if _dir == 'BUY':
+                        if   cci < -100: conf_adj += 0.05; passed_checks.append('CCI_OVERSOLD')
+                        elif cci >  100: conf_adj -= 0.05; failed_checks.append('CCI_OVERBOUGHT')
+>>>>>>> origin/main
                     else:
-                        if cci_value > 100:
-                            confidence_adjustment += 0.05
-                            passed_checks.append('CCI_OVERBOUGHT')
-                        elif cci_value < -100:
-                            confidence_adjustment -= 0.05
-                            failed_checks.append('CCI_OVERSOLD')
+                        if   cci >  100: conf_adj += 0.05; passed_checks.append('CCI_OVERBOUGHT')
+                        elif cci < -100: conf_adj -= 0.05; failed_checks.append('CCI_OVERSOLD')
         except Exception as e:
             metadata['checks']['cci'] = {'error': str(e)}
-        
-        # Bollinger Bands Check
+
+        # ── Bollinger Bands ───────────────────────────────────────────────────
         try:
             is_squeezed, band_width = ti.check_bollinger_squeeze(ticker)
-            metadata['checks']['bbands'] = {
-                'band_width': band_width,
-                'is_squeezed': is_squeezed
-            }
+            metadata['checks']['bbands'] = {'band_width': band_width, 'is_squeezed': is_squeezed}
             if is_squeezed:
-                confidence_adjustment += 0.05
-                passed_checks.append('BB_SQUEEZE')
+                conf_adj += 0.05; passed_checks.append('BB_SQUEEZE')
         except Exception as e:
             metadata['checks']['bbands'] = {'error': str(e)}
-        
-        # VPVR Check
+
+        # ── VPVR ──────────────────────────────────────────────────────────────
         vpvr_rescue_applied = False
         if self.enable_vpvr and vpvr_calculator:
             try:
                 from app.data.data_manager import data_manager
                 bars = data_manager.get_today_session_bars(ticker)
-                
                 if bars and len(bars) >= 78:
                     vpvr = vpvr_calculator.calculate_vpvr(bars, lookback_bars=78)
-                    
                     if vpvr and vpvr['poc'] is not None:
                         entry_score, entry_reason = vpvr_calculator.get_entry_score(current_price, vpvr)
-                        
                         metadata['checks']['vpvr'] = {
-                            'poc': vpvr['poc'],
-                            'vah': vpvr['vah'],
-                            'val': vpvr['val'],
-                            'entry_score': round(entry_score, 2),
-                            'entry_reason': entry_reason,
-                            'hvn_zones': vpvr['hvn_zones'][:2] if len(vpvr['hvn_zones']) > 2 else vpvr['hvn_zones'],
-                            'lvn_zones': vpvr['lvn_zones'][:2] if len(vpvr['lvn_zones']) > 2 else vpvr['lvn_zones']
+                            'poc': vpvr['poc'], 'vah': vpvr['vah'], 'val': vpvr['val'],
+                            'entry_score': round(entry_score, 2), 'entry_reason': entry_reason,
+                            'hvn_zones': vpvr['hvn_zones'][:2], 'lvn_zones': vpvr['lvn_zones'][:2]
                         }
-                        
                         self.validation_stats['vpvr_scored'] += 1
-                        
-                        # VPVR Rescue Logic
+
                         if needs_vpvr_rescue and entry_score >= 0.85:
+<<<<<<< HEAD
                             rescue_boost = abs(counter_trend_penalty)
                             confidence_adjustment += rescue_boost
+=======
+                            rescue = abs(counter_trend_penalty)
+                            conf_adj += rescue
+>>>>>>> origin/main
                             passed_checks.append('VPVR_RESCUE')
                             failed_checks.remove('BIAS_COUNTER_TREND_STRONG')
                             vpvr_rescue_applied = True
                             self.validation_stats['vpvr_rescued'] += 1
-                            print(f"[VPVR] ✨ {ticker} RESCUED: Excellent entry at {entry_reason} overrides bias penalty (+{rescue_boost:.2%})")
-                        
-                        # Standard VPVR scoring
+                            logger.info(f"[VPVR] {ticker} RESCUED: {entry_reason} overrides bias penalty (+{rescue:.2%})")
+
                         if entry_score >= 0.85:
                             if not vpvr_rescue_applied:
-                                confidence_adjustment += 0.08
-                                passed_checks.append('VPVR_STRONG')
-                            print(f"[VPVR] ✅ {ticker} strong entry: {entry_reason}")
+                                conf_adj += 0.08; passed_checks.append('VPVR_STRONG')
+                            logger.info(f"[VPVR] {ticker} strong entry: {entry_reason}")
                         elif entry_score >= 0.70:
-                            confidence_adjustment += 0.03
-                            passed_checks.append('VPVR_GOOD')
-                            print(f"[VPVR] 🟢 {ticker} good entry: {entry_reason}")
+                            conf_adj += 0.03; passed_checks.append('VPVR_GOOD')
                         elif entry_score < 0.50:
-                            confidence_adjustment -= 0.05
-                            failed_checks.append('VPVR_WEAK')
-                            print(f"[VPVR] ⚠️  {ticker} weak entry: {entry_reason}")
+                            conf_adj -= 0.05; failed_checks.append('VPVR_WEAK')
                         else:
                             passed_checks.append('VPVR_NEUTRAL')
-                            print(f"[VPVR] 🟡 {ticker} neutral entry: {entry_reason}")
-                        
+
                         if vpvr_rescue_applied:
                             metadata['checks']['vpvr']['rescued'] = True
                     else:
@@ -1272,122 +1232,73 @@ class SignalValidator:
                     metadata['checks']['vpvr'] = {'error': f'Need 78+ bars, got {len(bars) if bars else 0}'}
             except Exception as e:
                 metadata['checks']['vpvr'] = {'error': str(e)}
-        
-        # Calculate final confidence
-        adjusted_confidence = max(0.0, min(1.0, base_confidence + confidence_adjustment))
-        
-        if adjusted_confidence < self.min_final_confidence:
+
+        # ── Final decision ────────────────────────────────────────────────────
+        adjusted = max(0.0, min(1.0, base_confidence + conf_adj))
+
+        if adjusted < self.min_final_confidence:
             should_pass = False
             self.validation_stats['confidence_filtered'] += 1
-            print(f"[VALIDATOR] ❌ {ticker} FILTERED: {adjusted_confidence*100:.1f}% < {self.min_final_confidence*100:.1f}% minimum")
+            logger.info(f"[VALIDATOR] {ticker} FILTERED: {adjusted*100:.1f}% < {self.min_final_confidence*100:.1f}%")
         elif self.strict_mode:
-            critical_failures = ['VOLUME_WEAK', 'DMI_CONFLICT', 'ADX_WEAK']
-            should_pass = not any(fail in failed_checks for fail in critical_failures)
+            critical = ['VOLUME_WEAK', 'DMI_CONFLICT', 'ADX_WEAK']
+            should_pass = not any(f in failed_checks for f in critical)
         else:
-            should_pass = len(passed_checks) >= len(failed_checks)
-        
-        # Update stats
+            should_pass = len(passed_checks) > 0 and len(passed_checks) >= len(failed_checks)
+
         if should_pass:
             self.validation_stats['passed'] += 1
-            if confidence_adjustment > 0:
+            if conf_adj > 0:
                 self.validation_stats['boosted'] += 1
         else:
             self.validation_stats['filtered'] += 1
-        
-        # Add summary to metadata
+
         metadata['summary'] = {
-            'should_pass': should_pass,
-            'adjusted_confidence': round(adjusted_confidence, 3),
-            'confidence_adjustment': round(confidence_adjustment, 3),
-            'passed_checks': passed_checks,
-            'failed_checks': failed_checks,
-            'check_score': f"{len(passed_checks)}/{len(passed_checks) + len(failed_checks)}",
-            'vpvr_rescued': vpvr_rescue_applied,
-            'min_confidence_met': adjusted_confidence >= self.min_final_confidence
+            'should_pass':           should_pass,
+            'adjusted_confidence':   round(adjusted, 3),
+            'confidence_adjustment': round(conf_adj, 3),
+            'passed_checks':         passed_checks,
+            'failed_checks':         failed_checks,
+            'check_score':           f"{len(passed_checks)}/{len(passed_checks)+len(failed_checks)}",
+            'vpvr_rescued':          vpvr_rescue_applied,
+            'min_confidence_met':    adjusted >= self.min_final_confidence
         }
-        
-        return should_pass, adjusted_confidence, metadata
-    
+        return should_pass, adjusted, metadata
+
     def print_validation_summary(self, ticker: str, metadata: Dict) -> None:
-        """Print formatted validation summary for production monitoring."""
         summary = metadata.get('summary', {})
-        checks = metadata.get('checks', {})
-        
-        result = "✅ PASS" if summary.get('should_pass') else "❌ FAIL"
-        
-        conf = summary.get('adjusted_confidence', 0)
-        if conf >= 0.80:
-            quality = "🔵 STRONG"
-        elif conf >= 0.65:
-            quality = "🟢 GOOD"
-        elif conf >= 0.50:
-            quality = "🟡 FAIR"
-        else:
-            quality = "🔴 WEAK"
-        
-        base = metadata.get('base_confidence', 0)
-        adj = summary.get('confidence_adjustment', 0)
-        conf_change = f"+{adj*100:.1f}%" if adj >= 0 else f"{adj*100:.1f}%"
-        
-        print("=" * 70)
-        print(f"🎯 VALIDATION SUMMARY: {ticker}")
-        print("=" * 70)
-        print(f"Result:     {result}")
-        print(f"Quality:    {quality}")
-        print(f"Confidence: {base*100:.1f}% → {conf*100:.1f}% ({conf_change})")
-        print(f"Score:      {summary.get('check_score', 'N/A')} checks passed")
-        print("")
-        
-        regime = checks.get('regime_filter', {})
-        if regime and 'regime' in regime:
-            status = "✓" if regime.get('favorable') else "✗"
-            print(f"Regime:     {status} {regime['regime']} (VIX: {regime.get('vix', 0):.1f})")
-            print("")
-        
-        passed = summary.get('passed_checks', [])
-        if passed:
-            print(f"Passed:     {', '.join(passed[:5])}")
-            if len(passed) > 5:
-                print(f"            +{len(passed)-5} more")
-            print("")
-        
-        failed = summary.get('failed_checks', [])
-        if failed:
-            print(f"Failed:     {', '.join(failed)}")
-            print("")
-        
+        checks  = metadata.get('checks', {})
+        result  = "OK PASS" if summary.get('should_pass') else "FAIL"
+        conf    = summary.get('adjusted_confidence', 0)
+        quality = "STRONG" if conf >= 0.80 else ("GOOD" if conf >= 0.65 else ("FAIR" if conf >= 0.50 else "WEAK"))
+        base    = metadata.get('base_confidence', 0)
+        adj     = summary.get('confidence_adjustment', 0)
+        logger.info(f"[VALIDATOR] {result} {ticker} | {quality} | {base*100:.1f}%→{conf*100:.1f}% ({adj*100:+.1f}%) | {summary.get('check_score')}")
+        passed  = summary.get('passed_checks', [])
+        failed  = summary.get('failed_checks', [])
+        if passed: logger.info(f"[VALIDATOR]   Passed: {', '.join(passed[:5])}")
+        if failed: logger.info(f"[VALIDATOR]   Failed: {', '.join(failed)}")
         if summary.get('vpvr_rescued'):
-            print("✨ VPVR RESCUE: Counter-trend signal saved by excellent entry point!")
-            print("")
-        
-        print("=" * 70)
-    
+            logger.info("[VALIDATOR]   VPVR RESCUE: Counter-trend signal saved!")
+
     def get_validation_stats(self) -> Dict:
-        """Get validation statistics."""
         total = self.validation_stats['total_validated']
         if total == 0:
             return self.validation_stats
-        
-        stats = {
+        return {
             **self.validation_stats,
-            'pass_rate': round(self.validation_stats['passed'] / total, 3),
-            'filter_rate': round(self.validation_stats['filtered'] / total, 3),
-            'boost_rate': round(self.validation_stats['boosted'] / total, 3),
-            'bias_penalty_rate': round(self.validation_stats['bias_penalized'] / total, 3),
-            'vpvr_rescue_rate': round(self.validation_stats['vpvr_rescued'] / total, 3),
-            'ema_stack_rate': round(self.validation_stats['ema_stack_aligned'] / total, 3),
-            'rsi_div_rate': round(self.validation_stats['rsi_divergence_detected'] / total, 3),
-            'vpvr_scored_rate': round(self.validation_stats['vpvr_scored'] / total, 3),
-            'confidence_filter_rate': round(self.validation_stats['confidence_filtered'] / total, 3)
+            'pass_rate':               round(self.validation_stats['passed']    / total, 3),
+            'filter_rate':             round(self.validation_stats['filtered']  / total, 3),
+            'boost_rate':              round(self.validation_stats['boosted']   / total, 3),
+            'bias_penalty_rate':       round(self.validation_stats['bias_penalized'] / total, 3),
+            'vpvr_rescue_rate':        round(self.validation_stats['vpvr_rescued']   / total, 3),
+            'ema_stack_rate':          round(self.validation_stats['ema_stack_aligned']       / total, 3),
+            'rsi_div_rate':            round(self.validation_stats['rsi_divergence_detected'] / total, 3),
+            'vpvr_scored_rate':        round(self.validation_stats['vpvr_scored']             / total, 3),
+            'confidence_filter_rate':  round(self.validation_stats['confidence_filtered']     / total, 3),
         }
-        
-        if self.validation_stats['time_zones']:
-            stats['time_zone_distribution'] = self.validation_stats['time_zones']
-        
-        return stats
-    
+
     def reset_stats(self):
-        """Reset validation statistics."""
         self.validation_stats = {
             'total_validated': 0, 'passed': 0, 'filtered': 0, 'boosted': 0,
             'bias_penalized': 0, 'vpvr_rescued': 0, 'vpvr_scored': 0,
@@ -1396,36 +1307,20 @@ class SignalValidator:
         }
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# GLOBAL INSTANCES & FACTORY FUNCTIONS
-# ══════════════════════════════════════════════════════════════════════════════
-
-_validator_instance: Optional[SignalValidator] = None
-_regime_filter_instance: Optional[RegimeFilter] = None
-_options_filter_instance: Optional[OptionsFilter] = None
+# ── Global instances ──────────────────────────────────────────────────────────
+_validator_instance:      Optional[SignalValidator] = None
+_regime_filter_instance:  Optional[RegimeFilter]   = None
+_options_filter_instance: Optional[OptionsFilter]  = None
 
 
 def get_validator() -> SignalValidator:
-    """Get or create global validator instance."""
     global _validator_instance
     if _validator_instance is None:
-        _validator_instance = SignalValidator(
-            min_final_confidence=0.50,
-            min_adx=15.0,
-            min_volume_ratio=1.5,
-            enable_vpvr=True,
-            enable_daily_bias=True,
-            enable_time_filter=True,
-            enable_ema_stack=True,
-            enable_rsi_divergence=True,
-            min_bias_confidence=0.65,
-            strict_mode=False
-        )
+        _validator_instance = SignalValidator()
     return _validator_instance
 
 
 def get_regime_filter() -> RegimeFilter:
-    """Get or create global regime filter instance."""
     global _regime_filter_instance
     if _regime_filter_instance is None:
         _regime_filter_instance = RegimeFilter()
@@ -1433,47 +1328,15 @@ def get_regime_filter() -> RegimeFilter:
 
 
 def get_options_filter() -> OptionsFilter:
-    """Get or create global options filter instance."""
     global _options_filter_instance
     if _options_filter_instance is None:
         _options_filter_instance = OptionsFilter()
     return _options_filter_instance
 
 
-# Export all public APIs
 __all__ = [
-    # Classes
-    'SignalValidator',
-    'RegimeFilter',
-    'RegimeState',
-    'OptionsFilter',
-    # Factory functions
-    'get_validator',
-    'get_regime_filter',
-    'get_options_filter',
-    # Helper functions
-    'get_time_of_day_quality',
-    'get_options_recommendation',
+    'SignalValidator', 'RegimeFilter', 'RegimeState', 'OptionsFilter',
+    'get_validator', 'get_regime_filter', 'get_options_filter',
+    'get_time_of_day_quality', 'get_options_recommendation',
+    'IVR_HARD_BLOCK', 'IVR_WARN',
 ]
-
-
-if __name__ == "__main__":
-    print("\n" + "=" * 70)
-    print("VALIDATION MODULE - Unified Testing")
-    print("=" * 70 + "\n")
-    
-    print("Testing SignalValidator...")
-    validator = get_validator()
-    print(f"✅ SignalValidator initialized")
-    
-    print("\nTesting RegimeFilter...")
-    regime = get_regime_filter()
-    regime.print_regime_summary()
-    
-    print("\nTesting OptionsFilter...")
-    opts = get_options_filter()
-    print(f"✅ OptionsFilter initialized")
-    
-    print("\n" + "=" * 70)
-    print("All validation components operational!")
-    print("=" * 70)

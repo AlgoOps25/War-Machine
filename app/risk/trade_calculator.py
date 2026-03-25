@@ -19,10 +19,21 @@ FIXED Mar 13 2026:
     On tight tape days (ATR < 1%), gaps rarely exceed 0.15% so watches
     expired on every ticker without ever finding an FVG. 0.08% matches
     the actual gap sizes seen on low-volatility sessions.
+
+UPDATED Mar 19 2026 (47.P6-2 Sprint 1):
+    get_adaptive_fvg_threshold() now uses get_atr_for_breakout() (live
+    Wilder intraday ATR) for volatility bucket selection instead of the
+    internal calculate_atr() which used session-filtered bars designed
+    for stop/target math.  atr_source is logged for observability.
+    compute_stop_and_targets() is unchanged — continues to use
+    calculate_atr() for the TR-series stop calculations.
 """
+from utils import config
 import numpy as np
 from datetime import time as dtime
 from typing import List, Dict, Tuple
+import logging
+logger = logging.getLogger(__name__)
 
 # ============================================================================
 # ATR & VOLATILITY CALCULATIONS
@@ -53,6 +64,11 @@ def calculate_atr(bars: List[Dict], period: int = 14) -> float:
 
     Pre-market candles are excluded so wide overnight spreads do not
     inflate the ATR and push stops artificially far from entry.
+
+    NOTE: This function is intentionally kept for stop/target math in
+    compute_stop_and_targets().  For volatility bucket selection
+    (FVG thresholds, dynamic confidence thresholds) use
+    get_atr_for_breakout() from app.data.intraday_atr instead.
     """
     session_bars = _filter_session_bars(bars)
     if len(session_bars) < period:
@@ -78,16 +94,35 @@ def calculate_atr(bars: List[Dict], period: int = 14) -> float:
 
 def get_adaptive_fvg_threshold(bars: List[Dict], ticker: str) -> Tuple[float, float]:
     """
-    CFW6 OPTIMIZATION: Adaptive FVG size based on ticker volatility
+    CFW6 OPTIMIZATION: Adaptive FVG size based on ticker volatility.
+
+    47.P6-2 (Mar 19 2026): Uses get_atr_for_breakout() (Wilder intraday
+    ATR on today's 1m session bars) for volatility bucket selection.
+    Falls back to calculate_atr() (session-filtered bars) if intraday
+    ATR returns 0 or errors.
+
     Returns: (fvg_threshold, confidence_adjustment)
     - High volatility (ATR > 2.0%): 0.30% minimum FVG, 0.95x confidence
     - Medium volatility (ATR 1.0-2.0%): 0.20% minimum FVG, 1.0x confidence
     - Low volatility (ATR < 1.0%): 0.08% minimum FVG, 1.05x confidence
       (lowered from 0.15% — tight tape days rarely produce gaps > 0.15%)
     """
-    atr           = calculate_atr(bars, period=14)
-    current_price = bars[-1]["close"]
-    atr_pct       = (atr / current_price) * 100 if current_price > 0 else 0
+    # 47.P6-2: primary ATR source — live Wilder intraday ATR
+    atr_val    = 0.0
+    atr_source = "NONE"
+    try:
+        from app.data.intraday_atr import get_atr_for_breakout
+        atr_val, atr_source = get_atr_for_breakout(bars, ticker)
+    except Exception as _atr_err:
+        logger.info(f"[ADAPTIVE] {ticker} intraday ATR error (falling back): {_atr_err}")
+
+    # Fallback: session-filtered ATR if intraday ATR returned 0
+    if atr_val <= 0:
+        atr_val    = calculate_atr(bars, period=14)
+        atr_source = "SESSION_FILTERED"
+
+    current_price = bars[-1]["close"] if bars else 0
+    atr_pct       = (atr_val / current_price) * 100 if current_price > 0 else 0
 
     # RVOL-based threshold reduction for high momentum tickers
     try:
@@ -116,10 +151,13 @@ def get_adaptive_fvg_threshold(bars: List[Dict], ticker: str) -> Tuple[float, fl
     # Lower threshold for high RVOL tickers (gap day movers)
     if _rvol >= 5.0:
         fvg_threshold = min(fvg_threshold, 0.001)
-        print(f"[ADAPTIVE] {ticker} HIGH RVOL ({_rvol:.1f}x) — FVG threshold lowered to {fvg_threshold*100:.2f}%")
+        logger.info(f"[ADAPTIVE] {ticker} HIGH RVOL ({_rvol:.1f}x) — FVG threshold lowered to {fvg_threshold*100:.2f}%")
 
-    print(f"[ADAPTIVE] {ticker} ATR: {atr:.2f} ({atr_pct:.2f}%) - {volatility_label} volatility")
-    print(f"  FVG threshold: {fvg_threshold*100:.2f}% | Confidence adj: {confidence_adjustment:.2f}x")
+    logger.info(
+        f"[ADAPTIVE] {ticker} ATR={atr_val:.4f} ({atr_pct:.2f}% / {atr_source}) "
+        f"— {volatility_label} volatility"
+    )
+    logger.info(f"  FVG threshold: {fvg_threshold*100:.2f}% | Confidence adj: {confidence_adjustment:.2f}x")
     return fvg_threshold, confidence_adjustment
 
 # ============================================================================
@@ -145,13 +183,13 @@ def get_adaptive_orb_threshold(bars: List[Dict], breakout_idx: int) -> float:
     volume_multiplier = calculate_volume_multiplier(bars, breakout_idx)
     if volume_multiplier >= 2.0:
         orb_threshold = 0.0008
-        print(f"[ADAPTIVE] High volume breakout ({volume_multiplier:.1f}x) - Using 0.08% threshold")
+        logger.info(f"[ADAPTIVE] High volume breakout ({volume_multiplier:.1f}x) - Using 0.08% threshold")
     elif volume_multiplier >= 1.5:
         orb_threshold = 0.001
-        print(f"[ADAPTIVE] Standard volume ({volume_multiplier:.1f}x) - Using 0.10% threshold")
+        logger.info(f"[ADAPTIVE] Standard volume ({volume_multiplier:.1f}x) - Using 0.10% threshold")
     else:
         orb_threshold = 0.0015
-        print(f"[ADAPTIVE] Low volume ({volume_multiplier:.1f}x) - Using 0.15% threshold")
+        logger.info(f"[ADAPTIVE] Low volume ({volume_multiplier:.1f}x) - Using 0.15% threshold")
     return orb_threshold
 
 # ============================================================================
@@ -177,8 +215,8 @@ def apply_confidence_decay(base_confidence: float, candles_waited: int) -> float
 
     adjusted_confidence = base_confidence * (1 - decay)
     if candles_waited > 5:
-        print(f"[DECAY] Waited {candles_waited} candles - Confidence reduced by {decay*100:.1f}%")
-        print(f"  {base_confidence:.2%} -> {adjusted_confidence:.2%}")
+        logger.info(f"[DECAY] Waited {candles_waited} candles - Confidence reduced by {decay*100:.1f}%")
+        logger.info(f"  {base_confidence:.2%} -> {adjusted_confidence:.2%}")
     return max(adjusted_confidence, 0.50)
 
 # ============================================================================
@@ -246,6 +284,13 @@ def calculate_stop_loss_by_grade(
                 f"Using ${stop_price:.2f}"
             )
 
+    # FIX 10.C-4 (MAR 19 2026): guard against stop at or above entry on bull,
+    # or at or below entry on bear — can happen on A+ high-vol tight-OR tape.
+    if direction == "bull" and stop_price >= entry_price:
+        return None
+    elif direction == "bear" and stop_price <= entry_price:
+        return None
+
     return stop_price
 
 
@@ -259,8 +304,8 @@ def calculate_targets_by_grade(
     T1 = 2R, T2 = 3.5R for all grades (per CFW6 video rules).
     """
     risk        = abs(entry_price - stop_price)
-    t1_distance = risk * 2.0
-    t2_distance = risk * 3.5
+    t1_distance = risk * config.T1_MULTIPLIER
+    t2_distance = risk * config.T2_MULTIPLIER
 
     if direction == "bull":
         t1 = entry_price + t1_distance
@@ -269,7 +314,7 @@ def calculate_targets_by_grade(
         t1 = entry_price - t1_distance
         t2 = entry_price - t2_distance
 
-    print(f"[TARGETS] {grade}: T1=${t1:.2f} (2R) | T2=${t2:.2f} (3.5R) | Risk/contract=${risk:.2f}")
+    logger.info(f"[TARGETS] {grade}: T1=${t1:.2f} (2R) | T2=${t2:.2f} (3.5R) | Risk/contract=${risk:.2f}")
     return t1, t2
 
 
@@ -284,7 +329,8 @@ def compute_stop_and_targets(
     """
     Main entry point: compute stop and targets.
     ATR is derived from session-only bars (09:30-16:00 ET) so pre-market
-    volatility does not widen stops.
+    volatility does not widen stops.  Uses calculate_atr() (not intraday ATR)
+    because stop math requires TR-series smoothing, not just a % bucket.
     Passing or_high=0 / or_low=0 is safe — the OR boundary is skipped
     and ATR stop is used exclusively (M8 fix).
     Returns: (stop_price, t1, t2)
@@ -293,6 +339,8 @@ def compute_stop_and_targets(
     stop_price = calculate_stop_loss_by_grade(
         entry_price, grade, direction, or_low, or_high, atr
     )
+    if stop_price is None:
+        return None, None, None
     t1, t2 = calculate_targets_by_grade(entry_price, stop_price, grade, direction)
     return stop_price, t1, t2
 

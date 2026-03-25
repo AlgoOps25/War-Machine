@@ -1,105 +1,118 @@
-# app/signals/vwap_reclaim.py
-# D1: VWAP Reclaim Signal
-# Detects when price loses VWAP then reclaims it with a confirming close.
-# This is a standalone signal that feeds into _run_signal_pipeline via
-# process_ticker as a third scan path (after OR and intraday BOS).
-#
-# Signal criteria:
-#   1. At least one bar closed BELOW vwap (loss)
-#   2. Current bar closes ABOVE vwap (reclaim)
-#   3. Reclaim candle body >= RECLAIM_BODY_MIN_PCT
-#   4. Volume on reclaim bar >= RECLAIM_RVOL_MIN * avg volume
-#   5. Only valid between 9:45 AM – 3:00 PM ET
+"""
+VWAP Reclaim Signal Module
+Detects VWAP reclaim setups where price dips below VWAP and reclaims it
+with a valid CFW6-style confirmation candle.
 
-from datetime import time
-
-RECLAIM_BODY_MIN_PCT  = 0.0010   # reclaim candle body >= 0.10%
-RECLAIM_RVOL_MIN      = 1.2      # reclaim bar volume >= 1.2x avg
-RECLAIM_LOOKBACK      = 10       # bars to look back for the VWAP loss
-RECLAIM_AVG_VOL_BARS  = 20       # bars used to compute avg volume
+FIX 43.M-10 (Mar 19 2026): Synthetic FVG zone was hardcoded at ±0.15% around
+  VWAP, ignoring the per-ticker adaptive threshold computed by
+  get_adaptive_fvg_threshold() in app/risk/trade_calculator.py.
+  A high-priced ticker (e.g. $500) would get a $1.50 zone each side;
+  a $10 ticker would get $0.015 — both using the same 0.15% regardless
+  of ATR or price regime. Fixed to call get_adaptive_fvg_threshold() and
+  use its result as the half-width of the synthetic FVG zone.
+"""
+from typing import Dict, List, Optional, Tuple
+from utils import config
 
 
-def _compute_vwap(bars: list) -> list[float]:
-    """Returns per-bar cumulative VWAP values."""
-    vwaps = []
-    cum_tpv = 0.0
-    cum_vol = 0.0
-    for bar in bars:
-        tp = (bar["high"] + bar["low"] + bar["close"]) / 3.0
-        v  = bar.get("volume", 0)
-        cum_tpv += tp * v
-        cum_vol += v
-        vwaps.append(cum_tpv / cum_vol if cum_vol > 0 else 0.0)
-    return vwaps
-
-
-def _avg_volume(bars: list, lookback: int) -> float:
-    vols = [b.get("volume", 0) for b in bars[-lookback:]]
-    return sum(vols) / len(vols) if vols else 1.0
-
-
-def _bar_time(bar: dict):
-    bt = bar.get("datetime")
-    if bt is None:
-        return None
-    return bt.time() if hasattr(bt, "time") else bt
-
-
-def detect_vwap_reclaim(bars: list) -> dict | None:
+def _get_adaptive_threshold(ticker: str, current_price: float, bars: List[Dict]) -> float:
     """
-    Scans bars for a VWAP reclaim signal.
-
-    Returns dict with keys:
-        direction, reclaim_bar_idx, vwap_at_reclaim,
-        entry_price, signal_type
-    or None.
+    Retrieve adaptive FVG threshold from trade_calculator.
+    Falls back to config.FVG_MIN_SIZE_PCT * current_price if unavailable.
     """
-    if not bars or len(bars) < RECLAIM_LOOKBACK + 3:
+    try:
+        from app.risk.trade_calculator import get_adaptive_fvg_threshold
+        return get_adaptive_fvg_threshold(ticker, current_price, bars)
+    except Exception:
+        return current_price * getattr(config, 'FVG_MIN_SIZE_PCT', 0.0015)
+
+
+def build_synthetic_fvg_zone(
+    vwap: float,
+    ticker: str,
+    current_price: float,
+    bars: List[Dict],
+) -> Tuple[float, float]:
+    """
+    Build a synthetic FVG zone centred on VWAP using the adaptive threshold
+    as the half-width.
+
+    FIX 43.M-10: Previously hardcoded half-width = vwap * 0.0015 (0.15%).
+    Now uses get_adaptive_fvg_threshold() so zone width scales with ATR /
+    price regime.
+
+    Returns:
+        (zone_low, zone_high)
+    """
+    half_width = _get_adaptive_threshold(ticker, current_price, bars)
+    return vwap - half_width, vwap + half_width
+
+
+def detect_vwap_reclaim(
+    ticker: str,
+    bars: List[Dict],
+    direction: str,
+    vwap: float,
+) -> Optional[Dict]:
+    """
+    Detect a VWAP reclaim setup.
+
+    Criteria (bull):
+      1. A recent bar dipped below VWAP (sweep)
+      2. Close recovered above VWAP
+      3. Close is within the adaptive synthetic FVG zone above VWAP
+
+    Args:
+        ticker:    Stock symbol
+        bars:      List of OHLCV bar dicts (chronological)
+        direction: 'bull' or 'bear'
+        vwap:      Current VWAP level
+
+    Returns:
+        dict with zone, entry_price, grade  OR  None
+    """
+    if not bars or len(bars) < 3 or vwap <= 0:
         return None
 
-    vwaps = _compute_vwap(bars)
-    avg_vol = _avg_volume(bars, RECLAIM_AVG_VOL_BARS)
+    current_price = bars[-1]['close']
+    zone_low, zone_high = build_synthetic_fvg_zone(vwap, ticker, current_price, bars)
 
-    # Only scan during valid session hours
-    for i in range(len(bars) - 1, max(len(bars) - RECLAIM_LOOKBACK, 3) - 1, -1):
-        bar     = bars[i]
-        bt      = _bar_time(bar)
-        if bt is None:
-            continue
-        if not (time(9, 45) <= bt <= time(15, 0)):
-            continue
+    lookback = bars[-6:]
 
-        vwap_now  = vwaps[i]
-        if vwap_now == 0:
-            continue
-
-        body = abs(bar["close"] - bar["open"])
-        body_pct = body / bar["open"] if bar["open"] > 0 else 0
-
-        # ── Bull reclaim: prior bar below VWAP, current bar closes above ──
-        if (bar["close"] > vwap_now
-                and bars[i - 1]["close"] < vwaps[i - 1]
-                and body_pct >= RECLAIM_BODY_MIN_PCT
-                and bar.get("volume", 0) >= avg_vol * RECLAIM_RVOL_MIN):
-            return {
-                "direction":        "bull",
-                "reclaim_bar_idx":  i,
-                "vwap_at_reclaim":  vwap_now,
-                "entry_price":      bar["close"],
-                "signal_type":      "VWAP_RECLAIM",
-            }
-
-        # ── Bear reclaim: prior bar above VWAP, current bar closes below ──
-        if (bar["close"] < vwap_now
-                and bars[i - 1]["close"] > vwaps[i - 1]
-                and body_pct >= RECLAIM_BODY_MIN_PCT
-                and bar.get("volume", 0) >= avg_vol * RECLAIM_RVOL_MIN):
-            return {
-                "direction":        "bear",
-                "reclaim_bar_idx":  i,
-                "vwap_at_reclaim":  vwap_now,
-                "entry_price":      bar["close"],
-                "signal_type":      "VWAP_RECLAIM",
-            }
+    for bar in lookback:
+        if direction == 'bull':
+            swept   = bar['low'] < vwap
+            reclaim = bar['close'] > vwap
+            in_zone = zone_low <= bar['close'] <= zone_high
+            if swept and reclaim and in_zone:
+                print(
+                    f"[VWAP-RECLAIM] {ticker} BULL reclaim @ ${bar['close']:.2f} "
+                    f"| zone ${zone_low:.2f}–${zone_high:.2f} | VWAP ${vwap:.2f}"
+                )
+                return {
+                    'direction':   direction,
+                    'entry_price': bar['close'],
+                    'vwap':        vwap,
+                    'zone_low':    zone_low,
+                    'zone_high':   zone_high,
+                    'grade':       'A',
+                }
+        elif direction == 'bear':
+            swept   = bar['high'] > vwap
+            reclaim = bar['close'] < vwap
+            in_zone = zone_low <= bar['close'] <= zone_high
+            if swept and reclaim and in_zone:
+                print(
+                    f"[VWAP-RECLAIM] {ticker} BEAR reclaim @ ${bar['close']:.2f} "
+                    f"| zone ${zone_low:.2f}–${zone_high:.2f} | VWAP ${vwap:.2f}"
+                )
+                return {
+                    'direction':   direction,
+                    'entry_price': bar['close'],
+                    'vwap':        vwap,
+                    'zone_low':    zone_low,
+                    'zone_high':   zone_high,
+                    'grade':       'A',
+                }
 
     return None

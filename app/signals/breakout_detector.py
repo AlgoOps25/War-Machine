@@ -40,6 +40,8 @@ Risk Management:
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 import statistics
+import logging
+logger = logging.getLogger(__name__)
 
 
 class BreakoutDetector:
@@ -85,10 +87,10 @@ class BreakoutDetector:
         # PDH/PDL cache (refreshed daily)
         self._pdh_pdl_cache: Dict[str, Tuple[float, float]] = {}
 
-        print(f"[BREAKOUT] Split targets: T1={t1_reward_ratio}R (50%), T2={t2_reward_ratio}R (50%)")
+        logger.info(f"[BREAKOUT] Split targets: T1={t1_reward_ratio}R (50%), T2={t2_reward_ratio}R (50%)")
         print(f"[BREAKOUT] Confirmation bars: {min_bars_since_breakout} "
               f"({'first-break signal' if min_bars_since_breakout == 0 else 'wait-for-confirm'})")
-        print(f"[BREAKOUT] Lookback: {lookback_bars} bars | Session anchoring: ENABLED")
+        logger.info(f"[BREAKOUT] Lookback: {lookback_bars} bars | Session anchoring: ENABLED")
 
     # =================================================================
     # ATR
@@ -131,20 +133,24 @@ class BreakoutDetector:
     # PDH / PDL
     # =================================================================
 
-    def get_pdh_pdl(self, ticker: str) -> Tuple[Optional[float], Optional[float]]:
-        """Get previous day high/low from data_manager (cached per session)."""
-        if ticker in self._pdh_pdl_cache:
-            return self._pdh_pdl_cache[ticker]
+    def get_pdh_pdl(self, ticker: str, as_of_date=None) -> Tuple[Optional[float], Optional[float]]:
+        """Get previous day high/low from data_manager (cached per ticker+date).
+
+        as_of_date: pass session date in backtests so each fold fetches its own PDH/PDL.
+        """
+        cache_key = (ticker, as_of_date)
+        if cache_key in self._pdh_pdl_cache:
+            return self._pdh_pdl_cache[cache_key]
         try:
             from app.data.data_manager import data_manager
-            prev_day = data_manager.get_previous_day_ohlc(ticker)
+            prev_day = data_manager.get_previous_day_ohlc(ticker, as_of_date=as_of_date)
             if prev_day and 'high' in prev_day and 'low' in prev_day:
                 pdh = prev_day['high']
                 pdl = prev_day['low']
-                self._pdh_pdl_cache[ticker] = (pdh, pdl)
+                self._pdh_pdl_cache[cache_key] = (pdh, pdl)
                 return pdh, pdl
         except Exception as e:
-            print(f"[BREAKOUT] PDH/PDL fetch error for {ticker}: {e}")
+            logger.info(f"[BREAKOUT] PDH/PDL fetch error for {ticker}: {e}")
         return None, None
 
     def clear_pdh_pdl_cache(self) -> None:
@@ -156,72 +162,75 @@ class BreakoutDetector:
     # =================================================================
 
     def calculate_support_resistance(
-        self, bars: List[Dict], ticker: str = "unknown"
-    ) -> Tuple[float, float]:
+        self, bars: List[Dict], ticker: str = "unknown", as_of_date=None
+    ) -> Tuple[float, float, str, str]:
         """
         Calculate support and resistance levels.
 
         Phase 1.17 — Session Anchoring:
-          1. Compute rolling intraday levels from last N bars (unchanged)
+          1. Compute rolling intraday levels from last N bars
           2. Pull 9:30 session high/low via get_session_levels()
           3. Session high becomes resistance when price is within 0.5% of it
              OR when it is higher than the rolling resistance (true day high)
           4. Session low becomes support when price is within 0.5% of it
              OR when it is lower than the rolling support (true day low)
-          5. PDH/PDL confluence still applies on top (unchanged)
+          5. PDH/PDL confluence still applies on top
 
-        This ensures a breakout above the session high is detected regardless
-        of how many bars are in the rolling lookback window.
+        Fixes (this commit):
+          - resistance_source and support_source are now initialized immediately
+            after the rolling levels are set, preventing NameError when the
+            session-anchoring try block runs without updating them.
+          - Removed duplicate get_pdh_pdl() call that appeared both before and
+            after the session-anchoring block (second call was redundant).
         """
         if not bars:
-            return 0.0, 0.0
+            return 0.0, 0.0, 'rolling', 'rolling'
 
         lookback = (bars[-self.lookback_bars:]
                     if len(bars) >= self.lookback_bars
                     else bars)
 
         # Step 1: rolling intraday levels
-        intraday_resistance = max(bar['high'] for bar in lookback)
-        intraday_support    = min(bar['low']  for bar in lookback)
+        resistance = max(bar['high'] for bar in lookback)
+        support    = min(bar['low']  for bar in lookback)
 
-        resistance = intraday_resistance
-        support    = intraday_support
+        # Initialize source labels immediately (fixes NameError)
+        resistance_source = 'rolling'
+        support_source    = 'rolling'
 
-        # Step 2: session anchoring via OR detector
+        # Step 2: session-anchoring via opening_range.get_session_levels()
         try:
             from app.signals.opening_range import get_session_levels
             session = get_session_levels(ticker)
             if session:
-                session_high = session['session_high']
-                session_low  = session['session_low']
-
-                # Use session high as resistance if it is the true day high
-                # (i.e. higher than what the rolling window sees) OR if price
-                # is approaching it (within 0.5%).
+                session_high  = session['session_high']
+                session_low   = session['session_low']
                 current_price = bars[-1]['close']
+
                 near_session_high = (abs(current_price - session_high) / session_high) < 0.005
-                if session_high >= intraday_resistance or near_session_high:
-                    resistance = session_high
+                if session_high >= resistance or near_session_high:
+                    resistance        = session_high
+                    resistance_source = 'session'
 
-                # Use session low as support similarly
                 near_session_low = (abs(current_price - session_low) / session_low) < 0.005
-                if session_low <= intraday_support or near_session_low:
-                    support = session_low
-
-        except Exception as e:
-            # Non-fatal: fall back to rolling levels only
+                if session_low <= support or near_session_low:
+                    support        = session_low
+                    support_source = 'session'
+        except Exception:
             pass
 
-        # Step 3: PDH/PDL confluence (unchanged from Phase 1.8)
-        pdh, pdl = self.get_pdh_pdl(ticker)
+        # Step 3: PDH/PDL confluence (single fetch — removed duplicate)
+        pdh, pdl = self.get_pdh_pdl(ticker, as_of_date=as_of_date)
         if pdh is not None:
             if abs(pdh - resistance) / resistance < 0.02:
-                resistance = pdh
+                resistance        = pdh
+                resistance_source = 'pdh'
         if pdl is not None:
             if abs(pdl - support) / support < 0.02:
-                support = pdl
+                support        = pdl
+                support_source = 'pdl'
 
-        return support, resistance
+        return support, resistance, support_source, resistance_source
 
     # =================================================================
     # VOLUME
@@ -284,7 +293,7 @@ class BreakoutDetector:
     # =================================================================
 
     def detect_breakout(
-        self, bars: List[Dict], ticker: str = "unknown"
+        self, bars: List[Dict], ticker: str = "unknown", as_of_date=None
     ) -> Optional[Dict]:
         """
         Detect breakout/breakdown entry signal.
@@ -298,7 +307,7 @@ class BreakoutDetector:
             return None
 
         latest      = bars[-1]
-        support, resistance = self.calculate_support_resistance(bars[:-1], ticker)
+        support, resistance, support_source, resistance_source = self.calculate_support_resistance(bars[:-1], ticker, as_of_date=as_of_date)
         ema_volume  = self.calculate_ema_volume(bars[:-1])
         atr         = self.calculate_atr(bars, ticker)
 
@@ -308,20 +317,10 @@ class BreakoutDetector:
         current_volume  = latest['volume']
         volume_ratio    = current_volume / ema_volume
         candle_strength = self.analyze_candle_strength(latest)
-        pdh, pdl        = self.get_pdh_pdl(ticker)
+        pdh, pdl        = self.get_pdh_pdl(ticker, as_of_date=as_of_date)
 
         # Detect whether session levels were used
-        session_anchored = False
-        try:
-            from app.signals.opening_range import get_session_levels
-            session = get_session_levels(ticker)
-            if session:
-                session_anchored = (
-                    abs(resistance - session['session_high']) < 0.01 or
-                    abs(support    - session['session_low'])  < 0.01
-                )
-        except Exception:
-            pass
+        session_anchored = (resistance_source == 'session' or support_source == 'session')
 
         # ============================================================
         # BULL BREAKOUT
@@ -719,18 +718,18 @@ if __name__ == "__main__":
     signal = detector.detect_breakout(sample_bars, ticker="TEST")
 
     if signal:
-        print("\n" + "="*60)
-        print("BREAKOUT DETECTED!")
-        print("="*60)
-        print(format_signal_message("TEST", signal))
-        print("="*60)
+        logger.info("\n" + "="*60)
+        logger.info("BREAKOUT DETECTED!")
+        logger.info("="*60)
+        logger.info(format_signal_message("TEST", signal))
+        logger.info("="*60)
         shares = detector.calculate_position_size(
             account_balance=10000, risk_percent=1.0,
             entry=signal['entry'], stop=signal['stop']
         )
-        print(f"\nPosition Size: {shares} shares")
-        print(f"Total Risk:    ${shares * signal['risk']:.2f}")
-        print(f"T1 Profit:     ${shares * 0.5 * (signal['t1'] - signal['entry']):.2f}")
-        print(f"T2 Profit:     ${shares * 0.5 * (signal['t2'] - signal['entry']):.2f}")
+        logger.info(f"\nPosition Size: {shares} shares")
+        logger.info(f"Total Risk:    ${shares * signal['risk']:.2f}")
+        logger.info(f"T1 Profit:     ${shares * 0.5 * (signal['t1'] - signal['entry']):.2f}")
+        logger.info(f"T2 Profit:     ${shares * 0.5 * (signal['t2'] - signal['entry']):.2f}")
     else:
-        print("No breakout signal detected")
+        logger.info("No breakout signal detected")

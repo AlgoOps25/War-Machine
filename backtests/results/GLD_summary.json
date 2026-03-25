@@ -1,0 +1,17 @@
+{
+  "ticker": "GLD",
+  "days": 90,
+  "total_trades": 2,
+  "wins": 1,
+  "losses": 1,
+  "win_rate_pct": 50.0,
+  "avg_r": -0.01,
+  "median_r": -0.01,
+  "avg_win_r": 1.0,
+  "avg_loss_r": -1.02,
+  "profit_factor": 0.98,
+  "max_drawdown_r": 0.0,
+  "exit_reasons": {
+    "STOP": 2
+  }
+}

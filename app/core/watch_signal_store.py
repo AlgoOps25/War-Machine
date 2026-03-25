@@ -8,6 +8,8 @@ from zoneinfo import ZoneInfo
 
 from app.core.thread_safe_state import get_state
 from app.data.sql_safe import safe_execute, safe_query, get_placeholder
+import logging
+logger = logging.getLogger(__name__)
 
 _state = get_state()
 
@@ -43,7 +45,7 @@ def _ensure_watch_db():
         """)
         conn.commit()
     except Exception as e:
-        print(f"[WATCH-DB] Init error: {e}")
+        logger.info(f"[WATCH-DB] Init error: {e}")
     finally:
         if conn:
             return_conn(conn)
@@ -78,7 +80,7 @@ def _persist_watch(ticker: str, data: dict):
         ))
         conn.commit()
     except Exception as e:
-        print(f"[WATCH-DB] Persist error for {ticker}: {e}")
+        logger.info(f"[WATCH-DB] Persist error for {ticker}: {e}")
     finally:
         if conn:
             return_conn(conn)
@@ -94,7 +96,7 @@ def _remove_watch_from_db(ticker: str):
         safe_execute(cursor, f"DELETE FROM watching_signals_persist WHERE ticker = {p}", (ticker,))
         conn.commit()
     except Exception as e:
-        print(f"[WATCH-DB] Remove error for {ticker}: {e}")
+        logger.info(f"[WATCH-DB] Remove error for {ticker}: {e}")
     finally:
         if conn:
             return_conn(conn)
@@ -115,9 +117,9 @@ def _cleanup_stale_watches():
         deleted_count = cursor.rowcount
         conn.commit()
         if deleted_count > 0:
-            print(f"[WATCH-DB] 🧹 Auto-cleaned {deleted_count} stale watch(es) (older than {watch_window_minutes}min)")
+            logger.info(f"[WATCH-DB] 🧹 Auto-cleaned {deleted_count} stale watch(es) (older than {watch_window_minutes}min)")
     except Exception as e:
-        print(f"[WATCH-DB] Cleanup error: {e}")
+        logger.info(f"[WATCH-DB] Cleanup error: {e}")
     finally:
         if conn:
             return_conn(conn)
@@ -162,7 +164,7 @@ def _load_watches_from_db() -> dict:
             )
         return loaded
     except Exception as e:
-        print(f"[WATCH-DB] Load error: {e}")
+        logger.info(f"[WATCH-DB] Load error: {e}")
         return {}
     finally:
         if conn:
@@ -182,7 +184,7 @@ def _maybe_load_watches():
 def send_bos_watch_alert(ticker, direction, bos_price, struct_high, struct_low,
                           signal_type="CFW6_INTRADAY"):
     """Send Discord alert when BOS is detected and we enter watch mode."""
-    from app.discord_helpers import send_simple_message
+    from app.notifications.discord_helpers import send_simple_message
     arrow = "🟢" if direction == "bull" else "🔴"
     level = f"${struct_high:.2f}" if direction == "bull" else f"${struct_low:.2f}"
     mode_tag = "[OR]" if signal_type == "CFW6_OR" else "[INTRADAY]"
@@ -194,9 +196,9 @@ def send_bos_watch_alert(ticker, direction, bos_price, struct_high, struct_low,
     )
     try:
         send_simple_message(msg)
-        print(f"[WATCH] 📡 {ticker} {direction.upper()} BOS @ ${bos_price:.2f}")
+        logger.info(f"[WATCH] 📡 {ticker} {direction.upper()} BOS @ ${bos_price:.2f}")
     except Exception as e:
-        print(f"[WATCH] Alert error: {e}")
+        logger.info(f"[WATCH] Alert error: {e}")
 
 def clear_watching_signals():
     """Clear all watching signals from memory and DB."""
@@ -210,8 +212,8 @@ def clear_watching_signals():
         safe_execute(cursor, "DELETE FROM watching_signals_persist")
         conn.commit()
     except Exception as e:
-        print(f"[WATCH-DB] Clear error: {e}")
+        logger.info(f"[WATCH-DB] Clear error: {e}")
     finally:
         if conn:
             return_conn(conn)
-    print("[WATCHING] Cleared")
+    logger.info("[WATCHING] Cleared")

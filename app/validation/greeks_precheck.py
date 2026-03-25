@@ -23,6 +23,9 @@ Bug fixes (Phase 1.17, Mar 12 2026):
            is_valid_dte() is kept on GreeksSnapshot for the downstream
            options selector but is no longer used as a gate here.
 
+Mar 25 2026 — Add missing ZoneInfo import (Pylance reportUndefinedVariable
+              on line 285: timestamp=datetime.now(ZoneInfo(...))).
+
 DTE Responsibility Split:
   greeks_precheck  → answers "does ANY liquid contract exist?"  (0-30 DTE)
   options_selector → answers "which contract is best?"          (uses config.MIN/MAX/IDEAL_DTE)
@@ -39,11 +42,16 @@ Usage:
 
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime, timedelta, date
+from zoneinfo import ZoneInfo
 from dataclasses import dataclass
 import time
 import requests
 
 from utils import config
+import logging
+logger = logging.getLogger(__name__)
+
+ET = ZoneInfo("America/New_York")
 
 # How long to suppress retries for tickers with no options (30 minutes)
 NO_OPTIONS_TTL = 1800
@@ -291,7 +299,7 @@ class GreeksCache:
             return snapshots
 
         except Exception as e:
-            print(f"[GREEKS-CACHE] Error fetching {ticker}: {e}")
+            logger.info(f"[GREEKS-CACHE] Error fetching {ticker}: {e}")
             return []
 
     def update_cache(self, ticker: str, current_price: float) -> bool:
@@ -395,6 +403,7 @@ class GreeksCache:
         ticker: str,
         direction: str,
         entry_price: float,
+        next_bar_open: Optional[float] = None,
     ) -> Tuple[bool, str]:
         """
         Quick pre-validation of options availability.
@@ -434,16 +443,20 @@ class GreeksCache:
                     f"(blacklisted, {mins_left}min remaining)"
                 )
 
+        # Use next-bar open for strike selection if provided (43.H-2 fix)
+        strike_center = next_bar_open if next_bar_open else entry_price
+
         # Get ATM strikes (wide DTE window via cache)
-        atm_strikes = self.get_atm_strikes(ticker, entry_price, num_strikes=7)
+        atm_strikes = self.get_atm_strikes(ticker, strike_center, num_strikes=7)
         if not atm_strikes:
             self.stats['quick_fails'] += 1
             return False, "No ATM options data available"
 
         option_type      = "call" if direction == "bull" else "put"
         relevant_options = self.get_atm_strikes(
-            ticker, entry_price, num_strikes=7, option_type=option_type
+            ticker, strike_center, num_strikes=7, option_type=option_type
         )
+
         if not relevant_options:
             self.stats['quick_fails'] += 1
             return False, f"No {option_type}s found near ATM"
@@ -528,12 +541,12 @@ class GreeksCache:
             self._cache.pop(ticker, None)
             self._cache_timestamps.pop(ticker, None)
             self._no_options_set.pop(ticker, None)
-            print(f"[GREEKS-CACHE] Cleared cache for {ticker}")
+            logger.info(f"[GREEKS-CACHE] Cleared cache for {ticker}")
         else:
             self._cache.clear()
             self._cache_timestamps.clear()
             self._no_options_set.clear()
-            print("[GREEKS-CACHE] Cleared all cache")
+            logger.info("[GREEKS-CACHE] Cleared all cache")
 
 
 # Global instance
@@ -542,7 +555,8 @@ greeks_cache = GreeksCache(cache_ttl=300)
 
 # Convenience functions
 def quick_validate_options(
-    ticker: str, direction: str, entry_price: float
+    ticker: str, direction: str, entry_price: float,
+    next_bar_open: Optional[float] = None,
 ) -> Tuple[bool, str]:
     """
     Quick pre-validation convenience function.
@@ -550,7 +564,7 @@ def quick_validate_options(
     Usage:
         is_valid, reason = quick_validate_options("AAPL", "bull", 175.50)
     """
-    return greeks_cache.quick_validate(ticker, direction, entry_price)
+    return greeks_cache.quick_validate(ticker, direction, entry_price, next_bar_open)
 
 
 def get_cached_greeks(
@@ -577,14 +591,22 @@ def get_cached_greeks(
     for snapshot in snapshots:
         if snapshot.is_liquid() and snapshot.is_valid_delta():
             results.append({
-                'strike':    float(snapshot.strike),
-                'delta':     float(snapshot.delta),
-                'iv':        float(snapshot.iv),
-                'dte':       snapshot.dte,
-                'spread_pct': float(snapshot.spread_pct),
-                'is_liquid': snapshot.is_liquid(),
-                'bid':       float(snapshot.bid),
-                'ask':       float(snapshot.ask),
+                'strike':       float(snapshot.strike),
+                'expiration':   snapshot.expiration,
+                'option_type':  snapshot.option_type,
+                'delta':        float(snapshot.delta),
+                'gamma':        float(snapshot.gamma),
+                'theta':        float(snapshot.theta),
+                'vega':         float(snapshot.vega),
+                'iv':           float(snapshot.iv),
+                'dte':          snapshot.dte,
+                'spread_pct':   float(snapshot.spread_pct),
+                'is_liquid':    snapshot.is_liquid(),
+                'bid':          float(snapshot.bid),
+                'ask':          float(snapshot.ask),
+                'open_interest': snapshot.open_interest,
+                'volume':        snapshot.volume,
+                '_snapshot':    snapshot,   # 43.M-11: full object for downstream multipliers
             })
 
     # Sort by DTE ascending so caller always sees soonest-expiry first
@@ -594,40 +616,40 @@ def get_cached_greeks(
 
 if __name__ == "__main__":
     """Test the Greeks cache with real data."""
-    print("\n" + "=" * 70)
-    print("GREEKS PRE-VALIDATION CACHE - Test Suite")
-    print("=" * 70 + "\n")
+    logger.info("\n" + "=" * 70)
+    logger.info("GREEKS PRE-VALIDATION CACHE - Test Suite")
+    logger.info("=" * 70 + "\n")
 
     test_ticker   = "AAPL"
     initial_price = 250.0
 
-    print(f"Discovering real {test_ticker} price...")
+    logger.info(f"Discovering real {test_ticker} price...")
     greeks_cache.update_cache(test_ticker, initial_price)
     real_price = greeks_cache.estimate_current_price(test_ticker)
 
     if real_price:
-        print(f"✅ Estimated {test_ticker} price: ${real_price:.2f}\n")
+        logger.info(f"✅ Estimated {test_ticker} price: ${real_price:.2f}\n")
         test_price = real_price
     else:
-        print(f"⚠️  Could not estimate price, using ${initial_price}\n")
+        logger.info(f"⚠️  Could not estimate price, using ${initial_price}\n")
         test_price = initial_price
 
-    print(f"Test 1: Quick validate {test_ticker} CALL at ${test_price:.2f}")
+    logger.info(f"Test 1: Quick validate {test_ticker} CALL at ${test_price:.2f}")
     is_valid, reason = quick_validate_options(test_ticker, "bull", test_price)
-    print(f"Result: {'✅ VALID' if is_valid else '❌ INVALID'}")
-    print(f"Reason: {reason}\n")
+    logger.info(f"Result: {'✅ VALID' if is_valid else '❌ INVALID'}")
+    logger.info(f"Reason: {reason}\n")
 
-    print(f"Test 2: Quick validate {test_ticker} PUT at ${test_price:.2f}")
+    logger.info(f"Test 2: Quick validate {test_ticker} PUT at ${test_price:.2f}")
     is_valid, reason = quick_validate_options(test_ticker, "bear", test_price)
-    print(f"Result: {'✅ VALID' if is_valid else '❌ INVALID'}")
-    print(f"Reason: {reason}\n")
+    logger.info(f"Result: {'✅ VALID' if is_valid else '❌ INVALID'}")
+    logger.info(f"Reason: {reason}\n")
 
-    print(f"Test 3: Get cached ATM CALLS for {test_ticker}")
+    logger.info(f"Test 3: Get cached ATM CALLS for {test_ticker}")
     calls = get_cached_greeks(test_ticker, "bull", num_strikes=5)
-    print(f"Found {len(calls)} ATM call strikes (sorted by DTE asc):\n")
+    logger.info(f"Found {len(calls)} ATM call strikes (sorted by DTE asc):\n")
     for i, strike_data in enumerate(calls[:3], 1):
-        print(f"{i}. ${strike_data['strike']:.0f} CALL  |  {strike_data['dte']}DTE")
-        print(f"   Delta: {strike_data['delta']:.3f} | IV: {strike_data['iv']*100:.1f}%")
+        logger.info(f"{i}. ${strike_data['strike']:.0f} CALL  |  {strike_data['dte']}DTE")
+        logger.info(f"   Delta: {strike_data['delta']:.3f} | IV: {strike_data['iv']*100:.1f}%")
         print(
             f"   Bid/Ask: ${strike_data['bid']:.2f}/${strike_data['ask']:.2f} "
             f"(spread: {strike_data['spread_pct']:.1f}%)"
@@ -637,13 +659,13 @@ if __name__ == "__main__":
             f"| Delta OK: {'✅' if abs(strike_data['delta']) >= 0.30 else '❌'}\n"
         )
 
-    print("=" * 70)
-    print("Cache Statistics:")
-    print("=" * 70)
+    logger.info("=" * 70)
+    logger.info("Cache Statistics:")
+    logger.info("=" * 70)
     stats = greeks_cache.get_stats()
     for key, value in stats.items():
-        print(f"{key}: {value}")
-    print("=" * 70)
+        logger.info(f"{key}: {value}")
+    logger.info("=" * 70)
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -651,28 +673,11 @@ if __name__ == "__main__":
 # ════════════════════════════════════════════════════════════════════════════════
 
 def validate_signal_greeks(
-    ticker: str, direction: str, entry_price: float
+    ticker: str, direction: str, entry_price: float,
+    next_bar_open: Optional[float] = None,
 ) -> tuple[bool, str]:
-    """
-    Fast pre-validation using cached Greeks data.
-    Called from sniper.py Step 6.5 to confirm options exist before alerting.
-
-    Returns:
-        (is_valid, reason_string)
-
-    Examples:
-        (True,  "Valid calls: $265 strike, Δ=0.50, IV=31%, 3DTE")
-        (False, "No valid calls: poor delta")
-        (False, "No options available for XYZ (blacklisted, 28min remaining)")
-
-    Fix history:
-      Fix 1 (Mar 12): Removed unconditional update_cache() — TTL handled inside
-                      get_atm_strikes() → _is_cache_valid().
-      Fix 4 (Mar 12): DTE no longer used as a gate. Signal fires for any
-                      optionable ticker regardless of nearest expiry cycle.
-    """
     try:
-        is_valid, reason = quick_validate_options(ticker, direction, entry_price)
+        is_valid, reason = quick_validate_options(ticker, direction, entry_price, next_bar_open)
         return is_valid, reason
     except Exception as e:
         return True, f"Validation skipped: {e}"

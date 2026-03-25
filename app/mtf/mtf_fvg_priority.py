@@ -17,6 +17,7 @@ Integration:
 - Marks lower-TF FVGs as "secondary" for confluence tracking only
 """
 
+import logging
 from datetime import datetime, time
 from typing import List, Dict, Optional, Tuple
 from zoneinfo import ZoneInfo
@@ -32,6 +33,8 @@ from .mtf_compression import (
     TIMEFRAME_PRIORITY,
     TIMEFRAME_WEIGHTS
 )
+
+logger = logging.getLogger(__name__)
 
 ET = ZoneInfo("America/New_York")
 
@@ -387,18 +390,58 @@ def get_highest_priority_fvg(
     return result['primary_fvg']
 
 
+# ── PHASE 3C: FIX 41.H-5 ────────────────────────────────────────────────────────────────────────────────
+# get_full_mtf_analysis now resamples internally from bars_5m (or bars_1m if
+# provided) instead of requiring the caller to build the MTF dict. This
+# eliminates the 3 extra DB reads that occurred when sniper.py passed raw
+# session bars directly to resolve_fvg_priority, which expected a dict.
+# Backward-compatible: existing callers that pass only bars_5m continue to work.
+
 def get_full_mtf_analysis(
     ticker: str,
     direction: str,
     bars_5m: List[dict],
-    min_pct: float = 0.001
+    min_pct: float = 0.001,
+    bars_1m: List[dict] = None,  # optional: pre-fetched 1m bars for sharper resampling
 ) -> Dict:
     """
     Get complete MTF FVG analysis including all detected FVGs and priority logic.
-    
+
+    Builds the full timeframe dict internally - no additional DB reads.
     Use this for detailed logging or when you need to track secondary FVGs.
     """
-    return resolve_fvg_priority(ticker, direction, bars_5m, min_pct)
+    from collections import defaultdict
+
+    def _resample(bars: list, minutes: int) -> list:
+        buckets = defaultdict(list)
+        for b in bars:
+            dt = b["datetime"]
+            floored = dt.replace(
+                minute=(dt.minute // minutes) * minutes,
+                second=0, microsecond=0
+            )
+            buckets[floored].append(b)
+        result = []
+        for ts in sorted(buckets):
+            bucket = buckets[ts]
+            result.append({
+                "datetime": ts,
+                "open":   bucket[0]["open"],
+                "high":   max(b["high"]  for b in bucket),
+                "low":    min(b["low"]   for b in bucket),
+                "close":  bucket[-1]["close"],
+                "volume": sum(b["volume"] for b in bucket),
+            })
+        return result
+
+    src = bars_1m if bars_1m else bars_5m
+    bars_mtf = {
+        "5m": bars_5m,
+        "3m": _resample(src, 3),
+        "2m": _resample(src, 2),
+        "1m": src,
+    }
+    return resolve_fvg_priority(ticker, direction, bars_mtf, min_pct)
 
 
 def print_priority_stats():
@@ -409,22 +452,17 @@ def print_priority_stats():
     conflict_rate = (_priority_stats['conflicts_resolved'] / _priority_stats['scans']) * 100
     confluence_rate = (_priority_stats['confluence_found'] / _priority_stats['scans']) * 100
     
-    print("\n" + "="*80)
-    print("MTF FVG PRIORITY RESOLVER - DAILY STATISTICS")
-    print("="*80)
-    print(f"Total Scans:          {_priority_stats['scans']}")
-    print(f"Conflicts Resolved:   {_priority_stats['conflicts_resolved']} ({conflict_rate:.1f}%)")
-    print(f"Confluence Found:     {_priority_stats['confluence_found']} ({confluence_rate:.1f}%)")
-    print("\nPrimary FVG Timeframe Breakdown:")
+    logger.info("\n" + "="*80)
+    logger.info("MTF FVG PRIORITY RESOLVER - DAILY STATISTICS")
+    logger.info("="*80)
+    logger.info(f"Total Scans:          {_priority_stats['scans']}")
+    logger.info(f"Conflicts Resolved:   {_priority_stats['conflicts_resolved']} ({conflict_rate:.1f}%)")
+    logger.info(f"Confluence Found:     {_priority_stats['confluence_found']} ({confluence_rate:.1f}%)")
+    logger.info("\nPrimary FVG Timeframe Breakdown:")
     for tf in TIMEFRAME_PRIORITY:
         count = _priority_stats['primary_tf_breakdown'][tf]
         pct = (count / _priority_stats['scans'] * 100) if _priority_stats['scans'] > 0 else 0
-        print(f"  {tf}: {count} ({pct:.1f}%)")
-    print("\nPriority Rule: 5m > 3m > 2m > 1m")
-    print("Confluence: Lower-TF FVGs overlapping primary FVG zone")
-    print("="*80 + "\n")
-
-
-print("[MTF-PRIORITY] \u2705 Multi-timeframe FVG priority resolver loaded")
-print("[MTF-PRIORITY] Rule: Always trade the highest-TF FVG when conflicts exist")
-print("[MTF-PRIORITY] Priority order: 5m > 3m > 2m > 1m")
+        logger.info(f"  {tf}: {count} ({pct:.1f}%)")
+    logger.info("\nPriority Rule: 5m > 3m > 2m > 1m")
+    logger.info("Confluence: Lower-TF FVGs overlapping primary FVG zone")
+    logger.info("="*80 + "\n")

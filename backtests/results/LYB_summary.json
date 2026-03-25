@@ -1,0 +1,18 @@
+{
+  "ticker": "LYB",
+  "days": 90,
+  "total_trades": 8,
+  "wins": 2,
+  "losses": 6,
+  "win_rate_pct": 25.0,
+  "avg_r": -0.343,
+  "median_r": -0.395,
+  "avg_win_r": 0.625,
+  "avg_loss_r": -0.665,
+  "profit_factor": 0.31,
+  "max_drawdown_r": 3.74,
+  "exit_reasons": {
+    "STOP": 3,
+    "EOD": 5
+  }
+}

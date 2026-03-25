@@ -1,0 +1,3 @@
+ticker,date,direction,grade,confidence,or_high,or_low,or_range_pct,fvg_low,fvg_high,fvg_size_pct,entry_price,stop_price,t1_price,t2_price,entry_time,exit_time,exit_price,exit_reason,pnl_pts,r_multiple,win,entry_hour,rvol,entry_minute
+GLD,2026-03-09,bear,A,0.7,471.51,468.32,0.681,467.72,468.04,0.068,467.88,471.9815,462.7531,459.677,2026-03-09 10:31:00,2026-03-09 12:00:00,471.9815,STOP,-4.1951,-1.02,0,10,1.96,31
+GLD,2026-03-19,bear,A,0.7,434.0,432.0,0.463,430.99,431.5,0.118,431.245,434.434,427.2588,424.867,2026-03-19 10:15:00,2026-03-19 11:56:00,427.9698,STOP,3.189,1.0,1,10,2.01,15

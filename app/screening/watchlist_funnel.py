@@ -75,11 +75,29 @@ TUNE v3.7 (MAR 16, 2026) - Stage threshold tuning + catalyst bypass:
   - _apply_catalyst_bypass() added: tickers with catalyst_score > 0 skip the
     min_score gate at wide and narrow stages unconditionally. Earnings / mergers /
     FDA events are highest-probability options setups regardless of RVOL score.
+
+FIX v3.8 (MAR 17, 2026) - WS coverage filter before lock:
+  - _build_live_watchlist() now drops tickers with zero session bars before
+    the watchlist is locked. Tickers subscribed to the EODHD WebSocket but
+    receiving no data (e.g. CFLT) were firing ⚠️ No session bars every scan
+    cycle for the entire session. The filter runs once at lock time (9:30 ET)
+    so there is zero overhead during the live session.
+  - Falls back to the full unfiltered list only if every ticker fails the
+    check (safety net — should never happen in practice).
+
+PHASE 1.34 (MAR 19, 2026) - Daily funnel reset:
+  - reset_funnel() added: sets _funnel_instance = None so the EOD block in
+    scanner.py can clear the prior session's locked watchlist.
+  - Without this, the Railway process retains the WatchlistFunnel singleton
+    across session boundaries, causing yesterday's locked watchlist to be
+    returned all day on the following session.
 """
 import sys
 from pathlib import Path
 from datetime import datetime, time
 from typing import List, Dict, Optional
+import logging
+logger = logging.getLogger(__name__)
 
 # Add project root to path for CLI runs
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -109,6 +127,49 @@ def _get_discord_helpers():
 def _normalise(watchlist: List[str]) -> List[str]:
     """Force all ticker symbols to uppercase. Single canonical normalisation point."""
     return [t.upper() for t in watchlist if t]
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# FIX v3.8: WS COVERAGE FILTER
+# Drop tickers that have zero session bars at lock time. These are tickers
+# subscribed to EODHD WebSocket but for which EODHD sends no data.
+# ════════════════════════════════════════════════════════════════════════════════
+
+def _filter_ws_covered(watchlist: List[str]) -> List[str]:
+    """
+    FIX v3.8: Remove tickers with zero today session bars before lock.
+
+    Tickers can pass scoring but have no WS coverage from EODHD (e.g. CFLT).
+    Locking them causes ⚠️ No session bars every scan cycle all session.
+    This check runs once at 9:30 ET — zero runtime cost during live session.
+
+    Falls back to the full list if every ticker fails (safety net).
+    """
+    try:
+        from app.data.data_manager import data_manager
+        covered = []
+        dropped = []
+        for ticker in watchlist:
+            bars = data_manager.get_today_session_bars(ticker)
+            if bars:
+                covered.append(ticker)
+            else:
+                dropped.append(ticker)
+
+        if dropped:
+            print(f"[FUNNEL] 🚫 WS coverage filter dropped {len(dropped)} ticker(s) "
+                  f"with no session bars: {dropped}")
+
+        if not covered:
+            logger.info("[FUNNEL] ⚠️  All tickers failed WS coverage check — keeping full list (safety net)")
+            return watchlist
+
+        logger.info(f"[FUNNEL] ✅ WS coverage filter: {len(covered)}/{len(watchlist)} tickers verified")
+        return covered
+
+    except Exception as e:
+        logger.info(f"[FUNNEL] ⚠️  WS coverage filter error (non-blocking): {e}")
+        return watchlist
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -167,7 +228,7 @@ def _apply_catalyst_bypass(
     if not bypassed:
         return scored_tickers
 
-    print(f"[FUNNEL] ✅ Catalyst bypass injected {len(bypassed)} ticker(s) into {stage} stage")
+    logger.info(f"[FUNNEL] ✅ Catalyst bypass injected {len(bypassed)} ticker(s) into {stage} stage")
     return scored_tickers + bypassed
 
 
@@ -226,9 +287,9 @@ def _apply_relative_outlier_boost(scored_tickers: List[Dict]) -> List[Dict]:
                 t['relative_outlier'] = False
 
     if outlier_count == 0:
-        print("[FUNNEL] \u2139\ufe0f  No relative outliers detected in sector groups")
+        logger.info("[FUNNEL] \u2139\ufe0f  No relative outliers detected in sector groups")
     else:
-        print(f"[FUNNEL] \u2705 Relative outlier boost applied to {outlier_count} ticker(s)")
+        logger.info(f"[FUNNEL] \u2705 Relative outlier boost applied to {outlier_count} ticker(s)")
 
     return scored_tickers
 
@@ -301,7 +362,7 @@ class WatchlistFunnel:
             return True
         if self.last_update_time is None:
             return True
-        elapsed_minutes = (datetime.now() - self.last_update_time).total_seconds() / 60
+        elapsed_minutes = (datetime.now(tz=ET) - self.last_update_time).total_seconds() / 60
         intervals = {"wide": 5, "narrow": 2, "final": 1, "live": 3}
         return elapsed_minutes >= intervals.get(current_stage, 5)
 
@@ -318,21 +379,21 @@ class WatchlistFunnel:
             return []
 
         if self._locked_watchlist is not None and self.get_current_stage() == "live" and not force_refresh:
-            print(f"[FUNNEL] Using locked watchlist ({len(self._locked_watchlist)} tickers, locked at {self._locked_at.strftime('%H:%M:%S') if self._locked_at else '?'})")
+            logger.info(f"[FUNNEL] Using locked watchlist ({len(self._locked_watchlist)} tickers, locked at {self._locked_at.strftime('%H:%M:%S') if self._locked_at else '?'})")
             return self._locked_watchlist
 
         if not self.should_update(force_refresh):
-            print(f"[FUNNEL] Using cached watchlist ({len(self.current_watchlist)} tickers)")
+            logger.info(f"[FUNNEL] Using cached watchlist ({len(self.current_watchlist)} tickers)")
             return self.current_watchlist
 
         new_stage          = self.get_current_stage()
         self.current_stage = new_stage
         stage_config       = self.stages[self.current_stage]
 
-        print(f"\n{'='*80}")
-        print(f"WATCHLIST FUNNEL - {datetime.now().strftime('%H:%M:%S')}")
-        print(f"Stage: {self.current_stage.upper()} - {stage_config['description']}")
-        print(f"{'='*80}\n")
+        logger.info(f"\n{'='*80}")
+        logger.info(f"WATCHLIST FUNNEL - {datetime.now(tz=ET).strftime('%H:%M:%S')}")
+        logger.info(f"Stage: {self.current_stage.upper()} - {stage_config['description']}")
+        logger.info(f"{'='*80}\n")
 
         if self.current_stage == "wide":
             watchlist = self._build_wide_scan()
@@ -346,7 +407,7 @@ class WatchlistFunnel:
         watchlist = _normalise(watchlist)
 
         self.current_watchlist = watchlist
-        self.last_update_time  = datetime.now()
+        self.last_update_time  = datetime.now(tz=ET)
 
         # persist locked list after normalise (PHASE 1.18)
         self._finalise_lock(watchlist)
@@ -359,8 +420,8 @@ class WatchlistFunnel:
                 except Exception:
                     pass
 
-        print(f"\n\u2705 Watchlist: {len(watchlist)} tickers")
-        print(f"{', '.join(watchlist[:15])}{'...' if len(watchlist) > 15 else ''}\n")
+        logger.info(f"\n\u2705 Watchlist: {len(watchlist)} tickers")
+        logger.info(f"{', '.join(watchlist[:15])}{'...' if len(watchlist) > 15 else ''}\n")
 
         try:
             _get_discord_helpers().send_premarket_watchlist(
@@ -369,7 +430,7 @@ class WatchlistFunnel:
                 stage=self.current_stage,
             )
         except Exception as e:
-            print(f"[FUNNEL] \u26a0\ufe0f  Discord watchlist post failed (non-blocking): {e}")
+            logger.info(f"[FUNNEL] \u26a0\ufe0f  Discord watchlist post failed (non-blocking): {e}")
 
         return watchlist
 
@@ -379,7 +440,7 @@ class WatchlistFunnel:
         all_scored = dynamic_screener.get_scored_tickers(
             max_tickers=100, min_score=0, force_refresh=True
         )
-        print(f"[FUNNEL] Dynamic screener returned {len(all_scored)} tickers")
+        logger.info(f"[FUNNEL] Dynamic screener returned {len(all_scored)} tickers")
         candidates = [t['ticker'] for t in all_scored[:stage_config["max_tickers"]]]
         gap_movers = dynamic_screener.get_gap_candidates(min_gap_pct=2.0, limit=30)
         for ticker in gap_movers:
@@ -487,15 +548,15 @@ class WatchlistFunnel:
             t for t in self.scored_tickers if t.get('volume', 0) > 5000
         ]
         if not filtered_tickers:
-            print("[FUNNEL] \u26a0\ufe0f  No tickers passed final volume filter, using top scorers")
+            logger.info("[FUNNEL] \u26a0\ufe0f  No tickers passed final volume filter, using top scorers")
             filtered_tickers = self.scored_tickers
         watchlist = _get_momentum_screener().get_top_n_movers(
             filtered_tickers, stage_config["max_tickers"]
         )
         n = stage_config["max_tickers"]
-        print("\n" + "="*80)
-        print(f"\U0001f3af FINAL TOP {n} FOR MARKET OPEN")
-        print("="*80)
+        logger.info("\n" + "="*80)
+        logger.info(f"\U0001f3af FINAL TOP {n} FOR MARKET OPEN")
+        logger.info("="*80)
         _get_momentum_screener().print_momentum_summary(filtered_tickers, top_n=n)
         return watchlist
 
@@ -503,21 +564,22 @@ class WatchlistFunnel:
         """
         PHASE 1.18: Only runs ONCE at 9:30 ET.
         PHASE 1.19: Applies relative strength/weakness outlier boost before lock.
+        FIX v3.8:   WS coverage filter drops zero-bar tickers before lock.
         """
         stage_config = self.stages["live"]
         screener_results = dynamic_screener.get_scored_tickers(
             max_tickers=50, min_score=0, force_refresh=False
         )
         candidates = [t['ticker'] for t in screener_results[:50]]
-        print(f"[FUNNEL] Live session scanning {len(candidates)} candidates from screener")
+        logger.info(f"[FUNNEL] Live session scanning {len(candidates)} candidates from screener")
         self.scored_tickers = _get_momentum_screener().run_momentum_screener(
             candidates,
             min_composite_score=stage_config["min_score"],
             use_cache=True
         )
-        print(f"[FUNNEL] {len(self.scored_tickers)} tickers passed scoring (min_score={stage_config['min_score']})")
+        logger.info(f"[FUNNEL] {len(self.scored_tickers)} tickers passed scoring (min_score={stage_config['min_score']})")
         if len(self.scored_tickers) < 10:
-            print(f"[FUNNEL] \u26a0\ufe0f  Only {len(self.scored_tickers)} tickers — expanding search...")
+            logger.info(f"[FUNNEL] \u26a0\ufe0f  Only {len(self.scored_tickers)} tickers — expanding search...")
             expanded_results = dynamic_screener.get_scored_tickers(
                 max_tickers=100, min_score=0, force_refresh=True
             )
@@ -527,7 +589,7 @@ class WatchlistFunnel:
                 min_composite_score=20.0,
                 use_cache=True
             )
-            print(f"[FUNNEL] Expanded: {len(self.scored_tickers)} tickers (min_score=20.0)")
+            logger.info(f"[FUNNEL] Expanded: {len(self.scored_tickers)} tickers (min_score=20.0)")
 
         volume_signals = self.volume_analyzer.get_active_signals()
         for signal in volume_signals:
@@ -543,9 +605,14 @@ class WatchlistFunnel:
             self.scored_tickers, stage_config["max_tickers"]
         )
 
+        # FIX v3.8: Drop tickers with no session bars before lock.
+        # Tickers subscribed to EODHD WS but receiving no data would fire
+        # ⚠️ No session bars every scan cycle for the entire session.
+        watchlist = _filter_ws_covered(watchlist)
+
         _get_momentum_screener().lock_scanner_cache()
         self._locked_watchlist = None  # finalised after normalise in build_watchlist
-        self._locked_at = datetime.now()
+        self._locked_at = datetime.now(tz=ET)
         print(
             f"[FUNNEL] Watchlist LOCKED at {self._locked_at.strftime('%H:%M:%S')} ET "
             f"\u2014 {len(watchlist)} tickers | next session for re-score"
@@ -593,6 +660,20 @@ def get_funnel() -> WatchlistFunnel:
     return _funnel_instance
 
 
+def reset_funnel() -> None:
+    """
+    PHASE 1.34: Reset the global funnel singleton.
+
+    Called by scanner.py at EOD so the next session starts with a fresh
+    WatchlistFunnel() — no stale locked watchlist, no prior-day stage state.
+    Without this, the Railway process retains the singleton across midnight
+    and the locked watchlist from yesterday is returned all day.
+    """
+    global _funnel_instance
+    _funnel_instance = None
+    logger.info("[FUNNEL] 🔄 Funnel singleton reset — fresh build on next premarket scan")
+
+
 def get_current_watchlist(force_refresh: bool = False) -> List[str]:
     """Get current watchlist from funnel (main entry point for scanner.py)."""
     funnel = get_funnel()
@@ -612,11 +693,11 @@ def get_watchlist_with_metadata(force_refresh: bool = False) -> Dict:
 
 
 if __name__ == "__main__":
-    print("Testing Watchlist Funnel...\n")
+    logger.info("Testing Watchlist Funnel...\n")
     funnel    = WatchlistFunnel()
     watchlist = funnel.build_watchlist(force_refresh=True)
-    print(f"\n\U0001f4e6 Current Stage: {funnel.current_stage}")
-    print(f"\U0001f3af Watchlist: {len(watchlist)} tickers")
-    print(f"\U0001f4c8 Top 5: {watchlist[:5]}")
+    logger.info(f"\n\U0001f4e6 Current Stage: {funnel.current_stage}")
+    logger.info(f"\U0001f3af Watchlist: {len(watchlist)} tickers")
+    logger.info(f"\U0001f4c8 Top 5: {watchlist[:5]}")
     metadata = funnel.get_watchlist_metadata()
-    print(f"\n\U0001f4ca Metadata: {metadata}")
+    logger.info(f"\n\U0001f4ca Metadata: {metadata}")

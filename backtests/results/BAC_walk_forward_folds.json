@@ -1,0 +1,14 @@
+[
+  {
+    "test_date": "2026-03-16",
+    "train_days": 30,
+    "r_multiple": -0.65,
+    "win": 0
+  },
+  {
+    "test_date": "2026-03-18",
+    "train_days": 30,
+    "r_multiple": 1.0,
+    "win": 1
+  }
+]

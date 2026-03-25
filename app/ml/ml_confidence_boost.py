@@ -18,6 +18,8 @@ from datetime import datetime
 from xgboost import XGBClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report, roc_auc_score
+import logging
+logger = logging.getLogger(__name__)
 
 MODEL_PATH = "/app/models/confidence_booster.pkl"
 IMPORTANCE_PATH = "/app/models/feature_importance.csv"
@@ -38,11 +40,11 @@ class MLConfidenceBooster:
                     self.model = data['model']
                     self.feature_names = data['feature_names']
                     self.is_trained = True
-                print(f"[ML] Loaded model from {MODEL_PATH}")
+                logger.info(f"[ML] Loaded model from {MODEL_PATH}")
             except Exception as e:
-                print(f"[ML] Model load error: {e}")
+                logger.info(f"[ML] Model load error: {e}")
         else:
-            print("[ML] No pre-trained model found - will use default confidence")
+            logger.info("[ML] No pre-trained model found - will use default confidence")
     
     def predict_confidence_adjustment(self, features: Dict[str, float]) -> float:
         """
@@ -73,7 +75,7 @@ class MLConfidenceBooster:
             return np.clip(adjustment, -0.15, 0.15)
         
         except Exception as e:
-            print(f"[ML] Prediction error: {e}")
+            logger.info(f"[ML] Prediction error: {e}")
             return 0.0
     
     def train(self, X: pd.DataFrame, y: pd.Series, test_size: float = 0.25) -> Dict:
@@ -88,7 +90,7 @@ class MLConfidenceBooster:
         Returns:
             Training metrics dict
         """
-        print(f"[ML-TRAIN] Starting training with {len(X)} samples, {len(X.columns)} features")
+        logger.info(f"[ML-TRAIN] Starting training with {len(X)} samples, {len(X.columns)} features")
         
         # Store feature names
         self.feature_names = list(X.columns)
@@ -148,7 +150,7 @@ class MLConfidenceBooster:
     def save_model(self):
         """Save trained model to disk."""
         if not self.is_trained:
-            print("[ML] No trained model to save")
+            logger.info("[ML] No trained model to save")
             return
         
         os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
@@ -162,7 +164,7 @@ class MLConfidenceBooster:
         with open(MODEL_PATH, 'wb') as f:
             pickle.dump(data, f)
         
-        print(f"[ML] Model saved to {MODEL_PATH}")
+        logger.info(f"[ML] Model saved to {MODEL_PATH}")
     
     def _save_feature_importance(self):
         """Save feature importance scores to CSV."""
@@ -178,7 +180,7 @@ class MLConfidenceBooster:
         os.makedirs(os.path.dirname(IMPORTANCE_PATH), exist_ok=True)
         df.to_csv(IMPORTANCE_PATH, index=False)
         
-        print(f"[ML] Feature importance saved to {IMPORTANCE_PATH}")
-        print(f"[ML] Top 10 features:")
+        logger.info(f"[ML] Feature importance saved to {IMPORTANCE_PATH}")
+        logger.info(f"[ML] Top 10 features:")
         for idx, row in df.head(10).iterrows():
-            print(f"  {row['feature']}: {row['importance']:.4f}")
+            logger.info(f"  {row['feature']}: {row['importance']:.4f}")

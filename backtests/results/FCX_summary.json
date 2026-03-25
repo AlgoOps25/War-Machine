@@ -1,0 +1,17 @@
+{
+  "ticker": "FCX",
+  "days": 90,
+  "total_trades": 1,
+  "wins": 1,
+  "losses": 0,
+  "win_rate_pct": 100.0,
+  "avg_r": 0.07,
+  "median_r": 0.07,
+  "avg_win_r": 0.07,
+  "avg_loss_r": 0.0,
+  "profit_factor": Infinity,
+  "max_drawdown_r": 0.0,
+  "exit_reasons": {
+    "EOD": 1
+  }
+}

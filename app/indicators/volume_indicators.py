@@ -14,6 +14,8 @@ MOVED: app/analytics/volume_indicators.py → app/indicators/volume_indicators.p
 """
 
 from typing import List, Dict, Optional, Tuple
+import logging
+logger = logging.getLogger(__name__)
 
 
 def calculate_vwap(bars: List[Dict]) -> float:
@@ -329,23 +331,23 @@ if __name__ == "__main__":
         {'high': 104, 'low': 102, 'close': 103, 'volume': 1400000},
     ]
     
-    print("Testing volume indicators...\n")
+    logger.info("Testing volume indicators...\n")
     
     vwap = calculate_vwap(test_bars)
-    print(f"VWAP: ${vwap:.2f}")
+    logger.info(f"VWAP: ${vwap:.2f}")
     
     vwap_dev = calculate_vwap_deviation(test_bars)
-    print(f"VWAP Deviation: {vwap_dev:.2f}%")
+    logger.info(f"VWAP Deviation: {vwap_dev:.2f}%")
     
     mfi = calculate_mfi(test_bars, period=3)
-    print(f"MFI: {mfi:.1f}")
+    logger.info(f"MFI: {mfi:.1f}")
     
     obv_values = calculate_obv(test_bars)
-    print(f"OBV values: {obv_values}")
+    logger.info(f"OBV values: {obv_values}")
     
     obv_trend = calculate_obv_trend(test_bars, lookback=3)
-    print(f"OBV Trend: {obv_trend}")
+    logger.info(f"OBV Trend: {obv_trend}")
     
     confluence = check_indicator_confluence(test_bars, direction='bullish')
-    print(f"\nConfluence Score: {confluence['confluence_score']:.0%}")
-    print(f"Signals: {confluence['signals']}")
+    logger.info(f"\nConfluence Score: {confluence['confluence_score']:.0%}")
+    logger.info(f"Signals: {confluence['signals']}")

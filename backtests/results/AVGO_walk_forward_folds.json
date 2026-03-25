@@ -1,0 +1,8 @@
+[
+  {
+    "test_date": "2026-03-18",
+    "train_days": 30,
+    "r_multiple": 0.42,
+    "win": 1
+  }
+]

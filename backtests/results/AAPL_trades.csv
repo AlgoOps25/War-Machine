@@ -1,0 +1,2 @@
+ticker,date,direction,grade,confidence,or_high,or_low,or_range_pct,fvg_low,fvg_high,fvg_size_pct,entry_price,stop_price,t1_price,t2_price,entry_time,exit_time,exit_price,exit_reason,pnl_pts,r_multiple,win,entry_hour,rvol,entry_minute
+AAPL,2026-03-16,bull,A,0.7,252.58,249.88,1.081,252.75,252.83,0.032,252.79,249.6301,256.7399,259.1098,2026-03-16 09:55:00,2026-03-16 15:55:00,252.62,EOD,-0.2206,-0.07,0,9,0.58,55

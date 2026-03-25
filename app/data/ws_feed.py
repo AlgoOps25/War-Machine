@@ -71,6 +71,8 @@ import time
 from collections import defaultdict
 from datetime import datetime
 from zoneinfo import ZoneInfo
+import logging
+logger = logging.getLogger(__name__)
 
 try:
     import websockets
@@ -171,7 +173,7 @@ def _on_tick(ticker: str, price: float, volume: int, epoch_ms: int, msg: dict = 
     """
     # Gate 1: basic bounds (fast path, no lock needed)
     if price <= 0 or volume < 0 or price > 100_000:
-        print(f"[WS] ⚠️ Bad tick rejected: {ticker} p={price} v={volume}")
+        logger.info(f"[WS] ⚠️ Bad tick rejected: {ticker} p={price} v={volume}")
         return
 
     if msg:
@@ -181,8 +183,6 @@ def _on_tick(ticker: str, price: float, volume: int, epoch_ms: int, msg: dict = 
 
         # Gate 3: Trade condition filter
         condition = msg.get("c", 0)
-        if isinstance(condition, list):
-            condition = condition[0] if condition else 0
         if isinstance(condition, list):
             if any(c in INVALID_TRADE_CONDITIONS for c in condition):
                 return
@@ -265,7 +265,7 @@ def _flush_pending():
         total = sum(stored_counts.values())
         parts = ", ".join(f"{t}\u00d7{n}" for t, n in stored_counts.items())
         ts    = datetime.now(ET).strftime("%H:%M:%S")
-        print(f"[WS] Closed: {parts}  ({total} bars, {ts} ET)")
+        logger.info(f"[WS] Closed: {parts}  ({total} bars, {ts} ET)")
 
 
 def _flush_open():
@@ -296,7 +296,7 @@ def _flush_open():
     if now - _last_heartbeat >= HEARTBEAT_INTERVAL:
         ts = datetime.now(ET).strftime("%H:%M:%S")
         active = len(snapshot)
-        print(f"[WS] ♥ live | {active} tickers | {ts} ET")
+        logger.info(f"[WS] ♥ live | {active} tickers | {ts} ET")
         _last_heartbeat = now
 
 
@@ -308,7 +308,7 @@ def _flush_loop():
             _flush_pending()
             _flush_open()
         except Exception as exc:
-            print(f"[WS] Flush error: {exc}")
+            logger.info(f"[WS] Flush error: {exc}")
 
 
 # ── Dynamic subscription (async, runs inside WS event loop) ────────────────────
@@ -329,7 +329,7 @@ async def _do_subscribe(ws, tickers: list):
         with _sub_lock:
             _subscribed.update(chunk)
         preview = ", ".join(chunk[:8]) + ("..." if len(chunk) > 8 else "")
-        print(f"[WS] +{len(chunk)} tickers subscribed: {preview}")
+        logger.info(f"[WS] +{len(chunk)} tickers subscribed: {preview}")
 
 
 def subscribe_tickers(tickers: list):
@@ -356,7 +356,7 @@ def subscribe_tickers(tickers: list):
             _do_subscribe(_ws_connection, new), _event_loop
         )
     except Exception as e:
-        print(f"[WS] subscribe_tickers error: {e}")
+        logger.info(f"[WS] subscribe_tickers error: {e}")
 
 
 # ── WebSocket coroutine ───────────────────────────────────────────────────────────────────────────────────
@@ -369,7 +369,7 @@ async def _ws_run():
 
     while True:
         try:
-            print(f"[WS] Connecting -> {WS_BASE_URL}")
+            logger.info(f"[WS] Connecting -> {WS_BASE_URL}")
             async with websockets.connect(
                 url, ping_interval=20, ping_timeout=10, close_timeout=5
             ) as ws:
@@ -392,7 +392,7 @@ async def _ws_run():
                         msg = json.loads(raw)
 
                         if "status_code" in msg or "status" in msg:
-                            print(f"[WS] Server msg: {msg}")
+                            logger.info(f"[WS] Server msg: {msg}")
                             continue
 
                         ticker = msg.get("s", "")
@@ -403,7 +403,7 @@ async def _ws_run():
                         if ticker and price and ts_ms:
                             _on_tick(ticker, float(price), volume, int(ts_ms), msg=msg)
                     except Exception as exc:
-                        print(f"[WS] Tick error: {exc}")
+                        logger.info(f"[WS] Tick error: {exc}")
 
                 _connected     = False
                 _ws_connection = None
@@ -411,7 +411,7 @@ async def _ws_run():
         except Exception as exc:
             _connected     = False
             _ws_connection = None
-            print(f"[WS] Disconnected ({exc}) — reconnecting in {RECONNECT_DELAY}s")
+            logger.info(f"[WS] Disconnected ({exc}) — reconnecting in {RECONNECT_DELAY}s")
             await asyncio.sleep(RECONNECT_DELAY)
 
 
@@ -438,7 +438,7 @@ def start_ws_feed(tickers: list):
 
     if _started:
         subscribe_tickers(tickers)
-        print(f"[WS] Already running — merged {len(tickers)} tickers into active session")
+        logger.info(f"[WS] Already running — merged {len(tickers)} tickers into active session")
         return
     _started = True
 
@@ -503,7 +503,7 @@ def _fetch_bar_rest(ticker: str) -> dict | None:
     try:
         resp = requests.get(url, params=params, timeout=5)
         if resp.status_code != 200:
-            print(f"[WS-FAILOVER] REST HTTP {resp.status_code} for {ticker}")
+            logger.info(f"[WS-FAILOVER] REST HTTP {resp.status_code} for {ticker}")
             return None
         data = resp.json()
         if not data or not isinstance(data, list):
@@ -520,7 +520,7 @@ def _fetch_bar_rest(ticker: str) -> dict | None:
             "source":   "rest",
         }
     except Exception as exc:
-        print(f"[WS-FAILOVER] REST fetch failed for {ticker}: {exc}")
+        logger.info(f"[WS-FAILOVER] REST fetch failed for {ticker}: {exc}")
         return None
 
 

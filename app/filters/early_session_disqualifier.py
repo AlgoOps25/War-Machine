@@ -16,6 +16,8 @@ Date: 2026-03-03
 from datetime import time, datetime
 from zoneinfo import ZoneInfo
 from utils import config
+import logging
+logger = logging.getLogger(__name__)
 
 
 def should_skip_cfw6_or_early(or_range_pct: float, now_et: datetime) -> bool:
@@ -64,19 +66,19 @@ if __name__ == '__main__':
     # Test 1: 9:35 AM with 2% OR (should BLOCK)
     test_time_1 = datetime(2026, 3, 3, 9, 35, tzinfo=ET)
     result_1 = should_skip_cfw6_or_early(0.02, test_time_1)
-    print(f"Test 1 (9:35 AM, OR=2%): Block={result_1} (expected True) {'✅' if result_1 == True else '❌'}")
+    logger.info(f"Test 1 (9:35 AM, OR=2%): Block={result_1} (expected True) {'✅' if result_1 == True else '❌'}")
     
     # Test 2: 9:35 AM with 4% OR (should ALLOW)
     test_time_2 = datetime(2026, 3, 3, 9, 35, tzinfo=ET)
     result_2 = should_skip_cfw6_or_early(0.04, test_time_2)
-    print(f"Test 2 (9:35 AM, OR=4%): Block={result_2} (expected False) {'✅' if result_2 == False else '❌'}")
+    logger.info(f"Test 2 (9:35 AM, OR=4%): Block={result_2} (expected False) {'✅' if result_2 == False else '❌'}")
     
     # Test 3: 9:45 AM with 2% OR (should ALLOW)
     test_time_3 = datetime(2026, 3, 3, 9, 45, tzinfo=ET)
     result_3 = should_skip_cfw6_or_early(0.02, test_time_3)
-    print(f"Test 3 (9:45 AM, OR=2%): Block={result_3} (expected False) {'✅' if result_3 == False else '❌'}")
+    logger.info(f"Test 3 (9:45 AM, OR=2%): Block={result_3} (expected False) {'✅' if result_3 == False else '❌'}")
     
     # Test 4: 9:40 AM exactly with 2% OR (should ALLOW)
     test_time_4 = datetime(2026, 3, 3, 9, 40, tzinfo=ET)
     result_4 = should_skip_cfw6_or_early(0.02, test_time_4)
-    print(f"Test 4 (9:40 AM, OR=2%): Block={result_4} (expected False) {'✅' if result_4 == False else '❌'}")
+    logger.info(f"Test 4 (9:40 AM, OR=2%): Block={result_4} (expected False) {'✅' if result_4 == False else '❌'}")

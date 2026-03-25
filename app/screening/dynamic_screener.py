@@ -42,6 +42,8 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 from collections import defaultdict
+import logging
+logger = logging.getLogger(__name__)
 
 # ── Project root on sys.path for direct CLI runs ────────────────────────
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -237,18 +239,18 @@ def _run_pass(pass_config: Dict) -> List[Dict]:
         url += f"&signals={signal}"
 
     try:
-        print(f"[SCREENER] [{label}] → signal={signal or 'none'}  sort={sort_by}  limit={limit}")
+        logger.info(f"[SCREENER] [{label}] → signal={signal or 'none'}  sort={sort_by}  limit={limit}")
         r = requests.get(url, timeout=15)
-        print(f"[SCREENER] [{label}] HTTP {r.status_code}")
+        logger.info(f"[SCREENER] [{label}] HTTP {r.status_code}")
 
         if r.status_code == 422:
-            print(f"[SCREENER] [{label}] ❌ 422 filter rejected: {r.text[:200]}")
+            logger.info(f"[SCREENER] [{label}] ❌ 422 filter rejected: {r.text[:200]}")
             return []
         if r.status_code == 403:
-            print(f"[SCREENER] [{label}] ❌ 403 not in EODHD plan")
+            logger.info(f"[SCREENER] [{label}] ❌ 403 not in EODHD plan")
             return []
         if r.status_code == 401:
-            print(f"[SCREENER] [{label}] ❌ 401 invalid API key")
+            logger.info(f"[SCREENER] [{label}] ❌ 401 invalid API key")
             return []
 
         r.raise_for_status()
@@ -257,14 +259,14 @@ def _run_pass(pass_config: Dict) -> List[Dict]:
             return []
 
         results = data.get("data", [])
-        print(f"[SCREENER] [{label}] ✅ {len(results)} raw results")
+        logger.info(f"[SCREENER] [{label}] ✅ {len(results)} raw results")
         return results
 
     except requests.exceptions.Timeout:
-        print(f"[SCREENER] [{label}] ⚠️  Timeout")
+        logger.info(f"[SCREENER] [{label}] ⚠️  Timeout")
         return []
     except Exception as e:
-        print(f"[SCREENER] [{label}] ⚠️  Error: {e}")
+        logger.info(f"[SCREENER] [{label}] ⚠️  Error: {e}")
         return []
 
 
@@ -449,7 +451,7 @@ def _apply_sector_cap(scored: List[Dict]) -> List[Dict]:
 
     capped = {s: c for s, c in sector_count.items() if c >= MAX_PER_SECTOR}
     if capped:
-        print(f"[SCREENER] Sector cap applied: {capped}")
+        logger.info(f"[SCREENER] Sector cap applied: {capped}")
 
     return within_cap + overflow
 
@@ -471,12 +473,12 @@ def run_all_passes(force_refresh: bool = False) -> List[Dict]:
         if ts and (datetime.now() - ts) < timedelta(minutes=_CACHE_TTL_MINUTES):
             cached = _screener_cache.get("scored", [])
             age_m  = int((datetime.now() - ts).total_seconds() / 60)
-            print(f"[SCREENER] ✅ Cache hit: {len(cached)} tickers (age: {age_m}m)")
+            logger.info(f"[SCREENER] ✅ Cache hit: {len(cached)} tickers (age: {age_m}m)")
             return cached
 
-    print(f"\n{'='*65}")
-    print(f"[SCREENER] v3.1 — Dynamic Screener — {datetime.now().strftime('%H:%M:%S')}")
-    print(f"{'='*65}\n")
+    logger.info(f"\n{'='*65}")
+    logger.info(f"[SCREENER] v3.1 — Dynamic Screener — {datetime.now().strftime('%H:%M:%S')}")
+    logger.info(f"{'='*65}\n")
 
     seen: Dict[str, Dict] = {}
     any_pass_ok = False
@@ -499,13 +501,13 @@ def run_all_passes(force_refresh: bool = False) -> List[Dict]:
     if pass2_raw:
         _merge(pass2_raw, pass_num=2)
     else:
-        print("[SCREENER] Pass 2 empty — activating downside movers (Pass 2b)")
+        logger.info("[SCREENER] Pass 2 empty — activating downside movers (Pass 2b)")
         _merge(_run_pass(PASS2B_DOWNSIDE_MOVERS), pass_num=2)
 
     _merge(_run_pass(PASS3_BREAKOUT_TREND),   pass_num=3)
 
     if not any_pass_ok:
-        print("[SCREENER] ⚠️  All passes failed — FALLBACK_WATCHLIST")
+        logger.info("[SCREENER] ⚠️  All passes failed — FALLBACK_WATCHLIST")
         return [{
             "ticker": t, "name": "", "sector": "",
             "score": 20, "rvol": 1.0, "rvol_tier": "C",
@@ -535,12 +537,12 @@ def _print_screener_summary(scored: List[Dict], top_n: int = 15) -> None:
         if tier in tc:
             tc[tier] += 1
 
-    print(f"\n{'='*90}")
+    logger.info(f"\n{'='*90}")
     print(f"[SCREENER] v3.1  |  {len(scored)} tickers  |  "
           f"🔥 Tier A: {tc['A']}  ⚡ Tier B: {tc['B']}  📊 Tier C: {tc['C']}")
     print(f"\n{'#':<4} {'Ticker':<7} {'Score':<7} {'Tier':<6} {'RVOL':<7} "
           f"{'1d%':>7} {'5d%':>7} {'$Vol M':>8} {'Price':>8} {'MCap$B':>8}  Sector")
-    print("-" * 90)
+    logger.info("-" * 90)
 
     icons = {"A": "🔥", "B": "⚡", "C": "📊"}
     for i, t in enumerate(scored[:top_n], 1):
@@ -556,7 +558,7 @@ def _print_screener_summary(scored: List[Dict], top_n: int = 15) -> None:
             f"${t['mktcap_b']:>7.1f}  "
             f"{t['sector'][:18]}"
         )
-    print(f"{'='*90}\n")
+    logger.info(f"{'='*90}\n")
 
 
 # ─────────────────────────────────────────────
@@ -570,7 +572,7 @@ def get_dynamic_watchlist(
 ) -> List[str]:
     scored  = run_all_passes(force_refresh=force_refresh)
     tickers = [t["ticker"] for t in scored[:max_tickers]]
-    print(f"[SCREENER] get_dynamic_watchlist → {len(tickers)} tickers")
+    logger.info(f"[SCREENER] get_dynamic_watchlist → {len(tickers)} tickers")
     return tickers
 
 
@@ -587,7 +589,7 @@ def get_scored_tickers(
 def get_gap_candidates(min_gap_pct: float = 1.5, limit: int = 30) -> List[str]:
     scored = run_all_passes()
     result = [t["ticker"] for t in scored if t["refund_1d"] >= min_gap_pct]
-    print(f"[SCREENER] get_gap_candidates(≥{min_gap_pct}%) → {len(result[:limit])} tickers")
+    logger.info(f"[SCREENER] get_gap_candidates(≥{min_gap_pct}%) → {len(result[:limit])} tickers")
     return result[:limit]
 
 
@@ -618,7 +620,7 @@ def get_high_volume_day_watchlist(limit: int = 50) -> List[str]:
 def clear_screener_cache() -> None:
     global _screener_cache
     _screener_cache = {}
-    print("[SCREENER] Cache cleared")
+    logger.info("[SCREENER] Cache cleared")
 
 
 def get_cache_stats() -> Dict:
@@ -647,16 +649,16 @@ def add_etf_to_blocklist(ticker: str) -> None:
     """
     _ETF_TICKER_BLOCKLIST.add(ticker.upper())
     clear_screener_cache()
-    print(f"[SCREENER] Added {ticker.upper()} to ETF blocklist — cache cleared")
+    logger.info(f"[SCREENER] Added {ticker.upper()} to ETF blocklist — cache cleared")
 
 
 # ─────────────────────────────────────────────
 # CLI Test
 # ─────────────────────────────────────────────
 if __name__ == "__main__":
-    print("\n" + "="*65)
-    print("War Machine v3.1 — Dynamic Screener CLI Test")
-    print("="*65)
+    logger.info("\n" + "="*65)
+    logger.info("War Machine v3.1 — Dynamic Screener CLI Test")
+    logger.info("="*65)
 
     scored = run_all_passes(force_refresh=True)
 
@@ -664,25 +666,25 @@ if __name__ == "__main__":
     tier_b = [t for t in scored if t["rvol_tier"] == "B"]
     tier_c = [t for t in scored if t["rvol_tier"] == "C"]
 
-    print(f"\n📊 RVOL Tier Breakdown:")
-    print(f"  🔥 Tier A (≥2x):   {len(tier_a):>3}  →  {[t['ticker'] for t in tier_a[:8]]}")
-    print(f"  ⚡ Tier B (≥1.5x): {len(tier_b):>3}  →  {[t['ticker'] for t in tier_b[:8]]}")
-    print(f"  📊 Tier C (≥1x):   {len(tier_c):>3}  →  {[t['ticker'] for t in tier_c[:8]]}")
+    logger.info(f"\n📊 RVOL Tier Breakdown:")
+    logger.info(f"  🔥 Tier A (≥2x):   {len(tier_a):>3}  →  {[t['ticker'] for t in tier_a[:8]]}")
+    logger.info(f"  ⚡ Tier B (≥1.5x): {len(tier_b):>3}  →  {[t['ticker'] for t in tier_b[:8]]}")
+    logger.info(f"  📊 Tier C (≥1x):   {len(tier_c):>3}  →  {[t['ticker'] for t in tier_c[:8]]}")
 
-    print(f"\n🎯 Top 10 Watchlist (SPY/QQQ allowed, other ETFs excluded):")
+    logger.info(f"\n🎯 Top 10 Watchlist (SPY/QQQ allowed, other ETFs excluded):")
     for i, t in enumerate(get_dynamic_watchlist(max_tickers=10), 1):
-        print(f"  {i:>2}. {t}")
+        logger.info(f"  {i:>2}. {t}")
 
-    print(f"\n⚡ Gap Candidates (≥1.5% yesterday):")
-    print(f"  {get_gap_candidates(min_gap_pct=1.5, limit=10)}")
+    logger.info(f"\n⚡ Gap Candidates (≥1.5% yesterday):")
+    logger.info(f"  {get_gap_candidates(min_gap_pct=1.5, limit=10)}")
 
-    print(f"\n🔥 Tier A Only:")
-    print(f"  {get_tier_a_tickers()}")
+    logger.info(f"\n🔥 Tier A Only:")
+    logger.info(f"  {get_tier_a_tickers()}")
 
-    print(f"\n💵 Dollar-Vol Sample (top 5):")
+    logger.info(f"\n💵 Dollar-Vol Sample (top 5):")
     for t in scored[:5]:
-        print(f"  {t['ticker']:<6}  ${t['dollar_vol_m']:.0f}M  ({t['rvol_tier']})  {t['name'][:40]}")
+        logger.info(f"  {t['ticker']:<6}  ${t['dollar_vol_m']:.0f}M  ({t['rvol_tier']})  {t['name'][:40]}")
 
-    print(f"\n💾 Cache Stats:")
+    logger.info(f"\n💾 Cache Stats:")
     for k, v in get_cache_stats().items():
-        print(f"  {k}: {v}")
+        logger.info(f"  {k}: {v}")

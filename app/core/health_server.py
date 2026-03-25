@@ -33,6 +33,8 @@ import time
 from datetime import datetime, time as dtime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from zoneinfo import ZoneInfo
+import logging
+logger = logging.getLogger(__name__)
 
 ET = ZoneInfo("America/New_York")
 
@@ -124,7 +126,7 @@ def start_health_server(port: int | None = None) -> threading.Thread:
     server = HTTPServer(("0.0.0.0", port), _HealthHandler)
 
     def _serve():
-        print(f"[HEALTH] ✅ Health server listening on :{port} (GET /health)", flush=True)
+        logger.info(f"[HEALTH] ✅ Health server listening on :{port} (GET /health)")
         server.serve_forever()
 
     t = threading.Thread(target=_serve, daemon=True, name="health_server")

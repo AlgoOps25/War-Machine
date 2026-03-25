@@ -23,10 +23,10 @@ Usage:
         confidence=75
     )
 
-NOTE (M9, Mar 10 2026): build_0dte_trade() is DEAD CODE — it is never called
-by the live signal pipeline. All active options logic goes through
-get_options_recommendation() in app.validation.validation. build_0dte_trade
-has been deprecated and removed from __all__. Do not add new callers.
+NOTE (M10, Mar 17 2026): build_0dte_trade() and its _options_dm import guard
+have been permanently removed. The function was confirmed dead code (zero callers,
+excluded from __all__ since M9). All active options logic flows through
+get_options_recommendation() in app.validation.validation.
 
 NOTE (M8, Mar 10 2026): _get_iv_rank() is now wired to iv_tracker.compute_ivr().
 It stores each IV observation to the iv_history table and returns a real
@@ -38,17 +38,6 @@ import os
 import requests
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-
-# Guard OptionsDataManager import so a transient failure doesn't kill the whole module
-try:
-    from app.options.options_data_manager import OptionsDataManager
-    _options_dm = OptionsDataManager()
-except Exception as _odm_err:
-    import logging as _log
-    _log.getLogger(__name__).warning(
-        f"[OPTIONS] OptionsDataManager unavailable: {_odm_err} — 0DTE fast-path disabled"
-    )
-    _options_dm = None
 
 logger = logging.getLogger(__name__)
 
@@ -167,135 +156,6 @@ def build_options_trade(
     logger.info(
         f"[OPTIONS] Trade built: {contract_symbol} x{quantity} @ ${option_price:.2f} "
         f"(IV Rank: {iv_rank}%, Delta: {greeks.get('delta', 'N/A')})",
-        extra={'component': 'options', 'symbol': ticker, 'trade': trade}
-    )
-
-    return trade
-
-
-def build_0dte_trade(
-    ticker: str,
-    direction: str,
-    confidence: float,
-    current_price: float = None,
-    account_balance: float = 5000.0,
-    risk_per_trade: float = 0.02
-) -> dict:
-    """
-    DEPRECATED — DEAD CODE (M9, Mar 10 2026).
-
-    This function is never called by the live War Machine signal pipeline.
-    All active options recommendations flow through:
-        app.validation.validation.get_options_recommendation()
-
-    Do NOT add callers. This function will be removed in a future cleanup pass.
-    """
-    import warnings
-    warnings.warn(
-        "build_0dte_trade() is deprecated dead code and will be removed. "
-        "Use get_options_recommendation() from app.validation.validation instead.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    logger.warning(
-        "[OPTIONS] build_0dte_trade() called — this is deprecated dead code (M9). "
-        "Caller should use get_options_recommendation() instead. "
-        f"ticker={ticker} direction={direction} confidence={confidence}"
-    )
-
-    # Get current price if not provided
-    if current_price is None:
-        current_price = _get_current_price(ticker)
-        if current_price is None:
-            logger.error(f"[OPTIONS] Failed to fetch price for {ticker}")
-            return None
-
-    # If data manager failed to load, fall back to regular build
-    if _options_dm is None:
-        logger.warning(f"[OPTIONS] OptionsDataManager not available, falling back to standard build")
-        return build_options_trade(
-            ticker=ticker,
-            direction=direction,
-            confidence=confidence,
-            current_price=current_price,
-            account_balance=account_balance,
-            risk_per_trade=risk_per_trade
-        )
-
-    # Use optimized data manager for 0DTE
-    contract = _options_dm.get_optimized_chain(
-        ticker=ticker,
-        direction=direction,
-        target_dte=0,  # 0DTE
-        for_0dte=True,
-        confidence=confidence
-    )
-
-    if not contract:
-        logger.warning(f"[OPTIONS] No suitable 0DTE contract for {ticker}")
-        # Fallback to regular build
-        return build_options_trade(
-            ticker=ticker,
-            direction=direction,
-            confidence=confidence,
-            current_price=current_price,
-            account_balance=account_balance,
-            risk_per_trade=risk_per_trade
-        )
-
-    # Extract contract details
-    strike = contract['strike']
-    expiration = contract['expiration']
-    option_price = contract['price']
-    greeks = {
-        'delta': contract['delta'],
-        'gamma': contract['gamma'],
-        'theta': contract['theta'],
-        'vega': contract['vega'],
-        'iv': contract['iv'],
-        'price': option_price,
-        'bid': contract['bid'],
-        'ask': contract['ask'],
-        'volume': contract['volume'],
-        'open_interest': contract['open_interest']
-    }
-
-    # Calculate quantity
-    max_risk = account_balance * risk_per_trade
-    quantity = _calculate_quantity(option_price, max_risk)
-
-    # Build contract symbol
-    exp_date = datetime.strptime(expiration, '%Y-%m-%d')
-    contract_symbol = _build_contract_symbol(ticker, expiration, direction, strike)
-
-    # Get IV Rank
-    iv_rank = _get_iv_rank(ticker, greeks)
-
-    # Calculate DTE
-    dte = (exp_date.date() - datetime.now(ZoneInfo("America/New_York")).date()).days
-
-    trade = {
-        'ticker': ticker,
-        'direction': direction,
-        'strike': strike,
-        'expiration': expiration,
-        'dte': dte,
-        'contract': contract_symbol,
-        'price': option_price,
-        'greeks': greeks,
-        'iv_rank': iv_rank,
-        'risk_reward': f"1:{2.5}",
-        'quantity': quantity,
-        'total_cost': option_price * quantity * 100,
-        'max_risk': max_risk,
-        'confidence': confidence,
-        'strategy': contract.get('strategy', 'balanced'),
-        'is_0dte': True
-    }
-
-    logger.info(
-        f"[OPTIONS] 0DTE trade built: {contract_symbol} x{quantity} @ ${option_price:.2f} "
-        f"(delta={greeks['delta']:.2f}, vol={greeks['volume']}, OI={greeks['open_interest']})",
         extra={'component': 'options', 'symbol': ticker, 'trade': trade}
     )
 
@@ -537,7 +397,6 @@ def _select_strike_with_greeks(
 
             # Also prefer contracts with reasonable liquidity
             open_interest = attrs.get('open_interest', 0)
-            volume = attrs.get('volume', 0)
 
             # Penalty for low liquidity (but don't exclude completely)
             liquidity_penalty = 0
@@ -607,7 +466,6 @@ def _select_strike_with_greeks(
         strike, greeks = _fallback_strike_selection(current_price, direction, target_delta)
         exp_date = _calculate_fallback_expiration(target_dte)
         return strike, greeks, exp_date
-
 
 
 def _fallback_strike_selection(current_price: float, direction: str, target_delta: float) -> tuple:
@@ -753,5 +611,5 @@ def _build_contract_symbol(ticker: str, expiration: str, direction: str, strike:
     return f"{ticker.upper()}{exp_str}{direction_char}{strike_str}"
 
 
-# Export public API — build_0dte_trade intentionally excluded (deprecated dead code, M9)
+# Public API
 __all__ = ['build_options_trade', 'get_greeks']

@@ -11,7 +11,12 @@ OB_CACHE: dict[str, list] = {}   # ticker -> list of order block dicts
 
 OB_BODY_MIN_PCT     = 0.0010     # OB candle body must be >= 0.10% to qualify
 OB_ZONE_BUFFER_PCT  = 0.0015     # extend OB zone ±0.15% for retest tolerance
-OB_RETEST_BOOST     = 0.03       # +3% confidence on confirmed OB retest
+try:
+    from utils import config as _cfg
+    OB_RETEST_BOOST = getattr(_cfg, 'OB_RETEST_BOOST', 0.03)
+except Exception:
+    OB_RETEST_BOOST = 0.03
+
 OB_MAX_CACHE_PER_TICKER = 5      # keep only the 5 most recent OBs per ticker
 
 

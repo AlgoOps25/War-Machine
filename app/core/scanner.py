@@ -1,70 +1,13 @@
 """
-Scanner Module - Intelligent Watchlist Builder & Scanner Loop
-INTEGRATED: Adaptive Watchlist Funnel, Pre-Market Scanner, Position Monitoring, Database Cleanup
-CANDLE CACHE: Cache-aware startup with 95%+ API reduction
-OUTCOME TRACKING: Signal deduplication, ML predictions, EOD reports
-DYNAMIC WS SUBSCRIPTION: Live session ticker subscription with bar prefetch
-
-PHASE 1.16b (MAR 9, 2026):
-  - FIXED: Python 3.10 SyntaxError — backslashes in f-strings not allowed
-
-PHASE 1.17 (MAR 9, 2026):
-  - FIXED: startup_backfill demoted to fire-and-forget background daemon
-
-PHASE 1.18 (MAR 10, 2026):
-  - FIXED: DB startup block now uses print() so status always visible in Railway logs
-
-PHASE 1.18a (MAR 10, 2026):
-  - FIXED: Cache dir uses os.getcwd() instead of __file__ relative path (Railway compat)
-
-PHASE 1.19 (MAR 10, 2026):
-  - FIX C5: start_health_server() called once at startup before WS init
-
-PHASE 1.20 (MAR 10, 2026):
-  - FIX H1: analytics_conn wrapped in reconnect helper
-
-PHASE 1.21 (MAR 10, 2026):
-  - FIX P0-3: Ticker timeout watchdog — 45-second hard timeout per ticker
-
-PHASE 1.22 (MAR 10, 2026):
-  - FIX: candle_cache EOD cleanup now runs alongside DB bar cleanup
-
-PHASE 1.23 (MAR 12, 2026):
-  - FIX OR WINDOW: Removed dead should_scan_now() guard blocking 9:30-9:40
-
-PHASE 1.23a (MAR 12, 2026):
-  - FIX: REGIME-FILTER banner check imports from correct module path
-
-PHASE 1.24 (MAR 13, 2026):
-  - FIX 1: Boot-time session guard on redeploy during market hours
-  - FIX 2-6: Log noise, premarket guard, smart backfill improvements
-
-PHASE 1.25 (MAR 13, 2026):
-  - SPY+QQQ Market Regime — visual-only Discord, no hard blocks
-
-PHASE 1.26 (MAR 13, 2026):
-  - FIX REGIME FILTER: SPY and QQQ always included in WS subscription
-
-PHASE 1.27 (MAR 14, 2026):
-  - FIX HEALTHCHECK: start_health_server() moved to module level
-
-PHASE 1.28 (MAR 16, 2026):
-  - FIX #10: validate_required_env_vars() called at top of start_scanner_loop()
-    Hard-fails on missing EODHD_API_KEY / DATABASE_URL / DISCORD_WEBHOOK_URL
-    before any blocking DB/WS work begins. Surfaces config errors immediately
-    in Railway logs with a clear table instead of a cryptic mid-boot crash.
-
-PHASE 1.29 (MAR 16, 2026):
-  - FIX #9: Eliminate redundant get_session_status() / get_loss_streak() DB
-    checkouts in the main scan cycle.
-    * get_session_status() called ONCE per cycle, result cached as `session`
-    * loss_streak derived from session["daily_stats"] (no extra DB call)
-    * monitor_open_positions() accepts optional pre-fetched session kwarg
-    Net: 3 DB checkouts per cycle -> 1, preventing pool exhaustion at OR open.
+scanner.py — Intelligent Watchlist Builder & Scanner Loop v1.38b
+Adaptive Watchlist Funnel, Pre-Market Scanner, Position Monitoring, DB Cleanup.
+WebSocket bar + quote feeds with candle cache (95%+ API reduction on redeploy).
+See CHANGELOG.md for full phase history.
 """
 from app.core.health_server import start_health_server, health_heartbeat
 
-# ── PHASE 1.27: Start health server immediately at module load ───────────────
+# Start health server at TRUE module level so Railway /health probe gets a
+# 200 response within the 30s healthcheck window before any blocking init runs.
 start_health_server()
 
 import os
@@ -76,24 +19,24 @@ from datetime import datetime, time as dtime
 from zoneinfo import ZoneInfo
 from utils import config
 from utils.config import validate_required_env_vars
+try:
+    from utils.production_helpers import _db_operation_safe
+    PRODUCTION_HELPERS_ENABLED = True
+except ImportError:
+    PRODUCTION_HELPERS_ENABLED = False
+    def _db_operation_safe(fn, label=""): fn()
 
-# Scanner optimizer caches
-_last_logged_interval = None
+_last_logged_interval       = None
 _last_logged_watchlist_size = None
 
 from app.data.data_manager import data_manager
 from app.data.ws_feed import start_ws_feed, subscribe_tickers, set_backfill_complete
 from app.data.ws_quote_feed import start_quote_feed, subscribe_quote_tickers
 from app.screening.watchlist_funnel import (
-    get_current_watchlist,
-    get_watchlist_with_metadata,
-    get_funnel
+    get_current_watchlist, get_watchlist_with_metadata, get_funnel, reset_funnel,
 )
 from app.risk.risk_manager import (
-    get_loss_streak,
-    get_session_status,
-    get_eod_report,
-    check_exits as risk_check_exits,
+    get_loss_streak, get_session_status, get_eod_report, check_exits as risk_check_exits,
 )
 from app.risk.position_manager import position_manager as _pm
 
@@ -106,10 +49,10 @@ except Exception:
 
 logger = logging.getLogger(__name__)
 
-REGIME_TICKERS = ["SPY", "QQQ"]
+REGIME_TICKERS          = ["SPY", "QQQ"]
+TICKER_TIMEOUT_SECONDS  = 45
+_ticker_executor        = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ticker_watchdog")
 
-TICKER_TIMEOUT_SECONDS = 45
-_ticker_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ticker_watchdog")
 
 
 def _run_ticker_with_timeout(process_ticker_fn, ticker: str) -> bool:
@@ -118,9 +61,7 @@ def _run_ticker_with_timeout(process_ticker_fn, ticker: str) -> bool:
         future.result(timeout=TICKER_TIMEOUT_SECONDS)
         return True
     except FuturesTimeoutError:
-        logger.error(
-            f"[WATCHDOG] ⏰ {ticker} timed out after {TICKER_TIMEOUT_SECONDS}s — skipping"
-        )
+        logger.error(f"[WATCHDOG] ⏰ {ticker} timed out after {TICKER_TIMEOUT_SECONDS}s — skipping")
         future.cancel()
         return False
     except Exception as exc:
@@ -128,59 +69,57 @@ def _run_ticker_with_timeout(process_ticker_fn, ticker: str) -> bool:
         return False
 
 
-ANALYTICS_AVAILABLE = False
-analytics_conn = None
-DATABASE_URL = os.getenv('DATABASE_URL')
 
-print("=" * 50, flush=True)
-print("[DB] Attempting connection...", flush=True)
+ANALYTICS_AVAILABLE = False
+analytics_conn      = None
+_analytics_conn_lock = __import__('threading').Lock()
+DATABASE_URL        = os.getenv('DATABASE_URL')
+
 if DATABASE_URL:
     try:
         import psycopg2
-        analytics_conn = psycopg2.connect(DATABASE_URL, connect_timeout=10)
+        analytics_conn = psycopg2.connect(DATABASE_URL, connect_timeout=3)
         analytics_conn.autocommit = True
-        print("[DB] ✓ Connected - Analytics ONLINE", flush=True)
+        logger.info("[DB] ✓ Connected - Analytics ONLINE")
         ANALYTICS_AVAILABLE = True
     except Exception as e:
-        print(f"[DB] ✗ FAILED: {e}", flush=True)
-        print("[DB] Analytics DISABLED - continuing without tracking", flush=True)
+        logger.info(f"[DB] ✗ FAILED: {e}")
         ANALYTICS_AVAILABLE = False
 else:
-    print("[DB] ✗ DATABASE_URL not set - Analytics DISABLED", flush=True)
-    ANALYTICS_AVAILABLE = False
-print("=" * 50, flush=True)
+    logger.info("[DB] ✗ DATABASE_URL not set - Analytics DISABLED")
 
 
 def _get_analytics_conn():
     global analytics_conn, ANALYTICS_AVAILABLE
     if not DATABASE_URL:
         return None
-    if analytics_conn is not None:
-        try:
-            cur = analytics_conn.cursor()
-            cur.execute("SELECT 1")
-            cur.close()
-            return analytics_conn
-        except Exception:
+    with _analytics_conn_lock:
+        if analytics_conn is not None:
             try:
-                analytics_conn.close()
+                cur = analytics_conn.cursor()
+                cur.execute("SELECT 1")
+                cur.close()
+                return analytics_conn
             except Exception:
-                pass
-            analytics_conn = None
-    for attempt in range(1, 4):
-        try:
-            import psycopg2
-            analytics_conn = psycopg2.connect(DATABASE_URL, connect_timeout=10)
-            analytics_conn.autocommit = True
-            ANALYTICS_AVAILABLE = True
-            logger.info(f"[DB] Reconnected analytics connection (attempt {attempt})")
-            return analytics_conn
-        except Exception as e:
-            logger.warning(f"[DB] Reconnect attempt {attempt}/3 failed: {e}")
-            time.sleep(1)
-    logger.error("[DB] All reconnect attempts failed — analytics disabled for this cycle")
-    ANALYTICS_AVAILABLE = False
-    return None
+                try:
+                    analytics_conn.close()
+                except Exception:
+                    pass
+                analytics_conn = None
+        for attempt in range(1, 4):
+            try:
+                import psycopg2
+                analytics_conn = psycopg2.connect(DATABASE_URL, connect_timeout=10)
+                analytics_conn.autocommit = True
+                ANALYTICS_AVAILABLE = True
+                logger.info(f"[DB] Reconnected analytics connection (attempt {attempt})")
+                return analytics_conn
+            except Exception as e:
+                logger.warning(f"[DB] Reconnect attempt {attempt}/3 failed: {e}")
+                time.sleep(1)
+        logger.error("[DB] All reconnect attempts failed — analytics disabled for this cycle")
+        ANALYTICS_AVAILABLE = False
+        return None
 
 
 try:
@@ -190,26 +129,18 @@ try:
 except ImportError:
     LEGACY_ANALYTICS_ENABLED = False
     signal_tracker = None
-    logger.info("[SCANNER] ⚠️  signal_analytics not available")
 
 analytics = None
 if ANALYTICS_AVAILABLE and analytics_conn:
     try:
         from app.analytics import AnalyticsIntegration
         if AnalyticsIntegration is not None:
-            analytics = AnalyticsIntegration(
-                analytics_conn,
-                enable_ml=True,
-                enable_discord=True
-            )
-        else:
-            analytics = None
+            analytics = AnalyticsIntegration(analytics_conn, enable_ml=True, enable_discord=True)
     except Exception as e:
-        analytics = None
         logger.warning(f"[SCANNER] ⚠️  Outcome tracking disabled: {e}")
 
 VALIDATION_AVAILABLE = False
-OPTIONS_AVAILABLE = False
+OPTIONS_AVAILABLE    = False
 
 try:
     from app.validation import validate_signal
@@ -227,8 +158,9 @@ except Exception as e:
     logger.warning(f"[SCANNER] ⚠️  Options module not available: {e}")
     build_options_trade = None
 
-API_KEY = os.getenv("EODHD_API_KEY", "")
+API_KEY            = os.getenv("EODHD_API_KEY", "")
 EMERGENCY_FALLBACK = ["SPY", "QQQ", "AAPL", "MSFT", "NVDA", "TSLA", "META", "AMD"]
+
 
 
 def _fire_and_forget(fn, label: str):
@@ -243,8 +175,8 @@ def _fire_and_forget(fn, label: str):
     return t
 
 
+
 def _get_stale_tickers(tickers: list) -> list:
-    """Return tickers that have no cached bar in the last 24 hours."""
     stale = []
     try:
         from app.data.candle_cache import candle_cache
@@ -263,14 +195,14 @@ def _get_stale_tickers(tickers: list) -> list:
     return stale
 
 
+
 def _extract_premarket_metrics(watchlist_data: dict) -> dict:
     try:
         all_tickers = watchlist_data.get('all_tickers_with_scores', [])
         if not all_tickers:
             return None
         explosive_count = sum(
-            1 for t in all_tickers
-            if t.get('score', 0) >= 80 and t.get('rvol', 0) >= 4.0
+            1 for t in all_tickers if t.get('score', 0) >= 80 and t.get('rvol', 0) >= 4.0
         )
         avg_rvol  = sum(t.get('rvol', 0)  for t in all_tickers) / len(all_tickers)
         avg_score = sum(t.get('score', 0) for t in all_tickers) / len(all_tickers)
@@ -290,37 +222,11 @@ def _extract_premarket_metrics(watchlist_data: dict) -> dict:
         return None
 
 
-def _get_eod_summary_metrics() -> dict:
-    try:
-        session     = get_session_status()
-        daily_stats = session["daily_stats"]
-        if not daily_stats or daily_stats.get("trades", 0) == 0:
-            return None
-        top_performers = get_eod_report()
-        try:
-            watchlist_data  = get_watchlist_with_metadata(force_refresh=False)
-            all_tickers     = watchlist_data.get('all_tickers_with_scores', [])
-            avg_rvol        = sum(t.get('rvol', 0) for t in all_tickers) / len(all_tickers) if all_tickers else 0
-            explosive_count = sum(
-                1 for t in all_tickers
-                if t.get('score', 0) >= 80 and t.get('rvol', 0) >= 4.0
-            )
-        except Exception:
-            avg_rvol        = 0
-            explosive_count = 0
-        return {
-            'top_performers':  top_performers,
-            'avg_rvol':        avg_rvol,
-            'explosive_count': explosive_count,
-        }
-    except Exception as e:
-        logger.error(f"[METRICS] EOD extraction error: {e}")
-        return None
-
 
 data_update_counter    = 0
 data_update_symbols    = set()
 last_data_summary_time = time.time()
+
 
 
 def _now_et():
@@ -342,26 +248,14 @@ def is_market_hours():
 def get_adaptive_scan_interval() -> int:
     global _last_logged_interval
     now = datetime.now(ZoneInfo("America/New_York")).time()
-    if dtime(9, 30) <= now < dtime(9, 40):
-        interval = 5
-        label = "OR Formation (BOS build)"
-    elif dtime(9, 40) <= now < dtime(11, 0):
-        interval = 45
-        label = "Post-OR Morning"
-    elif dtime(11, 0) <= now < dtime(14, 0):
-        interval = 180
-        label = "Midday Chop"
-    elif dtime(14, 0) <= now < dtime(15, 30):
-        interval = 60
-        label = "Afternoon Activity"
-    elif dtime(15, 30) <= now < dtime(16, 0):
-        interval = 45
-        label = "Power Hour"
-    else:
-        interval = 300
-        label = "Outside Market Hours"
+    if   dtime(9, 30)  <= now < dtime(9, 40):  interval, label = 5,   "OR Formation (BOS build)"
+    elif dtime(9, 40)  <= now < dtime(11, 0):  interval, label = 45,  "Post-OR Morning"
+    elif dtime(11, 0)  <= now < dtime(14, 0):  interval, label = 180, "Midday Chop"
+    elif dtime(14, 0)  <= now < dtime(15, 30): interval, label = 60,  "Afternoon Activity"
+    elif dtime(15, 30) <= now < dtime(16, 0):  interval, label = 45,  "Power Hour"
+    else:                                       interval, label = 300, "Outside Market Hours"
     if interval != _last_logged_interval:
-        print(f"[SCANNER] {label} -> Scanning every {interval}s")
+        logger.info(f"[SCANNER] {label} -> Scanning every {interval}s")
         _last_logged_interval = interval
     return interval
 
@@ -377,18 +271,13 @@ def should_scan_now() -> bool:
 def calculate_optimal_watchlist_size() -> int:
     global _last_logged_watchlist_size
     now = datetime.now(ZoneInfo("America/New_York")).time()
-    if dtime(9, 30) <= now < dtime(9, 40):
-        size = 30
-    elif dtime(9, 40) <= now < dtime(10, 30):
-        size = 30
-    elif dtime(10, 30) <= now < dtime(15, 0):
-        size = 50
-    elif dtime(15, 0) <= now <= dtime(16, 0):
-        size = 35
-    else:
-        size = 40
+    if   dtime(9, 30)  <= now < dtime(9, 40):  size = 30
+    elif dtime(9, 40)  <= now < dtime(10, 30): size = 30
+    elif dtime(10, 30) <= now < dtime(15, 0):  size = 50
+    elif dtime(15, 0)  <= now <= dtime(16, 0): size = 35
+    else:                                       size = 40
     if size != _last_logged_watchlist_size:
-        print(f"[SCANNER] Watchlist size adjusted to {size} tickers")
+        logger.info(f"[SCANNER] Watchlist size adjusted to {size} tickers")
         _last_logged_watchlist_size = size
     return size
 
@@ -410,11 +299,6 @@ def build_watchlist(force_refresh: bool = False) -> list:
 
 
 def monitor_open_positions(session: dict = None):
-    """
-    FIX #9 (PHASE 1.29): Accept optional pre-fetched session dict.
-    When the caller already holds a session snapshot from this cycle,
-    we skip the redundant get_session_status() DB checkout entirely.
-    """
     from app.data.ws_feed import get_current_bar_with_fallback
     if session is None:
         session = get_session_status()
@@ -446,7 +330,7 @@ def subscribe_and_prefetch_tickers(new_tickers: list):
         combined = list(dict.fromkeys(new_tickers + REGIME_TICKERS))
         subscribe_tickers(combined)
         subscribe_quote_tickers(combined)
-        logger.info(f"[WS-SUBSCRIBE] ✅ Subscribed {len(new_tickers)} tickers + regime ({', '.join(REGIME_TICKERS)}): {', '.join(new_tickers)}")
+        logger.info(f"[WS-SUBSCRIBE] ✅ Subscribed {len(new_tickers)} tickers + regime: {', '.join(new_tickers)}")
         _fire_and_forget(
             lambda: (
                 data_manager.startup_backfill_with_cache(combined, days=30),
@@ -454,25 +338,19 @@ def subscribe_and_prefetch_tickers(new_tickers: list):
             ),
             label=f"prefetch-{','.join(new_tickers[:3])}"
         )
-        logger.info(f"[PREFETCH] 🔄 Background backfill started for {len(combined)} tickers")
     except Exception as e:
-        logger.error(f"[WS-SUBSCRIBE] ⚠️ Error subscribing tickers: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.error(f"[WS-SUBSCRIBE] ⚠ Error subscribing tickers: {e}")
+        import traceback; traceback.print_exc()
+
 
 
 def start_scanner_loop():
-    # ── PHASE 1.28: Validate required env vars before any blocking work ──────────
     validate_required_env_vars()
 
-    try:
-        from app.core.sniper import process_ticker, clear_armed_signals, clear_watching_signals, _orb_classifications
-        logger.info("[SCANNER] ✅ process_ticker loaded from sniper.py (CFW6 engine active)")
-    except ImportError as e:
-        logger.error(f"[SCANNER] ❌ sniper.py import failed: {e} — falling back to sniper_stubs")
-        from app.core.sniper_stubs import process_ticker, clear_armed_signals, clear_watching_signals
+    from app.core.sniper import process_ticker, clear_armed_signals, clear_watching_signals, _orb_classifications
+    logger.info("[SCANNER] ✅ process_ticker loaded from sniper.py (CFW6 engine active)")
 
-    from app.discord_helpers import send_simple_message
+    from app.notifications.discord_helpers import send_simple_message
 
     try:
         from app.ai.ai_learning import learning_engine
@@ -481,90 +359,54 @@ def start_scanner_loop():
         learning_engine = None
         HAS_AI_LEARNING = False
 
-    # ── STARTUP BANNER ────────────────────────────────────────────────────────────────
-    print("=" * 60, flush=True)
-    print("WAR MACHINE CFW6 SCANNER v1.29 - STARTUP", flush=True)
-    print("=" * 60, flush=True)
-    print("✓ REGIME-FILTER  VIX/SPY regime detection active", flush=True)
-    print("=" * 60, flush=True)
-    print("Risk Manager:    ✅ ENABLED (unified risk layer — Phase 1.15)", flush=True)
-    print("✓ DATA-INGEST    WebSocket starting (tickers TBD)", flush=True)
+    # ── Startup banner (status only — see CHANGELOG.md for phase history) ─────
+    logger.info("=" * 60)
+    logger.info("WAR MACHINE CFW6 SCANNER v1.38b - STARTUP")
+    logger.info("=" * 60)
 
     try:
-        cache_dir  = os.path.join(os.getcwd(), 'cache')
+        cache_dir   = os.path.join(os.getcwd(), 'cache')
         os.makedirs(cache_dir, exist_ok=True)
         cache_files = len([f for f in os.listdir(cache_dir) if f.endswith('.parquet')])
-        print(f"✓ CACHE          {cache_files} cached ticker files, 30d history", flush=True)
+        logger.info(f"✓ CACHE          {cache_files} cached ticker files (30d history)")
     except Exception as e:
-        print(f"? CACHE          Status unknown: {e}", flush=True)
+        logger.info(f"? CACHE          Status unknown: {e}")
 
-    db_icon = "✓" if ANALYTICS_AVAILABLE else "✗"
-    db_msg  = "Connected - Analytics tracking enabled" if ANALYTICS_AVAILABLE else "OFFLINE - no volume/signal/P&L tracking"
-    print(f"✓ DATABASE        {db_msg}", flush=True)
+    db_msg   = "Connected — Analytics tracking enabled" if ANALYTICS_AVAILABLE else "OFFLINE — no tracking"
+    disc_msg = "Alert notifications ready" if os.getenv('DISCORD_WEBHOOK_URL') else "NOT CONFIGURED"
+    scrn_msg = ("EODHD API configured (" + API_KEY[:8] + "...)") if API_KEY else "EODHD_API_KEY not set"
+    reg_msg  = "Regime channel active" if os.getenv('REGIME_WEBHOOK_URL') else "Set REGIME_WEBHOOK_URL"
+    opts_msg = "Greeks analysis active" if OPTIONS_AVAILABLE else "NOT INTEGRATED"
+    val_msg  = "CFW6 confirmation active" if VALIDATION_AVAILABLE else "NOT INTEGRATED"
 
-    discord_webhook = os.getenv('DISCORD_WEBHOOK_URL')
-    disc_icon = "✓" if discord_webhook else "✗"
-    disc_msg  = "Alert notifications ready" if discord_webhook else "NOT CONFIGURED - no alerts"
-    print(f"{disc_icon} DISCORD         {disc_msg}", flush=True)
+    # FIX: Pre-compute ternary labels — backslashes inside f-string expressions
+    # are a SyntaxError on Python 3.10 (Railway runtime). Same fix as position_manager FIX #7.
+    db_tick   = "\u2713" if ANALYTICS_AVAILABLE else "\u2717"
+    disc_tick = "\u2713" if os.getenv('DISCORD_WEBHOOK_URL') else "\u2717"
+    scrn_tick = "\u2713" if API_KEY else "\u2717"
+    reg_tick  = "\u2713" if os.getenv('REGIME_WEBHOOK_URL') else "\u2717"
+    opts_tick = "\u2713" if OPTIONS_AVAILABLE else "\u2717"
+    val_tick  = "\u2713" if VALIDATION_AVAILABLE else "\u2717"
 
-    screener_icon = "✓" if API_KEY else "✗"
-    screener_msg  = ("EODHD API configured (" + API_KEY[:8] + "...)") if API_KEY else "EODHD_API_KEY not set"
-    print(f"{screener_icon} SCREENER       {screener_msg}", flush=True)
-
-    try:
-        from app.validation.validation import get_regime_filter
-        get_regime_filter()
-        print("✓ REGIME-FILTER  VIX/SPY regime detection active", flush=True)
-    except Exception:
-        print("? REGIME-FILTER  Module not found (may be inline)", flush=True)
-
-    regime_webhook = os.getenv('REGIME_WEBHOOK_URL')
-    reg_icon = "✓" if regime_webhook else "✗"
-    reg_msg  = "Regime channel active (SPY+QQQ visual)" if regime_webhook else "NOT CONFIGURED — set REGIME_WEBHOOK_URL"
-    print(f"{reg_icon} REGIME-DISCORD  {reg_msg}", flush=True)
-
-    opts_icon = "✓" if OPTIONS_AVAILABLE else "✗"
-    opts_msg  = "Integrated - Greeks analysis active" if OPTIONS_AVAILABLE else "NOT INTEGRATED"
-    print(f"{opts_icon} OPTIONS-GATE    {opts_msg}", flush=True)
-
-    val_icon = "✓" if VALIDATION_AVAILABLE else "✗"
-    val_msg  = "Integrated - CFW6 confirmation active" if VALIDATION_AVAILABLE else "NOT INTEGRATED"
-    print(f"{val_icon} VALIDATION      {val_msg}", flush=True)
-
-    print("=" * 60, flush=True)
-    pm_mode = "Pre-market" if is_premarket() else "Live"
-    print("Trading session: 09:30 - 16:00 ET", flush=True)
-    print(f"Scanner mode: {pm_mode}", flush=True)
-    print("=" * 60, flush=True)
-    print("Candle Cache:    ✅ ENABLED (95%+ API reduction on redeploy)", flush=True)
-    print("WS Failover:     ✅ ENABLED (REST API fallback on disconnect)", flush=True)
-    print("Spread Gate:     ✅ ENABLED (us-quote bid/ask filter active)", flush=True)
-    print("Dynamic WS:      ✅ ENABLED (live session ticker subscription)", flush=True)
-    print("CFW6 Engine:     ✅ ENABLED (sniper.py direct — Phase 1.16)", flush=True)
-    print("BG Backfill:     ✅ ENABLED (fire-and-forget — Phase 1.17)", flush=True)
-    print("Cache Dir Fix:   ✅ FIXED   (os.getcwd() — Phase 1.18a)", flush=True)
-    print("Health HTTP:     ✅ ENABLED (GET /health → 200/503 — Phase 1.19 C5)", flush=True)
-    print("Analytics Conn:  ✅ FIXED   (reconnect guard — Phase 1.20 H1)", flush=True)
-    print(f"Ticker Watchdog: ✅ ENABLED ({TICKER_TIMEOUT_SECONDS}s hard timeout — Phase 1.21 P0-3)", flush=True)
-    print("Cache Cleanup:   ✅ ENABLED (30d candle_cache pruning EOD — Phase 1.22)", flush=True)
-    print("OR Window:       ✅ FIXED   (9:30-9:40 scans every 5s — Phase 1.23)", flush=True)
-    print("Regime Banner:   ✅ FIXED   (correct import path — Phase 1.23a)", flush=True)
-    print("Session Guard:   ✅ FIXED   (skip premarket on redeploy — Phase 1.24)", flush=True)
-    print("Log Noise:       ✅ REDUCED (no per-ticker banners, no lock spam — Phase 1.24)", flush=True)
-    print("Smart Backfill:  ✅ ENABLED (skip warm cache tickers on redeploy — Phase 1.24)", flush=True)
-    print("Market Regime:   ✅ VISUAL  (SPY+QQQ → REGIME_WEBHOOK_URL, no blocks — Phase 1.25)", flush=True)
-    print(f"Regime WS Feed:  ✅ FIXED   (SPY+QQQ always subscribed for regime bars — Phase 1.26)", flush=True)
-    print("Health Boot Fix: ✅ FIXED   (start_health_server at module load — Phase 1.27)", flush=True)
-    print("Env Var Guard:   ✅ ENABLED (validate_required_env_vars — Phase 1.28)", flush=True)
-    print("DB Checkout Fix: ✅ FIXED   (single get_session_status per cycle — Phase 1.29)", flush=True)
-    print("=" * 60 + "\n", flush=True)
+    logger.info(f"{db_tick} DATABASE        {db_msg}")
+    logger.info(f"{disc_tick} DISCORD         {disc_msg}")
+    logger.info(f"{scrn_tick} SCREENER        {scrn_msg}")
+    logger.info(f"{reg_tick} REGIME-DISCORD  {reg_msg}")
+    logger.info(f"{opts_tick} OPTIONS-GATE    {opts_msg}")
+    logger.info(f"{val_tick} VALIDATION      {val_msg}")
+    logger.info(f"  RVOL Signal Gate : MIN={config.RVOL_SIGNAL_GATE}x  Ceiling={config.RVOL_CEILING}x")
+    logger.info(f"  Bear Signals     : {'ENABLED' if config.BEAR_SIGNALS_ENABLED else 'DISABLED'}")
+    logger.info(f"  Ticker Watchdog  : {TICKER_TIMEOUT_SECONDS}s hard timeout per ticker")
+    logger.info("=" * 60)
+    logger.info(f"Session: 09:30–16:00 ET | Mode: {'Pre-market' if is_premarket() else 'Live'}")
+    logger.info("=" * 60 + "\n")
 
     _booting_into_market_hours = is_market_hours()
     premarket_watchlist = []
     premarket_built     = False
 
     if _booting_into_market_hours:
-        logger.info("[SCANNER] ⚡ Redeploy detected during market hours — skipping premarket, loading locked watchlist")
+        logger.info("[SCANNER] ⚡ Redeploy detected during market hours — loading locked watchlist")
         try:
             watchlist_data      = get_watchlist_with_metadata(force_refresh=False)
             premarket_watchlist = watchlist_data.get('watchlist', [])
@@ -580,8 +422,8 @@ def start_scanner_loop():
 
     try:
         send_simple_message(
-            f"⚔️ WAR MACHINE ONLINE — CFW6 v1.29 | "
-            f"{'Resuming intraday' if _booting_into_market_hours else 'OR window active'} | Phase 1.29"
+            f"⚔️ WAR MACHINE ONLINE — CFW6 v1.38b | "
+            f"{'Resuming intraday' if _booting_into_market_hours else 'OR window active'}"
         )
     except Exception as e:
         logger.warning(f"[SCANNER] Discord unavailable: {e}")
@@ -594,22 +436,15 @@ def start_scanner_loop():
     _watchlist_lock_logged    = False
 
     startup_watchlist = list(dict.fromkeys(
-        (premarket_watchlist if premarket_watchlist else list(EMERGENCY_FALLBACK))
-        + REGIME_TICKERS
+        (premarket_watchlist if premarket_watchlist else list(EMERGENCY_FALLBACK)) + REGIME_TICKERS
     ))
 
-    ws_thread = threading.Thread(
-        target=lambda: start_ws_feed(startup_watchlist),
-        daemon=True, name="start_ws_feed"
-    )
+    ws_thread = threading.Thread(target=lambda: start_ws_feed(startup_watchlist), daemon=True, name="start_ws_feed")
     ws_thread.start()
     ws_thread.join(timeout=20)
     logger.info("[WS] WebSocket feed started (or timed out gracefully)")
 
-    quote_thread = threading.Thread(
-        target=lambda: start_quote_feed(startup_watchlist),
-        daemon=True, name="start_quote_feed"
-    )
+    quote_thread = threading.Thread(target=lambda: start_quote_feed(startup_watchlist), daemon=True, name="start_quote_feed")
     quote_thread.start()
     quote_thread.join(timeout=20)
     logger.info("[QUOTE] Quote feed started (or timed out gracefully)")
@@ -617,16 +452,10 @@ def start_scanner_loop():
     stale = _get_stale_tickers(startup_watchlist)
     if stale:
         logger.info(f"[BACKFILL] {len(stale)} stale tickers need backfill: {', '.join(stale)}")
-        _fire_and_forget(
-            lambda: data_manager.startup_backfill_with_cache(stale, days=30),
-            label="startup_backfill"
-        )
-        _fire_and_forget(
-            lambda: data_manager.startup_intraday_backfill_today(stale),
-            label="intraday_backfill"
-        )
+        _fire_and_forget(lambda: data_manager.startup_backfill_with_cache(stale, days=30), label="startup_backfill")
+        _fire_and_forget(lambda: data_manager.startup_intraday_backfill_today(stale), label="intraday_backfill")
     else:
-        logger.info("[BACKFILL] ✅ All tickers have warm cache — skipping EODHD backfill")
+        logger.info("[BACKFILL] ✅ All tickers warm — skipping EODHD backfill")
 
     set_backfill_complete()
     last_subscribed_watchlist = set(startup_watchlist)
@@ -649,17 +478,15 @@ def start_scanner_loop():
                         watchlist_data      = get_watchlist_with_metadata(force_refresh=True)
                         premarket_watchlist = watchlist_data['watchlist']
                         metadata            = watchlist_data['metadata']
-                        volume_signals      = watchlist_data['volume_signals']
 
                         if not premarket_watchlist and now_et.time() > dtime(8, 0):
                             logger.warning("⚠️  WATCHLIST EMPTY after 8:00 AM - possible config issue")
                             try:
-                                send_simple_message("⚠️ **WATCHLIST EMPTY** after 8:00 AM ET — Check funnel configuration!")
+                                send_simple_message("⚠️ **WATCHLIST EMPTY** after 8:00 AM ET — Check funnel!")
                             except Exception:
                                 pass
 
                         premarket_built = True
-
                         current_set = set(premarket_watchlist)
                         new_tickers = list(current_set - last_subscribed_watchlist)
                         if new_tickers:
@@ -669,36 +496,10 @@ def start_scanner_loop():
                             subscribe_tickers(combined)
                             subscribe_quote_tickers(combined)
                         last_subscribed_watchlist = current_set
-
                         logger.info(f"[WS] Subscribed premarket watchlist ({len(premarket_watchlist)} tickers)")
-
-                        stage_emoji = {'wide': '📡', 'narrow': '🎯', 'final': '🔥', 'live': '⚡'}
-                        emoji       = stage_emoji.get(metadata['stage'], '📊')
-                        pm_metrics  = _extract_premarket_metrics(watchlist_data)
-
-                        ellipsis = '...' if len(premarket_watchlist) > 20 else ''
-                        msg = (
-                            f"{emoji} **{metadata['stage_description']}**\n"
-                            f"✅ Watchlist: {len(premarket_watchlist)} tickers\n"
-                            f"{', '.join(premarket_watchlist[:20])}{ellipsis}\n"
-                        )
-                        if pm_metrics:
-                            msg += (
-                                f"\n**Screener Insights:**\n"
-                                f"🔥 Explosive: {pm_metrics['explosive_count']} "
-                                f"(RVOL ≥{pm_metrics['explosive_rvol_threshold']}x)\n"
-                                f"📊 Avg RVOL: {pm_metrics['avg_rvol']:.1f}x | "
-                                f"Avg Score: {pm_metrics['avg_score']:.0f}\n"
-                                f"🎯 Top 3: {pm_metrics['top_3_summary']}"
-                            )
-                        if volume_signals:
-                            msg += f"\n\n⚠️ {len(volume_signals)} volume signals active"
-                        send_simple_message(msg)
-
                     except Exception as e:
                         logger.error(f"[PRE-MARKET] Funnel error: {e}")
-                        import traceback
-                        traceback.print_exc()
+                        import traceback; traceback.print_exc()
                         premarket_watchlist = list(EMERGENCY_FALLBACK)
                         premarket_built     = True
                 else:
@@ -735,17 +536,11 @@ def start_scanner_loop():
                         )
                         _or_window_logged = True
 
-                # ── FIX #9 (PHASE 1.29): Single get_session_status() per cycle ──
-                # Previously: get_loss_streak() + monitor_open_positions() +
-                # get_session_status() = 3 DB checkouts every 5s OR cycle.
-                # Now: one call, result passed to all consumers below.
                 session     = get_session_status()
                 daily_stats = session["daily_stats"]
 
-                # Derive loss streak from cached session data — no extra DB call
                 _has_loss_streak = (
-                    daily_stats.get("losses", 0) >= 3
-                    and daily_stats.get("wins", 0) == 0
+                    (daily_stats.get("losses", 0) >= 3 and daily_stats.get("wins", 0) == 0)
                     or _pm.has_loss_streak(max_consecutive_losses=3)
                 )
 
@@ -760,13 +555,11 @@ def start_scanner_loop():
                             pass
                         loss_streak_alerted = True
                         logger.warning("[RISK] Daily loss streak reached — halting new scans.")
-                    # Pass pre-fetched session — zero extra DB calls
                     monitor_open_positions(session=session)
                     time.sleep(60)
                     continue
 
                 cycle_count += 1
-
                 send_regime_discord()
 
                 try:
@@ -794,19 +587,23 @@ def start_scanner_loop():
                     logger.debug(f"[SCANNER] Cycle #{cycle_count} | {len(watchlist)} tickers | {current_time_str}")
 
                 if ANALYTICS_AVAILABLE and analytics:
-                    try:
+                    def _run_analytics(conn=None):
                         live_conn = _get_analytics_conn()
                         if live_conn and analytics:
-                            def get_price(ticker):
+                            def get_price(t):
                                 from app.data.ws_feed import get_current_bar_with_fallback
-                                bar = get_current_bar_with_fallback(ticker)
+                                bar = get_current_bar_with_fallback(t)
                                 return bar['close'] if bar else None
                             analytics.monitor_active_signals(get_price)
                             analytics.check_scheduled_tasks()
-                    except Exception as e:
-                        logger.error(f"[ANALYTICS] Monitor error: {e}")
+                    if PRODUCTION_HELPERS_ENABLED:
+                        _db_operation_safe(_run_analytics, "analytics monitor")
+                    else:
+                        try:
+                            _run_analytics()
+                        except Exception as e:
+                            logger.error(f"[ANALYTICS] Monitor error: {e}")
 
-                # Pass pre-fetched session — skips second get_session_status() call
                 monitor_open_positions(session=session)
 
                 logger.info(
@@ -821,8 +618,7 @@ def start_scanner_loop():
                         _run_ticker_with_timeout(process_ticker, ticker)
                     except Exception as e:
                         logger.error(f"[SCANNER] Error on {ticker}: {e}")
-                        import traceback
-                        traceback.print_exc()
+                        import traceback; traceback.print_exc()
                         continue
 
                 scan_interval = get_adaptive_scan_interval()
@@ -838,49 +634,18 @@ def start_scanner_loop():
                     if open_positions:
                         logger.info(f"[EOD] {len(open_positions)} positions still open")
 
-                    if LEGACY_ANALYTICS_ENABLED and signal_tracker:
-                        try:
-                            summary      = signal_tracker.get_daily_summary()
-                            print(summary)
-                            funnel_stats = signal_tracker.get_funnel_stats()
-                            mult_stats   = signal_tracker.get_multiplier_impact()
-                            print("\n" + "="*80)
-                            print("SIGNAL FUNNEL ANALYSIS")
-                            print("="*80)
-                            print(f"Generated: {funnel_stats['generated']}")
-                            print(f"Validated: {funnel_stats['validated']} ({funnel_stats['validation_rate']}%)")
-                            print(f"Armed:     {funnel_stats['armed']} ({funnel_stats['arming_rate']}%)")
-                            print(f"Traded:    {funnel_stats['traded']} ({funnel_stats['execution_rate']}%)")
-                        except Exception as e:
-                            logger.error(f"[ANALYTICS] Error generating report: {e}")
-                            import traceback
-                            traceback.print_exc()
-
                     try:
-                        daily_stats  = session["daily_stats"]
-                        eod_metadata = _get_eod_summary_metrics()
-                        eod_report = (
-                            f"📊 **EOD Report {current_day}**\n"
-                            f"Trades: {daily_stats['trades']} | "
-                            f"WR: {daily_stats['win_rate']:.1f}% | "
-                            f"P&L: ${daily_stats['total_pnl']:+.2f}\n"
-                        )
-                        if eod_metadata:
-                            eod_report += (
-                                f"\n**Top Performers:**\n{eod_metadata.get('top_performers', 'N/A')}\n"
-                                f"\n**Screener Stats:**\n"
-                                f"Avg RVOL: {eod_metadata.get('avg_rvol', 0):.1f}x | "
-                                f"Explosive Movers: {eod_metadata.get('explosive_count', 0)}"
-                            )
-                        send_simple_message(eod_report)
+                        from app.core.eod_reporter import run_eod_report
+                        run_eod_report(current_day)
                     except Exception as e:
-                        logger.error(f"[EOD] EOD report error: {e}")
+                        logger.error(f"[EOD] eod_reporter failed: {e}")
+                        import traceback; traceback.print_exc()
 
                     if HAS_AI_LEARNING:
                         try:
                             learning_engine.optimize_confirmation_weights()
                             learning_engine.optimize_fvg_threshold()
-                            print(learning_engine.generate_performance_report())
+                            logger.info(learning_engine.generate_performance_report())
                         except Exception as e:
                             logger.error(f"[AI] Optimization error: {e}")
 
@@ -912,9 +677,10 @@ def start_scanner_loop():
                     last_subscribed_watchlist = set()
                     _watchlist_lock_logged    = False
 
+                    reset_funnel()
                     clear_armed_signals()
                     clear_watching_signals()
-
+                    from app.core.sniper import _bos_watch_alerted; _bos_watch_alerted.clear()
                     try:
                         data_manager.clear_prev_day_cache()
                     except Exception as e:
@@ -927,54 +693,18 @@ def start_scanner_loop():
 
         except KeyboardInterrupt:
             logger.info("[SCANNER] Shutdown signal received")
-            print(get_eod_report())
+            logger.info(get_eod_report())
             raise
 
         except Exception as e:
             logger.error(f"[SCANNER] Critical error: {e}")
-            import traceback
-            traceback.print_exc()
+            import traceback; traceback.print_exc()
             try:
                 send_simple_message(f"⚠️ Scanner Error: {str(e)}")
             except Exception:
                 pass
             time.sleep(30)
 
-
-def get_screener_tickers(min_market_cap: int = 1_000_000_000, limit: int = 50) -> list:
-    import requests
-    import json
-    url    = "https://eodhd.com/api/screener"
-    params = {
-        "api_token": config.EODHD_API_KEY,
-        "filters": json.dumps([
-            ["market_capitalization", ">=", min_market_cap],
-            ["avgvol_1d",            ">=", 1_000_000],
-            ["exchange",             "=",  "us"],
-        ]),
-        "sort":   "avgvol_1d.desc",
-        "limit":  limit,
-        "offset": 0,
-    }
-    try:
-        response = requests.get(url, params=params, timeout=15)
-        if response.status_code != 200:
-            logger.error(f"[SCREENER] HTTP {response.status_code}: {response.text[:300]}")
-            response.raise_for_status()
-        data = response.json()
-        if not isinstance(data, dict) or "data" not in data:
-            logger.error(f"[SCREENER] Unexpected response shape: {str(data)[:300]}")
-            return []
-        tickers = []
-        for item in data["data"]:
-            code = item.get("code")
-            if code:
-                tickers.append(code.replace(".US", "").replace(".us", ""))
-        logger.info(f"[SCREENER] ✅ Fetched {len(tickers)} tickers")
-        return tickers[:limit]
-    except Exception as e:
-        logger.error(f"[SCREENER] Error: {e}")
-        return []
 
 
 if __name__ == "__main__":

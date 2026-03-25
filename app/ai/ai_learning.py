@@ -4,6 +4,8 @@ Analyzes win/loss patterns and adjusts strategy parameters
 
 CONSOLIDATED: Now includes learning_policy functions (compute_confidence, grade_to_label)
 FIXED (Mar 10 2026): All get_conn() calls now use try/finally: return_conn(conn) — no leaks.
+FIXED (Mar 16 2026): Extended _GRADE_BASE to all 9 grades (A+/A/A-/B+/B/B-/C+/C/C-).
+                     Fixed bare 'import db_connection' -> 'from app.data import db_connection'.
 """
 
 import json
@@ -11,19 +13,29 @@ import os
 from datetime import datetime, timedelta
 from typing import Dict, List
 import numpy as np
-import db_connection
+from app.data import db_connection
 from utils import config
+import logging
+logger = logging.getLogger(__name__)
 
 
 # =============================================================================
 # CONFIDENCE SCORING (formerly learning_policy.py)
 # =============================================================================
 
-# Grade baseline confidence map (CFW6 video rules)
+# Grade baseline confidence map — all 9 CFW6 grades.
+# A+/A/A- midpoints align with original learning_policy values.
+# B+/B/B-/C+/C/C- midpoints sourced from confidence_model.py (Phase 2 extraction).
 _GRADE_BASE = {
-    "A+": 0.85,
-    "A":  0.70,
-    "A-": 0.55,
+    "A+":  0.90,   # midpoint of (0.88, 0.92)
+    "A":   0.85,   # midpoint of (0.83, 0.87)
+    "A-":  0.80,   # midpoint of (0.78, 0.82)
+    "B+":  0.74,   # midpoint of (0.72, 0.76)
+    "B":   0.68,   # midpoint of (0.66, 0.70)
+    "B-":  0.62,   # midpoint of (0.60, 0.64)
+    "C+":  0.575,  # midpoint of (0.55, 0.60)
+    "C":   0.525,  # midpoint of (0.50, 0.55)
+    "C-":  0.475,  # midpoint of (0.45, 0.50)
 }
 
 # Timeframe multiplier: higher timeframe = higher weight
@@ -47,34 +59,32 @@ def compute_confidence(
     Compute base confidence score for a CFW6 signal.
 
     Args:
-        grade:     Signal grade string - "A+", "A", "A-"
+        grade:     Signal grade string - "A+" through "C-" (9 grades)
         timeframe: Bar timeframe - "1m", "2m", "3m", "5m"
         ticker:    Ticker symbol (reserved for future per-ticker tuning)
 
     Returns:
         Float in [0.0, 1.0] representing signal confidence.
+        Falls back to 0.50 (MIN_CONFIDENCE) for unrecognised grades.
     """
-    base = _GRADE_BASE.get(grade, 0.50)
+    base = _GRADE_BASE.get(grade, MIN_CONFIDENCE)
     tf_mult = _TF_MULTIPLIER.get(timeframe, 1.00)
     score = base * tf_mult
     return round(min(max(score, 0.0), 1.0), 4)
 
 
 def grade_to_label(confidence: float) -> str:
-    """
-    Convert a numeric confidence back to a readable label.
-    Used for logging and Discord alerts.
-    """
-    if confidence >= 0.80:
-        return "A+"
-    elif confidence >= 0.65:
-        return "A"
-    elif confidence >= 0.50:
-        return "A-"
-    else:
-        return "reject"
-
-
+    if confidence >= 0.88:   return "A+"
+    elif confidence >= 0.83: return "A"
+    elif confidence >= 0.78: return "A-"
+    elif confidence >= 0.72: return "B+"
+    elif confidence >= 0.66: return "B"
+    elif confidence >= 0.60: return "B-"
+    elif confidence >= 0.55: return "C+"
+    elif confidence >= 0.50: return "C"
+    elif confidence >= 0.45: return "C-"
+    else:                    return "reject"
+    
 # =============================================================================
 # AI LEARNING ENGINE
 # =============================================================================
@@ -103,7 +113,7 @@ class AILearningEngine:
             """)
             conn.commit()
         except Exception as e:
-            print(f"[AI] Error creating learning table: {e}")
+            logger.info(f"[AI] Error creating learning table: {e}")
         finally:
             if conn:
                 db_connection.return_conn(conn)
@@ -137,7 +147,7 @@ class AILearningEngine:
                         d = json.loads(d)
                     return {**default_data, **d}
             except Exception as e:
-                print(f"[AI] Error loading from PostgreSQL: {e}")
+                logger.info(f"[AI] Error loading from PostgreSQL: {e}")
             finally:
                 if conn:
                     db_connection.return_conn(conn)
@@ -150,7 +160,7 @@ class AILearningEngine:
                 if isinstance(loaded, dict):
                     return {**default_data, **loaded}
             except Exception as e:
-                print(f"[AI] Error loading JSON: {e}")
+                logger.info(f"[AI] Error loading JSON: {e}")
         return default_data
 
     def save_data(self):
@@ -171,7 +181,7 @@ class AILearningEngine:
                 """, (json.dumps(self.data),))
                 conn.commit()
             except Exception as e:
-                print(f"[AI] Error saving to PostgreSQL: {e}")
+                logger.info(f"[AI] Error saving to PostgreSQL: {e}")
             finally:
                 if conn:
                     db_connection.return_conn(conn)
@@ -181,7 +191,7 @@ class AILearningEngine:
             with open(self.db_path, "w") as f:
                 json.dump(self.data, f, indent=2)
         except Exception as e:
-            print(f"[AI] Error saving JSON: {e}")
+            logger.info(f"[AI] Error saving JSON: {e}")
 
     def record_trade(self, trade: Dict):
         """Record a completed trade for learning."""
@@ -245,7 +255,7 @@ class AILearningEngine:
         ]
 
         if len(trades_with_confirmations) < 20:
-            print("[AI] Not enough data for confirmation optimization (need 20+ trades)")
+            logger.info("[AI] Not enough data for confirmation optimization (need 20+ trades)")
             return
 
         all_trades = self.data["trades"]
@@ -277,9 +287,9 @@ class AILearningEngine:
                 new_weight = win_rate / baseline_wr
                 self.data["confirmation_weights"][conf_type] = round(new_weight, 2)
 
-        print("[AI] Confirmation weights optimized:")
+        logger.info("[AI] Confirmation weights optimized:")
         for conf, weight in self.data["confirmation_weights"].items():
-            print(f"  {conf}: {weight:.2f}")
+            logger.info(f"  {conf}: {weight:.2f}")
         self.save_data()
 
     def optimize_fvg_threshold(self):
@@ -297,7 +307,7 @@ class AILearningEngine:
         if len(winning_fvg) > 10:
             optimal_fvg = np.median(winning_fvg)
             self.data["fvg_size_optimal"] = round(optimal_fvg, 4)
-            print(f"[AI] Optimal FVG size updated: {optimal_fvg:.4f}")
+            logger.info(f"[AI] Optimal FVG size updated: {optimal_fvg:.4f}")
             self.save_data()
 
     def get_ticker_confidence_multiplier(self, ticker: str) -> float:
@@ -354,7 +364,7 @@ class AILearningEngine:
         except ImportError:
             return 1.0
         except Exception as e:
-            print(f"[AI] Error getting options flow weight for {ticker}: {e}")
+            logger.info(f"[AI] Error getting options flow weight for {ticker}: {e}")
             return 1.0
 
     def get_optimal_parameters(self) -> Dict:
@@ -383,7 +393,7 @@ class AILearningEngine:
         report += f"Total P&L: ${total_pnl:+,.2f}\n"
         report += "\nGrade Performance:\n"
 
-        for grade in ["A+", "A", "A-"]:
+        for grade in ["A+", "A", "A-", "B+", "B", "B-", "C+", "C", "C-"]:
             if grade in self.data["pattern_performance"]:
                 perf     = self.data["pattern_performance"][grade]
                 grade_wr = (perf["wins"] / perf["count"]) * 100 if perf["count"] > 0 else 0

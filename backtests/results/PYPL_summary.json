@@ -1,0 +1,18 @@
+{
+  "ticker": "PYPL",
+  "days": 90,
+  "total_trades": 7,
+  "wins": 2,
+  "losses": 5,
+  "win_rate_pct": 28.6,
+  "avg_r": -0.244,
+  "median_r": -0.27,
+  "avg_win_r": 0.515,
+  "avg_loss_r": -0.548,
+  "profit_factor": 0.38,
+  "max_drawdown_r": 2.74,
+  "exit_reasons": {
+    "EOD": 6,
+    "STOP": 1
+  }
+}

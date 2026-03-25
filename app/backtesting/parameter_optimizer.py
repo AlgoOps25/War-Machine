@@ -29,6 +29,8 @@ from itertools import product
 from dataclasses import dataclass
 
 from app.backtesting.backtest_engine import BacktestEngine, BacktestResults
+import logging
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -66,10 +68,10 @@ class ParameterOptimizer:
         if optimization_metric not in self.valid_metrics:
             raise ValueError(f"Invalid metric: {optimization_metric}. Choose from {self.valid_metrics}")
         
-        print(f"[OPTIMIZER] Initialized")
-        print(f"  Capital: ${initial_capital:,.2f}")
-        print(f"  Optimizing: {optimization_metric}")
-        print(f"  Min trades: {min_trades}")
+        logger.info(f"[OPTIMIZER] Initialized")
+        logger.info(f"  Capital: ${initial_capital:,.2f}")
+        logger.info(f"  Optimizing: {optimization_metric}")
+        logger.info(f"  Min trades: {min_trades}")
     
     def grid_search(self,
                     ticker: str,
@@ -90,8 +92,8 @@ class ParameterOptimizer:
         Returns:
             List of dicts with 'params', 'results', 'metric_value'
         """
-        print(f"\n[OPTIMIZER] Starting grid search for {ticker}")
-        print(f"  Parameter grid: {param_grid}")
+        logger.info(f"\n[OPTIMIZER] Starting grid search for {ticker}")
+        logger.info(f"  Parameter grid: {param_grid}")
         
         # Generate all parameter combinations
         param_names = list(param_grid.keys())
@@ -99,7 +101,7 @@ class ParameterOptimizer:
         combinations = list(product(*param_values))
         
         total_combinations = len(combinations)
-        print(f"  Total combinations: {total_combinations}")
+        logger.info(f"  Total combinations: {total_combinations}")
         
         # Test each combination
         results = []
@@ -108,7 +110,7 @@ class ParameterOptimizer:
             # Create param dict
             params = dict(zip(param_names, combo))
             
-            print(f"\n  [{i}/{total_combinations}] Testing: {params}")
+            logger.info(f"\n  [{i}/{total_combinations}] Testing: {params}")
             
             # Run backtest
             engine = BacktestEngine(initial_capital=self.initial_capital)
@@ -123,7 +125,7 @@ class ParameterOptimizer:
                 
                 # Check if result is valid
                 if backtest_results.total_trades < self.min_trades:
-                    print(f"    Skipped (only {backtest_results.total_trades} trades)")
+                    logger.info(f"    Skipped (only {backtest_results.total_trades} trades)")
                     continue
                 
                 # Get metric value
@@ -140,7 +142,7 @@ class ParameterOptimizer:
                       f"P&L: ${backtest_results.net_pnl:,.2f}")
                 
             except Exception as e:
-                print(f"    Error: {e}")
+                logger.info(f"    Error: {e}")
                 continue
         
         # Sort by metric value (descending)
@@ -149,13 +151,13 @@ class ParameterOptimizer:
         # Return top N
         top_results = results[:top_n]
         
-        print(f"\n[OPTIMIZER] Grid search complete")
-        print(f"  Valid results: {len(results)} / {total_combinations}")
+        logger.info(f"\n[OPTIMIZER] Grid search complete")
+        logger.info(f"  Valid results: {len(results)} / {total_combinations}")
         
         if top_results:
-            print(f"\n  TOP {len(top_results)} RESULTS:")
+            logger.info(f"\n  TOP {len(top_results)} RESULTS:")
             for i, result in enumerate(top_results, 1):
-                print(f"    #{i} {result['params']}")
+                logger.info(f"    #{i} {result['params']}")
                 print(f"        {self.optimization_metric}: {result['metric_value']:.2f} | "
                       f"Trades: {result['results'].total_trades} | "
                       f"P&L: ${result['results'].net_pnl:,.2f}")
@@ -164,6 +166,6 @@ class ParameterOptimizer:
 
 
 if __name__ == "__main__":
-    print("Parameter Optimizer - Example Usage")
-    print("="*80)
-    print("\nSee docs/task10_backtesting_guide.md for examples.")
+    logger.info("Parameter Optimizer - Example Usage")
+    logger.info("="*80)
+    logger.info("\nSee docs/task10_backtesting_guide.md for examples.")

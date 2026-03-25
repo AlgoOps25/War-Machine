@@ -1,0 +1,2 @@
+ticker,date,direction,grade,confidence,or_high,or_low,or_range_pct,fvg_low,fvg_high,fvg_size_pct,entry_price,stop_price,t1_price,t2_price,entry_time,exit_time,exit_price,exit_reason,pnl_pts,r_multiple,win,entry_hour,rvol,entry_minute
+BOX,2026-03-20,bull,A,0.7,24.52,23.97,2.295,24.55,24.57,0.081,24.56,23.946,25.3275,25.7879,2026-03-20 10:03:00,2026-03-20 15:55:00,24.655,EOD,0.0901,0.15,1,10,0.82,3

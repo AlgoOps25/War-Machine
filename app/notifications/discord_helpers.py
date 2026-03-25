@@ -27,6 +27,18 @@ import threading
 from typing import Dict, List, Optional
 from datetime import datetime
 from utils import config
+import logging
+logger = logging.getLogger(__name__)
+# 45.H-2: Cache webhook URLs at module load — prevents TypeError on unset env vars
+# and avoids repeated attribute lookups inside the hot send path.
+_SIGNALS_WEBHOOK: str = (getattr(config, "DISCORD_SIGNALS_WEBHOOK_URL",  None) or "").strip().rstrip("\n\r")
+_WATCHLIST_WEBHOOK: str = (getattr(config, "DISCORD_WATCHLIST_WEBHOOK_URL", None) or "").strip().rstrip("\n\r")
+
+# Rate-limiter state (used by Fix 45.M-4)
+import time as _time
+_last_send_ts: float = 0.0
+_RATE_LIMIT_INTERVAL: float = 0.5   # minimum seconds between Discord POSTs
+_rl_lock = threading.Lock()
 
 # ══════════════════════════════════════════════════════════════════════════════
 # COMPANY NAME RESOLUTION
@@ -36,7 +48,7 @@ try:
     YFINANCE_AVAILABLE = True
 except ImportError:
     YFINANCE_AVAILABLE = False
-    print("[DISCORD] ⚠️  yfinance not installed - company names will show as ticker only")
+    logger.info("[DISCORD] ⚠️  yfinance not installed - company names will show as ticker only")
 
 @functools.lru_cache(maxsize=512)
 def get_company_name(symbol: str) -> str:
@@ -566,28 +578,60 @@ def _send_to_discord_watchlist(payload: Dict):
     Falls back to DISCORD_SIGNALS_WEBHOOK_URL if watchlist URL not configured.
     Dispatched on a daemon thread (non-blocking).
     """
-    watchlist_url = (config.DISCORD_WATCHLIST_WEBHOOK_URL or "").strip().rstrip("\n").rstrip("\r")
-    fallback_url  = (config.DISCORD_SIGNALS_WEBHOOK_URL  or "").strip().rstrip("\n").rstrip("\r")
-    webhook_url   = watchlist_url or fallback_url
+    # 45.H-2: use module-level cached URLs
+    webhook_url = _WATCHLIST_WEBHOOK or _SIGNALS_WEBHOOK
 
     if not webhook_url:
-        print("[DISCORD] ❌ No watchlist webhook URL configured.")
+        logger.info("[DISCORD] ❌ No watchlist webhook URL configured.")
         return
 
-    if not watchlist_url:
-        print("[DISCORD] ⚠️  DISCORD_WATCHLIST_WEBHOOK_URL not set — falling back to signals channel")
+    if not _WATCHLIST_WEBHOOK:
+        logger.info("[DISCORD] ⚠️  DISCORD_WATCHLIST_WEBHOOK_URL not set — falling back to signals channel")
 
     def _post():
+        global _last_send_ts
+        # 45.M-4: Rate limit shared across all Discord POSTs
+        with _rl_lock:
+            now = _time.monotonic()
+            wait = _RATE_LIMIT_INTERVAL - (now - _last_send_ts)
+            if wait > 0:
+                _time.sleep(wait)
+            _last_send_ts = _time.monotonic()
         try:
-            response = requests.post(webhook_url, json=payload, timeout=10)
+            response = requests.post(webhook_url, json=_truncate_payload(payload), timeout=5)  # 45.M-7
             if response.status_code not in (200, 204):
-                print(f"[DISCORD] ⚠️  Watchlist HTTP {response.status_code}: {response.text[:200]}")
+                # 45.M-10: fallback log
+                logger.info(f"[DISCORD] ❌ Watchlist HTTP {response.status_code} — payload dropped: {str(payload)[:300]}")
         except Exception as e:
-            print(f"[DISCORD] ⚠️  Watchlist send error (non-blocking): {e}")
+            # 45.M-10: fallback log
+            logger.info(f"[DISCORD] ❌ Watchlist send failed ({e}) — payload dropped: {str(payload)[:300]}")
 
     t = threading.Thread(target=_post, daemon=True)
     t.start()
 
+def _truncate_payload(payload: Dict, max_chars: int = 1900) -> Dict:
+    """
+    45.M-7: Discord rejects messages over 2000 chars with HTTP 400.
+    Truncate content and embed descriptions/field values to stay under the limit.
+    """
+    import copy
+    payload = copy.deepcopy(payload)
+
+    # Truncate top-level content
+    if "content" in payload and isinstance(payload["content"], str):
+        if len(payload["content"]) > max_chars:
+            payload["content"] = payload["content"][:max_chars] + "\n*(truncated)*"
+
+    # Truncate embed fields
+    for embed in payload.get("embeds", []):
+        if "description" in embed and isinstance(embed["description"], str):
+            if len(embed["description"]) > max_chars:
+                embed["description"] = embed["description"][:max_chars] + "\n*(truncated)*"
+        for field in embed.get("fields", []):
+            if isinstance(field.get("value"), str) and len(field["value"]) > 1024:
+                field["value"] = field["value"][:1021] + "..."
+
+    return payload
 
 def _send_to_discord(payload: Dict):
     """
@@ -597,23 +641,33 @@ def _send_to_discord(payload: Dict):
     or outage never blocks the scan loop. The caller always returns
     immediately. Errors are caught and logged inside the thread.
     """
-    webhook_url = (config.DISCORD_SIGNALS_WEBHOOK_URL or "").strip().rstrip("\n").rstrip("\r")
+    webhook_url = _SIGNALS_WEBHOOK  # 45.H-2: use module-level cached URL
 
     if not webhook_url:
-        print("[DISCORD] ❌ No webhook URL configured.")
+        logger.info("[DISCORD] ❌ No webhook URL configured.")
         return
 
     def _post():
+        global _last_send_ts
+        # 45.M-4: Rate limit — enforce minimum interval between POSTs
+        with _rl_lock:
+            now = _time.monotonic()
+            wait = _RATE_LIMIT_INTERVAL - (now - _last_send_ts)
+            if wait > 0:
+                _time.sleep(wait)
+            _last_send_ts = _time.monotonic()
         try:
             response = requests.post(
                 webhook_url,
-                json=payload,
-                timeout=10,
+                json=_truncate_payload(payload),  # 45.M-7
+                timeout=5,
             )
             if response.status_code not in (200, 204):
-                print(f"[DISCORD] ⚠️  HTTP {response.status_code}: {response.text[:200]}")
+                # 45.M-10: fallback log on webhook failure
+                logger.info(f"[DISCORD] ❌ HTTP {response.status_code} — payload dropped: {str(payload)[:300]}")
         except Exception as e:
-            print(f"[DISCORD] ⚠️  Send error (non-blocking): {e}")
+            # 45.M-10: fallback log on exception
+            logger.info(f"[DISCORD] ❌ Send failed ({e}) — payload dropped: {str(payload)[:300]}")
 
     t = threading.Thread(target=_post, daemon=True)
     t.start()
@@ -621,18 +675,19 @@ def _send_to_discord(payload: Dict):
 
 def test_webhook():
     """Call once at startup to verify Discord is working."""
-    webhook_url = (config.DISCORD_SIGNALS_WEBHOOK_URL or "").strip()
+    webhook_url = _SIGNALS_WEBHOOK
     if not webhook_url:
-        print("[DISCORD] ❌ DISCORD_SIGNALS_WEBHOOK_URL is empty!")
+        logger.info("[DISCORD] ❌ DISCORD_SIGNALS_WEBHOOK_URL is empty!")
         return False
-    
-    print(f"[DISCORD] URL length: {len(webhook_url)} chars")
-    print(f"[DISCORD] URL ends with: {repr(webhook_url[-10:])}")
-    
+
+    logger.info(f"[DISCORD] URL length: {len(webhook_url)} chars")
+    logger.info(f"[DISCORD] URL ends with: {repr(webhook_url[-10:])}")
+
     try:
-        r = requests.post(webhook_url, json={"content": "🚀 War Machine Online!"}, timeout=10)
-        print(f"[DISCORD] Test result: {r.status_code}")
+        r = requests.post(webhook_url, json={"content": "🚀 War Machine Online!"}, timeout=5)
+        logger.info(f"[DISCORD] Test result: {r.status_code}")
         return r.status_code in (200, 204)
     except Exception as e:
-        print(f"[DISCORD] Test failed: {e}")
+        logger.info(f"[DISCORD] Test failed: {e}")
         return False
+

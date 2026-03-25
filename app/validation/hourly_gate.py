@@ -23,6 +23,8 @@ Usage in sniper.py:
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from typing import Optional
+import logging
+logger = logging.getLogger(__name__)
 
 # Cache state (module-level)
 _heatmap_cache: Optional[dict] = None
@@ -47,9 +49,9 @@ def _refresh_cache():
     try:
         _heatmap_cache = build_heatmap_data(lookback_days=30)
         _last_update = _now_et()
-        print("[HOURLY GATE] Cache refreshed | running neutral (no history yet)")
+        logger.info("[HOURLY GATE] Cache refreshed | running neutral (no history yet)")
     except Exception as e:
-        print(f"[HOURLY GATE] Cache refresh error: {e}")
+        logger.info(f"[HOURLY GATE] Cache refresh error: {e}")
         _heatmap_cache = {"hour_totals": {}}
         _last_update = _now_et()
 
@@ -170,14 +172,14 @@ def print_hourly_gate_stats():
     if total == 0:
         return
     
-    print("\n" + "="*60)
-    print("HOURLY CONFIDENCE GATE STATISTICS")
-    print("="*60)
-    print(f"Total Evaluations: {total}")
-    print(f"  Raised Gate (+10%): {_stats['raised']} ({_stats['raised']/total*100:.1f}%)")
-    print(f"  Lowered Gate (-5%): {_stats['lowered']} ({_stats['lowered']/total*100:.1f}%)")
-    print(f"  Neutral (1.0x):     {_stats['neutral']} ({_stats['neutral']/total*100:.1f}%)")
-    print("="*60 + "\n")
+    logger.info("\n" + "="*60)
+    logger.info("HOURLY CONFIDENCE GATE STATISTICS")
+    logger.info("="*60)
+    logger.info(f"Total Evaluations: {total}")
+    logger.info(f"  Raised Gate (+10%): {_stats['raised']} ({_stats['raised']/total*100:.1f}%)")
+    logger.info(f"  Lowered Gate (-5%): {_stats['lowered']} ({_stats['lowered']/total*100:.1f}%)")
+    logger.info(f"  Neutral (1.0x):     {_stats['neutral']} ({_stats['neutral']/total*100:.1f}%)")
+    logger.info("="*60 + "\n")
 
 def build_heatmap_data(lookback_days: int = 30) -> dict:
     """

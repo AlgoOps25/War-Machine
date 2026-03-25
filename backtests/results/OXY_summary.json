@@ -1,0 +1,18 @@
+{
+  "ticker": "OXY",
+  "days": 90,
+  "total_trades": 10,
+  "wins": 3,
+  "losses": 7,
+  "win_rate_pct": 30.0,
+  "avg_r": -0.324,
+  "median_r": -0.38,
+  "avg_win_r": 0.407,
+  "avg_loss_r": -0.637,
+  "profit_factor": 0.27,
+  "max_drawdown_r": 3.85,
+  "exit_reasons": {
+    "EOD": 6,
+    "STOP": 4
+  }
+}

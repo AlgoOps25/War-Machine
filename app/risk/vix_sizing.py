@@ -37,6 +37,8 @@ import requests
 from typing import Optional, Dict, Tuple
 
 from utils import config
+import logging
+logger = logging.getLogger(__name__)
 
 ET = ZoneInfo("America/New_York")
 
@@ -116,7 +118,7 @@ def _fetch_vix_from_eodhd() -> Optional[float]:
                 source_field = 'close'
 
         if vix_level is None:
-            print(f"[VIX] No valid 'last' or 'close' in response: {data}")
+            logger.info(f"[VIX] No valid 'last' or 'close' in response: {data}")
             return None
 
         # H2: stale warning only during RTH
@@ -136,7 +138,7 @@ def _fetch_vix_from_eodhd() -> Optional[float]:
 
         # Only print after-hours fetches at debug level (not INFO)
         if _is_market_hours_now():
-            print(f"[VIX] Fetched VIX={vix_level:.2f} (field='{source_field}')")
+            logger.info(f"[VIX] Fetched VIX={vix_level:.2f} (field='{source_field}')")
         else:
             import logging as _log
             _log.getLogger(__name__).debug(
@@ -146,10 +148,10 @@ def _fetch_vix_from_eodhd() -> Optional[float]:
         return vix_level
 
     except requests.exceptions.RequestException as exc:
-        print(f"[VIX] Fetch error: {exc}")
+        logger.info(f"[VIX] Fetch error: {exc}")
         return None
     except Exception as exc:
-        print(f"[VIX] Parse error: {exc}")
+        logger.info(f"[VIX] Parse error: {exc}")
         return None
 
 
@@ -263,19 +265,19 @@ def get_sizing_examples() -> str:
 
 
 if __name__ == "__main__":
-    print("\n" + "="*60)
-    print("VIX SIZING - Market Volatility Check")
-    print("="*60)
+    logger.info("\n" + "="*60)
+    logger.info("VIX SIZING - Market Volatility Check")
+    logger.info("="*60)
     regime = get_vix_regime()
-    print(f"\nVIX Level: {regime['vix']:.2f}")
-    print(f"Regime: {regime['regime'].upper()}")
-    print(f"Multiplier: {regime['multiplier']:.2f}\u00d7 ({regime['multiplier']*100:.0f}% of base)")
-    print(f"Cache: {'Cached' if regime['cached'] else 'Fresh'} ({regime['cache_age']:.0f}s old)")
-    print(f"Market Hours Now: {_is_market_hours_now()}")
+    logger.info(f"\nVIX Level: {regime['vix']:.2f}")
+    logger.info(f"Regime: {regime['regime'].upper()}")
+    logger.info(f"Multiplier: {regime['multiplier']:.2f}\u00d7 ({regime['multiplier']*100:.0f}% of base)")
+    logger.info(f"Cache: {'Cached' if regime['cached'] else 'Fresh'} ({regime['cache_age']:.0f}s old)")
+    logger.info(f"Market Hours Now: {_is_market_hours_now()}")
     if regime['multiplier'] > 1.0:
-        print(f"\n✅ LOW VOLATILITY - Increase sizes by {(regime['multiplier']-1)*100:.0f}%")
+        logger.info(f"\n✅ LOW VOLATILITY - Increase sizes by {(regime['multiplier']-1)*100:.0f}%")
     elif regime['multiplier'] < 0.85:
-        print(f"\n⚠️  HIGH VOLATILITY - Reduce sizes by {(1-regime['multiplier'])*100:.0f}%")
+        logger.info(f"\n⚠️  HIGH VOLATILITY - Reduce sizes by {(1-regime['multiplier'])*100:.0f}%")
     else:
-        print(f"\n➡️  NORMAL VOLATILITY - Use baseline sizes")
-    print(get_sizing_examples())
+        logger.info(f"\n➡️  NORMAL VOLATILITY - Use baseline sizes")
+    logger.info(get_sizing_examples())

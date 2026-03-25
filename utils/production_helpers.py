@@ -3,10 +3,21 @@ Production Helper Functions - Phase 3H
 
 Safe wrappers for Discord, API, and database operations.
 These prevent crashes from external service failures.
+
+FIX (MAR 25, 2026): SEMAPHORE LEAK IN _db_operation_safe()
+  - _db_operation_safe() called conn.close() in its finally block instead of
+    return_conn(). conn.close() only closes the TCP socket — it does NOT call
+    _db_semaphore.release(). Every analytics cycle permanently consumed one
+    semaphore slot. After 12 cycles the semaphore hit 0, all subsequent
+    get_conn() calls timed out at 30s, and the scanner entered a crash loop.
+  - Fix: replace conn.close() with return_conn(conn) so the semaphore slot is
+    always released back to the pool on every call.
 """
 
 import requests
 import traceback
+import logging
+logger = logging.getLogger(__name__)
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -29,13 +40,13 @@ def _send_alert_safe(alert_func, *args, **kwargs):
         alert_func(*args, **kwargs)
         return True
     except requests.Timeout:
-        print("[DISCORD] ⏱️  Alert timed out (continuing)")
+        logger.info("[DISCORD] ⏱️  Alert timed out (continuing)")
         return False
     except requests.RequestException as e:
-        print(f"[DISCORD] ❌ Request failed (continuing): {e}")
+        logger.info(f"[DISCORD] ❌ Request failed (continuing): {e}")
         return False
     except Exception as e:
-        print(f"[DISCORD] ❌ Alert failed (continuing): {e}")
+        logger.info(f"[DISCORD] ❌ Alert failed (continuing): {e}")
         return False
 
 # Usage:
@@ -62,11 +73,11 @@ def _fetch_data_safe(ticker, data_func, data_type="data"):
     try:
         data = data_func(ticker)
         if not data:
-            print(f"[{ticker}] ⚠️  No {data_type} available")
+            logger.info(f"[{ticker}] ⚠️  No {data_type} available")
             return None
         return data
     except Exception as e:
-        print(f"[{ticker}] ❌ Failed to fetch {data_type}: {e}")
+        logger.info(f"[{ticker}] ❌ Failed to fetch {data_type}: {e}")
         import traceback
         traceback.print_exc()
         return None
@@ -85,7 +96,13 @@ def _fetch_data_safe(ticker, data_func, data_type="data"):
 def _db_operation_safe(operation_func, operation_name="DB operation"):
     """
     Execute database operation with automatic rollback on error.
-    
+
+    FIX (MAR 25, 2026): Use return_conn() instead of conn.close().
+    conn.close() only shuts the TCP socket — it never calls
+    _db_semaphore.release(). Every call was permanently leaking one semaphore
+    slot, exhausting the gate (limit=12) after ~12 analytics cycles and
+    causing the 30s timeout crash loop in get_conn().
+
     Args:
         operation_func: Function that takes conn as argument and performs DB operation
         operation_name: Description for logging
@@ -93,7 +110,7 @@ def _db_operation_safe(operation_func, operation_name="DB operation"):
     Returns:
         Result from operation_func, or None if failed
     """
-    from db_connection import get_conn
+    from app.data.db_connection import get_conn, return_conn
     conn = None
     try:
         conn = get_conn()
@@ -104,16 +121,13 @@ def _db_operation_safe(operation_func, operation_name="DB operation"):
         if conn:
             try:
                 conn.rollback()
-                print(f"[DB] ↩️  Rolled back {operation_name}: {e}")
-            except:
-                print(f"[DB] ❌ Rollback failed for {operation_name}: {e}")
+                logger.info(f"[DB] ↩️  Rolled back {operation_name}: {e}")
+            except Exception:
+                logger.info(f"[DB] ❌ Rollback failed for {operation_name}: {e}")
         raise
     finally:
         if conn:
-            try:
-                conn.close()
-            except:
-                pass
+            return_conn(conn)   # ← releases semaphore slot correctly
 
 # Usage example:
 # def _persist_operation(conn):

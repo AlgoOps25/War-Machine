@@ -1,0 +1,18 @@
+{
+  "ticker": "VG",
+  "days": 90,
+  "total_trades": 2,
+  "wins": 2,
+  "losses": 0,
+  "win_rate_pct": 100.0,
+  "avg_r": 0.505,
+  "median_r": 0.505,
+  "avg_win_r": 0.505,
+  "avg_loss_r": 0.0,
+  "profit_factor": Infinity,
+  "max_drawdown_r": 0.0,
+  "exit_reasons": {
+    "STOP": 1,
+    "EOD": 1
+  }
+}

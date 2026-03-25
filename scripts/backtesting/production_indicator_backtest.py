@@ -329,7 +329,8 @@ for combo_idx, combo in enumerate(COMBINATIONS, 1):
             # Start after minimum bars needed
             for i in range(100, len(bars_list)):
                 bars_subset = bars_list[:i+1]
-                result = detector.detect_breakout(bars_subset, ticker)
+                bar_date = bars_subset[-1].get("datetime","")[:10] if bars_subset else ""
+                result = detector.detect_breakout(bars_subset, ticker, as_of_date=bar_date)
                 if result:
                     signals.append(result)
             

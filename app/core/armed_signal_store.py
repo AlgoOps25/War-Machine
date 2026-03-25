@@ -10,6 +10,8 @@ from zoneinfo import ZoneInfo
 from app.core.thread_safe_state import get_state
 from app.data.sql_safe import safe_execute, safe_query, safe_in_clause, get_placeholder
 from app.risk.position_manager import position_manager
+import logging
+logger = logging.getLogger(__name__)
 
 _state = get_state()
 
@@ -42,7 +44,7 @@ def _ensure_armed_db():
         """)
         conn.commit()
     except Exception as e:
-        print(f"[ARMED-DB] Init error: {e}")
+        logger.info(f"[ARMED-DB] Init error: {e}")
     finally:
         if conn:
             return_conn(conn)
@@ -94,7 +96,7 @@ def _persist_armed_signal(ticker: str, data: dict):
         ))
         conn.commit()
     except Exception as e:
-        print(f"[ARMED-DB] Persist error for {ticker}: {e}")
+        logger.info(f"[ARMED-DB] Persist error for {ticker}: {e}")
     finally:
         if conn:
             return_conn(conn)
@@ -110,7 +112,7 @@ def _remove_armed_from_db(ticker: str):
         safe_execute(cursor, f"DELETE FROM armed_signals_persist WHERE ticker = {p}", (ticker,))
         conn.commit()
     except Exception as e:
-        print(f"[ARMED-DB] Remove error for {ticker}: {e}")
+        logger.info(f"[ARMED-DB] Remove error for {ticker}: {e}")
     finally:
         if conn:
             return_conn(conn)
@@ -138,9 +140,9 @@ def _cleanup_stale_armed_signals():
                         f"DELETE FROM armed_signals_persist WHERE ticker IN ({placeholders})",
                         tuple(params))
             conn.commit()
-            print(f"[ARMED-DB] 🧹 Auto-cleaned {len(stale_tickers)} closed position(s): {', '.join(stale_tickers)}")
+            logger.info(f"[ARMED-DB] 🧹 Auto-cleaned {len(stale_tickers)} closed position(s): {', '.join(stale_tickers)}")
     except Exception as e:
-        print(f"[ARMED-DB] Cleanup error: {e}")
+        logger.info(f"[ARMED-DB] Cleanup error: {e}")
     finally:
         if conn:
             return_conn(conn)
@@ -197,17 +199,20 @@ def _load_armed_signals_from_db() -> dict:
             )
         return loaded
     except Exception as e:
-        print(f"[ARMED-DB] Load error: {e}")
+        logger.info(f"[ARMED-DB] Load error: {e}")
         return {}
     finally:
         if conn:
             return_conn(conn)
 
 
+_armed_load_lock = __import__('threading').Lock()
+
 def _maybe_load_armed_signals():
-    if _state.is_armed_loaded():
-        return
-    _state.set_armed_loaded(True)
+    with _armed_load_lock:
+        if _state.is_armed_loaded():
+            return
+        _state.set_armed_loaded(True)
     _ensure_armed_db()
     loaded = _load_armed_signals_from_db()
     if loaded:
@@ -225,8 +230,8 @@ def clear_armed_signals():
         safe_execute(cursor, "DELETE FROM armed_signals_persist")
         conn.commit()
     except Exception as e:
-        print(f"[ARMED-DB] Clear error: {e}")
+        logger.info(f"[ARMED-DB] Clear error: {e}")
     finally:
         if conn:
             return_conn(conn)
-    print("[ARMED] Cleared")
+    logger.info("[ARMED] Cleared")

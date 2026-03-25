@@ -10,6 +10,15 @@ Exports expected by app/mtf/__init__.py:
     get_mtf_trend_validator  factory → returns singleton
     mtf_validator            module-level singleton instance
     validate_signal_mtf      convenience function
+
+PHASE 41.H-3 (Mar 19, 2026):
+  - FIX: validate_signal_mtf() re-fetched bars from DB for all 4 timeframes
+    on every pipeline call (3 extra DB reads per signal).
+    Fix: accept optional bars_by_tf dict {"5m": [...], "15m": [...], ...}.
+    When a timeframe is present in bars_by_tf the DB fetch is skipped.
+    Callers that already hold 5m bars can pass {"5m": bars} and save
+    the two most-expensive reads (5m + 15m). Falls back to _get_bars()
+    for any timeframe not supplied.
 """
 from __future__ import annotations
 from typing import Dict, Any, Optional
@@ -79,13 +88,30 @@ def validate_signal_mtf(
     ticker: str,
     direction: str,
     entry_price: float = 0.0,
+    bars_by_tf: Optional[Dict[str, list]] = None,
 ) -> Dict[str, Any]:
-    """Validate MTF trend alignment. Returns passes/boost/score dict."""
+    """
+    Validate MTF trend alignment. Returns passes/boost/score dict.
+
+    Args:
+        ticker:      Stock symbol.
+        direction:   "bull" or "bear".
+        entry_price: Optional entry price (unused internally, kept for callers).
+        bars_by_tf:  Optional pre-fetched bars keyed by timeframe string
+                     e.g. {"5m": [...], "15m": [...]}.
+                     Any timeframe present here skips the DB fetch entirely.
+                     Missing timeframes fall back to _get_bars() as before.
+    """
+    if bars_by_tf is None:
+        bars_by_tf = {}
+
     tf_scores: Dict[str, dict] = {}
     divergences: list = []
     weighted_sum = 0.0
     for tf, weight in _TF_WEIGHTS.items():
-        score_norm, status = _score_timeframe(_get_bars(ticker, tf), direction)
+        # 41.H-3: use caller-supplied bars when available, else fetch from DB
+        bars = bars_by_tf.get(tf) or _get_bars(ticker, tf)
+        score_norm, status = _score_timeframe(bars, direction)
         weighted_sum += score_norm * weight
         tf_scores[tf] = {"score": round(score_norm, 3), "status": status, "weight": weight}
         if status == "divergent":
@@ -112,8 +138,14 @@ def validate_signal_mtf(
 class MTFTrendValidator:
     """Class wrapper around validate_signal_mtf for OOP consumers."""
 
-    def validate(self, ticker: str, direction: str, entry_price: float = 0.0) -> Dict[str, Any]:
-        return validate_signal_mtf(ticker, direction, entry_price)
+    def validate(
+        self,
+        ticker: str,
+        direction: str,
+        entry_price: float = 0.0,
+        bars_by_tf: Optional[Dict[str, list]] = None,
+    ) -> Dict[str, Any]:
+        return validate_signal_mtf(ticker, direction, entry_price, bars_by_tf=bars_by_tf)
 
     def is_aligned(self, ticker: str, direction: str) -> bool:
         return validate_signal_mtf(ticker, direction)["passes"]

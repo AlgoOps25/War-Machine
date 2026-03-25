@@ -1,0 +1,2 @@
+ticker,date,direction,grade,confidence,or_high,or_low,or_range_pct,fvg_low,fvg_high,fvg_size_pct,entry_price,stop_price,t1_price,t2_price,entry_time,exit_time,exit_price,exit_reason,pnl_pts,r_multiple,win,entry_hour,rvol,entry_minute
+TSLA,2026-03-23,bull,A,0.7,382.39,372.73,2.592,382.95,382.98,0.008,382.965,372.3573,396.2247,404.1805,2026-03-23 10:15:00,2026-03-23 15:55:00,380.69,EOD,-2.3516,-0.22,0,10,0.59,15
