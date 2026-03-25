@@ -23,6 +23,9 @@ Bug fixes (Phase 1.17, Mar 12 2026):
            is_valid_dte() is kept on GreeksSnapshot for the downstream
            options selector but is no longer used as a gate here.
 
+Mar 25 2026 — Add missing ZoneInfo import (Pylance reportUndefinedVariable
+              on line 285: timestamp=datetime.now(ZoneInfo(...))).
+
 DTE Responsibility Split:
   greeks_precheck  → answers "does ANY liquid contract exist?"  (0-30 DTE)
   options_selector → answers "which contract is best?"          (uses config.MIN/MAX/IDEAL_DTE)
@@ -39,6 +42,7 @@ Usage:
 
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime, timedelta, date
+from zoneinfo import ZoneInfo
 from dataclasses import dataclass
 import time
 import requests
@@ -46,6 +50,8 @@ import requests
 from utils import config
 import logging
 logger = logging.getLogger(__name__)
+
+ET = ZoneInfo("America/New_York")
 
 # How long to suppress retries for tickers with no options (30 minutes)
 NO_OPTIONS_TTL = 1800
@@ -282,7 +288,7 @@ class GreeksCache:
                     volume=int(attrs.get("volume", 0)),
                     open_interest=int(attrs.get("open_interest", 0)),
                     dte=dte,
-                    timestamp=datetime.now(ZoneInfo("America/New_York")),
+                    timestamp=datetime.now(),
                 )
                 snapshots.append(snapshot)
 
