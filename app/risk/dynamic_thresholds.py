@@ -11,6 +11,9 @@ Replaces static config thresholds with dynamic adjustments based on:
 
 FIXED (Mar 10 2026): All get_conn() calls now use try/finally: return_conn(conn) — no leaks.
 UPDATED (Mar 19 2026): get_dynamic_threshold() wires live intraday ATR (47.P6-2).
+FIXED (Mar 25 2026): _get_winrate_adjustment() now uses ph() instead of hardcoded %s —
+  raw %s caused ProgrammingError on SQLite, silently falling back to 0.00 and disabling
+  win-rate influence on thresholds during local dev/testing.
 """
 
 from datetime import datetime, time, timedelta
@@ -128,16 +131,17 @@ def _get_atr_volatility_adjustment(bars_session: list, ticker: str = "") -> tupl
 
 def _get_winrate_adjustment(signal_type, grade):
     try:
-        from app.data.db_connection import get_conn, return_conn, dict_cursor
+        from app.data.db_connection import get_conn, return_conn, dict_cursor, ph
 
+        p    = ph()
         conn = None
         try:
-            conn = get_conn()
+            conn   = get_conn()
             cursor = dict_cursor(conn)
 
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT pnl FROM positions
-                WHERE grade = %s
+                WHERE grade = {p}
                   AND status = 'CLOSED'
                 ORDER BY id DESC
                 LIMIT 20
