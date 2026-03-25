@@ -41,7 +41,16 @@ from app.risk.vix_sizing import get_vix_regime, get_vix_multiplier
 from app.risk.dynamic_thresholds import get_dynamic_threshold, get_threshold_stats
 
 # ── Kill switch ───────────────────────────────────────────────────────────────
+# FIX P1 (2026-03-25): Read from env on every evaluate_signal() call rather
+# than once at import time.  This makes the kill switch live-toggleable via
+# Railway env vars without a redeploy.  The module-level constant is kept as
+# a cache-buster fallback only for get_session_status().
 _KILL_SWITCH_ACTIVE = os.getenv("KILL_SWITCH", "0").strip() == "1"
+
+
+def _kill_switch_live() -> bool:
+    """Re-read KILL_SWITCH from env on every call so it can be toggled without redeploy."""
+    return os.getenv("KILL_SWITCH", "0").strip() == "1"
 
 
 # =============================================================================
@@ -64,14 +73,16 @@ def evaluate_signal(
     Gate a signal through every risk layer before a trade is opened.
 
     Checks (in order — fail-fast):
-      1. Kill switch (env var override)
+      1. Kill switch (env var override — re-read live on every call)
       2. Circuit breaker (daily loss limit from position_manager)
       3. Max drawdown from intraday high water mark
       4. Position count ceiling
-      5. RTH guard (9:30 AM - 4:00 PM ET only)
+      5. Duplicate ticker check
       6. Confidence decay (penalise delayed confirmations)
       7. Dynamic confidence threshold (time-of-day + VIX + win-rate adjusted)
       8. VIX regime hard block (crisis mode — VIX > 40 blocks new trades)
+      9. Stop/target calculation — rejects if stop is None (tight tape guard)
+     10. R:R validation
 
     Args:
         ticker:         Stock symbol
@@ -97,8 +108,8 @@ def evaluate_signal(
           threshold  (float)  — Dynamic confidence threshold used
     """
 
-    # ── 1. Kill switch ─────────────────────────────────────────────────────────────
-    if _KILL_SWITCH_ACTIVE:
+    # ── 1. Kill switch (live re-read — P1 fix 2026-03-25) ──────────────────────────
+    if _kill_switch_live():
         return _reject("KILL SWITCH active — no new positions", confidence, entry_price, or_high, or_low, bars, direction, grade)
 
     # ── 2 & 3: Fetch stats once; pass into both circuit-breaker and drawdown ─
@@ -151,9 +162,21 @@ def evaluate_signal(
             vix_regime=vix_regime,
         )
 
-    # ── All checks passed — calculate stop/targets ────────────────────────────────────
+    # ── 9. Stop/target calculation ────────────────────────────────────────────────────
+    # FIX P0 (2026-03-25): compute_stop_and_targets() returns (None, None, None) when
+    # calculate_stop_loss_by_grade() fires the 10.C-4 guard (stop >= entry on bull, or
+    # stop <= entry on bear).  This happens on A+ signals during tight high-vol tape.
+    # Previously this None propagated into validate_risk_reward() and crashed.
+    # Now we reject cleanly with a human-readable reason.
     stop, t1, t2 = compute_stop_and_targets(bars, direction, or_high, or_low, entry_price, grade)
+    if stop is None:
+        return _reject(
+            f"Invalid stop computed (stop >= entry) — tight tape {grade} signal rejected",
+            decayed_confidence, entry_price, or_high, or_low, bars, direction, grade,
+            vix_regime=vix_regime,
+        )
 
+    # ── 10. R:R validation ───────────────────────────────────────────────────────────
     rr_valid, rr_ratio = position_manager.validate_risk_reward(entry_price, stop, t2)
     if not rr_valid:
         return _reject(
@@ -194,7 +217,9 @@ def _reject(
     """Build a standardised rejection response."""
     stop, t1, t2 = (0.0, 0.0, 0.0)
     try:
-        stop, t1, t2 = compute_stop_and_targets(bars, direction, or_high, or_low, entry_price, grade)
+        _s, _t1, _t2 = compute_stop_and_targets(bars, direction, or_high, or_low, entry_price, grade)
+        if _s is not None:
+            stop, t1, t2 = _s, _t1, _t2
     except Exception:
         pass
 
@@ -301,7 +326,7 @@ def get_session_status() -> Dict:
       circuit_breaker  — (is_breached: bool, reason: str)
       vix_regime       — current VIX level, regime, multiplier
       threshold_stats  — current dynamic threshold adjustments
-      kill_switch      — True if KILL_SWITCH env var is active
+      kill_switch      — True if KILL_SWITCH env var is active (live read)
       risk_summary     — formatted string for printing/Discord
     """
     daily_stats    = position_manager.get_daily_stats()
@@ -319,7 +344,7 @@ def get_session_status() -> Dict:
         "circuit_breaker": circuit_breaker,
         "vix_regime":      vix_regime_data,
         "threshold_stats": threshold_data,
-        "kill_switch":     _KILL_SWITCH_ACTIVE,
+        "kill_switch":     _kill_switch_live(),  # P1: live read
         "risk_summary":    risk_summary,
     }
 

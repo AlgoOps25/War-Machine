@@ -14,7 +14,7 @@
 #       logger.info(f"[{ticker}] 🚫 SCORECARD-GATE: {scorecard.score:.1f} < {SCORECARD_GATE_MIN}")
 #       return False
 #
-# SCORE BREAKDOWN (max 85):
+# SCORE BREAKDOWN (max 85 + RVOL ceiling deduction):
 #   Grade quality          0-15   (A+ = 15, A = 13, A- = 11, B+ = 11, B = 10)
 #                          NOTE: grade weight intentionally flattened — backtest shows
 #                          B+ / B grades outperform A+ when RVOL ≥ 1.2x. Old 25pt
@@ -27,6 +27,8 @@
 #   Liquidity sweep        0-5    (detected = 5, else = 0)
 #   OB retest              0-5    (detected = 5, else = 0)
 #   SPY regime             0-5    (STRONG_BULL/BEAR aligned = 5, BULL/BEAR = 3, else = 1)
+#   RVOL ceiling penalty   -20    (RVOL >= config.RVOL_CEILING → deduct 20 pts)
+#                                  Enforces config.RVOL_CEILING (3.0x) at scorecard layer.
 #
 # GATE: score < 60 → signal dropped.
 # (Lowered from 72 to pass B-grade setups validated by grid search data.)
@@ -35,6 +37,16 @@
 #   IVR/GEX/MTF fallbacks raised so missing enrichment data does not
 #   block valid signals. Gate stays at 60.
 #   Typical no-enrichment signal: 38 → 48 after this fix.
+#
+# FIX P2 (2026-03-25): exception handler now scores SCORECARD_GATE_MIN - 1
+#   instead of exactly SCORECARD_GATE_MIN, so a scorer crash blocks the signal
+#   rather than silently passing through at the gate boundary. Upgraded to
+#   logger.warning so errors surface in Railway logs.
+#
+# FIX P4 (2026-03-25): _score_rvol_ceiling() added. RVOL >= RVOL_CEILING (3.0x)
+#   deducts 20pts from scorecard total — enough to push any signal below the
+#   60-pt gate. Enforces backtest finding that RVOL >= 3.0x destroys P&L
+#   (-32.23 Total R combined across 3.0–4.0x and 4.0x+ cohorts).
 
 from dataclasses import dataclass, field
 from typing import Optional
@@ -47,15 +59,16 @@ SCORECARD_GATE_MIN = 60   # lowered from 72 — grid search shows B-grade setups
 @dataclass
 class SignalScorecard:
     # Raw contributor scores
-    grade_score:     float = 0.0
-    ivr_score:       float = 0.0
-    gex_score:       float = 0.0
-    mtf_trend_score: float = 0.0
-    smc_score:       float = 0.0
-    vwap_score:      float = 0.0
-    sweep_score:     float = 0.0
-    ob_score:        float = 0.0
-    regime_score:    float = 0.0
+    grade_score:        float = 0.0
+    ivr_score:          float = 0.0
+    gex_score:          float = 0.0
+    mtf_trend_score:    float = 0.0
+    smc_score:          float = 0.0
+    vwap_score:         float = 0.0
+    sweep_score:        float = 0.0
+    ob_score:           float = 0.0
+    regime_score:       float = 0.0
+    rvol_ceiling_score: float = 0.0   # P4: 0 normally, -20 when RVOL >= RVOL_CEILING
 
     # Computed total
     score: float = 0.0
@@ -77,6 +90,7 @@ class SignalScorecard:
             + self.sweep_score
             + self.ob_score
             + self.regime_score
+            + self.rvol_ceiling_score
         )
         self.breakdown = (
             f"grade={self.grade_score:.0f} "
@@ -88,6 +102,7 @@ class SignalScorecard:
             f"sweep={self.sweep_score:.0f} "
             f"ob={self.ob_score:.0f} "
             f"regime={self.regime_score:.0f} "
+            f"rvol_ceil={self.rvol_ceiling_score:.0f} "
             f"= {self.score:.1f}"
         )
         return self
@@ -152,6 +167,30 @@ def _score_regime(spy_regime: Optional[dict], direction: str) -> float:
     return 1.0
 
 
+def _score_rvol_ceiling(rvol: Optional[float]) -> float:
+    """
+    P4 (2026-03-25): Enforce config.RVOL_CEILING at scorecard layer.
+    Backtest finding: RVOL >= 3.0x destroys P&L (-32.23 Total R combined
+    across 3.0–4.0x and 4.0x+ cohorts, 582-trade audit 2026-03-24).
+    Deducts 20pts — enough to drop any valid signal below the 60-pt gate.
+    No penalty when rvol is None (missing data does not penalise).
+    """
+    if rvol is None:
+        return 0.0
+    try:
+        from utils import config as _cfg
+        ceiling = getattr(_cfg, "RVOL_CEILING", 3.0)
+    except Exception:
+        ceiling = 3.0
+    if rvol >= ceiling:
+        logger.warning(
+            f"[SCORECARD] ⛔ RVOL={rvol:.2f}x >= RVOL_CEILING={ceiling:.1f}x — "
+            f"deducting 20pts (backtest: RVOL≥3.0x cohort is -32.23R)"
+        )
+        return -20.0
+    return 0.0
+
+
 def _check_confidence_inversion(ticker: str, grade: str, rvol: Optional[float]) -> None:
     """
     Warn when A+ grade + low RVOL — the exact combo that inverts confidence vs P&L.
@@ -177,11 +216,17 @@ def build_scorecard(
     sweep_detected: bool,
     ob_detected: bool,
     spy_regime: Optional[dict],
-    rvol: Optional[float] = None,   # added for inversion warning
+    rvol: Optional[float] = None,
 ) -> "SignalScorecard":
     """
     Build and return a computed SignalScorecard from all pipeline contributors.
-    Non-fatal: any exception returns a pass-through scorecard at score=60.
+
+    FIX P2 (2026-03-25): Any exception now returns score = SCORECARD_GATE_MIN - 1
+    (59) so a scorer crash blocks the signal rather than silently passing at exactly
+    the gate boundary. Logged at WARNING level so errors surface in Railway logs.
+
+    FIX P4 (2026-03-25): rvol parameter now passed to _score_rvol_ceiling() to
+    enforce config.RVOL_CEILING at the scorecard layer.
     """
     try:
         # Fire inversion warning before scoring
@@ -200,12 +245,14 @@ def build_scorecard(
             sweep_score=5.0 if sweep_detected else 0.0,
             ob_score=5.0 if ob_detected else 0.0,
             regime_score=_score_regime(spy_regime, direction),
+            rvol_ceiling_score=_score_rvol_ceiling(rvol),  # P4
         )
         sc.compute()
         logger.info(f"[{ticker}] 📊 SCORECARD: {sc.breakdown}")
         return sc
     except Exception as e:
-        logger.info(f"[SCORECARD] build_scorecard error (non-fatal, pass-through): {e}")
+        # P2 FIX: score below gate (59) so a crash blocks rather than passes the signal
+        logger.warning(f"[SCORECARD] ⚠️ build_scorecard error — blocking signal as precaution: {e}")
         sc = SignalScorecard(ticker=ticker, direction=direction, grade=grade)
-        sc.score = SCORECARD_GATE_MIN  # pass-through on error
+        sc.score = SCORECARD_GATE_MIN - 1  # 59 — fails gate, does not pass through
         return sc

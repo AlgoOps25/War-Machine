@@ -13,6 +13,11 @@ All heavy imports are deferred inside the function to avoid circular imports.
 
 FIXED (Mar 16 2026): Wire record_trade_executed() after position_id > 0 so the
   TRADED stage is recorded in signal_events and get_funnel_stats() shows real counts.
+
+FIX P3 (2026-03-25): vp_bias now passed in the fallback (non-production-helpers)
+  Discord alert path, matching the production-helpers path. Previously the fallback
+  path omitted vp_bias so VP bias data was silently dropped from Discord alerts
+  whenever production_helpers was not available.
 """
 
 
@@ -105,6 +110,8 @@ def arm_ticker(
             vp_bias=vp_bias
         )
     else:
+        # FIX P3 (2026-03-25): vp_bias added to fallback path — was missing, causing
+        # VP bias data to be silently dropped from Discord alerts in this branch.
         try:
             greeks_data = None
             if options_rec:
@@ -139,7 +146,8 @@ def arm_ticker(
                 volume_rank=None,
                 composite_score=metadata.get('score'),
                 mtf_convergence=mtf_convergence_count,
-                explosive_mover=metadata.get('qualified', False)
+                explosive_mover=metadata.get('qualified', False),
+                vp_bias=vp_bias  # P3 FIX: was missing from fallback path
             )
         except Exception as e:
             logger.info(f"[DISCORD] ❌ Alert failed: {e}")
