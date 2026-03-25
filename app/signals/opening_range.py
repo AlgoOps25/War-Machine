@@ -442,8 +442,6 @@ class OpeningRangeDetector:
             return False
 
         bars_1m = data_manager.get_today_session_bars(ticker)
-        if not bars_1m or len(bars_1m) < 8:
-            return False
 
         or_bars_so_far = self._extract_or_bars(bars_1m, end_time=time(9, 38))
         if not or_bars_so_far or len(or_bars_so_far) < 8:
