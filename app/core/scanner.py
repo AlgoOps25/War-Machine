@@ -644,7 +644,6 @@ def start_scanner_loop():
     logger.info("RVOL Signal Gate: ✅ ENABLED (MIN_RVOL=1.5x hard floor before options — Phase 1.36)")
     logger.info(f"  RVOL Ceiling   : ✅ ENABLED (MAX_RVOL={config.RVOL_CEILING}x hard cap — Phase 1.38b)")
     logger.info(f"  Bear Signals   : {'✅ ENABLED' if config.BEAR_SIGNALS_ENABLED else '🚫 DISABLED'} (Phase 1.38b — 267 trades -0.15R)")
-    start_scanner_loop()
     logger.info("=" * 60 + "\n")
 
 
