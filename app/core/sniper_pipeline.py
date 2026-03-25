@@ -689,8 +689,6 @@ def _run_signal_pipeline(
         mtf_result=mtf_result, metadata=_meta,
         vp_bias=vp_bias,
     )
-    try:
-        set_cooldown(ticker, direction, signal_type)
-        logger.info(f"[{ticker}] ✅ Cooldown registered ({signal_type})")
-    except Exception as _sc_err:
-        logger.warning(f"[{ticker}] set_cooldown error (non-fatal): {_sc_err}")
+    # NOTE: cooldown is set inside arm_ticker() only when a position opens.
+    # A duplicate set_cooldown() call here was removed (FIX: was blocking future
+    # signals even when arm_ticker returned early because risk rejected the trade).
