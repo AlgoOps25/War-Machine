@@ -1,7 +1,7 @@
 # War Machine — Full Repo Audit Registry
 
 > **Purpose:** Master reference for the file-by-file audit of all tracked files.  
-> **Last updated:** 2026-03-25 Session 9 — Full Reconciliation  
+> **Last updated:** 2026-03-25 Session 10 — Hotfixes + Pending Queue Progress  
 > **Auditor:** Perplexity AI (interactive audit with Michael)  
 > **Status legend:** ✅ KEEP | ⚠️ REVIEW | 🔀 MERGE → target | 🗃️ QUARANTINE | ❌ DELETE | 🔧 FIXED | 📦 MOVED  
 > **Prohibited (runtime-critical) directories:** `app/core`, `app/data`, `app/risk`, `app/signals`, `app/validation`, `app/filters`, `app/mtf`, `app/notifications`, `utils/`, `migrations/`  
@@ -23,6 +23,7 @@
 | E | `tests/`, `docs/`, `migrations/`, `models/`, root files | 30 | ✅ Complete |
 | Cross-Batch | Overlap analysis across all batches | all | ✅ Current |
 | **Session 9** | **Full live-repo reconciliation vs registry** | **all** | **✅ Complete 2026-03-25** |
+| **Session 10** | **Hotfix logging + pending queue #8/#9/#10 closed** | **3 items** | **✅ Complete 2026-03-25** |
 
 ---
 
@@ -54,6 +55,9 @@
 | 22 | 2026-03-25 | S9 | `app/validation/greeks_precheck.py` | 🔧 FIXED: Missing `ZoneInfo` import added. | `08648df` | Runtime bug fix |
 | 23 | 2026-03-25 | S9 | `app/signals/breakout_detector.py` | 🔧 FIXED: `resistance_source` NameError + duplicate PDH/PDL logic resolved. | `df2e625` | Runtime bug fix |
 | 24 | 2026-03-25 | S9 | `docs/AUDIT_REGISTRY.md` | Full live-repo reconciliation: 7 new files audited, 3 deletions confirmed, all counts corrected. | this commit | Registry 100% current |
+| 25 | 2026-03-25 | S10 | `app/screening/watchlist_funnel.py` | 🔧 FIXED: `TypeError: 'datetime.datetime' object is not callable` — spurious `()` after `datetime.now(tz=ET)` on log line ~394. | manual patch | Critical runtime crash fix — was crashing every pre-market cycle |
+| 26 | 2026-03-25 | S10 | `app/core/scanner.py` | 🔧 FIXED: `_run_analytics() takes 0 positional arguments but 1 was given` — added `conn=None` parameter so `_db_operation_safe` can pass its conn arg. | manual patch | Critical runtime crash fix — analytics monitor was crashing every market-hours cycle |
+| 27 | 2026-03-25 | S10 | `app/ml/metrics_cache.py` | 🔧 FIXED: Replaced raw SQLAlchemy `create_engine()` with production `get_conn()`/`return_conn()` pool. `datetime.utcnow()` → `datetime.now(ET)`. | manual patch | Connection leak eliminated — was allocating a new pool on every call |
 
 ---
 
@@ -68,9 +72,9 @@
 | 5 | ✅ DONE | `app/ml/analyze_signal_failures.py` | Moved to scripts/analysis/ | ✅ |
 | 6 | ✅ DONE | `app/ml/train_from_analytics.py` | Moved to scripts/ml/ | ✅ |
 | 7 | ✅ DONE | `app/ml/train_historical.py` | Moved to scripts/ml/ | ✅ |
-| 8 | 🟡 MEDIUM | `app/core/eod_reporter.py` | Confirm Discord send of `get_discord_eod_summary()` | ⏳ Open |
-| 9 | 🟡 MEDIUM | `app/signals/signal_analytics.py` | Wire `get_hourly_funnel()` into EOD output | ⏳ Open |
-| 10 | 🟡 MEDIUM | `app/ml/metrics_cache.py` | Standardize to `db_connection` pool (currently uses raw sqlalchemy) | ⏳ Open |
+| 8 | ✅ DONE | `app/core/eod_reporter.py` | Confirm Discord send of `get_discord_eod_summary()` | ✅ CONFIRMED — already wired and sending |
+| 9 | ✅ DONE | `app/signals/signal_analytics.py` | Wire `get_hourly_funnel()` into EOD output | ✅ CONFIRMED — already wired via `get_daily_summary()` (logs) + Discord compact block |
+| 10 | ✅ DONE | `app/ml/metrics_cache.py` | Standardize to `db_connection` pool (was raw sqlalchemy) | ✅ FIXED — manual patch 2026-03-25 |
 | 11 | 🟡 MEDIUM | `scripts/backtesting/backtest_v2_detector.py` | Verify vs `backtest_realistic_detector.py` — possibly superseded | ⏳ Open |
 | 12 | 🟢 LOW | `scripts/audit_repo.py` | QUARANTINE — one-time audit script, superseded by this registry | ⏳ Open |
 | 13 | 🟢 LOW | `models/signal_predictor.pkl` | `git rm --cached` to untrack binary (LOCAL ACTION) | ⏳ Pending |
@@ -105,7 +109,7 @@ No other local-only files found on GitHub. `ws_feed.py.backup`, `discord_helpers
 |------|------|------|---------|---------|-------|
 | `__init__.py` | 22 B | Package marker | All importers of `app.core` | ✅ KEEP | |
 | `__main__.py` | 177 B | Railway entrypoint shim | Railway start command | ✅ KEEP | |
-| `scanner.py` | 42 KB | Main scan loop | Entrypoint | ✅ KEEP | **PROHIBITED** |
+| `scanner.py` | 42 KB | Main scan loop | Entrypoint | ✅ KEEP | **PROHIBITED** — 🔧 FIXED S10: `_run_analytics(conn=None)` |
 | `sniper.py` | 72 KB | Signal detection engine | `scanner.py` | ✅ KEEP | **PROHIBITED** |
 | `arm_signal.py` | 7 KB | Signal arming | `sniper.py` | ✅ KEEP | `record_trade_executed()` wired (S4) |
 | `armed_signal_store.py` | 8 KB | Armed signal store | `sniper.py`, `scanner.py` | ✅ KEEP | |
@@ -117,7 +121,7 @@ No other local-only files found on GitHub. `ws_feed.py.backup`, `discord_helpers
 | `logging_config.py` | 3.6 KB | Centralized logging setup — `setup_logging()` called once at startup | `__main__.py` | ✅ KEEP | **NEW — added Sprint 1.** Single `setup_logging()` call; quiets noisy third-party loggers; idempotent. |
 | `signal_scorecard.py` | 10.1 KB | Structured 0–100 signal scoring gate (SCORECARD_GATE_MIN=60) | `sniper.py` | ✅ KEEP | **NEW — Sprint 1 P1-1.** Replaces ad-hoc float confidence arithmetic. P2+P4 fixes applied 2026-03-25. |
 | `analytics_integration.py` | 9.2 KB | Core↔analytics bridge | `scanner.py` | ✅ KEEP | |
-| `eod_reporter.py` | 3.8 KB | EOD cleanup + stats | `scanner.py` | ✅ KEEP ⚠️ | Verify Discord send (open) |
+| `eod_reporter.py` | 3.8 KB | EOD cleanup + stats | `scanner.py` | ✅ KEEP | ✅ CONFIRMED S10: `get_discord_eod_summary()` sending correctly |
 | `health_server.py` | 4.5 KB | `/health` endpoint | Railway healthcheck | ✅ KEEP | **PROHIBITED** |
 | `thread_safe_state.py` | 10.8 KB | Thread-safe shared state | `scanner.py`, `sniper.py` | ✅ KEEP | |
 
@@ -172,7 +176,7 @@ No other local-only files found on GitHub. `ws_feed.py.backup`, `discord_helpers
 | `__init__.py` | Package marker | All importers | ✅ KEEP | |
 | `breakout_detector.py` | Breakout pattern detection (ORB, range breaks) | `sniper.py` | 🔧 FIXED (S9) | **PROHIBITED** — `resistance_source` NameError + duplicate PDH/PDL fixed commit `df2e625` |
 | `opening_range.py` | Opening range high/low calculation | `breakout_detector.py`, `sniper.py` | ✅ KEEP | **PROHIBITED** |
-| `signal_analytics.py` | Per-signal metrics, rejection breakdown, hourly funnel, EOD summary | `sniper.py`, `analytics_integration.py` | ✅ KEEP | Extended S4/S5; `get_hourly_funnel()` wiring open |
+| `signal_analytics.py` | Per-signal metrics, rejection breakdown, hourly funnel, EOD summary | `sniper.py`, `analytics_integration.py` | ✅ KEEP | ✅ CONFIRMED S10: `get_hourly_funnel()` wired via `get_daily_summary()` (logs) + Discord compact block |
 | `vwap_reclaim.py` | 4.1 KB | VWAP reclaim signal detector — price dips below VWAP then reclaims with CFW6-style confirmation | `sniper.py` | ✅ KEEP | **NEW (Sprint 1, Fix 43.M-10).** Uses adaptive FVG threshold from `trade_calculator.py`. NOT overlap with `vwap_gate.py` (that is a filter; this is a signal pattern). |
 
 **app/signals: 5 active KEEP. 1 FIXED.**
@@ -233,7 +237,7 @@ No other local-only files found on GitHub. `ws_feed.py.backup`, `discord_helpers
 
 ## BATCH B — ML, Analytics, AI
 
-> **Completed 2026-03-16 Session 6. No changes in Session 9.**
+> **Completed 2026-03-16 Session 6. metrics_cache.py fixed Session 10.**
 
 ### `app/ml/` — 6 active files (was 9)
 
@@ -244,12 +248,12 @@ No other local-only files found on GitHub. `ws_feed.py.backup`, `discord_helpers
 | `INTEGRATION.md` | ML wiring guide | Dev reference | ✅ KEEP | |
 | `ml_trainer.py` | RF/GBM model training engine | `scripts/ml/train_historical.py`, `historical_trainer.py` | ✅ KEEP | |
 | `ml_confidence_boost.py` | Applies ML delta to signal confidence score | `sniper.py` via `signal_boosters.py` | ✅ KEEP | |
-| `metrics_cache.py` | Rolling per-ticker win rate cache | `sniper.py`, `ml_confidence_boost.py` | ✅ KEEP ⚠️ | **Flagged:** uses raw sqlalchemy vs `db_connection` pool |
+| `metrics_cache.py` | Rolling per-ticker win rate cache | `sniper.py`, `ml_confidence_boost.py` | ✅ KEEP | 🔧 FIXED S10: replaced raw SQLAlchemy `create_engine()` with `get_conn()`/`return_conn()` pool; `datetime.utcnow()` → `datetime.now(ET)` |
 | `analyze_signal_failures.py` | 📦 MOVED (S6) | → `scripts/analysis/` | Zero import callers. `42126d5` / `f6254b5` |
 | `train_from_analytics.py` | 📦 MOVED (S6) | → `scripts/ml/` | CLI tool. `42126d5` / `2f586e6` |
 | `train_historical.py` | 📦 MOVED (S6) | → `scripts/ml/` | CLI tool. `42126d5` / `dc9a8db` |
 
-**app/ml: 6/9 active KEEP. 3 MOVED to scripts/.**
+**app/ml: 6/9 active KEEP. 3 MOVED to scripts/. 1 FIXED (metrics_cache).**
 
 ### `app/analytics/`
 
@@ -281,7 +285,7 @@ No other local-only files found on GitHub. `ws_feed.py.backup`, `discord_helpers
 
 ## BATCH C — Backtesting & Scripts
 
-> **Completed 2026-03-16 Session 7. No changes in Session 9.**
+> **Completed 2026-03-16 Session 7. No changes in Session 9/10.**
 
 ### `app/backtesting/`
 
@@ -318,7 +322,7 @@ Batch C fully audited. Summary: 55/55 KEEP (net), 1 QUARANTINE pending (`scripts
 | `volume_analyzer.py` | Relative volume, unusual volume spike detection | `premarket_scanner.py`, `dynamic_screener.py` | ✅ KEEP | Distinct from `app/indicators/volume_indicators.py` |
 | `news_catalyst.py` | News headline fetch + catalyst scoring | `premarket_scanner.py` | ✅ KEEP | |
 | `market_calendar.py` | Trading day/holiday calendar, session timing | `premarket_scanner.py`, `scanner.py`, `rth_filter.py` | ✅ KEEP | |
-| `watchlist_funnel.py` | Narrows scanned universe → watchlist candidates | `premarket_scanner.py`, `funnel_analytics.py` | ✅ KEEP | |
+| `watchlist_funnel.py` | Narrows scanned universe → watchlist candidates | `premarket_scanner.py`, `funnel_analytics.py` | ✅ KEEP | 🔧 FIXED S10: spurious `()` on `datetime.now(tz=ET)` crash fixed |
 
 **app/screening: 8/8 KEEP.**
 
@@ -369,7 +373,7 @@ Batch C fully audited. Summary: 55/55 KEEP (net), 1 QUARANTINE pending (`scripts
 
 ## BATCH E — Tests, Docs, Migrations, Models, Root Files
 
-> **Completed 2026-03-17 Session 8. No changes in Session 9.**
+> **Completed 2026-03-17 Session 8. No changes in Session 9/10.**
 
 ### `tests/`
 
@@ -429,7 +433,7 @@ All unchanged from Session 8. Refer to prior registry entries. Open items remain
 
 ---
 
-## Files Cleared (Full Count — Session 9 Reconciled)
+## Files Cleared (Full Count — Session 10 Current)
 
 - **app/core:** 12 active KEEP, 4 DELETED (confidence_model, gate_stats, sniper_log, error_recovery), 2 NEW (logging_config, signal_scorecard)
 - **app/risk:** 6 KEEP
@@ -439,11 +443,11 @@ All unchanged from Session 8. Refer to prior registry entries. Open items remain
 - **app/mtf:** 7 KEEP
 - **app/validation:** 7 KEEP, 2 FIXED (cfw6_confirmation, greeks_precheck)
 - **app/notifications:** 2 KEEP
-- **app/ml:** 6 KEEP, 3 MOVED
+- **app/ml:** 6 KEEP, 3 MOVED, 1 FIXED (metrics_cache)
 - **app/analytics:** 10 KEEP
 - **app/ai:** 2 KEEP
 - **app/backtesting:** 7 KEEP
-- **app/screening:** 8 KEEP
+- **app/screening:** 8 KEEP, 1 FIXED (watchlist_funnel)
 - **app/options:** 9 KEEP (1 NEW: dte_selector), 1 FIXED (options_intelligence)
 - **app/indicators:** 5 KEEP (no `__init__.py` by design)
 - **utils/:** 4 KEEP
@@ -454,10 +458,10 @@ All unchanged from Session 8. Refer to prior registry entries. Open items remain
 - **docs/:** All KEEP
 - **Root files:** All KEEP / noted
 
-**Total actions to date: 7 DELETED, 4 MOVED, 3 FIXED (S9), 1 FIXED (S0), 4 shims confirmed, 2 open REVIEW flags, 3 LOCAL ACTIONS pending.**
+**Total actions to date: 7 DELETED, 4 MOVED, 5 FIXED (S9/S10), 1 FIXED (S0), 3 CONFIRMED (S10), 4 shims confirmed, 2 open REVIEW flags, 3 LOCAL ACTIONS pending.**
 
-**Registry last verified against live repo HEAD: 2026-03-25 Session 9. Every tracked file accounted for.**
+**Registry last verified against live repo HEAD: 2026-03-25 Session 10. Every tracked file accounted for.**
 
 ---
 
-*Updated: Session 9, 2026-03-25. Full live-repo reconciliation complete. Registry 100% current.*
+*Updated: Session 10, 2026-03-25. Hotfixes #25/#26/#27 logged. Pending items #8/#9/#10 closed.*
