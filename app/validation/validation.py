@@ -324,7 +324,7 @@ class RegimeFilter:
                       adx: Optional[float], favorable: bool, reason: str) -> RegimeState:
         return RegimeState(
             regime=regime, vix=vix, spy_trend=spy_trend, adx=adx,
-            favorable=favorable, reason=reason, timestamp=datetime.now()
+            favorable=favorable, reason=reason, timestamp=datetime.now(ET)
         )
     
     def _get_vix_level(self) -> float:
@@ -881,7 +881,7 @@ class OptionsFilter:
         # ── Gate 1: IVR pre-check (P2-1) ──────────────────────────────────────
         ivr_gate_val, ivr_obs, ivr_reliable = self._get_ivr_for_gate(ticker)
 
-        if ivr_reliable and ivr_gate_val is not None:
+        if ivr_reliable and ivr_gate_val is not None and isinstance(ivr_gate_val, (int, float)):
             if ivr_gate_val > IVR_HARD_BLOCK:
                 msg = (
                     f"IVR too high ({ivr_gate_val:.0f} > {IVR_HARD_BLOCK}) "
@@ -1393,7 +1393,7 @@ class SignalValidator:
             critical_failures = ['VOLUME_WEAK', 'DMI_CONFLICT', 'ADX_WEAK']
             should_pass = not any(fail in failed_checks for fail in critical_failures)
         else:
-            should_pass = len(passed_checks) >= len(failed_checks)
+            should_pass = len(passed_checks) > 0 and len(passed_checks) >= len(failed_checks)
         
         if should_pass:
             self.validation_stats['passed'] += 1

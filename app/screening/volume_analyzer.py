@@ -366,7 +366,8 @@ if __name__ == "__main__":
     analyzer.update_bar(test_ticker, 455, 200000)
     analyzer.update_bar(test_ticker, 455.5, 180000)
     analyzer.update_bar(test_ticker, 456, 3000000)
-    analyzer.print_summary()
+    for state in analyzer.get_all_states():
+        logger.info(f"  {state}")
     signals = analyzer.get_active_signals()
     if signals:
         logger.info("\nACTIVE SIGNALS:")
