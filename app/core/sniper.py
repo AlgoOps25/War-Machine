@@ -159,13 +159,17 @@ except ImportError:
 
 try:
     from app.analytics.cooldown_tracker import cooldown_tracker
-    from app.analytics.explosive_tracker import explosive_tracker
+    from app.analytics.explosive_tracker import (  # noqa: F401
+        explosive_tracker,
+        track_explosive_override,
+    )
     from app.analytics.grade_gate_tracker import grade_gate_tracker
     TRACKERS_ENABLED = True
     logger.info("[SNIPER] ✅ Analytics trackers loaded")
 except ImportError:
     cooldown_tracker = None
     explosive_tracker = None
+    track_explosive_override = None
     grade_gate_tracker = None
     TRACKERS_ENABLED = False
 
@@ -284,10 +288,22 @@ def process_ticker(ticker: str):
             if not regime_filter.is_favorable_regime():
                 metadata = get_ticker_screener_metadata(ticker)
                 if metadata['qualified']:
-                    if TRACKERS_ENABLED and explosive_tracker:
-                        explosive_tracker.record_override(
-                            ticker=ticker, score=metadata['score'],
-                            rvol=metadata['rvol'], tier=metadata['tier']
+                    if TRACKERS_ENABLED and track_explosive_override is not None:
+                        # FIX: use track_explosive_override() directly so real regime/VIX
+                        # data is written to DB instead of legacy dummy values.
+                        # direction is "pre-scan" — not yet determined at this gate (intentional).
+                        state_r = regime_filter.get_regime_state()
+                        track_explosive_override(
+                            ticker=ticker,
+                            direction="pre-scan",
+                            score=metadata['score'],
+                            rvol=metadata['rvol'],
+                            tier=metadata['tier'] or "N/A",
+                            regime_type=state_r.regime,
+                            vix_level=state_r.vix,
+                            entry_price=0.0,
+                            grade="N/A",
+                            confidence=0.0,
                         )
                     logger.info(
                         f"[{ticker}] 🚀 EXPLOSIVE MOVER OVERRIDE: "
