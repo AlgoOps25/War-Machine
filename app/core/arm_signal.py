@@ -51,7 +51,7 @@ def arm_ticker(
         return
 
     mode_label = " [OR]" if signal_type == "CFW6_OR" else " [INTRADAY]"
-    print(
+    logger.info(
         f"✅ {ticker} ARMED{mode_label}: {direction.upper()} | "
         f"Entry:${entry_price:.2f} Stop:${stop_price:.2f} "
         f"T1:${t1:.2f} T2:${t2:.2f} | {confidence*100:.1f}% ({grade})"
@@ -61,7 +61,7 @@ def arm_ticker(
 
     metadata = metadata or get_ticker_screener_metadata(ticker)
 
-    mtf_convergence_count = None
+    mtf_convergence_count = 0
     if mtf_result and mtf_result.get('convergence'):
         mtf_convergence_count = len(mtf_result.get('timeframes', []))
 
