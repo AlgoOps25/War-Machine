@@ -448,7 +448,7 @@ def process_ticker(ticker: str):
             else:
                 logger.info(f"[{ticker}] OR: ${or_low:.2f}—${or_high:.2f} ({or_range_pct:.2%})")
 
-                if should_skip_cfw6_or_early(or_range_pct, _now_et()):
+                if should_skip_cfw6_or_early(or_range_pct, _now_et(), or_threshold):
                     logger.info(
                         f"[{ticker}] EARLY SESSION GATE: CFW6_OR blocked before 9:45 AM "
                         f"(OR={or_range_pct:.2%} < {or_threshold:.2%})"
