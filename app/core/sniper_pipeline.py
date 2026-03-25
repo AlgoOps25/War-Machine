@@ -2,7 +2,7 @@
 sniper_pipeline.py — CFW6 Signal Pipeline
 Extracted from sniper.py to keep that file under safe API size limits.
 All gate logic lives here: cooldown → RVOL → options → volume profile →
-confirmation → entry timing → VWAP → MTF bias → confidence → arm.
+confirmation → entry timing → VWAP → MTF bias → confidence → scorecard → arm.
 """
 from __future__ import annotations
 import logging
@@ -669,6 +669,12 @@ def _run_signal_pipeline(
         spy_regime=spy_regime,
         rvol=_signal_rvol,
     )
+    if _sc.score < SCORECARD_GATE_MIN:
+        logger.info(
+            f"[{ticker}] 🚫 SCORECARD-GATE: {_sc.score:.1f} < {SCORECARD_GATE_MIN} "
+            f"— signal dropped | {_sc.breakdown}"
+        )
+        return False
 
     # ── Arm the trade ─────────────────────────────────────────────────────────
     arm_ticker(
