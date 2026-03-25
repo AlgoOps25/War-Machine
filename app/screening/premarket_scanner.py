@@ -103,9 +103,18 @@ PHASE 1.30 (MAR 25, 2026) - Premarket window gate:
   - Eliminates the EARLY EXIT / RVOL=0.00x flood in Railway logs every time
     the container boots mid-day and _build_live_watchlist() calls
     run_momentum_screener() for the live session scoring pass.
-  - is_premarket_window() helper: returns True 04:00-09:30 ET only.
+  - is_premarket_window() delegated to market_calendar.is_premarket_window()
+    which already wraps is_market_day() (weekend + NYSE holiday check).
   - Outside the window: cached results are returned silently; fresh scans
     are skipped with a single DEBUG log (no EARLY EXIT spam).
+
+PHASE 1.30a (MAR 25, 2026) - is_premarket_window() fix:
+  - BUG: Phase 1.30 added a local is_premarket_window() that only checked
+    the time (04:00-09:30 ET) without calling is_market_day(). A Saturday
+    or NYSE holiday at 8 AM ET would pass the gate and trigger fresh scans.
+  - FIX: Replaced local implementation with a direct import from
+    market_calendar.is_premarket_window(), which already wraps is_market_day()
+    (weekend + NYSE holiday check) before the time comparison.
 """
 from datetime import datetime, timedelta, time as dt_time
 from typing import List, Dict, Optional, Tuple
@@ -141,23 +150,32 @@ EARLY_EXIT_RVOL_MIN = 0.10
 
 
 # ===============================================================================
-# PHASE 1.30: PREMARKET WINDOW GATE
+# PHASE 1.30a: PREMARKET WINDOW GATE — delegated to market_calendar
 # ===============================================================================
 
 def is_premarket_window() -> bool:
     """
-    Returns True only during the pre-market scanning window: 04:00–09:30 ET.
+    Returns True only during the pre-market scanning window: 04:00–09:30 ET
+    on a NYSE trading day (Mon–Fri, not a holiday).
 
-    scan_ticker() calls this at entry. Outside the window (mid-day boots,
-    live-session calls from _build_live_watchlist) fresh scans are suppressed
-    and only cached results are returned, eliminating the EARLY EXIT log flood.
+    Delegates to market_calendar.is_premarket_window() which wraps
+    is_market_day() so weekends and NYSE holidays are also blocked.
+
+    Falls back to a local time-only check if the import fails, defaulting
+    to True (allow scan) on any exception so pre-market work is never
+    silently blocked by an import error.
     """
     try:
-        from zoneinfo import ZoneInfo
-        now = datetime.now(ZoneInfo("America/New_York")).time()
-        return dt_time(4, 0) <= now < dt_time(9, 30)
+        from app.screening.market_calendar import is_premarket_window as _cal_check
+        return _cal_check()
     except Exception:
-        return True  # safe default — allow scan if tz lookup fails
+        # Fallback: time-only check (no holiday/weekend guard)
+        try:
+            from zoneinfo import ZoneInfo
+            now = datetime.now(ZoneInfo("America/New_York")).time()
+            return dt_time(4, 0) <= now < dt_time(9, 30)
+        except Exception:
+            return True  # safe default — allow scan if tz lookup fails
 
 
 # ===============================================================================
@@ -499,14 +517,15 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
     """
     Scan a single ticker with professional 3-tier scoring + v2 enhancements.
 
-    PHASE 1.30: Premarket window gate.
-      Outside 04:00-09:30 ET, returns any existing cached result silently
-      (no new API calls, no EARLY EXIT logs). If no cache entry exists,
-      returns None. This prevents the mid-day RVOL=0.00x EARLY EXIT flood
-      caused by _build_live_watchlist() calling run_momentum_screener() at
-      container boot time after market open.
+    PHASE 1.30 / 1.30a: Premarket window gate.
+      Outside 04:00-09:30 ET on a NYSE trading day, returns any existing
+      cached result silently (no new API calls, no EARLY EXIT logs). If no
+      cache entry exists, returns None. This prevents the mid-day RVOL=0.00x
+      EARLY EXIT flood caused by _build_live_watchlist() calling
+      run_momentum_screener() at container boot time after market open.
+      Weekend and holiday checks are handled by market_calendar.
     """
-    # ── PHASE 1.30: time gate ─────────────────────────────────────────────────
+    # ── PHASE 1.30a: time + trading-day gate ─────────────────────────────────
     if not is_premarket_window():
         cached = _scanner_cache.get_scan(ticker)
         if cached:
