@@ -138,13 +138,15 @@ from datetime import datetime, time as dtime
 from zoneinfo import ZoneInfo
 from utils import config
 from utils.config import validate_required_env_vars
-
-
+try:
+    from utils.production_helpers import _db_operation_safe
+    PRODUCTION_HELPERS_ENABLED = True
+except ImportError:
+    PRODUCTION_HELPERS_ENABLED = False
+    def _db_operation_safe(fn, label=""): fn()
 # Scanner optimizer caches
 _last_logged_interval = None
 _last_logged_watchlist_size = None
-
-
 from app.data.data_manager import data_manager
 from app.data.ws_feed import start_ws_feed, subscribe_tickers, set_backfill_complete
 from app.data.ws_quote_feed import start_quote_feed, subscribe_quote_tickers
@@ -552,7 +554,7 @@ def start_scanner_loop():
 
     # ── STARTUP BANNER ────────────────────────────────────────────────────────────────────
     logger.info("=" * 60)
-    logger.info("WAR MACHINE CFW6 SCANNER v1.35 - STARTUP")
+    logger.info("WAR MACHINE CFW6 SCANNER v1.38b - STARTUP")
     logger.info("=" * 60)
     logger.info("✓ REGIME-FILTER  VIX/SPY regime detection active")
     logger.info("=" * 60)
@@ -880,17 +882,29 @@ def start_scanner_loop():
 
 
                 if ANALYTICS_AVAILABLE and analytics:
-                    try:
-                        live_conn = _get_analytics_conn()
-                        if live_conn and analytics:
-                            def get_price(ticker):
-                                from app.data.ws_feed import get_current_bar_with_fallback
-                                bar = get_current_bar_with_fallback(ticker)
-                                return bar['close'] if bar else None
-                            analytics.monitor_active_signals(get_price)
-                            analytics.check_scheduled_tasks()
-                    except Exception as e:
-                        logger.error(f"[ANALYTICS] Monitor error: {e}")
+                    if PRODUCTION_HELPERS_ENABLED:
+                        def _run_analytics():
+                            live_conn = _get_analytics_conn()
+                            if live_conn and analytics:
+                                def get_price(ticker):
+                                    from app.data.ws_feed import get_current_bar_with_fallback
+                                    bar = get_current_bar_with_fallback(ticker)
+                                    return bar['close'] if bar else None
+                                analytics.monitor_active_signals(get_price)
+                                analytics.check_scheduled_tasks()
+                        _db_operation_safe(_run_analytics, "analytics monitor")
+                    else:
+                        try:
+                            live_conn = _get_analytics_conn()
+                            if live_conn and analytics:
+                                def get_price(ticker):
+                                    from app.data.ws_feed import get_current_bar_with_fallback
+                                    bar = get_current_bar_with_fallback(ticker)
+                                    return bar['close'] if bar else None
+                                analytics.monitor_active_signals(get_price)
+                                analytics.check_scheduled_tasks()
+                        except Exception as e:
+                            logger.error(f"[ANALYTICS] Monitor error: {e}")
 
 
                 monitor_open_positions(session=session)

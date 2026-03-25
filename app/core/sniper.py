@@ -514,6 +514,7 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         # ── PHASE 1.36: RVOL Signal Gate ─────────────────────────────────────────
     # Kills low-volume setups before any expensive Greeks/options calls run.
     # Explosive movers (rvol >= EXPLOSIVE_RVOL_THRESHOLD) bypass this gate.
+    _signal_rvol = 0.0  # P4 fix: initialize before try so build_scorecard never hits UnboundLocalError
     try:
         _rvol_meta = get_ticker_screener_metadata(ticker)
         _signal_rvol = _rvol_meta.get('rvol', 0.0)
@@ -945,7 +946,8 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         if final_confidence > _conf_cap:
             logger.info(f"[{ticker}] 📉 CONF CAP [{final_grade}]: {final_confidence:.3f} → {_conf_cap:.3f}")
             final_confidence = _conf_cap
-            print(
+
+    print(
         f"[CONFIDENCE-v2] Base:{base_confidence:.2f} "
         f"+ MTF-Trend:{_mtf_trend_boost:+.3f} "
         f"+ SMC:{_smc_delta:+.3f} "
@@ -1068,9 +1070,6 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         spy_regime=spy_regime,
         rvol=_signal_rvol,
     )
-    if _sc.score < SCORECARD_GATE_MIN:
-        logger.info(f"[{ticker}] 🚫 SCORECARD-GATE: {_sc.score:.1f} < {SCORECARD_GATE_MIN} | {_sc.breakdown}")
-        return False
     arm_ticker(
         ticker, direction, zone_low, zone_high,
         or_low_ref, or_high_ref,
@@ -1083,6 +1082,11 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         mtf_result=mtf_result, metadata=_meta,
         vp_bias=vp_bias
     )
+    try:
+        set_cooldown(ticker, direction, signal_type)
+        logger.info(f"[{ticker}] ✅ Cooldown registered ({signal_type})")
+    except Exception as _sc_err:
+        logger.warning(f"[{ticker}] set_cooldown error (non-fatal): {_sc_err}")
 
 def _get_or_threshold(spy_regime) -> float:
     from app.validation.validation import get_regime_filter
@@ -1451,9 +1455,9 @@ def process_ticker(ticker: str):
             except Exception as orb_err:
                 logger.info(f"[{ticker}] ORB classify error (non-fatal): {orb_err}")
 
-        # AFTER
         if scan_mode is None and VWAP_RECLAIM_ENABLED:
             _vwap_val = compute_vwap(bars_session)
+            vr = None  # P6 fix: initialize before loop to prevent NameError on exception
             for _vr_dir in ("bull", "bear"):
                 vr = detect_vwap_reclaim(ticker, bars_session, _vr_dir, _vwap_val)
                 if vr:
