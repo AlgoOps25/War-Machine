@@ -108,21 +108,22 @@ class OptionsIntelligence:
         now = time.time()
         
         with self._lock:
-            # Check cache
+            # Return cached data if still fresh
             if not force_refresh and ticker in self._chain_cache:
                 cached = self._chain_cache[ticker]
                 age = now - cached['timestamp']
                 if age < self.cache_ttl:
                     return cached['data']
-            
-                # Fetch fresh chain via OptionsFilter (lives in validation.py)
-                try:
-                    from app.validation.validation import OptionsFilter
-                    _filter = OptionsFilter()
-                    chain = _filter.get_options_chain(ticker)
-                except Exception as e:
-                    logger.info(f"[OPTIONS-DM] Chain fetch error for {ticker}: {e}")
-                    chain = None
+
+            # Cache miss or stale — fetch fresh chain via OptionsFilter
+            chain = None
+            try:
+                from app.validation.validation import OptionsFilter
+                _filter = OptionsFilter()
+                chain = _filter.get_options_chain(ticker)
+            except Exception as e:
+                logger.info(f"[OPTIONS-DM] Chain fetch error for {ticker}: {e}")
+                chain = None
 
             if chain:
                 # Store previous chain for change detection
