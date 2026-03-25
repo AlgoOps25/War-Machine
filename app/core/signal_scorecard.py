@@ -146,7 +146,8 @@ def _score_mtf_trend(mtf_trend_boost: float) -> float:
 
 
 def _score_smc(smc_delta: Optional[float]) -> float:
-    if smc_delta is None: return 7.0     if smc_delta >= 0.05:
+    if smc_delta is None: return 7.0
+    if smc_delta >= 0.05:
         return 10.0
     if smc_delta > 0.0:
         return 7.0
@@ -256,3 +257,4 @@ def build_scorecard(
         sc = SignalScorecard(ticker=ticker, direction=direction, grade=grade)
         sc.score = SCORECARD_GATE_MIN - 1  # 59 — fails gate, does not pass through
         return sc
+
