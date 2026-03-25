@@ -215,7 +215,6 @@ def _run_signal_pipeline(
     _meta = get_ticker_screener_metadata(ticker)  # single call — reused below
     try:
         _signal_rvol = _meta.get('rvol', 0.0)
-        _explosive_rvol_threshold = config.RVOL_SIGNAL_GATE  # reuse constant
         if _signal_rvol < RVOL_SIGNAL_GATE and _signal_rvol < 3.0:
             logger.info(f"[{ticker}] 🚫 RVOL GATE: {_signal_rvol:.2f}x < {RVOL_SIGNAL_GATE}x minimum — signal dropped")
             return False
