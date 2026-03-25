@@ -107,7 +107,7 @@ from app.data.data_manager import data_manager
 from utils import config
 from app.mtf.bos_fvg_engine import scan_bos_fvg, is_force_close_time, find_fvg_after_bos
 from app.core.signal_scorecard import build_scorecard, SCORECARD_GATE_MIN
-
+from utils.config import RVOL_SIGNAL_GATE, RVOL_CEILING, BEAR_SIGNALS_ENABLED
 from app.filters.dead_zone_suppressor import is_dead_zone
 from app.filters.gex_pin_gate import is_in_gex_pin_zone
 from app.filters.early_session_disqualifier import should_skip_cfw6_or_early
@@ -498,6 +498,10 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         if blocked:
             logger.info(f"[{ticker}] 🚫 SIGNAL COOLDOWN: {cooldown_reason}")
             return False
+        # Phase 1.38b: Bear signal kill switch — 267 trades, -0.15 Total R
+        if direction == 'bear' and not config.BEAR_SIGNALS_ENABLED:
+            logger.info(f"[{ticker}] 🚫 BEAR SUPPRESSED: BEAR_SIGNALS_ENABLED=False")
+            return False
     except Exception as _cd_err:
         logger.info(f"[{ticker}] [COOLDOWN] Check error (non-fatal): {_cd_err}")
 
@@ -520,6 +524,12 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
             return False
         else:
             logger.info(f"[{ticker}] ✅ RVOL GATE: {_signal_rvol:.2f}x — passed")
+        # Phase 1.38b: RVOL ceiling — high RVOL destroys P&L (-32R in audit)
+        if _signal_rvol >= config.RVOL_CEILING:
+            logger.info(
+                f"[{ticker}] 🚫 RVOL CEILING: {_signal_rvol:.2f}x >= {config.RVOL_CEILING}x — signal dropped"
+            )
+            return False
     except Exception as _rvol_err:
         logger.info(f"[{ticker}] RVOL gate error (non-fatal): {_rvol_err}")
     # ─────────────────────────────────────────────────────────────────────────
