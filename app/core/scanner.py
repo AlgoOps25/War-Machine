@@ -883,7 +883,7 @@ def start_scanner_loop():
 
                 if ANALYTICS_AVAILABLE and analytics:
                     if PRODUCTION_HELPERS_ENABLED:
-                        def _run_analytics():
+                        def _run_analytics(conn=None):
                             live_conn = _get_analytics_conn()
                             if live_conn and analytics:
                                 def get_price(ticker):

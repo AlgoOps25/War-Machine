@@ -391,7 +391,7 @@ class WatchlistFunnel:
         stage_config       = self.stages[self.current_stage]
 
         logger.info(f"\n{'='*80}")
-        logger.info(f"WATCHLIST FUNNEL - {datetime.now(tz=ET)().strftime('%H:%M:%S')}")
+        logger.info(f"WATCHLIST FUNNEL - {datetime.now(tz=ET).strftime('%H:%M:%S')}")
         logger.info(f"Stage: {self.current_stage.upper()} - {stage_config['description']}")
         logger.info(f"{'='*80}\n")
 
