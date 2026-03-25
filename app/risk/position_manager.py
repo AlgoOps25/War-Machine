@@ -981,13 +981,6 @@ class PositionManager:
             # ─────────────────────────────────────────────────────────────────
 
             if exit_reason != "STALE_EOD":
-                if final_pnl > 0:
-                    self.consecutive_wins += 1
-                    self.consecutive_losses = 0
-                else:
-                    self.consecutive_losses += 1
-                    self.consecutive_wins = 0
-
                 closed_trades = self.get_todays_closed_trades()
                 self._update_performance_streak(closed_trades)
 
@@ -1124,13 +1117,14 @@ class PositionManager:
             conn   = get_conn()
             cursor = dict_cursor(conn)
             since  = (datetime.now(_ET) - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+            date_col = _date_eq_today("exit_time")
             cursor.execute(f"""
                 SELECT grade,
                        COUNT(*)                                  AS total,
                        SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) AS wins,
                        AVG(pnl)                                  AS avg_pnl
                 FROM positions
-                WHERE status = 'CLOSED' AND DATE(exit_time) >= {p}
+                WHERE status = 'CLOSED' AND {date_col} >= {p}
                 GROUP BY grade
             """, (since,))
             rows = cursor.fetchall()
