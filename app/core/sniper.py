@@ -1161,9 +1161,12 @@ def process_ticker(ticker: str):
         if SPY_EMA_CONTEXT_ENABLED:
             try:
                 spy_regime = get_market_regime()
-                print_market_regime(spy_regime, ticker)
+                # Log regime once per cache refresh, not per ticker
+                regime_age = (datetime.now(_ET) - spy_regime.get("ts", datetime.now(_ET))).total_seconds()
+                if regime_age < 2:   # just refreshed — log it once
+                    print_market_regime(spy_regime)
             except Exception as e:
-                logger.info(f"[{ticker}] SPY EMA context error (non-fatal): {e}")
+                logger.info(f"[{ticker}] SPY EMA context error: {e}")
 
         if is_force_close_time(bars_session[-1]):
             run_eod_reports(
