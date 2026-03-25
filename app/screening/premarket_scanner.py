@@ -101,7 +101,6 @@ from datetime import datetime, timedelta, time as dt_time
 from typing import List, Dict, Optional, Tuple
 import statistics
 import requests
-
 from utils import config
 import logging
 logger = logging.getLogger(__name__)
@@ -160,7 +159,7 @@ class ScannerCache:
             return None
 
         cached = self.scan_cache[ticker]
-        age = (datetime.now() - cached['timestamp']).total_seconds()
+        age = (datetime.now() - cached['timestamp']).total_seconds()  # naive-ET, intentional
 
         if age > self.ttl_seconds:
             del self.scan_cache[ticker]
@@ -211,18 +210,9 @@ _scanner_cache = ScannerCache(ttl_seconds=180)
 # ===============================================================================
 
 def calculate_time_elapsed_pct(now: Optional[datetime] = None) -> float:
-    """
-    Return the fraction of the regular trading session (9:30-16:00 ET)
-    that has elapsed as of `now`.
-
-    Pre-market  (<9:30): returns a small value (0.01) so RVOL isn't
-                         inflated when very little session volume exists.
-    Post-market (>16:00): capped at 1.0 (full day).
-    Intraday:   elapsed_minutes / 390.0
-    """
+    from zoneinfo import ZoneInfo
     if now is None:
-        now = datetime.utcnow()
-        now = now.replace(tzinfo=None) - timedelta(hours=4)
+        now = datetime.now(ZoneInfo("America/New_York")).replace(tzinfo=None)
 
     market_open  = now.replace(hour=9,  minute=30, second=0, microsecond=0)
     market_close = now.replace(hour=16, minute=0,  second=0, microsecond=0)
@@ -631,6 +621,7 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
             'sector_bonus':     0,
             'composite_score':  round(composite_score, 1),
             'rvol':             volume_metrics['rvol'],
+            'rvol_tier':        'low',
             'dollar_volume':    volume_metrics['dollar_volume'],
             'atr':              fundamentals['atr'],
             'market_cap':       fundamentals['market_cap'],
@@ -720,6 +711,9 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
 
     logger.info(f"[PREMARKET] {ticker}: Composite score={composite_score:.1f} (vol={volume_score:.1f}, gap={gap_score:.1f}, catalyst={catalyst_score:.1f}, sector={sector_bonus:.1f})")
 
+    rvol = volume_metrics['rvol']
+    rvol_tier = 'explosive' if rvol >= 5.0 else 'high' if rvol >= 3.0 else 'moderate' if rvol >= 1.5 else 'low'
+
     result = {
         'ticker':           ticker,
         'price':            price,
@@ -729,7 +723,8 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
         'catalyst_score':   catalyst_score,
         'sector_bonus':     sector_bonus,
         'composite_score':  round(composite_score, 1),
-        'rvol':             volume_metrics['rvol'],
+        'rvol':             rvol,
+        'rvol_tier':        rvol_tier,
         'dollar_volume':    volume_metrics['dollar_volume'],
         'atr':              fundamentals['atr'],
         'market_cap':       fundamentals['market_cap'],
