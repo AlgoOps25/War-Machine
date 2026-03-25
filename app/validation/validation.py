@@ -1,10 +1,136 @@
 """
+<<<<<<< HEAD
+═══════════════════════════════════════════════════════════════════════════════
+UNIFIED VALIDATION MODULE - PRODUCTION
+═══════════════════════════════════════════════════════════════════════════════
+
+Consolidates signal_validator.py + regime_filter.py + options_filter.py
+into a single validation interface with comprehensive multi-indicator confirmation.
+
+PHASE 3A CONSOLIDATION (Feb 26, 2026):
+  - Merged 3 files → 1 active module
+  - 72KB → ~65KB (eliminated duplicate imports)
+  - Single source of truth for all validation
+  - Compatibility stubs maintain zero breaking changes
+
+PHASE 3A PATCH (Mar 6, 2026) — Regime Filter Improvements:
+  - VIX-aware dynamic ADX threshold replaces hardcoded 25
+      VIX ≤ 20  → effective ADX threshold = 20.0
+      VIX 20–25 → effective ADX threshold = 15.0  (elevated VIX compresses ADX)
+      VIX > 25  → effective ADX threshold = 12.0  (extreme fear, ADX tanks)
+  - RegimeFilter.is_favorable_for_explosive_mover(rvol): bypasses regime gate
+    ENTIRELY when RVOL ≥ 3.0x — explosive movers override choppy-tape blocking
+  - min_adx default lowered 25.0 → 15.0 (aligns with regime filter change)
+
+PHASE 3A PATCH 2 (Mar 12, 2026) — Bug Fixes:
+  - Fix 1 (P0): _calculate_adx() replaced with proper Wilder's smoothed ADX.
+    Previous implementation returned a single raw DX snapshot (0–5 early session)
+    instead of the 14-period smoothed ADX (15–40 range). Regime was blocking nearly
+    all signals in the first 60–90 minutes as a result.
+  - Fix 2 (P0): RVOL bypass threshold unified to 3.0x across all call sites.
+    is_favorable_for_explosive_mover() default was 4.0x — inconsistent with
+    get_ticker_screener_metadata() which already used 3.0x. 3.0–3.9x RVOL tickers
+    were getting qualified=True from the screener but still hitting the regime gate.
+  - Fix 3 (P1): entryprice NameError + bestoption typo in optimizer branch of
+    find_best_strike(). Every call with OPTIONS_OPTIMIZER_ENABLED=True was throwing
+    NameError and silently falling back to the slow serial EODHD chain fetch.
+  - Fix 4 (P2): Removed ghost earnings guard comment. The docstring claimed an
+    earnings guard was active — no such code exists anywhere in the pipeline.
+
+PHASE 1.26a (Mar 13, 2026) — Bug Fix:
+  - Fix OPTIONS_OPTIMIZER_ENABLED NameError in find_best_strike().
+    The try/except import block set _OPTIMIZER_AVAILABLE but find_best_strike()
+    referenced the undefined OPTIONS_OPTIMIZER_ENABLED name, throwing a NameError
+    on every ONDS scan cycle. Changed to use _OPTIMIZER_AVAILABLE consistently.
+
+PHASE 1.28 (Mar 14, 2026) — Bug Fix:
+  - Fix P0: technical_indicators import path updated.
+    technical_indicators.py was moved to app/indicators/ during Phase 2 file
+    restructure but the import on line 111 was never updated, causing sniper.py
+    to fail on every boot with:
+      ImportError: cannot import name 'technical_indicators' from 'app.analytics'
+    Changed: from app.analytics import technical_indicators as ti
+         To: from app.indicators import technical_indicators as ti
+
+PHASE 1.29 (Mar 16, 2026) — Bug Fixes:
+  - Fix 1 (P0): validate_signal_for_options() IV>100% hard-drop now respects
+    explosive_mover flag. When explosive_mover=True the IV gate is demoted
+    from a hard reject to a loud warning — the signal proceeds with a
+    ⚠️ HIGH-IV EXPLOSIVE MOVER log so the operator is informed.
+    New signature:
+      validate_signal_for_options(..., explosive_mover: bool = False)
+  - Fix 2 (P1): is_favorable_for_explosive_mover() override log was printing
+    VIX: 0.0 and Regime: UNKNOWN because the f-string referenced the wrong
+    variable names. Fix: read state.vix and state.regime from the returned
+    object directly. Log now correctly shows actual VIX and regime.
+
+VALIDATION CONFIGURATION:
+  • Minimum Final Confidence: 50% (configurable via min_final_confidence)
+  • Minimum ADX: 15.0 (VIX-aware dynamic threshold, was 25.0)
+  • Minimum Volume Ratio: 1.5x average
+  • Daily Bias Penalty: -25% for counter-trend (VPVR can rescue)
+  • Regime Penalty: -30% for unfavorable market conditions
+  • VIX Threshold: 30+ = VOLATILE regime (unfavorable)
+  • ADX Threshold: VIX-aware dynamic (12 / 15 / 20 based on VIX level)
+
+CONFIDENCE ADJUSTMENTS:
+  Boosts (additive):
+    +10%: Volume 2x+ average
+    +8%:  VPVR strong entry (0.85+ score)
+    +7%:  EMA full stack alignment
+    +5%:  Multiple indicators (ADX 40+, bias aligned, divergence, time zones)
+  
+  Penalties (subtractive):
+    -30%: Unfavorable regime (CHOPPY/VOLATILE)
+    -25%: Strong counter-trend to daily bias (rescuable by VPVR 0.85+)
+    -10%: DMI conflict
+    -8%:  Weak volume
+    -5%:  Various indicator conflicts
+
+VALIDATION LAYERS:
+  1. SignalValidator - Multi-indicator CFW6 confirmation
+  2. RegimeFilter - Market condition detection (VIX/SPY)
+  3. OptionsFilter - Options chain analysis with IVR/UOA/GEX
+  Note: No earnings guard is implemented. Tickers are not filtered by earnings date.
+
+USAGE:
+  from validation import get_validator, get_regime_filter, get_options_filter
+  
+  # Signal validation with automatic filtering
+  validator = get_validator()  # Uses 50% minimum confidence
+  should_pass, conf, metadata = validator.validate_signal(...)
+  
+  # Print formatted summary for monitoring
+  if should_pass:
+      validator.print_validation_summary(ticker, metadata)
+  
+  # Custom threshold (aggressive: 40%, conservative: 65%)
+  validator = SignalValidator(min_final_confidence=0.65, strict_mode=True)
+  
+  # Regime filtering (standard)
+  regime_filter = get_regime_filter()
+  if not regime_filter.is_favorable_regime():
+      print("Bad tape - skip signal")
+  
+  # Regime filtering (explosive mover override — call this INSTEAD of is_favorable_regime)
+  if regime_filter.is_favorable_for_explosive_mover(rvol=ticker_rvol):
+      process_signal()  # passes if RVOL >= 3x regardless of ADX/regime
+  
+  # Options validation (explosive mover — IV gate demoted to warning)
+  options_filter = get_options_filter()
+  is_valid, data, reason = options_filter.validate_signal_for_options(
+      ..., explosive_mover=True
+  )
+
+═══════════════════════════════════════════════════════════════════════════════
+=======
 validation.py — Unified Validation Interface v1.38b
 Consolidates SignalValidator + RegimeFilter + OptionsFilter.
 RegimeFilter/OptionsFilter now live in their own files to keep each under
 the GitHub API safe-write threshold (~30KB).
 All three are re-exported here — zero breaking changes for importers.
 See CHANGELOG.md for full phase history.
+>>>>>>> origin/main
 """
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime, time as dtime
@@ -39,6 +165,695 @@ except ImportError:
     VPVR_ENABLED = False
     vpvr_calculator = None
 
+<<<<<<< HEAD
+try:
+    from app.options.options_optimizer import get_optimal_strikes_sync
+    _OPTIMIZER_AVAILABLE = True
+except ImportError:
+    _OPTIMIZER_AVAILABLE = False
+
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# REGIME FILTER (from regime_filter.py)
+# ══════════════════════════════════════════════════════════════════════════════
+
+@dataclass
+class RegimeState:
+    """Current market regime state."""
+    regime: str              # TRENDING, CHOPPY, VOLATILE
+    vix: float              # Current VIX level
+    spy_trend: str          # BULL, BEAR, NEUTRAL
+    adx: Optional[float]    # Trend strength (0-100)
+    favorable: bool         # True = safe to trade
+    reason: str             # Why favorable/unfavorable
+    timestamp: datetime
+
+
+class RegimeFilter:
+    """
+    Market regime detection using VIX and SPY price action.
+    
+    Regime Classification:
+      TRENDING: ADX > dynamic threshold (VIX-aware), VIX < 30, clear directional move
+      CHOPPY:   ADX below dynamic threshold, VIX < 20, range-bound action
+      VOLATILE: VIX > 30, erratic moves, avoid trading
+    
+    VIX-Aware ADX Thresholds (Phase 3A Patch):
+      VIX ≤ 20:  ADX must be ≥ 20.0 for TRENDING
+      VIX 20–25: ADX must be ≥ 15.0 for TRENDING  (elevated VIX compresses ADX)
+      VIX > 25:  ADX must be ≥ 12.0 for TRENDING  (extreme fear, ADX tanks further)
+    
+    Explosive Mover Override (Phase 3A Patch 2):
+      RVOL ≥ 3.0x bypasses the regime gate entirely via
+      is_favorable_for_explosive_mover(rvol). Call this INSTEAD of
+      is_favorable_regime() for tickers with known high RVOL.
+    """
+    
+    def __init__(self):
+        self._cache: Optional[RegimeState] = None
+        self._cache_ttl = 300  # 5-minute cache
+        self._last_check = 0
+        
+    def is_favorable_regime(self, force_refresh: bool = False) -> bool:
+        """Check if current market regime is favorable for trading."""
+        state = self.get_regime_state(force_refresh=force_refresh)
+        return state.favorable
+
+    def is_favorable_for_explosive_mover(self, rvol: float, rvol_threshold: float = 3.0) -> bool:
+        """
+        RVOL-based regime override for explosive movers.
+
+        Checks RVOL BEFORE the regime gate. If RVOL >= rvol_threshold, the
+        regime check is bypassed entirely — an explosive mover with 3x+
+        relative volume warrants a signal attempt regardless of ADX or VIX.
+
+        Threshold unified to 3.0x (was 4.0x) to match screener_integration
+        get_ticker_screener_metadata() which uses rvol >= 3.0 for qualified=True.
+
+        Call this method INSTEAD of is_favorable_regime() for tickers where
+        the RVOL is known (e.g., from the premarket scanner composite score).
+
+        Args:
+            rvol: Relative volume ratio (e.g., 3.5 means 3.5x average volume)
+            rvol_threshold: Minimum RVOL to trigger override (default 3.0x)
+
+        Returns:
+            True if explosive mover override fires OR standard regime is favorable
+        """
+        if rvol >= rvol_threshold:
+            # PHASE 1.29 FIX 2: read vix/regime from the returned state object.
+            # Previously referenced undefined local names, printing VIX:0.0 / UNKNOWN.
+            state = self.get_regime_state()
+            print(
+                f"[REGIME] ⚡ EXPLOSIVE MOVER OVERRIDE: RVOL={rvol:.1f}x ≥ {rvol_threshold:.0f}x "
+                f"— bypassing {state.regime} gate "
+                f"(VIX:{state.vix:.1f}, ADX:{state.adx if state.adx is not None else 'N/A'})"
+            )
+            return True
+        return self.is_favorable_regime()
+    
+    def get_regime_state(self, force_refresh: bool = False) -> RegimeState:
+        """Get current market regime state."""
+        now = time.time()
+        
+        if not force_refresh and self._cache and (now - self._last_check) < self._cache_ttl:
+            return self._cache
+        
+        try:
+            vix = self._get_vix_level()
+            spy_bars = self._get_spy_bars()
+            
+            if not spy_bars or len(spy_bars) < 14:
+                return self._create_state(
+                    regime="CHOPPY", vix=vix or 20.0, spy_trend="NEUTRAL",
+                    adx=None, favorable=False, reason="Insufficient data for regime analysis"
+                )
+            
+            spy_trend = self._calculate_spy_trend(spy_bars)
+            adx = self._calculate_adx(spy_bars)
+            regime, favorable, reason = self._classify_regime(vix, adx, spy_trend, spy_bars)
+            
+            state = self._create_state(
+                regime=regime, vix=vix, spy_trend=spy_trend,
+                adx=adx, favorable=favorable, reason=reason
+            )
+            
+            self._cache = state
+            self._last_check = now
+            return state
+            
+        except Exception as e:
+            print(f"[REGIME] Error calculating regime: {e}")
+            return self._create_state(
+                regime="CHOPPY", vix=20.0, spy_trend="NEUTRAL",
+                adx=None, favorable=False, reason=f"Error: {str(e)}"
+            )
+    
+    def _create_state(self, regime: str, vix: float, spy_trend: str, 
+                      adx: Optional[float], favorable: bool, reason: str) -> RegimeState:
+        return RegimeState(
+            regime=regime, vix=vix, spy_trend=spy_trend, adx=adx,
+            favorable=favorable, reason=reason, timestamp=datetime.now()
+        )
+    
+    def _get_vix_level(self) -> float:
+        """Get current VIX level from data manager."""
+        try:
+            from app.data.data_manager import data_manager
+            try:
+                vix_level = data_manager.get_vix_level()
+                if vix_level and vix_level > 0:
+                    return vix_level
+            except:
+                pass
+            bars = data_manager.get_bars_from_memory("VIX", limit=1)
+            if bars and len(bars) > 0:
+                return bars[-1]["close"]
+            latest_bar = data_manager.get_latest_bar("VIX")
+            if latest_bar:
+                return latest_bar["close"]
+            return 20.0
+        except Exception as e:
+            print(f"[REGIME] Error fetching VIX: {e}")
+            return 20.0
+    
+    def _get_spy_bars(self, limit: int = 50) -> list:
+        """Get recent SPY bars for trend analysis."""
+        try:
+            from app.data.data_manager import data_manager
+            bars = data_manager.get_bars_from_memory("SPY", limit=limit)
+            if bars and len(bars) >= 14:
+                return bars
+            bars = data_manager.get_today_session_bars("SPY")
+            if bars and len(bars) >= 14:
+                return bars[-limit:] if len(bars) > limit else bars
+            bars = data_manager.get_today_5m_bars("SPY")
+            if bars and len(bars) >= 14:
+                return bars[-limit:] if len(bars) > limit else bars
+            return []
+        except Exception as e:
+            print(f"[REGIME] Error fetching SPY bars: {e}")
+            return []
+    
+    def _calculate_spy_trend(self, bars: list) -> str:
+        """Determine SPY trend direction using EMAs."""
+        if len(bars) < 20:
+            return "NEUTRAL"
+        try:
+            closes = [b["close"] for b in bars[-20:]]
+            ema9 = self._calculate_ema(closes[-9:], 9)
+            ema20 = self._calculate_ema(closes, 20)
+            current_price = closes[-1]
+            
+            if ema9 > ema20 and current_price > ema9:
+                return "BULL"
+            elif ema9 < ema20 and current_price < ema9:
+                return "BEAR"
+            else:
+                return "NEUTRAL"
+        except Exception:
+            return "NEUTRAL"
+    
+    def _calculate_adx(self, bars: list, period: int = 14) -> Optional[float]:
+        """
+        Calculate ADX using Wilder's smoothing (proper implementation).
+
+        Fix (Mar 12, 2026): Previous version returned a single raw DX snapshot
+        using a simple EMA on the last 14 bars — this produced values of 0–5
+        early in the session, causing CHOPPY regime blocks for the first 60–90
+        minutes every day.
+
+        Correct Wilder's ADX algorithm:
+          1. Compute TR, +DM, -DM for each bar
+          2. Seed smoothed values with simple sum over first `period` bars
+          3. Apply Wilder's RMA: smoothed = smoothed - (smoothed / period) + current
+          4. DI± = smoothed_DM / smoothed_TR * 100
+          5. DX  = |+DI - -DI| / (+DI + -DI) * 100
+          6. ADX = Wilder's RMA of DX over `period` bars
+
+        Requires len(bars) >= period * 2 + 1 for a valid seed + one ADX update.
+        Returns None if insufficient bars.
+        """
+        min_bars = period * 2 + 1
+        if len(bars) < min_bars:
+            return None
+        try:
+            trs, plus_dms, minus_dms = [], [], []
+            for i in range(1, len(bars)):
+                high      = bars[i]["high"]
+                low       = bars[i]["low"]
+                prev_close = bars[i - 1]["close"]
+                prev_high  = bars[i - 1]["high"]
+                prev_low   = bars[i - 1]["low"]
+
+                tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+                trs.append(tr)
+
+                up_move   = high - prev_high
+                down_move = prev_low - low
+                plus_dms.append(up_move   if up_move   > down_move and up_move   > 0 else 0.0)
+                minus_dms.append(down_move if down_move > up_move   and down_move > 0 else 0.0)
+
+            # Seed: simple sum of first `period` values (Wilder's initialisation)
+            s_tr       = sum(trs[:period])
+            s_plus_dm  = sum(plus_dms[:period])
+            s_minus_dm = sum(minus_dms[:period])
+
+            def _di(s_dm, s_tr):
+                return (s_dm / s_tr * 100) if s_tr > 0 else 0.0
+
+            def _dx(pdi, mdi):
+                return abs(pdi - mdi) / (pdi + mdi) * 100 if (pdi + mdi) > 0 else 0.0
+
+            # Seed ADX with first DX
+            adx = _dx(_di(s_plus_dm, s_tr), _di(s_minus_dm, s_tr))
+
+            # Wilder's RMA over remaining bars
+            for i in range(period, len(trs)):
+                s_tr       = s_tr       - (s_tr       / period) + trs[i]
+                s_plus_dm  = s_plus_dm  - (s_plus_dm  / period) + plus_dms[i]
+                s_minus_dm = s_minus_dm - (s_minus_dm / period) + minus_dms[i]
+                dx  = _dx(_di(s_plus_dm, s_tr), _di(s_minus_dm, s_tr))
+                adx = adx - (adx / period) + dx
+
+            return round(adx, 2)
+
+        except Exception as e:
+            print(f"[REGIME] ADX calculation error: {e}")
+            return None
+    
+    def _calculate_ema(self, values: list, period: int) -> float:
+        """Calculate Exponential Moving Average."""
+        if not values:
+            return 0.0
+        multiplier = 2 / (period + 1)
+        ema = values[0]
+        for value in values[1:]:
+            ema = (value * multiplier) + (ema * (1 - multiplier))
+        return ema
+    
+    def _classify_regime(self, vix: float, adx: Optional[float],
+                         spy_trend: str, spy_bars: list) -> Tuple[str, bool, str]:
+        """
+        Classify market regime and determine if favorable for trading.
+
+        Phase 3A Patch: VIX-aware ADX thresholds replace the hardcoded 25.
+        Elevated VIX environments naturally compress ADX readings — a market
+        moving directionally with VIX=25 will often show ADX=10–14, which is
+        still a tradeable trend. The thresholds scale accordingly:
+
+          VIX > 25  → effective_adx_threshold = 12.0
+          VIX > 20  → effective_adx_threshold = 15.0
+          VIX ≤ 20  → effective_adx_threshold = 20.0
+        """
+        # Hard blocks: extreme volatility
+        if vix >= 35:
+            return ("VOLATILE", False, f"VIX too high ({vix:.1f}) - extreme fear/greed")
+        if vix >= 30:
+            return ("VOLATILE", False, f"VIX elevated ({vix:.1f}) - elevated volatility")
+
+        # Whipsaw check: too many candle direction reversals
+        if len(spy_bars) >= 10:
+            recent_bars = spy_bars[-10:]
+            reversals = sum(
+                1 for i in range(1, len(recent_bars))
+                if (recent_bars[i]["close"] - recent_bars[i]["open"]) *
+                   (recent_bars[i-1]["close"] - recent_bars[i-1]["open"]) < 0
+            )
+            if reversals >= 6:
+                return ("CHOPPY", False, f"Whipsaw action ({reversals}/10 reversals) - avoid")
+
+        # VIX-aware dynamic ADX threshold
+        if vix > 25:
+            effective_adx_threshold = 12.0
+        elif vix > 20:
+            effective_adx_threshold = 15.0
+        else:
+            effective_adx_threshold = 20.0
+
+        if adx is not None:
+            if adx >= effective_adx_threshold:
+                if vix < 25:
+                    return (
+                        "TRENDING", True,
+                        f"Strong {spy_trend} trend (ADX: {adx:.0f} ≥ {effective_adx_threshold:.0f}, VIX: {vix:.1f})"
+                    )
+                else:
+                    favorable = spy_trend != "NEUTRAL"
+                    return (
+                        "TRENDING", favorable,
+                        f"{spy_trend} trend with elevated VIX (ADX: {adx:.0f} >= {effective_adx_threshold:.0f}, VIX: {vix:.1f})"
+                    )
+
+            else:
+                return (
+                    "CHOPPY", False,
+                    f"Weak trend (ADX: {adx:.0f} < {effective_adx_threshold:.0f}) - range-bound"
+                )
+
+        if vix < 20 and spy_trend != "NEUTRAL":
+            return ("TRENDING", True, f"Low VIX ({vix:.1f}), {spy_trend} bias")
+
+        return ("CHOPPY", False, f"Neutral conditions (VIX: {vix:.1f})")
+    
+    def print_regime_summary(self) -> None:
+        """Print formatted regime summary to console."""
+        state = self.get_regime_state()
+        emoji = {"TRENDING": "📈" if state.favorable else "📉", "CHOPPY": "〰️", "VOLATILE": "⚡"}[state.regime]
+        status = "✅ FAVORABLE" if state.favorable else "🚫 UNFAVORABLE"
+        
+        print("\n" + "=" * 70)
+        print(f"{emoji}  MARKET REGIME: {state.regime}  {status}")
+        print("=" * 70)
+        print(f"VIX:       {state.vix:.2f}")
+        print(f"SPY Trend: {state.spy_trend}")
+        if state.adx:
+            print(f"ADX:       {state.adx:.1f} (trend strength)")
+        print(f"Reason:    {state.reason}")
+        print("=" * 70 + "\n")
+    
+    def reset_cache(self) -> None:
+        """Clear cached regime state."""
+        self._cache = None
+        self._last_check = 0
+        print("[REGIME] Cache cleared")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# OPTIONS FILTER (from options_filter.py)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class OptionsFilter:
+    """Filters and analyzes options chains for trading signals."""
+
+    def __init__(self):
+        self.api_key = config.EODHD_API_KEY
+        self.base_url = "https://eodhd.com/api/mp/unicornbay/options/contracts"
+
+    def _normalize_v2_chain(self, v2_data: List[Dict]) -> Dict:
+        """Convert marketplace flat-list format to legacy nested structure."""
+        nested: Dict = {}
+        for item in v2_data:
+            attrs = item.get("attributes", item)
+            exp = attrs.get("exp_date", "")
+            ctype = attrs.get("type", "").lower()
+            strike = str(attrs.get("strike", ""))
+            if not exp or ctype not in ("call", "put") or not strike:
+                continue
+            if exp not in nested:
+                nested[exp] = {"calls": {}, "puts": {}}
+            bucket = "calls" if ctype == "call" else "puts"
+            nested[exp][bucket][strike] = {
+                "openInterest": attrs.get("open_interest", 0),
+                "volume": attrs.get("volume", 0),
+                "bid": attrs.get("bid", 0),
+                "ask": attrs.get("ask", 0),
+                "delta": attrs.get("delta", 0),
+                "impliedVolatility": attrs.get("volatility", 0),
+                "theta": attrs.get("theta", 0),
+                "gamma": attrs.get("gamma", 0),
+                "vega": attrs.get("vega", 0),
+                "rho": attrs.get("rho", 0),
+                "dte": attrs.get("dte", 0),
+            }
+        return nested
+
+    def get_options_chain(self, ticker: str) -> Optional[Dict]:
+        """Fetch options chain from EODHD Marketplace."""
+        today = datetime.now()
+        params = {
+            "filter[underlying_symbol]": ticker,
+            "filter[exp_date_from]": (today - timedelta(days=1)).strftime("%Y-%m-%d"),
+            "filter[exp_date_to]": (today + timedelta(days=30)).strftime("%Y-%m-%d"),
+            "sort": "exp_date",
+            "limit": 1000,
+            "api_token": self.api_key,
+        }
+        try:
+            response = requests.get(self.base_url, params=params, timeout=10)
+            response.raise_for_status()
+            raw = response.json()
+            items = raw.get("data", [])
+            if isinstance(items, list):
+                return {"data": self._normalize_v2_chain(items)}
+            return raw
+        except Exception as e:
+            print(f"[OPTIONS] Error fetching chain for {ticker}: {e}")
+            return None
+
+    def filter_by_liquidity(self, option: Dict) -> bool:
+        oi = option.get("openInterest", 0)
+        volume = option.get("volume", 0)
+        bid = option.get("bid", 0)
+        ask = option.get("ask", 0)
+        if oi < config.MIN_OPTION_OI or volume < config.MIN_OPTION_VOLUME:
+            return False
+        if ask > 0 and bid > 0:
+            mid = (bid + ask) / 2
+            if mid > 0 and (ask - bid) / mid > config.MAX_BID_ASK_SPREAD_PCT:
+                return False
+        return True
+
+    def filter_by_delta(self, option: Dict) -> bool:
+        d = abs(option.get("delta", 0))
+        return config.TARGET_DELTA_MIN <= d <= config.TARGET_DELTA_MAX
+
+    def filter_by_dte(self, expiration_date: str) -> Tuple[bool, int]:
+        try:
+            from zoneinfo import ZoneInfo
+            now_et = datetime.now(ZoneInfo("America/New_York")).replace(
+                hour=0, minute=0, second=0, microsecond=0, tzinfo=None
+            )
+            dte = (datetime.strptime(expiration_date, "%Y-%m-%d") - now_et).days
+
+            return (config.MIN_DTE <= dte <= config.MAX_DTE), dte
+        except Exception:
+            return False, 0
+
+    def calculate_expected_move(self, price: float, iv: float, dte: int) -> float:
+        return round(price * iv * ((dte / 365) ** 0.5), 2)
+
+    def find_best_strike(self, ticker, direction, entry_price, target_price, stop_price=0.0):
+        """
+        Find optimal option strike with parallel Greeks fetching.
+        Uses _OPTIMIZER_AVAILABLE for 5-10x speed improvement.
+        """
+        if _OPTIMIZER_AVAILABLE:
+            try:
+                strikes = get_optimal_strikes_sync(
+                    ticker=ticker,
+                    current_price=entry_price,
+                    direction=direction,
+                    target_delta_min=config.TARGET_DELTA_MIN,
+                    target_delta_max=config.TARGET_DELTA_MAX
+                )
+
+                if not strikes:
+                    print(f"[OPTIONS] {ticker}: No strikes from optimizer")
+                    return None
+
+                best_option = strikes[0]
+                return best_option
+
+            except Exception as e:
+                print(f"[OPTIONS] {ticker}: Optimizer error - {e}, falling back to legacy")
+                # Fall through to legacy code below
+
+        chain = self.get_options_chain(ticker)
+        if not chain:
+            return None
+
+        best_option = None
+        best_score = -1
+
+        for expiration_date, options_data in chain.get("data", {}).items():
+            is_valid_dte, dte = self.filter_by_dte(expiration_date)
+            if not is_valid_dte:
+                continue
+
+            option_type = "calls" if direction == "bull" else "puts"
+            is_call = (direction == "bull")
+
+            for strike_str, option in options_data.get(option_type, {}).items():
+                strike = float(strike_str)
+                if not self.filter_by_liquidity(option):
+                    continue
+                if not self.filter_by_delta(option):
+                    continue
+                if is_call and not (entry_price * 0.95 <= strike <= entry_price * 1.10):
+                    continue
+                if not is_call and not (entry_price * 0.90 <= strike <= entry_price * 1.05):
+                    continue
+
+                bid = option.get("bid", 0)
+                ask = option.get("ask", 0)
+                mid = (bid + ask) / 2 if (bid and ask) else 0
+
+                dte_score = 100 - abs(dte - config.IDEAL_DTE)
+                oi_score = min(option.get("openInterest", 0) / 1000, 100)
+                spread_pct = (ask - bid) / mid if mid > 0 else 999
+                spread_score = max(0, 100 - spread_pct * 1000)
+                total_score = dte_score + oi_score + spread_score
+
+                if total_score > best_score:
+                    best_score = total_score
+                    iv = option.get("impliedVolatility", 0)
+                    best_option = {
+                        "strike": strike, "expiration": expiration_date,
+                        "delta": option.get("delta", 0), "theta": option.get("theta", 0),
+                        "oi": option.get("openInterest", 0), "volume": option.get("volume", 0),
+                        "bid": bid, "ask": ask, "iv": iv, "dte": dte,
+                        "expected_move": self.calculate_expected_move(entry_price, iv, dte),
+                        "score": total_score
+                    }
+
+        if not best_option:
+            return None
+
+        # IVR enrichment
+        iv = best_option.get("iv", 0)
+        if iv and iv > 0:
+            store_iv_observation(ticker, iv)
+            ivr, obs, reliable = compute_ivr(ticker, iv)
+            mult, label = ivr_to_confidence_multiplier(ivr, reliable)
+            best_option.update({
+                "ivr": ivr, "ivr_obs": obs, "ivr_reliable": reliable,
+                "ivr_multiplier": mult, "ivr_label": label
+            })
+            status = f"IVR={ivr:.0f}" if (ivr is not None and reliable) else "IVR-BUILDING"
+            print(f"[IVR] {ticker}: IV={iv*100:.1f}% | {status} ({obs} obs) | {mult:.2f}x [{label}]")
+        else:
+            best_option.update({
+                "ivr": None, "ivr_obs": 0, "ivr_reliable": False,
+                "ivr_multiplier": 1.0, "ivr_label": "IVR-NO-DATA"
+            })
+
+        # UOA enrichment
+        try:
+            uoa_result = scan_chain_for_uoa(ticker, direction, entry_price)
+            best_option.update(uoa_result)
+            if uoa_result.get('uoa_detected'):
+                print(f"[UOA] {ticker}: {format_uoa_summary(uoa_result)}")
+            else:
+                print(f"[UOA] {ticker}: No unusual activity detected")
+        except Exception as e:
+            print(f"[UOA] {ticker} error: {e}")
+            best_option.update({
+                "uoa_multiplier": 1.0, "uoa_label": "UOA-ERROR",
+                "uoa_detected": False, "uoa_aligned": False,
+                "uoa_opposing": False, "uoa_max_score": 0.0,
+                "uoa_top_aligned": [], "uoa_top_opposing": []
+            })
+
+        # GEX enrichment
+        gex_stop_ref = stop_price if stop_price > 0 else best_option.get("strike", entry_price)
+        try:
+            gex_data = compute_gex_levels(chain, entry_price)
+            if gex_data["has_data"]:
+                gex_mult, gex_label, gex_ctx = get_gex_signal_context(
+                    gex_data, direction, entry_price, gex_stop_ref, target_price
+                )
+                best_option.update({
+                    "gex_multiplier": gex_mult, "gex_label": gex_label,
+                    "gamma_pin": gex_data["gamma_pin"], "gamma_flip": gex_data["gamma_flip"],
+                    "neg_gex_zone": gex_data["neg_gex_zone"], "total_gex": gex_data["total_gex"],
+                    "gex_top_pos": gex_data["top_positive"], "gex_top_neg": gex_data["top_negative"]
+                })
+                flip_str = f"${gex_data['gamma_flip']:.2f}" if gex_data["gamma_flip"] else "N/A"
+                pin_str = f"${gex_data['gamma_pin']:.2f}" if gex_data["gamma_pin"] else "N/A"
+                zone = "NEG" if gex_data["neg_gex_zone"] else "POS"
+                print(f"[GEX] {ticker}: Pin={pin_str} | Flip={flip_str} | Zone={zone} | {gex_mult:.2f}x [{gex_label}]")
+            else:
+                print(f"[GEX] {ticker}: No gamma data in chain")
+                best_option.update({
+                    "gex_multiplier": 1.0, "gex_label": "GEX-NO-DATA",
+                    "gamma_pin": None, "gamma_flip": None,
+                    "neg_gex_zone": False, "total_gex": 0.0,
+                    "gex_top_pos": [], "gex_top_neg": []
+                })
+        except Exception as e:
+            print(f"[GEX] {ticker} error: {e}")
+            best_option.update({
+                "gex_multiplier": 1.0, "gex_label": "GEX-ERROR",
+                "gamma_pin": None, "gamma_flip": None,
+                "neg_gex_zone": False, "total_gex": 0.0,
+                "gex_top_pos": [], "gex_top_neg": []
+            })
+
+        # Limit price entry enrichment
+        _bid = best_option["bid"]
+        _ask = best_option["ask"]
+        _mid = round((_bid + _ask) / 2, 2) if (_bid and _ask) else 0.0
+        _spd = round(((_ask - _bid) / _mid) * 100, 1) if _mid > 0 else 0.0
+        _ctype = "CALL" if direction == "bull" else "PUT"
+        try:
+            _m = int(best_option["expiration"][5:7])
+            _d = int(best_option["expiration"][8:10])
+            _exp_label = f"{_m}/{_d}"
+        except Exception:
+            _exp_label = best_option["expiration"]
+        best_option.update({
+            "mid": _mid, "limit_entry": _mid, "max_entry": _ask,
+            "contract_type": _ctype, "spread_pct": _spd,
+            "contract_label": f"{ticker} ${int(best_option['strike'])}{_ctype[0]} {_exp_label}",
+        })
+        print(f"[LIMIT-ENTRY] {ticker}: {_ctype} ${int(best_option['strike'])} Bid:${_bid:.2f}  Mid:${_mid:.2f}  Ask:${_ask:.2f}  Spread:{_spd:.1f}%")
+
+        return best_option
+
+    def validate_signal_for_options(
+        self,
+        ticker,
+        direction,
+        entry_price,
+        target_price,
+        stop_price: float = 0.0,
+        explosive_mover: bool = False,
+    ) -> Tuple[bool, Optional[Dict], str]:
+        """
+        Validate signal for options trading.
+
+        Args:
+            explosive_mover: When True (RVOL >= 3x override fired), the IV > 100%
+                hard-reject is demoted to a loud warning. The signal is allowed
+                through so the operator can evaluate it — but the high IV is
+                prominently flagged in the log and returned in the reason string.
+                All other gates (theta decay, expected move) still apply.
+        """
+        best_strike = self.find_best_strike(ticker, direction, entry_price, target_price, stop_price=stop_price)
+        if not best_strike:
+            return False, None, "No suitable options found"
+
+        if abs(target_price - entry_price) > best_strike["expected_move"] * 2:
+            return False, best_strike, "Target exceeds 2x expected move"
+
+        # PHASE 1.29 FIX 1: IV gate respects explosive_mover override.
+        # When explosive_mover=True, demote hard-reject to a loud warning so the
+        # signal proceeds. The operator sees the ⚠️ HIGH-IV log and can evaluate.
+        iv = best_strike.get("iv", 0)
+        if iv > 1.0:
+            iv_pct = iv * 100
+            if explosive_mover:
+                print(
+                    f"[OPTIONS-GATE] ⚠️  {ticker} HIGH-IV EXPLOSIVE MOVER: "
+                    f"IV={iv_pct:.1f}% > 100% — proceeding (explosive override active). "
+                    f"Premium is elevated; size accordingly."
+                )
+                # Tag the data so downstream / Discord can surface the warning
+                best_strike["high_iv_warning"] = True
+                best_strike["high_iv_pct"] = round(iv_pct, 1)
+            else:
+                return False, best_strike, f"IV too high ({iv_pct:.1f}%)"
+
+        dte = best_strike["dte"]
+        mid = (best_strike["bid"] + best_strike["ask"]) / 2 if (best_strike.get("bid") and best_strike.get("ask")) else 0
+        theta = abs(best_strike.get("theta", 0))
+        if mid > 0 and dte > 0 and theta > 0:
+            theta_pct = theta / mid
+            if theta_pct > config.MAX_THETA_DECAY_PCT:
+                return False, best_strike, f"Theta decay too high ({theta_pct:.1%}/day vs max {config.MAX_THETA_DECAY_PCT:.1%})"
+
+        iv_warning = " [HIGH-IV]" if best_strike.get("high_iv_warning") else ""
+        return True, best_strike, f"Options signal validated{iv_warning}"
+
+
+def get_options_recommendation(ticker, direction, entry_price, target_price, stop_price=0.0) -> Optional[Dict]:
+    """Get options recommendation (legacy compatibility function)."""
+    f = OptionsFilter()
+    is_valid, data, reason = f.validate_signal_for_options(ticker, direction, entry_price, target_price, stop_price=stop_price)
+    if is_valid and data:
+        print(f"[OPTIONS] ✅ {ticker}: {reason}")
+        return data
+    print(f"[OPTIONS] ⚠️ {ticker}: {reason}")
+    return None
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SIGNAL VALIDATOR (from signal_validator.py)
+# ══════════════════════════════════════════════════════════════════════════════
+=======
+>>>>>>> origin/main
 
 def get_time_of_day_quality(signal_time: datetime) -> Tuple[str, float]:
     t = signal_time.time()
@@ -97,11 +912,34 @@ class SignalValidator:
     ) -> Tuple[bool, float, Dict]:
         self.validation_stats['total_validated'] += 1
         signal_time = datetime.now(ET)
+<<<<<<< HEAD
+
+        # Normalize direction: pipeline emits 'bull'/'bear',
+        # but indicator checks expect 'BUY'/'SELL'.
+        # _dir is used for all comparisons; signal_direction preserved for metadata.
+=======
+>>>>>>> origin/main
         _dir = signal_direction.upper()
         _dir = 'BUY' if _dir in ('BULL', 'BUY', 'LONG') else 'SELL'
 
         metadata = {
             'timestamp': signal_time.isoformat(),
+<<<<<<< HEAD
+            'ticker': ticker,
+            'direction': signal_direction,   # keep original for logs
+            'base_confidence': base_confidence,
+            'checks': {}
+        }
+
+        
+        confidence_adjustment = 0.0
+        failed_checks = []
+        passed_checks = []
+        counter_trend_penalty = 0.0
+        needs_vpvr_rescue = False
+        
+        # Daily Bias Check
+=======
             'ticker': ticker, 'direction': signal_direction,
             'base_confidence': base_confidence, 'checks': {}
         }
@@ -113,6 +951,7 @@ class SignalValidator:
         needs_vpvr_rescue      = False
 
         # ── Daily Bias ────────────────────────────────────────────────────────
+>>>>>>> origin/main
         if self.enable_daily_bias and bias_engine:
             try:
                 should_filter, bias_reason = bias_engine.should_filter_signal(ticker, signal_direction)
@@ -176,6 +1015,21 @@ class SignalValidator:
         # ── EMA Stack ─────────────────────────────────────────────────────────
         if self.enable_ema_stack:
             try:
+<<<<<<< HEAD
+                ema9_data = ti.fetch_ema(ticker, period=9)
+                ema20_data = ti.fetch_ema(ticker, period=20)
+                ema50_data = ti.fetch_ema(ticker, period=50)
+                
+                if all([ema9_data, ema20_data, ema50_data]):
+                    ema9 = ti.get_latest_value(ema9_data, 'ema')
+                    ema20 = ti.get_latest_value(ema20_data, 'ema')
+                    ema50 = ti.get_latest_value(ema50_data, 'ema')
+                    
+                    if all([ema9, ema20, ema50]):
+                        if _dir == 'BUY':
+                            full_stack = (current_price > ema9 > ema20 > ema50)
+                            partial_stack = (current_price > ema9 and ema9 > ema20)
+=======
                 d9, d20, d50 = ti.fetch_ema(ticker, period=9), ti.fetch_ema(ticker, period=20), ti.fetch_ema(ticker, period=50)
                 if all([d9, d20, d50]):
                     e9  = ti.get_latest_value(d9,  'ema')
@@ -185,6 +1039,7 @@ class SignalValidator:
                         if _dir == 'BUY':
                             full    = current_price > e9 > e20 > e50
                             partial = current_price > e9 and e9 > e20
+>>>>>>> origin/main
                         else:
                             full    = current_price < e9 < e20 < e50
                             partial = current_price < e9 and e9 < e20
@@ -212,6 +1067,28 @@ class SignalValidator:
                 div_result, div_details = ti.check_rsi_divergence(ticker, signal_direction, lookback_bars=10)
                 if div_result and div_details:
                     metadata['checks']['rsi_divergence'] = div_details
+<<<<<<< HEAD
+                    if div_result == 'BEARISH_DIV':
+                        if _dir == 'SELL':
+                            confidence_adjustment += 0.05
+                            passed_checks.append('RSI_DIV_FAVORABLE')
+                        else:
+                            confidence_adjustment -= 0.05
+                            failed_checks.append('RSI_DIV_WARNING')
+                        self.validation_stats['rsi_divergence_detected'] += 1
+                    elif div_result == 'BULLISH_DIV':
+                        if _dir == 'BUY':
+                            confidence_adjustment += 0.05
+                            passed_checks.append('RSI_DIV_FAVORABLE')
+                        else:
+                            confidence_adjustment -= 0.05
+                            failed_checks.append('RSI_DIV_WARNING')
+                        self.validation_stats['rsi_divergence_detected'] += 1
+            except Exception as e:
+                metadata['checks']['rsi_divergence'] = {'error': str(e)}
+
+        # ADX Check
+=======
                     expected = ('BEARISH_DIV' if _dir == 'SELL' else 'BULLISH_DIV')
                     if div_result == expected:
                         conf_adj += 0.05; passed_checks.append('RSI_DIV_FAVORABLE')
@@ -222,6 +1099,7 @@ class SignalValidator:
                 metadata['checks']['rsi_divergence'] = {'error': str(e)}
 
         # ── ADX ───────────────────────────────────────────────────────────────
+>>>>>>> origin/main
         try:
             is_trending, adx_value = ti.check_trend_strength(ticker, self.min_adx)
             metadata['checks']['adx'] = {'value': adx_value, 'passed': is_trending, 'threshold': self.min_adx}
@@ -245,12 +1123,22 @@ class SignalValidator:
 
         # ── DMI ───────────────────────────────────────────────────────────────
         try:
+<<<<<<< HEAD
+            trend_direction = ti.get_trend_direction(ticker)
+            metadata['checks']['dmi'] = {'direction': trend_direction}
+            if trend_direction:
+                expected_direction = 'BULLISH' if _dir == 'BUY' else 'BEARISH'
+                if trend_direction == expected_direction:
+                    confidence_adjustment += 0.05
+                    passed_checks.append('DMI_ALIGNED')
+=======
             trend_dir = ti.get_trend_direction(ticker)
             metadata['checks']['dmi'] = {'direction': trend_dir}
             if trend_dir:
                 expected = 'BULLISH' if _dir == 'BUY' else 'BEARISH'
                 if trend_dir == expected:
                     conf_adj += 0.05; passed_checks.append('DMI_ALIGNED')
+>>>>>>> origin/main
                 else:
                     conf_adj -= 0.10; failed_checks.append('DMI_CONFLICT')
         except Exception as e:
@@ -260,12 +1148,25 @@ class SignalValidator:
         try:
             cci_data = ti.fetch_cci(ticker)
             if cci_data:
+<<<<<<< HEAD
+                cci_value = ti.get_latest_value(cci_data, 'cci')
+                metadata['checks']['cci'] = {'value': cci_value}
+                if cci_value is not None:
+                    if _dir == 'BUY':
+                        if cci_value < -100:
+                            confidence_adjustment += 0.05
+                            passed_checks.append('CCI_OVERSOLD')
+                        elif cci_value > 100:
+                            confidence_adjustment -= 0.05
+                            failed_checks.append('CCI_OVERBOUGHT')
+=======
                 cci = ti.get_latest_value(cci_data, 'cci')
                 metadata['checks']['cci'] = {'value': cci}
                 if cci is not None:
                     if _dir == 'BUY':
                         if   cci < -100: conf_adj += 0.05; passed_checks.append('CCI_OVERSOLD')
                         elif cci >  100: conf_adj -= 0.05; failed_checks.append('CCI_OVERBOUGHT')
+>>>>>>> origin/main
                     else:
                         if   cci >  100: conf_adj += 0.05; passed_checks.append('CCI_OVERBOUGHT')
                         elif cci < -100: conf_adj -= 0.05; failed_checks.append('CCI_OVERSOLD')
@@ -299,8 +1200,13 @@ class SignalValidator:
                         self.validation_stats['vpvr_scored'] += 1
 
                         if needs_vpvr_rescue and entry_score >= 0.85:
+<<<<<<< HEAD
+                            rescue_boost = abs(counter_trend_penalty)
+                            confidence_adjustment += rescue_boost
+=======
                             rescue = abs(counter_trend_penalty)
                             conf_adj += rescue
+>>>>>>> origin/main
                             passed_checks.append('VPVR_RESCUE')
                             failed_checks.remove('BIAS_COUNTER_TREND_STRONG')
                             vpvr_rescue_applied = True
