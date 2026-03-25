@@ -29,7 +29,7 @@ import logging
 logger = logging.getLogger(__name__)
 _ET = ZoneInfo("America/New_York")  # FIX: was NameError in process_ticker regime_age calc
 
-# ── Optional: screener metadata ───────────────────────────────────────────
+EXPLOSIVE_SCORE_THRESHOLD = 80 EXPLOSIVE_RVOL_THRESHOLD  = 3.0  # ── Optional: screener metadata ───────────────────────────────────────────
 try:
     from app.screening.screener_integration import get_ticker_screener_metadata
     logger.info("[SNIPER] ✅ screener_integration loaded")
@@ -64,12 +64,12 @@ from app.core.armed_signal_store import (
 
 # ── Optional modules (non-fatal stubs on missing) ──────────────────────────
 try:
-    from app.core.eod_reporter import run_eod_reports
+    from app.core.eod_reporter import run_eod_report
     logger.info("[SNIPER] ✅ eod_reporter loaded")
 except ImportError:
     logger.info("[SNIPER] ⚠️  eod_reporter not found — EOD reports disabled")
-    def run_eod_reports(*args, **kwargs):
-        logger.info("[EOD] ⚠️  run_eod_reports stub called — module not installed")
+    def run_eod_report(*args, **kwargs):
+        logger.info("[EOD] ⚠️  run_eod_report stub called — module not installed")
 
 from app.filters.vwap_gate import compute_vwap, passes_vwap_gate
 
@@ -356,7 +356,7 @@ def process_ticker(ticker: str):
                 logger.info(f"[{ticker}] SPY EMA context error: {e}")
 
         if is_force_close_time(bars_session[-1]):
-            run_eod_reports(
+            run_eod_report(
                 bars_session[-1],
                 validator_enabled=True,
                 validator_test_mode=False,
