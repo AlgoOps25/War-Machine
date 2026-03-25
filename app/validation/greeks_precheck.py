@@ -282,7 +282,7 @@ class GreeksCache:
                     volume=int(attrs.get("volume", 0)),
                     open_interest=int(attrs.get("open_interest", 0)),
                     dte=dte,
-                    timestamp=datetime.now(),
+                    timestamp=datetime.now(ZoneInfo("America/New_York")),
                 )
                 snapshots.append(snapshot)
 
