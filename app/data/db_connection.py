@@ -86,6 +86,15 @@ FIX 14.C-4 (MAR 19, 2026): DOUBLE-INIT RACE — USE_POSTGRES FLIPPED TO FALSE
   only sets USE_POSTGRES = False when _connection_pool is still None (i.e. we
   truly failed to build one), never when a working pool already exists.
 
+FIX (MAR 25, 2026): SEMAPHORE LIMIT INCREASE 12 → 14
+- Root cause of the 30s timeout crash loop was a semaphore leak in
+  production_helpers._db_operation_safe() (conn.close() instead of return_conn()).
+  That leak is fixed in production_helpers.py. This change raises the limit from
+  12 to 14 as a defensive buffer: the OR-window burst (analytics + monitor +
+  ticker loop) can briefly need 13 slots, and the extra headroom prevents a
+  single leaked slot from triggering the crash again.
+- Still well below POOL_MAX=15 and Railway's ~20 connection cap.
+
 NOTE: Railway provides DATABASE_URL as postgres:// — psycopg2 requires
 postgresql:// — we normalize it automatically here.
 """
@@ -123,7 +132,9 @@ CONNECTION_TIMEOUT_SECONDS = 300
 DB_RECONNECT_RETRIES = 3
 DB_RECONNECT_DELAYS  = [1, 2, 3]
 
-DB_SEMAPHORE_LIMIT = 12
+# FIX MAR 25, 2026: Raised 12 -> 14 as defensive buffer after semaphore leak
+# fix in production_helpers.py. Still below POOL_MAX=15 and Railway's ~20 cap.
+DB_SEMAPHORE_LIMIT = 14
 _db_semaphore = threading.Semaphore(DB_SEMAPHORE_LIMIT)
 
 _connection_pool = None
