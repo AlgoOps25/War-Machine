@@ -11,72 +11,38 @@ Features:
   - Signal tracking when trades execute (links signals to positions)
   - RTH guard: blocks new positions outside 9:30 AM - 4:00 PM ET
 
+Module-level helpers (SECTOR_GROUPS, date helpers, _write_completed_at)
+have been extracted to position_helpers.py for clarity.
+
 PHASE C1 FIX (MAR 10, 2026):
   - FIXED: _load_session_state() now re-populates self.positions from DB on startup
-  - Prevents phantom trade / wrong sizing after mid-session Railway restart or crash
-  - Streak, performance_multiplier, and circuit breaker math all survive restarts
 
 FIXED M5 (MAR 10, 2026):
-  - close_all_eod() now resets consecutive_wins, consecutive_losses, and
-    performance_multiplier to neutral (1.0) after all positions are closed.
-  - Previously EOD-closed positions incremented streak counters, carrying
-    yesterday's losing/winning streak into next morning's sizing math.
+  - close_all_eod() resets streak counters after EOD close.
 
 FIX #4 (MAR 11, 2026):
-  - close_position() now calls _write_completed_at() after every real close
-    (skipped for STALE_EOD).  This writes completed_at + outcome + exit_price
-    back to the ml_signals table, unblocking the live EOD retrain loop which
-    previously stalled because ml_signals rows stayed NULL in completed_at.
+  - close_position() calls _write_completed_at() after every real close.
 
-FIX #5 (MAR 13, 2026) — DB SEMAPHORE EXHAUSTION:
-  - Added 10s TTL cache on get_daily_stats() and get_open_positions().
-    Cache is invalidated immediately on every open_position() / close_position()
-    so trade logic always sees fresh state; only the polling hot-path is cached.
-  - check_circuit_breaker() and check_max_drawdown() now accept an optional
-    pre-fetched stats dict to avoid re-querying when the caller already has stats.
-  - get_risk_summary() now accepts an optional open_positions list for the same reason.
-  Net result: get_session_status() drops from 5 DB checkouts to 1-2;
-  evaluate_signal() drops 2 redundant checkouts on every ticker scan.
+FIX #5 (MAR 13, 2026):
+  - 10s TTL cache on get_daily_stats() and get_open_positions().
 
-FIX #6 (MAR 14, 2026) — TEST HOOK:
-  - Added _check_risk_limits(ticker, risk_dollars) as a testable wrapper around
-    can_open_position(). open_position() now calls _check_risk_limits() instead
-    of can_open_position() directly, so tests can monkeypatch the risk gate
-    cleanly without touching internals.
+FIX #6 (MAR 14, 2026):
+  - _check_risk_limits() testable wrapper around can_open_position().
 
-FIX #7 (MAR 14, 2026) — PY 3.10 F-STRING COMPAT:
-  - Python 3.10 (Railway runtime) forbids backslashes inside f-string expressions.
-  - Pre-compute circuit_breaker_label variable before the f-string in
-    get_risk_summary() to stay compatible with both Py 3.10 and 3.11.
+FIX #7 (MAR 14, 2026):
+  - Python 3.10 f-string backslash compat in get_risk_summary().
 
-FIX #8 (MAR 15, 2026) — CIRCUIT BREAKER POST-CLOSE USES REAL SESSION P&L:
-  - close_position() was passing a manually-constructed stats dict containing
-    only the current trade's P&L to check_circuit_breaker(). This meant the
-    breaker only saw the last trade's result, not the running session total.
-    Fix: call self.get_daily_stats() (cache already busted at this point) so
-    the breaker evaluates the true accumulated session P&L.
+FIX #8 (MAR 15, 2026):
+  - close_position() circuit-breaker check uses real session P&L.
 
-FIX #9 (MAR 15, 2026) — check_exits T1/T2 RACE VIA STALE CACHE:
-  - check_exits() read t1_hit from the cached get_open_positions() result.
-    If _scale_out() ran and a price gap pushed through T2 in the same scan
-    cycle, the stale t1_hit=False could allow close_position(TARGET 2) to fire
-    on the same position in the same loop iteration.
-    Fix: after _scale_out() call, re-fetch t1_hit live from DB before checking
-    the T2 condition, ensuring mutual exclusivity between T1 scale and T2 close.
+FIX #9 (MAR 15, 2026):
+  - check_exits() re-reads t1_hit from DB after _scale_out().
 
-FIX #10 (MAR 16, 2026) — UNICODE SURROGATE PAIRS:
-  - rotate (🔄) and siren (🚨) were stored as broken
-    surrogate pairs, causing UnicodeEncodeError on Railway stdout.
-    Replaced with correct 4-byte codepoints \\U0001f504 and \\U0001f6a8.
+FIX #10 (MAR 16, 2026):
+  - Unicode surrogate pair fix for rotate/siren emojis.
 
-FIX #11 (MAR 19, 2026) — SQLITE AT TIME ZONE CRASH (47.P4-1 UNBLOCK):
-  - Four queries used Postgres-only `AT TIME ZONE` syntax, crashing with
-    sqlite3.OperationalError on local dev.  This blocked every local import
-    of sniper.py (position_manager is instantiated at module level).
-  - Fix: branch on db_connection.USE_POSTGRES — Postgres keeps full TZ cast,
-    SQLite uses plain date() (naive-ET timestamps stored locally).
-  - Affected: _close_stale_positions, get_daily_stats, has_loss_streak,
-    get_todays_closed_trades.
+FIX #11 (MAR 19, 2026):
+  - SQLite AT TIME ZONE crash fix via _date_eq_today / _date_lt_today helpers.
 """
 from utils import config
 from datetime import datetime, timedelta
@@ -91,7 +57,17 @@ from app.data import db_connection
 from app.data.db_connection import get_conn, return_conn, ph, dict_cursor, serial_pk, USE_POSTGRES
 import time
 
-# ── VIX sizing (graceful fallback if module unavailable) ────────────────────
+# ── Import helpers from position_helpers ──────────────────────────────────────────
+from app.risk.position_helpers import (
+    SECTOR_GROUPS,
+    _STATS_CACHE_TTL,
+    _POSITIONS_CACHE_TTL,
+    _date_eq_today,
+    _date_lt_today,
+    _write_completed_at,
+)
+
+# ── VIX sizing (graceful fallback if module unavailable) ────────────────────────────
 try:
     from app.risk.vix_sizing import get_vix_multiplier as _get_vix_mult
     _VIX_SIZING_ENABLED = True
@@ -99,7 +75,7 @@ except ImportError:
     _VIX_SIZING_ENABLED = False
     def _get_vix_mult(): return 1.0
 
-# ── RTH guard (graceful fallback if module unavailable) ────────────────────
+# ── RTH guard (graceful fallback if module unavailable) ────────────────────────────
 try:
     from app.analytics.rth_filter import is_rth_now as _is_rth_now
     _RTH_GUARD_ENABLED = True
@@ -116,119 +92,6 @@ except ImportError:
     signal_tracker = None
     SIGNAL_TRACKING_ENABLED = False
     logger.info("[POSITION] \u26a0\ufe0f  Signal trade tracking disabled (signal_analytics not available)")
-
-
-# Sector/ticker correlation mapping used to prevent over-concentration in correlated assets
-SECTOR_GROUPS = {
-    "TECH": ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "TSLA", "AMD", "INTC", "CRM"],
-    "FINANCE": ["JPM", "BAC", "WFC", "GS", "MS", "C"],
-    "ENERGY": ["XOM", "CVX", "COP", "SLB", "EOG"],
-    "HEALTHCARE": ["JNJ", "UNH", "PFE", "ABBV", "MRK", "TMO"],
-    "INDICES": ["SPY", "QQQ", "IWM", "DIA"],
-    "VOLATILITY": ["VIX", "UVXY", "SVXY", "VXX"]
-}
-
-# ── Cache TTL (seconds) ────────────────────────────────────────────────
-_STATS_CACHE_TTL    = 10  # get_daily_stats() — re-query at most every 10s
-_POSITIONS_CACHE_TTL = 5  # get_open_positions() — re-query at most every 5s
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# FIX #11: SQLite-compatible date-filter helper
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _date_eq_today(col: str) -> str:
-    """
-    Return a SQL fragment that compares `col` (a TIMESTAMP) to today's ET date.
-
-    Postgres:  DATE(col AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York') = %s
-    SQLite:    date(col) = ?          (timestamps stored naive-ET locally)
-    """
-    if USE_POSTGRES:
-        return f"DATE({col} AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')"
-    return f"date({col})"
-
-
-def _date_lt_today(col: str) -> str:
-    """
-    Return a SQL fragment that checks `col` is strictly before today's ET date.
-
-    Postgres:  DATE(col AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York') < %s
-    SQLite:    date(col) < ?
-    """
-    if USE_POSTGRES:
-        return f"DATE({col} AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')"
-    return f"date({col})"
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# FIX #4: completed_at write-back helper
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _write_completed_at(
-    ticker:     str,
-    direction:  str,
-    outcome:    str,   # 'WIN' | 'LOSS'
-    exit_price: float,
-    exit_time:  datetime,
-) -> None:
-    """
-    Write completed_at, outcome, and exit_price back to the ml_signals table
-    for the most-recent PENDING signal matching (ticker, direction).
-
-    Safe no-op if:
-      - ml_signals table does not exist
-      - no matching PENDING row is found
-      - any DB error occurs
-
-    Called from close_position() for every real close (STOP LOSS, TARGET 1/2,
-    EOD CLOSE) so the live EOD retrain loop can detect resolved signals.
-    """
-    conn = None
-    try:
-        conn   = get_conn()
-        cursor = dict_cursor(conn)
-        p      = ph()
-
-        cursor.execute(
-            f"""
-            SELECT id FROM ml_signals
-            WHERE  ticker    = {p}
-              AND  direction = {p}
-              AND  status    = 'PENDING'
-            ORDER BY created_at DESC
-            LIMIT 1
-            """,
-            (ticker, direction),
-        )
-        row = cursor.fetchone()
-        if row is None:
-            return
-
-        signal_id = row["id"]
-
-        cursor.execute(
-            f"""
-            UPDATE ml_signals
-            SET  outcome      = {p},
-                 exit_price   = {p},
-                 completed_at = {p},
-                 status       = 'COMPLETED'
-            WHERE id = {p}
-            """,
-            (outcome, exit_price, exit_time, signal_id),
-        )
-        conn.commit()
-        print(
-            f"[ML-SIGNALS] \u2705 completed_at written: {ticker} {direction.upper()} "
-            f"{outcome} @ ${exit_price:.2f} (signal_id={signal_id})"
-        )
-
-    except Exception as exc:
-        logger.info(f"[ML-SIGNALS] \u26a0\ufe0f  completed_at write skipped ({ticker}): {exc}")
-    finally:
-        if conn:
-            return_conn(conn)
 
 
 class PositionManager:
@@ -249,25 +112,25 @@ class PositionManager:
         self.consecutive_losses = 0
         self.performance_multiplier = 1.0  # 0.5-1.5 range based on recent performance
 
-        # ── FIX #5: DB query result caches ──────────────────────────────────
+        # ── FIX #5: DB query result caches ─────────────────────────────────────────
         self._daily_stats_cache:     Optional[Dict] = None
         self._daily_stats_ts:        float          = 0.0
         self._open_positions_cache:  Optional[List] = None
         self._open_positions_ts:     float          = 0.0
-        # ───────────────────────────────────────────────────────────────────
+        # ────────────────────────────────────────────────────────────────────────────
 
         self._initialize_database()
         self._close_stale_positions()
         self._load_session_state()
 
-    # ── FIX #5: cache invalidation helper ──────────────────────────────────
+    # ── FIX #5: cache invalidation helper ────────────────────────────────────────────
     def _invalidate_caches(self) -> None:
         """Bust both caches immediately after any write (open/close)."""
         self._daily_stats_cache    = None
         self._daily_stats_ts       = 0.0
         self._open_positions_cache = None
         self._open_positions_ts    = 0.0
-    # ───────────────────────────────────────────────────────────────────
+    # ───────────────────────────────────────────────────────────────────────────
 
     def _load_session_state(self) -> None:
         """Load session starting balance, open positions, and performance streak on initialization."""
@@ -278,7 +141,7 @@ class PositionManager:
             self.account_size = self.session_starting_balance + total_pnl
             self.intraday_high_water_mark = max(self.intraday_high_water_mark, self.account_size)
 
-            # ── C1 FIX: Re-populate in-memory cache from DB on restart ────────────
+            # ── C1 FIX: Re-populate in-memory cache from DB on restart ─────────────────────
             open_db = self.get_open_positions()
             self.positions = [
                 {
@@ -304,7 +167,7 @@ class PositionManager:
                       f"from DB after restart: {tickers}")
             else:
                 logger.info("[RISK] \u2705 No open positions to reload \u2014 clean session start")
-            # ─────────────────────────────────────────────────────────────────────
+            # ────────────────────────────────────────────────────────────────────────────
 
             closed_trades = self.get_todays_closed_trades()
             if closed_trades:
@@ -410,7 +273,6 @@ class PositionManager:
         if _RTH_GUARD_ENABLED and not _is_rth_now():
             return False, "Outside RTH (9:30 AM - 4:00 PM ET) \u2014 no new positions"
 
-        # Share one stats fetch across both circuit-breaker and drawdown checks
         stats = self.get_daily_stats()
 
         breached, reason = self.check_circuit_breaker(stats=stats)
@@ -443,7 +305,7 @@ class PositionManager:
 
         return True, "OK"
 
-    # ── FIX #6: testable risk-gate hook ─────────────────────────────────────────
+    # ── FIX #6: testable risk-gate hook ─────────────────────────────────────────────────
     def _check_risk_limits(self, ticker: str, risk_dollars: float) -> Tuple[bool, str]:
         """
         Thin wrapper around can_open_position() so tests can monkeypatch
@@ -502,7 +364,6 @@ class PositionManager:
             conn   = get_conn()
             cursor = dict_cursor(conn)
             p      = ph()
-            # FIX #11: SQLite-compatible date comparison
             date_col = _date_eq_today("exit_time")
             cursor.execute(
                 f"""
@@ -576,7 +437,6 @@ class PositionManager:
             if conn:
                 return_conn(conn)
 
-
     def _close_stale_positions(self):
         """
         Force-close any OPEN positions whose entry_time is from a prior trading day.
@@ -589,7 +449,6 @@ class PositionManager:
             conn   = get_conn()
             cursor = dict_cursor(conn)
 
-            # FIX #11: SQLite-compatible date comparison
             date_col = _date_lt_today("entry_time")
             cursor.execute(f"""
                 SELECT id, ticker, direction, entry_price
@@ -612,7 +471,6 @@ class PositionManager:
         finally:
             if conn:
                 return_conn(conn)
-
 
     def calculate_position_size(self, confidence: float, grade: str,
                                 account_size: float = None,
@@ -665,7 +523,6 @@ class PositionManager:
             "vix_mult":        round(vix_mult, 2),
         }
 
-
     def open_position(self, ticker: str, direction: str,
                       zone_low: float, zone_high: float,
                       or_low: float, or_high: float,
@@ -695,7 +552,6 @@ class PositionManager:
         contracts = sizing["contracts"]
         risk_dollars = sizing["risk_dollars"]
 
-        # FIX #6: call _check_risk_limits() so tests can monkeypatch this hook
         can_open, reason = self._check_risk_limits(ticker, risk_dollars)
         if not can_open:
             logger.info(f"[RISK] \u274c {ticker} rejected - {reason}")
@@ -749,8 +605,6 @@ class PositionManager:
                 position_id = cursor.lastrowid
 
             conn.commit()
-
-            # Bust caches immediately after write
             self._invalidate_caches()
 
             self.positions.append({
@@ -803,7 +657,6 @@ class PositionManager:
             if conn:
                 return_conn(conn)
 
-
     def check_exits(self, current_prices: Dict[str, float]):
         """Check all open positions for stop/target hits with scale-out logic."""
         open_positions = self.get_open_positions()
@@ -829,8 +682,6 @@ class PositionManager:
                     self.close_position(pos_id, current_price, "STOP LOSS")
                 elif current_price >= t1 and not t1_hit:
                     self._scale_out(pos_id, current_price, entry)
-                    # FIX #9: re-read t1_hit from DB after scale_out before
-                    # evaluating T2 — prevents double-fire on a gap-through bar
                     t1_hit = self._get_t1_hit_from_db(pos_id)
                     if current_price >= t2 and t1_hit:
                         self.close_position(pos_id, current_price, "TARGET 2")
@@ -841,14 +692,11 @@ class PositionManager:
                     self.close_position(pos_id, current_price, "STOP LOSS")
                 elif current_price <= t1 and not t1_hit:
                     self._scale_out(pos_id, current_price, entry)
-                    # FIX #9: re-read t1_hit from DB after scale_out before
-                    # evaluating T2 — prevents double-fire on a gap-through bar
                     t1_hit = self._get_t1_hit_from_db(pos_id)
                     if current_price <= t2 and t1_hit:
                         self.close_position(pos_id, current_price, "TARGET 2")
                 elif current_price <= t2 and t1_hit:
                     self.close_position(pos_id, current_price, "TARGET 2")
-
 
     def _get_t1_hit_from_db(self, position_id: int) -> bool:
         """FIX #9: Re-read t1_hit directly from DB (bypasses cache) after _scale_out."""
@@ -869,7 +717,6 @@ class PositionManager:
         finally:
             if conn:
                 return_conn(conn)
-
 
     def _scale_out(self, position_id: int, exit_price: float, entry_price: float):
         """Close half the position at T1 and move stop to breakeven."""
@@ -904,8 +751,6 @@ class PositionManager:
                 WHERE id = {p}
             """, (contracts_left, entry_price, partial_pnl, position_id))
             conn.commit()
-
-            # Bust caches after scale-out write
             self._invalidate_caches()
 
             for cached in self.positions:
@@ -930,9 +775,8 @@ class PositionManager:
             if conn:
                 return_conn(conn)
 
-
     def close_position(self, position_id: int, exit_price: float, exit_reason: str):
-        """Close a position fully and record final P&L. Updates performance streak and checks circuit breaker."""
+        """Close a position fully and record final P&L."""
         conn = None
         try:
             p      = ph()
@@ -968,17 +812,14 @@ class PositionManager:
                 WHERE id = {p}
             """, (exit_price, exit_reason, final_pnl, exit_time, position_id))
             conn.commit()
-
-            # Bust caches immediately after write
             self._invalidate_caches()
 
             self.positions = [p for p in self.positions if p["id"] != position_id]
 
-            # ── FIX #4: write completed_at back to ml_signals ─────────────────
+            # FIX #4: write completed_at back to ml_signals
             if exit_reason != "STALE_EOD":
                 _ml_outcome = "WIN" if final_pnl > 0 else "LOSS"
                 _write_completed_at(ticker, direction, _ml_outcome, exit_price, exit_time)
-            # ─────────────────────────────────────────────────────────────────
 
             if exit_reason != "STALE_EOD":
                 closed_trades = self.get_todays_closed_trades()
@@ -1019,7 +860,6 @@ class PositionManager:
             if conn:
                 return_conn(conn)
 
-
     def close_all_eod(self, current_prices: Dict[str, float]):
         """Close all open positions at end of day (0DTE force close at 3:55 PM)."""
         open_positions = self.get_open_positions()
@@ -1028,13 +868,11 @@ class PositionManager:
             price  = current_prices.get(ticker, pos["entry_price"])
             self.close_position(pos["id"], price, "EOD CLOSE")
 
-        # ── M5 FIX: Reset streak counters after EOD force-close ──────────────────
+        # M5 FIX: Reset streak counters after EOD force-close
         self.consecutive_wins = 0
         self.consecutive_losses = 0
         self.performance_multiplier = 1.0
         logger.info("[POSITION] \U0001f504 EOD streak reset \u2014 performance_multiplier \u2192 1.0x for next session")
-        # ─────────────────────────────────────────────────────────────────────
-
 
     def get_open_positions(self) -> List[Dict]:
         """Return all currently open positions from the database (cached up to 5s)."""
@@ -1059,7 +897,6 @@ class PositionManager:
             if conn:
                 return_conn(conn)
 
-
     def get_daily_stats(self) -> Dict:
         """Return win/loss/P&L stats for today's closed trades (cached up to 10s)."""
         now = time.monotonic()
@@ -1075,7 +912,6 @@ class PositionManager:
             conn   = get_conn()
             cursor = dict_cursor(conn)
             today  = datetime.now(_ET).strftime("%Y-%m-%d")
-            # FIX #11: SQLite-compatible date comparison
             date_col = _date_eq_today("exit_time")
             cursor.execute(f"""
                 SELECT COUNT(*)                                  AS trades,
@@ -1107,7 +943,6 @@ class PositionManager:
         finally:
             if conn:
                 return_conn(conn)
-
 
     def get_win_rate(self, lookback_days: int = 30) -> Dict:
         """Return per-grade win rate stats over the last N days."""
@@ -1144,7 +979,6 @@ class PositionManager:
         finally:
             if conn:
                 return_conn(conn)
-
 
     def generate_report(self) -> str:
         """Generate end-of-day performance report string."""
@@ -1200,7 +1034,6 @@ class PositionManager:
             conn   = get_conn()
             cursor = dict_cursor(conn)
             today  = datetime.now(_ET).strftime("%Y-%m-%d")
-            # FIX #11: SQLite-compatible date comparison
             date_col = _date_eq_today("exit_time")
             cursor.execute(f"""
                 SELECT ticker, direction, grade, entry_price, exit_price, pnl
@@ -1216,9 +1049,7 @@ class PositionManager:
                 return_conn(conn)
 
     def get_risk_summary(self, open_positions: List[Dict] = None) -> str:
-        """Get formatted risk management summary.
-        Accepts optional pre-fetched open_positions to avoid a redundant DB call.
-        """
+        """Get formatted risk management summary."""
         stats = self.get_daily_stats()
         total_pnl = stats.get("total_pnl", 0.0)
 
@@ -1238,8 +1069,8 @@ class PositionManager:
 
         circuit_breached, _ = self.check_circuit_breaker(stats=stats)
 
-        # FIX #7: pre-compute label — backslashes inside f-string expressions
-        # are a SyntaxError on Python 3.10 (Railway runtime).
+        # FIX #7: pre-compute label — backslashes in f-string expressions are a
+        # SyntaxError on Python 3.10 (Railway runtime).
         cb_label = "\U0001f6a8 TRIGGERED" if circuit_breached else "\u2705 OK"
 
         summary = "\n" + "="*60 + "\n"
@@ -1259,5 +1090,5 @@ class PositionManager:
         return summary
 
 
-# ── Global singleton ─────────────────────────────────────────────────────────────────────────────
+# ── Global singleton ───────────────────────────────────────────────────────────────────────────────────
 position_manager = PositionManager()
