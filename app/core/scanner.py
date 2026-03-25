@@ -379,12 +379,21 @@ def start_scanner_loop():
     opts_msg = "Greeks analysis active" if OPTIONS_AVAILABLE else "NOT INTEGRATED"
     val_msg  = "CFW6 confirmation active" if VALIDATION_AVAILABLE else "NOT INTEGRATED"
 
-    logger.info(f"{'\u2713' if ANALYTICS_AVAILABLE else '\u2717'} DATABASE        {db_msg}")
-    logger.info(f"{'\u2713' if os.getenv('DISCORD_WEBHOOK_URL') else '\u2717'} DISCORD         {disc_msg}")
-    logger.info(f"{'\u2713' if API_KEY else '\u2717'} SCREENER        {scrn_msg}")
-    logger.info(f"{'\u2713' if os.getenv('REGIME_WEBHOOK_URL') else '\u2717'} REGIME-DISCORD  {reg_msg}")
-    logger.info(f"{'\u2713' if OPTIONS_AVAILABLE else '\u2717'} OPTIONS-GATE    {opts_msg}")
-    logger.info(f"{'\u2713' if VALIDATION_AVAILABLE else '\u2717'} VALIDATION      {val_msg}")
+    # FIX: Pre-compute ternary labels — backslashes inside f-string expressions
+    # are a SyntaxError on Python 3.10 (Railway runtime). Same fix as position_manager FIX #7.
+    db_tick   = "\u2713" if ANALYTICS_AVAILABLE else "\u2717"
+    disc_tick = "\u2713" if os.getenv('DISCORD_WEBHOOK_URL') else "\u2717"
+    scrn_tick = "\u2713" if API_KEY else "\u2717"
+    reg_tick  = "\u2713" if os.getenv('REGIME_WEBHOOK_URL') else "\u2717"
+    opts_tick = "\u2713" if OPTIONS_AVAILABLE else "\u2717"
+    val_tick  = "\u2713" if VALIDATION_AVAILABLE else "\u2717"
+
+    logger.info(f"{db_tick} DATABASE        {db_msg}")
+    logger.info(f"{disc_tick} DISCORD         {disc_msg}")
+    logger.info(f"{scrn_tick} SCREENER        {scrn_msg}")
+    logger.info(f"{reg_tick} REGIME-DISCORD  {reg_msg}")
+    logger.info(f"{opts_tick} OPTIONS-GATE    {opts_msg}")
+    logger.info(f"{val_tick} VALIDATION      {val_msg}")
     logger.info(f"  RVOL Signal Gate : MIN={config.RVOL_SIGNAL_GATE}x  Ceiling={config.RVOL_CEILING}x")
     logger.info(f"  Bear Signals     : {'ENABLED' if config.BEAR_SIGNALS_ENABLED else 'DISABLED'}")
     logger.info(f"  Ticker Watchdog  : {TICKER_TIMEOUT_SECONDS}s hard timeout per ticker")
