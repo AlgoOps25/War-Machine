@@ -96,6 +96,25 @@ PHASE 1.29 (MAR 16, 2026) - Ghost 12.9 score fix:
     by logging SKIPPED and moving on. No ghost scores enter the watchlist.
   - SECONDARY: Also return None when price == 0 (bar resolved but no price),
     which was another silent path to nonsense scores.
+
+PHASE 1.30 (MAR 25, 2026) - Premarket window gate:
+  - scan_ticker() now returns the cached result immediately (or None) when
+    called outside the premarket window (before 4:00 AM or after 9:30 AM ET).
+  - Eliminates the EARLY EXIT / RVOL=0.00x flood in Railway logs every time
+    the container boots mid-day and _build_live_watchlist() calls
+    run_momentum_screener() for the live session scoring pass.
+  - is_premarket_window() delegated to market_calendar.is_premarket_window()
+    which already wraps is_market_day() (weekend + NYSE holiday check).
+  - Outside the window: cached results are returned silently; fresh scans
+    are skipped with a single DEBUG log (no EARLY EXIT spam).
+
+PHASE 1.30a (MAR 25, 2026) - is_premarket_window() fix:
+  - BUG: Phase 1.30 added a local is_premarket_window() that only checked
+    the time (04:00-09:30 ET) without calling is_market_day(). A Saturday
+    or NYSE holiday at 8 AM ET would pass the gate and trigger fresh scans.
+  - FIX: Replaced local implementation with a direct import from
+    market_calendar.is_premarket_window(), which already wraps is_market_day()
+    (weekend + NYSE holiday check) before the time comparison.
 """
 from datetime import datetime, timedelta, time as dt_time
 from typing import List, Dict, Optional, Tuple
@@ -128,6 +147,35 @@ except ImportError as e:
 # Minimum RVOL required before running expensive API calls (gap/news/sector).
 # Tickers below this threshold are dead volume and will never make the watchlist.
 EARLY_EXIT_RVOL_MIN = 0.10
+
+
+# ===============================================================================
+# PHASE 1.30a: PREMARKET WINDOW GATE — delegated to market_calendar
+# ===============================================================================
+
+def is_premarket_window() -> bool:
+    """
+    Returns True only during the pre-market scanning window: 04:00–09:30 ET
+    on a NYSE trading day (Mon–Fri, not a holiday).
+
+    Delegates to market_calendar.is_premarket_window() which wraps
+    is_market_day() so weekends and NYSE holidays are also blocked.
+
+    Falls back to a local time-only check if the import fails, defaulting
+    to True (allow scan) on any exception so pre-market work is never
+    silently blocked by an import error.
+    """
+    try:
+        from app.screening.market_calendar import is_premarket_window as _cal_check
+        return _cal_check()
+    except Exception:
+        # Fallback: time-only check (no holiday/weekend guard)
+        try:
+            from zoneinfo import ZoneInfo
+            now = datetime.now(ZoneInfo("America/New_York")).time()
+            return dt_time(4, 0) <= now < dt_time(9, 30)
+        except Exception:
+            return True  # safe default — allow scan if tz lookup fails
 
 
 # ===============================================================================
@@ -469,24 +517,22 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
     """
     Scan a single ticker with professional 3-tier scoring + v2 enhancements.
 
-    PHASE 1.24 changes:
-      - Duplicate fundamentals log removed (fetch_fundamental_data() logs once).
-      - Early RVOL exit: tickers with RVOL < EARLY_EXIT_RVOL_MIN skip the
-        expensive gap/news/sector API chain entirely.
-
-    PHASE 1.28 changes:
-      - REST bar now captures `open` as the pre-market price (gap price) and
-        `previousClose` as the gap reference.
-      - rest_prev_close stored separately; used in gap analysis when available.
-      - detect_catalyst() result from Tier 2 reused in Tier 3.
-
-    PHASE 1.29 changes:
-      - FIX #8: Return None immediately when avg_daily_volume == 0 (failed
-        fundamentals fetch). Previously this produced a deterministic ghost
-        score of 12.9 (rvol=0 → rvol_score=20 → volume_score=21.5 →
-        composite=21.5*0.60=12.9) which leaked into the watchlist.
-      - FIX #8b: Return None when price == 0 (bar resolved but no price data).
+    PHASE 1.30 / 1.30a: Premarket window gate.
+      Outside 04:00-09:30 ET on a NYSE trading day, returns any existing
+      cached result silently (no new API calls, no EARLY EXIT logs). If no
+      cache entry exists, returns None. This prevents the mid-day RVOL=0.00x
+      EARLY EXIT flood caused by _build_live_watchlist() calling
+      run_momentum_screener() at container boot time after market open.
+      Weekend and holiday checks are handled by market_calendar.
     """
+    # ── PHASE 1.30a: time + trading-day gate ─────────────────────────────────
+    if not is_premarket_window():
+        cached = _scanner_cache.get_scan(ticker)
+        if cached:
+            return cached
+        logger.debug(f"[PREMARKET] {ticker}: outside premarket window — skipping fresh scan")
+        return None
+
     logger.info(f"[PREMARKET] Scanning {ticker}...")
 
     cached = _scanner_cache.get_scan(ticker)
@@ -498,9 +544,6 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
     fundamentals = fetch_fundamental_data(ticker)
 
     # ── PHASE 1.29: FIX #8 — bail out if fundamentals fetch failed ────────────
-    # avg_daily_volume=0 is the sentinel from _get_default_fundamentals().
-    # Without ADV we cannot compute a meaningful RVOL, so any score would be
-    # fabricated. Return None so scan_watchlist() logs SKIPPED and moves on.
     if fundamentals['avg_daily_volume'] == 0:
         print(
             f"[PREMARKET] {ticker}: SKIPPED — fundamentals fetch failed "
@@ -539,14 +582,8 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
             rt_resp = requests.get(rt_url, timeout=5)
             if rt_resp.status_code == 200:
                 rt = rt_resp.json()
-
-                # PHASE 1.28: EODHD real-time fields pre-market:
-                #   open  = pre-market indicated / last extended-hours price
-                #   close = previousClose (prior session close) — NOT a live price
-                # Use `open` as the gap price; fall back to `close` only if open absent.
                 premarket_price = rt.get('open') or rt.get('close') or rt.get('previousClose', 0)
                 rest_prev_close = rt.get('previousClose') or rt.get('close', 0)
-
                 current_bar = {
                     'close':  premarket_price,
                     'volume': rt.get('volume', 0)
@@ -602,8 +639,6 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
 
     # ──────────────────────────────────────────────────────────────────────────
     # Early RVOL exit gate (FIX 1.24)
-    # Note: this path is now only reachable when ADV > 0 (guaranteed above),
-    # so any score produced here reflects real volume data, not a ghost.
     # ──────────────────────────────────────────────────────────────────────────
     if volume_metrics['rvol'] < EARLY_EXIT_RVOL_MIN:
         composite_score = volume_score * 0.60
@@ -641,11 +676,10 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
 
     # ──────────────────────────────────────────────────────────────────────────
     # Tier 2: Gap quality (25% weight) + catalyst detection (shared with Tier 3)
-    # PHASE 1.28: detect_catalyst() called ONCE here; result reused in Tier 3.
     # ──────────────────────────────────────────────────────────────────────────
     gap_score = 0
     gap_data  = None
-    catalyst  = None  # shared across Tier 2 + Tier 3
+    catalyst  = None
 
     if V2_ENABLED:
         try:
@@ -678,7 +712,7 @@ def scan_ticker(ticker: str) -> Optional[Dict]:
         logger.info(f"[PREMARKET] {ticker}: Gap skipped — prev_close unavailable")
 
     # ──────────────────────────────────────────────────────────────────────────
-    # Tier 3: News catalyst score (15% weight) — reuses catalyst from Tier 2
+    # Tier 3: News catalyst score (15% weight)
     # ──────────────────────────────────────────────────────────────────────────
     catalyst_score = 0
     catalyst_data  = None

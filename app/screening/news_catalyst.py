@@ -16,6 +16,13 @@ PHASE 1.18 (MAR 10, 2026):
   - Matched keyword logged for debugging
   - notify_news_catalyst(): posts rich Discord embed to dedicated
     news channel (DISCORD_NEWS_WEBHOOK_URL) whenever a catalyst fires
+
+PHASE 1.30a (MAR 25, 2026):
+  - FIX: Reset matched_kw=None at the top of every catalyst-type block in
+    _analyze_news() so each check is fully independent of prior loop
+    iterations. Previously matched_kw was only reset before the downgrade
+    block, leaving merger and FDA blocks able to inherit a stale value
+    from an earlier for-loop iteration.
 """
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
@@ -296,9 +303,10 @@ class NewsCatalystDetector:
 
             ticker_specific_count += 1
             combined = (title + ' ' + content).lower()
-            matched_kw = None
 
             # --- Earnings ---
+            # FIX 1.30a: reset matched_kw at the top of every block
+            matched_kw = None
             for kw in self.EARNINGS_KEYWORDS:
                 if kw in combined:
                     matched_kw = kw
@@ -314,6 +322,7 @@ class NewsCatalystDetector:
                 continue
 
             # --- Upgrade ---
+            matched_kw = None
             for kw in self.UPGRADE_KEYWORDS:
                 if kw in combined:
                     matched_kw = kw
@@ -327,9 +336,8 @@ class NewsCatalystDetector:
                 ))
                 continue
 
-            matched_kw = None
-
             # --- Downgrade ---
+            matched_kw = None
             for kw in self.DOWNGRADE_KEYWORDS:
                 if kw in combined:
                     matched_kw = kw
@@ -343,9 +351,8 @@ class NewsCatalystDetector:
                 ))
                 continue
 
-            matched_kw = None
-
             # --- M&A ---
+            matched_kw = None
             for kw in self.MERGER_KEYWORDS:
                 if kw in combined:
                     matched_kw = kw
@@ -359,9 +366,8 @@ class NewsCatalystDetector:
                 ))
                 continue
 
-            matched_kw = None
-
             # --- FDA ---
+            matched_kw = None
             for kw in self.FDA_KEYWORDS:
                 if kw in combined:
                     matched_kw = kw
