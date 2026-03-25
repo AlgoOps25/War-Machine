@@ -19,9 +19,9 @@
 #                          NOTE: grade weight intentionally flattened — backtest shows
 #                          B+ / B grades outperform A+ when RVOL ≥ 1.2x. Old 25pt
 #                          A+ weight was blocking winning setups below the gate.
-#   IVR environment        0-15   (IVR 20-50 = 15, IVR 50-80 = 10, else = 5)
-#   GEX zone               0-15   (neg_gex_zone = 15, pos = 8)
-#   MTF trend alignment    0-15   (boost > 0.05 = 15, boost > 0 = 10, else = 5)
+#   IVR environment        0-15   (IVR 20-50 = 15, IVR 50-80 = 10, no-data = 10)
+#   GEX zone               0-15   (neg_gex_zone = 15, pos = 8, no-data = 10)
+#   MTF trend alignment    0-15   (boost > 0.05 = 15, boost > 0 = 10, no-data = 8)
 #   SMC enrichment         0-10   (delta >= 0.05 = 10, delta > 0 = 7, else = 3)
 #   VWAP gate pass         0-5    (pass = 5, else gate blocks before here)
 #   Liquidity sweep        0-5    (detected = 5, else = 0)
@@ -30,6 +30,11 @@
 #
 # GATE: score < 60 → signal dropped.
 # (Lowered from 72 to pass B-grade setups validated by grid search data.)
+#
+# Phase 1.38c — Fallback score calibration:
+#   IVR/GEX/MTF fallbacks raised so missing enrichment data does not
+#   block valid signals. Gate stays at 60.
+#   Typical no-enrichment signal: 38 → 48 after this fix.
 
 from dataclasses import dataclass, field
 from typing import Optional
@@ -97,10 +102,10 @@ def _score_grade(grade: str) -> float:
 
 def _score_ivr(options_rec: Optional[dict]) -> float:
     if not options_rec:
-        return 5.0
+        return 10.0  # Phase 1.38c: raised from 5 — missing data ≠ bad signal
     ivr = options_rec.get("ivr", None)
     if ivr is None:
-        return 5.0
+        return 10.0  # Phase 1.38c: raised from 5
     if 20 <= ivr <= 50:
         return 15.0
     if 50 < ivr <= 80:
@@ -110,10 +115,10 @@ def _score_ivr(options_rec: Optional[dict]) -> float:
 
 def _score_gex(options_rec: Optional[dict]) -> float:
     if not options_rec:
-        return 8.0
+        return 10.0  # Phase 1.38c: raised from 8 — missing data ≠ bad signal
     gex_data = options_rec.get("gex_data", {})
     if not gex_data or not gex_data.get("has_data"):
-        return 8.0
+        return 10.0  # Phase 1.38c: raised from 8
     return 15.0 if gex_data.get("neg_gex_zone") else 8.0
 
 
@@ -122,7 +127,7 @@ def _score_mtf_trend(mtf_trend_boost: float) -> float:
         return 15.0
     if mtf_trend_boost > 0.0:
         return 10.0
-    return 5.0
+    return 8.0  # Phase 1.38c: raised from 5 — no MTF data ≠ bad signal
 
 
 def _score_smc(smc_delta: float) -> float:
