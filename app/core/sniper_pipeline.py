@@ -662,7 +662,7 @@ def _run_signal_pipeline(
         ticker=ticker, direction=direction, grade=final_grade,
         options_rec=options_rec,
         mtf_trend_boost=_mtf_trend_boost,
-        smc_delta=_smc_delta,
+        smc_delta=_smc_delta if SMC_ENRICHMENT_ENABLED else None,
         vwap_passed=vwap_passes,
         sweep_detected=(_sweep_result is not None),
         ob_detected=(_ob_result is not None),
