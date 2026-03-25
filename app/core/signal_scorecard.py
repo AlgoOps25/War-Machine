@@ -145,8 +145,8 @@ def _score_mtf_trend(mtf_trend_boost: float) -> float:
     return 8.0  # Phase 1.38c: raised from 5 — no MTF data ≠ bad signal
 
 
-def _score_smc(smc_delta: float) -> float:
-    if smc_delta >= 0.05:
+def _score_smc(smc_delta: Optional[float]) -> float:
+    if smc_delta is None: return 7.0     if smc_delta >= 0.05:
         return 10.0
     if smc_delta > 0.0:
         return 7.0
