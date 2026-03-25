@@ -43,6 +43,12 @@ FIX #10 (MAR 16, 2026):
 
 FIX #11 (MAR 19, 2026):
   - SQLite AT TIME ZONE crash fix via _date_eq_today / _date_lt_today helpers.
+
+FIX #12 (MAR 25, 2026):
+  - Corrected RTH import: app.analytics.rth_filter -> app.filters.rth_filter
+    and function name is_rth_now -> is_rth. Prior broken import caused
+    _RTH_GUARD_ENABLED to always be False (silent fallback), disabling
+    the RTH guard on every session.
 """
 from utils import config
 from datetime import datetime, timedelta
@@ -75,9 +81,9 @@ except ImportError:
     _VIX_SIZING_ENABLED = False
     def _get_vix_mult(): return 1.0
 
-# ── RTH guard (graceful fallback if module unavailable) ────────────────────────────
+# ── RTH guard (FIX #12: corrected path app.filters.rth_filter and function is_rth) ──
 try:
-    from app.analytics.rth_filter import is_rth_now as _is_rth_now
+    from app.filters.rth_filter import is_rth as _is_rth_now
     _RTH_GUARD_ENABLED = True
 except ImportError:
     _RTH_GUARD_ENABLED = False
