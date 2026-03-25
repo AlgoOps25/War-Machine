@@ -254,14 +254,14 @@ def calculate_stop_loss_by_grade(
         if or_formed:
             or_stop    = or_low * 0.999
             stop_price = max(atr_stop, or_stop)
-            print(
+            logger.info(
                 f"[STOP] BULL {grade}: Entry ${entry_price:.2f} | "
                 f"ATR stop ${atr_stop:.2f} | OR stop ${or_stop:.2f} | "
                 f"Using ${stop_price:.2f}"
             )
         else:
             stop_price = atr_stop
-            print(
+            logger.info(
                 f"[STOP] BULL {grade}: Entry ${entry_price:.2f} | "
                 f"ATR stop ${atr_stop:.2f} | OR not formed — ATR only | "
                 f"Using ${stop_price:.2f}"
@@ -271,14 +271,14 @@ def calculate_stop_loss_by_grade(
         if or_formed:
             or_stop    = or_high * 1.001
             stop_price = min(atr_stop, or_stop)
-            print(
+            logger.info(
                 f"[STOP] BEAR {grade}: Entry ${entry_price:.2f} | "
                 f"ATR stop ${atr_stop:.2f} | OR stop ${or_stop:.2f} | "
                 f"Using ${stop_price:.2f}"
             )
         else:
             stop_price = atr_stop
-            print(
+            logger.info(
                 f"[STOP] BEAR {grade}: Entry ${entry_price:.2f} | "
                 f"ATR stop ${atr_stop:.2f} | OR not formed — ATR only | "
                 f"Using ${stop_price:.2f}"
