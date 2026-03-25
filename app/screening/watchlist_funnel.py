@@ -362,7 +362,7 @@ class WatchlistFunnel:
             return True
         if self.last_update_time is None:
             return True
-        elapsed_minutes = (datetime.now() - self.last_update_time).total_seconds() / 60
+        elapsed_minutes = (datetime.now(tz=ET) - self.last_update_time).total_seconds() / 60
         intervals = {"wide": 5, "narrow": 2, "final": 1, "live": 3}
         return elapsed_minutes >= intervals.get(current_stage, 5)
 
@@ -391,7 +391,7 @@ class WatchlistFunnel:
         stage_config       = self.stages[self.current_stage]
 
         logger.info(f"\n{'='*80}")
-        logger.info(f"WATCHLIST FUNNEL - {datetime.now().strftime('%H:%M:%S')}")
+        logger.info(f"WATCHLIST FUNNEL - {datetime.now(tz=ET)().strftime('%H:%M:%S')}")
         logger.info(f"Stage: {self.current_stage.upper()} - {stage_config['description']}")
         logger.info(f"{'='*80}\n")
 
@@ -407,7 +407,7 @@ class WatchlistFunnel:
         watchlist = _normalise(watchlist)
 
         self.current_watchlist = watchlist
-        self.last_update_time  = datetime.now()
+        self.last_update_time  = datetime.now(tz=ET)
 
         # persist locked list after normalise (PHASE 1.18)
         self._finalise_lock(watchlist)
@@ -612,7 +612,7 @@ class WatchlistFunnel:
 
         _get_momentum_screener().lock_scanner_cache()
         self._locked_watchlist = None  # finalised after normalise in build_watchlist
-        self._locked_at = datetime.now()
+        self._locked_at = datetime.now(tz=ET)
         print(
             f"[FUNNEL] Watchlist LOCKED at {self._locked_at.strftime('%H:%M:%S')} ET "
             f"\u2014 {len(watchlist)} tickers | next session for re-score"
