@@ -163,75 +163,72 @@ class BreakoutDetector:
 
     def calculate_support_resistance(
         self, bars: List[Dict], ticker: str = "unknown", as_of_date=None
-    ) -> Tuple[float, float]:
+    ) -> Tuple[float, float, str, str]:
         """
         Calculate support and resistance levels.
 
         Phase 1.17 — Session Anchoring:
-          1. Compute rolling intraday levels from last N bars (unchanged)
+          1. Compute rolling intraday levels from last N bars
           2. Pull 9:30 session high/low via get_session_levels()
           3. Session high becomes resistance when price is within 0.5% of it
              OR when it is higher than the rolling resistance (true day high)
           4. Session low becomes support when price is within 0.5% of it
              OR when it is lower than the rolling support (true day low)
-          5. PDH/PDL confluence still applies on top (unchanged)
+          5. PDH/PDL confluence still applies on top
 
-        This ensures a breakout above the session high is detected regardless
-        of how many bars are in the rolling lookback window.
+        Fixes (this commit):
+          - resistance_source and support_source are now initialized immediately
+            after the rolling levels are set, preventing NameError when the
+            session-anchoring try block runs without updating them.
+          - Removed duplicate get_pdh_pdl() call that appeared both before and
+            after the session-anchoring block (second call was redundant).
         """
         if not bars:
-            return 0.0, 0.0
+            return 0.0, 0.0, 'rolling', 'rolling'
 
         lookback = (bars[-self.lookback_bars:]
                     if len(bars) >= self.lookback_bars
                     else bars)
 
         # Step 1: rolling intraday levels
-        intraday_resistance = max(bar['high'] for bar in lookback)
-        intraday_support    = min(bar['low']  for bar in lookback)
+        resistance = max(bar['high'] for bar in lookback)
+        support    = min(bar['low']  for bar in lookback)
 
-        resistance = intraday_resistance
-        support    = intraday_support
+        # Initialize source labels immediately (fixes NameError)
+        resistance_source = 'rolling'
+        support_source    = 'rolling'
 
-        # Step 3: PDH/PDL confluence (unchanged from Phase 1.8)
-        pdh, pdl = self.get_pdh_pdl(ticker, as_of_date=as_of_date)
-        if pdh is not None:
-            if abs(pdh - resistance) / resistance < 0.02:
-                resistance = pdh
-        if pdl is not None:
-            if abs(pdl - support) / support < 0.02:
-                support = pdl
-
-                resistance_source = "rolling"
-        support_source    = "rolling"
-
+        # Step 2: session-anchoring via opening_range.get_session_levels()
         try:
             from app.signals.opening_range import get_session_levels
             session = get_session_levels(ticker)
             if session:
-                session_high = session['session_high']
-                session_low  = session['session_low']
+                session_high  = session['session_high']
+                session_low   = session['session_low']
                 current_price = bars[-1]['close']
+
                 near_session_high = (abs(current_price - session_high) / session_high) < 0.005
-                if session_high >= intraday_resistance or near_session_high:
+                if session_high >= resistance or near_session_high:
                     resistance        = session_high
-                    resistance_source = "session"
+                    resistance_source = 'session'
+
                 near_session_low = (abs(current_price - session_low) / session_low) < 0.005
-                if session_low <= intraday_support or near_session_low:
+                if session_low <= support or near_session_low:
                     support        = session_low
-                    support_source = "session"
+                    support_source = 'session'
         except Exception:
             pass
 
+        # Step 3: PDH/PDL confluence (single fetch — removed duplicate)
         pdh, pdl = self.get_pdh_pdl(ticker, as_of_date=as_of_date)
         if pdh is not None:
             if abs(pdh - resistance) / resistance < 0.02:
                 resistance        = pdh
-                resistance_source = "pdh"
+                resistance_source = 'pdh'
         if pdl is not None:
             if abs(pdl - support) / support < 0.02:
                 support        = pdl
-                support_source = "pdl"
+                support_source = 'pdl'
 
         return support, resistance, support_source, resistance_source
 
@@ -323,7 +320,7 @@ class BreakoutDetector:
         pdh, pdl        = self.get_pdh_pdl(ticker, as_of_date=as_of_date)
 
         # Detect whether session levels were used
-        session_anchored = (resistance_source == "session" or support_source == "session")
+        session_anchored = (resistance_source == 'session' or support_source == 'session')
 
         # ============================================================
         # BULL BREAKOUT
