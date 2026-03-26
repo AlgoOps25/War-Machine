@@ -2,6 +2,13 @@
 # Extracted from sniper.py (Phase 2 refactor)
 # Owns: _ensure_watch_db, _persist_watch, _remove_watch_from_db,
 #       _cleanup_stale_watches, _load_watches_from_db, _maybe_load_watches
+#
+# FIX I (2026-03-26): Added _watch_load_lock to _maybe_load_watches().
+#   armed_signal_store.py correctly wraps _maybe_load_armed_signals() in a
+#   threading.Lock() to prevent double-load on concurrent startup. This file
+#   had no equivalent lock — two threads could both see is_watches_loaded()==False
+#   simultaneously and both execute _load_watches_from_db(), duplicating watch
+#   state in memory. Now matches the pattern used by armed_signal_store.py.
 
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -14,6 +21,9 @@ logger = logging.getLogger(__name__)
 _state = get_state()
 
 MAX_WATCH_BARS = 12  # mirrored from sniper — watch window in bars (5m each)
+
+# FIX I: lock mirrors _armed_load_lock in armed_signal_store.py
+_watch_load_lock = __import__('threading').Lock()
 
 
 def _now_et():
@@ -172,9 +182,12 @@ def _load_watches_from_db() -> dict:
 
 
 def _maybe_load_watches():
-    if _state.is_watches_loaded():
-        return
-    _state.set_watches_loaded(True)
+    # FIX I (2026-03-26): lock prevents double-load when two threads both see
+    # is_watches_loaded()==False simultaneously at startup.
+    with _watch_load_lock:
+        if _state.is_watches_loaded():
+            return
+        _state.set_watches_loaded(True)
     _ensure_watch_db()
     loaded = _load_watches_from_db()
     if loaded:
@@ -207,13 +220,3 @@ def clear_watching_signals():
     _state.clear_watching_signals()
     conn = None
     try:
-        conn = get_conn()
-        cursor = conn.cursor()
-        safe_execute(cursor, "DELETE FROM watching_signals_persist")
-        conn.commit()
-    except Exception as e:
-        logger.info(f"[WATCH-DB] Clear error: {e}")
-    finally:
-        if conn:
-            return_conn(conn)
-    logger.info("[WATCHING] Cleared")
