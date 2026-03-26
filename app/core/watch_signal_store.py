@@ -127,7 +127,7 @@ def _cleanup_stale_watches():
         deleted_count = cursor.rowcount
         conn.commit()
         if deleted_count > 0:
-            logger.info(f"[WATCH-DB] 🧹 Auto-cleaned {deleted_count} stale watch(es) (older than {watch_window_minutes}min)")
+            logger.info(f"[WATCH-DB] \U0001f9f9 Auto-cleaned {deleted_count} stale watch(es) (older than {watch_window_minutes}min)")
     except Exception as e:
         logger.info(f"[WATCH-DB] Cleanup error: {e}")
     finally:
@@ -169,7 +169,7 @@ def _load_watches_from_db() -> dict:
             }
         if loaded:
             print(
-                f"[WATCH-DB] 📄 Reloaded {len(loaded)} watch state(s) from DB after restart: "
+                f"[WATCH-DB] \U0001f4c4 Reloaded {len(loaded)} watch state(s) from DB after restart: "
                 f"{', '.join(loaded.keys())}"
             )
         return loaded
@@ -198,20 +198,21 @@ def send_bos_watch_alert(ticker, direction, bos_price, struct_high, struct_low,
                           signal_type="CFW6_INTRADAY"):
     """Send Discord alert when BOS is detected and we enter watch mode."""
     from app.notifications.discord_helpers import send_simple_message
-    arrow = "🟢" if direction == "bull" else "🔴"
+    arrow = "\U0001f7e2" if direction == "bull" else "\U0001f534"
     level = f"${struct_high:.2f}" if direction == "bull" else f"${struct_low:.2f}"
     mode_tag = "[OR]" if signal_type == "CFW6_OR" else "[INTRADAY]"
     msg = (
-        f"📡 **BOS ALERT {mode_tag}: {ticker}** — {arrow} {direction.upper()}\n"
+        f"\U0001f4e1 **BOS ALERT {mode_tag}: {ticker}** \u2014 {arrow} {direction.upper()}\n"
         f"Break: **${bos_price:.2f}** | Level: {level}\n"
-        f"⏳ Watching for FVG (up to {MAX_WATCH_BARS} min) | "
-        f"🕐 {_now_et().strftime('%I:%M %p ET')}"
+        f"\u23f3 Watching for FVG (up to {MAX_WATCH_BARS} min) | "
+        f"\U0001f550 {_now_et().strftime('%I:%M %p ET')}"
     )
     try:
         send_simple_message(msg)
-        logger.info(f"[WATCH] 📡 {ticker} {direction.upper()} BOS @ ${bos_price:.2f}")
+        logger.info(f"[WATCH] \U0001f4e1 {ticker} {direction.upper()} BOS @ ${bos_price:.2f}")
     except Exception as e:
         logger.info(f"[WATCH] Alert error: {e}")
+
 
 def clear_watching_signals():
     """Clear all watching signals from memory and DB."""
@@ -220,3 +221,38 @@ def clear_watching_signals():
     _state.clear_watching_signals()
     conn = None
     try:
+        conn = get_conn()
+        cursor = conn.cursor()
+        safe_execute(cursor, "DELETE FROM watching_signals_persist", ())
+        conn.commit()
+        logger.info("[WATCH-DB] \U0001f9f9 All watching signals cleared from DB")
+    except Exception as e:
+        logger.info(f"[WATCH-DB] Clear error: {e}")
+    finally:
+        if conn:
+            return_conn(conn)
+
+
+def add_watching_signal(ticker: str, data: dict):
+    """Add a ticker to the watching signals state and persist to DB."""
+    _maybe_load_watches()
+    _state.add_watching_signal(ticker, data)
+    _persist_watch(ticker, data)
+
+
+def remove_watching_signal(ticker: str):
+    """Remove a ticker from watching signals state and DB."""
+    _state.remove_watching_signal(ticker)
+    _remove_watch_from_db(ticker)
+
+
+def get_watching_signals() -> dict:
+    """Return the current watching signals dict."""
+    _maybe_load_watches()
+    return _state.get_watching_signals()
+
+
+def is_watching(ticker: str) -> bool:
+    """Return True if ticker is currently in watch mode."""
+    _maybe_load_watches()
+    return _state.is_watching(ticker)
