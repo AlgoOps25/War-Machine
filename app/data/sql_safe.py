@@ -7,6 +7,14 @@ CRITICAL SECURITY FIX #3:
 - Prevents SQL injection attacks through user input
 - Maintains compatibility with existing code patterns
 
+FIX (MAR 26, 2026): SafeQueryBuilder.order_by() raw-string injection
+- ORDER BY clause was appended as an unsanitized f-string, inconsistent
+  with the module's own purpose. Each token is now validated:
+    column            → sanitize_table_name(column)
+    column ASC/DESC   → sanitize_table_name(column) + direction whitelist
+  Raises ValueError on any invalid token so callers fail loudly rather
+  than silently passing attacker-controlled SQL into the query.
+
 Usage:
     from app.data.sql_safe import safe_execute, safe_query, build_insert, build_update
     
@@ -240,6 +248,51 @@ def sanitize_table_name(name: str) -> str:
     return name
 
 
+def sanitize_order_by(order: str) -> str:
+    """
+    Validate and sanitize an ORDER BY expression before embedding in SQL.
+
+    FIX MAR 26, 2026: SafeQueryBuilder.order_by() previously accepted any
+    raw string, creating an unsanitized injection path inconsistent with the
+    rest of this module.
+
+    Accepts comma-separated tokens of the form:
+        column
+        column ASC
+        column DESC
+
+    Each column part is validated via sanitize_table_name().
+    Raises ValueError on any malformed token.
+
+    Examples:
+        sanitize_order_by("datetime DESC")        -> "datetime DESC"
+        sanitize_order_by("ticker ASC, price DESC") -> "ticker ASC, price DESC"
+        sanitize_order_by("1; DROP TABLE bars")   -> raises ValueError
+    """
+    _VALID_DIRECTIONS = {"ASC", "DESC"}
+    sanitized_tokens = []
+
+    for token in order.split(","):
+        parts = token.strip().split()
+        if len(parts) == 1:
+            sanitized_tokens.append(sanitize_table_name(parts[0]))
+        elif len(parts) == 2:
+            col = sanitize_table_name(parts[0])
+            direction = parts[1].upper()
+            if direction not in _VALID_DIRECTIONS:
+                raise ValueError(
+                    f"Invalid ORDER BY direction '{parts[1]}' — must be ASC or DESC"
+                )
+            sanitized_tokens.append(f"{col} {direction}")
+        else:
+            raise ValueError(
+                f"Invalid ORDER BY token '{token.strip()}' — "
+                f"expected 'column' or 'column ASC/DESC'"
+            )
+
+    return ", ".join(sanitized_tokens)
+
+
 def safe_in_clause(items: List[Any], placeholder: str = "?") -> Tuple[str, List[Any]]:
     """
     Build a safe IN clause for SQL queries.
@@ -309,18 +362,25 @@ class SafeQueryBuilder:
         return self
     
     def order_by(self, order: str):
-        """Add ORDER BY clause"""
-        self._order_by = order
+        """
+        Add ORDER BY clause.
+
+        FIX MAR 26, 2026: validates via sanitize_order_by() instead of
+        embedding the raw string directly. Accepted format per token:
+            column | column ASC | column DESC
+        Raises ValueError on any malformed or injection-suspicious input.
+        """
+        self._order_by = sanitize_order_by(order)
         return self
     
     def limit(self, limit: int):
         """Add LIMIT"""
-        self._limit = limit
+        self._limit = int(limit)  # int cast ensures no string injection
         return self
     
     def offset(self, offset: int):
         """Add OFFSET"""
-        self._offset = offset
+        self._offset = int(offset)  # int cast ensures no string injection
         return self
     
     def build(self) -> Tuple[str, Tuple]:
