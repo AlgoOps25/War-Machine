@@ -91,6 +91,20 @@ PHASE 1.34 (MAR 19, 2026) - Daily funnel reset:
   - Without this, the Railway process retains the WatchlistFunnel singleton
     across session boundaries, causing yesterday's locked watchlist to be
     returned all day on the following session.
+
+FIX v3.9 (MAR 26, 2026) - Prevent empty watchlist lock on mid-session redeploy:
+  - _filter_ws_covered(): if ALL tickers have zero session bars (WS not
+    connected yet / intraday backfill not complete at startup), skip the
+    filter entirely and return the full unfiltered list. Previously the
+    safety-net fallback was unreachable because the covered list was empty
+    AND watchlist was returned — but _build_live_watchlist() then received
+    the full list, scored 0 tickers, and locked []. Now the guard fires
+    early (before scoring) so startup redeployments during market hours
+    never produce an empty locked watchlist.
+  - _build_live_watchlist(): if the watchlist is empty after all
+    scoring/filtering, do NOT commit the lock (_locked_at cleared). The
+    next scanner tick retries the full live build instead of perpetually
+    returning an empty locked list for the rest of the session.
 """
 import sys
 from pathlib import Path
@@ -133,11 +147,19 @@ def _normalise(watchlist: List[str]) -> List[str]:
 # FIX v3.8: WS COVERAGE FILTER
 # Drop tickers that have zero session bars at lock time. These are tickers
 # subscribed to EODHD WebSocket but for which EODHD sends no data.
+#
+# FIX v3.9: Skip filter entirely when NO tickers have bars yet.
+# On a mid-session redeploy the WS hasn't connected and intraday backfill
+# hasn't run — every ticker has 0 bars. The old code hit the safety-net
+# fallback correctly, but _build_live_watchlist() still scored 0 tickers
+# and locked []. Now we skip the filter up-front so the full candidate
+# list reaches scoring.
 # ════════════════════════════════════════════════════════════════════════════════
 
 def _filter_ws_covered(watchlist: List[str]) -> List[str]:
     """
     FIX v3.8: Remove tickers with zero today session bars before lock.
+    FIX v3.9: Skip filter entirely if backfill/WS not ready (all zeros).
 
     Tickers can pass scoring but have no WS coverage from EODHD (e.g. CFLT).
     Locking them causes ⚠️ No session bars every scan cycle all session.
@@ -156,13 +178,19 @@ def _filter_ws_covered(watchlist: List[str]) -> List[str]:
             else:
                 dropped.append(ticker)
 
+        # FIX v3.9: if nobody has bars, WS/backfill isn't ready yet —
+        # skip the filter so the full list reaches scoring/lock.
+        if not covered:
+            logger.info(
+                "[FUNNEL] ⚠️  WS coverage filter: 0/%d tickers have session bars "
+                "— backfill likely still running, skipping filter (safety net)",
+                len(watchlist),
+            )
+            return watchlist
+
         if dropped:
             print(f"[FUNNEL] 🚫 WS coverage filter dropped {len(dropped)} ticker(s) "
                   f"with no session bars: {dropped}")
-
-        if not covered:
-            logger.info("[FUNNEL] ⚠️  All tickers failed WS coverage check — keeping full list (safety net)")
-            return watchlist
 
         logger.info(f"[FUNNEL] ✅ WS coverage filter: {len(covered)}/{len(watchlist)} tickers verified")
         return covered
@@ -565,6 +593,7 @@ class WatchlistFunnel:
         PHASE 1.18: Only runs ONCE at 9:30 ET.
         PHASE 1.19: Applies relative strength/weakness outlier boost before lock.
         FIX v3.8:   WS coverage filter drops zero-bar tickers before lock.
+        FIX v3.9:   Do NOT lock an empty watchlist — defer to next tick.
         """
         stage_config = self.stages["live"]
         screener_results = dynamic_screener.get_scored_tickers(
@@ -606,9 +635,17 @@ class WatchlistFunnel:
         )
 
         # FIX v3.8: Drop tickers with no session bars before lock.
-        # Tickers subscribed to EODHD WS but receiving no data would fire
-        # ⚠️ No session bars every scan cycle for the entire session.
+        # FIX v3.9: Skip filter when backfill/WS not ready (all zeros).
         watchlist = _filter_ws_covered(watchlist)
+
+        # FIX v3.9: Never lock an empty watchlist — defer to next scanner tick.
+        if not watchlist:
+            logger.warning(
+                "[FUNNEL] ⚠️  Live build produced empty watchlist "
+                "(screener cold / WS not ready) — deferring lock to next tick"
+            )
+            self._locked_at = None
+            return []
 
         _get_momentum_screener().lock_scanner_cache()
         self._locked_watchlist = None  # finalised after normalise in build_watchlist
