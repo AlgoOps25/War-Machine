@@ -3,9 +3,14 @@
 # Identifies order blocks (last up/down candle before a BOS) and caches them.
 # When price retests the OB zone, applies a confidence boost.
 # Cache is in-memory (per session) — resets on restart.
+#
+# FIX 50.A-2 (Mar 26 2026): print() in apply_ob_retest_boost() replaced with
+#   logger.info(); added import logging + module-level logger.
 
 from datetime import datetime, time
 from zoneinfo import ZoneInfo
+import logging
+logger = logging.getLogger(__name__)
 
 OB_CACHE: dict[str, list] = {}   # ticker -> list of order block dicts
 
@@ -107,9 +112,10 @@ def apply_ob_retest_boost(
         return confidence, None
 
     boosted = min(confidence + OB_RETEST_BOOST, 0.95)
-    print(
-        f"[{ticker}] ✅ ORDER BLOCK RETEST: zone ${ob['ob_low']:.2f}–${ob['ob_high']:.2f} | "
-        f"Conf boost: {confidence:.3f} → {boosted:.3f} (+{OB_RETEST_BOOST:.2f})"
+    # FIX 50.A-2: was print() — use logger.info for Railway log stream
+    logger.info(
+        f"[{ticker}] \u2705 ORDER BLOCK RETEST: zone ${ob['ob_low']:.2f}\u2013${ob['ob_high']:.2f} | "
+        f"Conf boost: {confidence:.3f} \u2192 {boosted:.3f} (+{OB_RETEST_BOOST:.2f})"
     )
     return boosted, ob
 

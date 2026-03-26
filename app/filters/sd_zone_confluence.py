@@ -2,6 +2,12 @@
 # D2: Supply/Demand Zone Confluence (MVP)
 # Identifies intraday S/D zones from swing highs/lows with strong momentum.
 # Boosts confidence when entry price lands inside a zone.
+#
+# FIX 50.A-3 (Mar 26 2026): print() in apply_sd_confluence_boost() replaced
+#   with logger.info(); added import logging + module-level logger.
+
+import logging
+logger = logging.getLogger(__name__)
 
 SD_ZONE_BUFFER_PCT   = 0.0020   # zone ±0.20% buffer for entry tolerance
 SD_MOMENTUM_MIN_PCT  = 0.0015   # impulse candle body >= 0.15% to qualify
@@ -102,10 +108,11 @@ def apply_sd_confluence_boost(
         return confidence, None
 
     boosted = min(confidence + SD_CONFLUENCE_BOOST, 0.95)
-    print(
-        f"[{ticker}] ✅ S/D ZONE CONFLUENCE: {zone['type'].upper()} "
-        f"${zone['zone_low']:.2f}–${zone['zone_high']:.2f} | "
-        f"Conf boost: {confidence:.3f} → {boosted:.3f} (+{SD_CONFLUENCE_BOOST:.2f})"
+    # FIX 50.A-3: was print() — use logger.info for Railway log stream
+    logger.info(
+        f"[{ticker}] \u2705 S/D ZONE CONFLUENCE: {zone['type'].upper()} "
+        f"${zone['zone_low']:.2f}\u2013${zone['zone_high']:.2f} | "
+        f"Conf boost: {confidence:.3f} \u2192 {boosted:.3f} (+{SD_CONFLUENCE_BOOST:.2f})"
     )
     return boosted, zone
 

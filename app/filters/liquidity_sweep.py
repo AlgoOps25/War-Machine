@@ -11,10 +11,15 @@
 #   above or_low pass as a valid reclaim. Fix: _candle_swept_level() now
 #   accepts an optional min_reclaim kwarg (absolute $) computed in
 #   detect_liquidity_sweep() as 20% of the OR range.
+#
+# FIX 50.A-1 (Mar 26 2026): print() in apply_sweep_boost() replaced with
+#   logger.info() for Railway log stream consistency.
 
 from datetime import time
 from zoneinfo import ZoneInfo
 from datetime import datetime
+import logging
+logger = logging.getLogger(__name__)
 
 SWEEP_WICK_MIN_PCT   = 0.0015   # wick must extend at least 0.15% beyond level
 SWEEP_CLOSE_MAX_PCT  = 0.0010   # close must retrace back within 0.10% of level
@@ -113,9 +118,10 @@ def apply_sweep_boost(
         return confidence, None
 
     boosted = min(confidence + result["boost"], 0.95)
-    print(
-        f"[{ticker}] ✅ LIQUIDITY SWEEP: {result['sweep_type']} @ "
+    # FIX 50.A-1: was print() — use logger.info for Railway log stream
+    logger.info(
+        f"[{ticker}] \u2705 LIQUIDITY SWEEP: {result['sweep_type']} @ "
         f"${result['swept_level']:.2f} | "
-        f"Conf boost: {confidence:.3f} → {boosted:.3f} (+{result['boost']:.2f})"
+        f"Conf boost: {confidence:.3f} \u2192 {boosted:.3f} (+{result['boost']:.2f})"
     )
     return boosted, result
