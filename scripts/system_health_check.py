@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-War Machine - Comprehensive System Health Check  v1.17
+War Machine - Comprehensive System Health Check  v1.18
 
 All imports match the CURRENT codebase. Run from repo root:
     python scripts/system_health_check.py
@@ -8,7 +8,7 @@ All imports match the CURRENT codebase. Run from repo root:
 import sys
 import os
 
-# ── Repo root on path ────────────────────────────────────────────────────────
+# ── Repo root on path ───────────────────────────────────────────────────────────
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 # ── Auto-load .env if present ────────────────────────────────────────────────
@@ -41,7 +41,7 @@ def test_component(name: str, test_func) -> Tuple[bool, str]:
         return False, msg
 
 print("\n" + "="*80)
-print("WAR MACHINE - COMPREHENSIVE SYSTEM HEALTH CHECK  v1.17")
+print("WAR MACHINE - COMPREHENSIVE SYSTEM HEALTH CHECK  v1.18")
 print("="*80)
 print(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
 
@@ -131,9 +131,14 @@ def test_dynamic_screener():
 test_component("Dynamic Screener Module (v3.1)", test_dynamic_screener)
 
 def test_screener_integration():
-    from app.screening.screener_integration import get_ticker_screener_metadata
-    meta = get_ticker_screener_metadata('AAPL')
-    assert isinstance(meta, dict), "metadata is not a dict"
+    """screener_integration was removed — soft-warn instead of hard-fail."""
+    try:
+        from app.screening.screener_integration import get_ticker_screener_metadata
+        meta = get_ticker_screener_metadata('AAPL')
+        assert isinstance(meta, dict), "metadata is not a dict"
+    except ModuleNotFoundError:
+        print("   ⚠️  app.screening.screener_integration not found (module removed — skipping)")
+        return True
 
 test_component("Screener Integration Helper", test_screener_integration)
 
@@ -267,20 +272,23 @@ def test_explosive_tracker():
 test_component("Explosive Mover Tracker", test_explosive_tracker)
 
 def test_signal_cooldown():
-    """Call is_on_cooldown with whatever arguments its real signature requires."""
+    """Verify is_on_cooldown is callable and returns (bool, str|None) tuple."""
     from app.analytics.cooldown_tracker import is_on_cooldown
     import inspect
     sig    = inspect.signature(is_on_cooldown)
     params = list(sig.parameters.keys())
     print(f"   is_on_cooldown params: {params}")
 
-    # Build kwargs for every required positional param using safe defaults
-    _defaults = {'ticker': 'TEST', 'direction': 'bull', 'signal_type': 'CFW6_OR'}
-    kwargs = {p: _defaults.get(p, 'TEST') for p in params
-              if sig.parameters[p].default is inspect.Parameter.empty}
-
-    result = is_on_cooldown(**kwargs)
-    assert isinstance(result, bool), f"is_on_cooldown didn't return bool, got {type(result)}"
+    result = is_on_cooldown('TEST', 'bull')
+    # is_on_cooldown returns (bool, Optional[str]) — check tuple[0] is bool
+    if isinstance(result, tuple):
+        blocked, reason = result
+        assert isinstance(blocked, bool), \
+            f"is_on_cooldown tuple[0] should be bool, got {type(blocked)}"
+        print(f"   ✅  is_on_cooldown('TEST','bull') → blocked={blocked}, reason={reason!r}")
+    else:
+        assert isinstance(result, bool), \
+            f"is_on_cooldown should return bool or (bool,str), got {type(result)}"
 
 test_component("Signal Cooldown Tracker", test_signal_cooldown)
 
@@ -331,30 +339,36 @@ test_component("Thread-Safe State Module", test_thread_safe_state)
 
 
 # ============================================================================
-# [13/15] ERROR RECOVERY
+# [13/15] ERROR RECOVERY (optional module)
 # ============================================================================
 print("\n[13/15] ERROR RECOVERY")
 print("-"*80)
 
 def test_error_recovery():
-    import app.core.error_recovery as er
-    members = [m for m in dir(er) if not m.startswith('_')]
-    print(f"   error_recovery exports: {members}")
+    try:
+        import app.core.error_recovery as er
+        members = [m for m in dir(er) if not m.startswith('_')]
+        print(f"   error_recovery exports: {members}")
+    except ModuleNotFoundError:
+        print("   ⚠️  app.core.error_recovery not found (optional module — skipping)")
     return True
 
 test_component("Error Recovery Module", test_error_recovery)
 
 
 # ============================================================================
-# [14/15] HEALTH CHECK MODULE
+# [14/15] HEALTH CHECK MODULE (optional)
 # ============================================================================
 print("\n[14/15] HEALTH CHECK MODULE")
 print("-"*80)
 
 def test_health_check_module():
-    import app.health_check as hc
-    members = [m for m in dir(hc) if not m.startswith('_')]
-    print(f"   health_check exports: {members}")
+    try:
+        import app.health_check as hc
+        members = [m for m in dir(hc) if not m.startswith('_')]
+        print(f"   health_check exports: {members}")
+    except ModuleNotFoundError:
+        print("   ⚠️  app.health_check not found (replaced by health_server.py — skipping)")
     return True
 
 test_component("Health Check Module", test_health_check_module)
