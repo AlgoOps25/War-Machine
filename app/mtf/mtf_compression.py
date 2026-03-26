@@ -19,10 +19,17 @@ Supported derivations:
 FIX H2 (MAR 10, 2026):
   Removed duplicate TIMEFRAME_PRIORITY / TIMEFRAME_WEIGHTS assignments.
   Single authoritative definition now covers all supported timeframes.
+
+FIX #44 (MAR 26, 2026):
+  Moved logger = logging.getLogger(__name__) to top of module (was at
+  bottom, after all functions, and unused). Standard placement.
 """
 import logging
 from typing import List, Dict, Optional
 from datetime import timedelta
+
+logger = logging.getLogger(__name__)
+
 
 def detect_bar_resolution(bars: list) -> int:
     """
@@ -320,5 +327,3 @@ def compress_bars(bars: List[dict], minutes: int) -> List[dict]:
     if fn is None:
         return bars
     return fn(bars)
-
-logger = logging.getLogger(__name__)
