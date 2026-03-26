@@ -15,6 +15,9 @@ Integration:
 - Scans all available timeframes for FVGs
 - Returns the highest-TF FVG as the primary trade zone
 - Marks lower-TF FVGs as "secondary" for confluence tracking only
+
+FIX (Mar 26 2026) — issue #29:
+  - get_highest_priority_fvg(): print() → logger.info() for priority log line.
 """
 
 import logging
@@ -380,17 +383,17 @@ def get_highest_priority_fvg(
     if result['primary_fvg'] is None:
         return None
     
-    # Log priority resolution
+    # FIX #29: print() → logger.info()
     if result['has_conflict']:
-        print(
-            f"[MTF-PRIORITY] {ticker} {direction.upper()}: "
-            f"{result['resolution']}"
+        logger.info(
+            "[MTF-PRIORITY] %s %s: %s",
+            ticker, direction.upper(), result['resolution']
         )
     
     return result['primary_fvg']
 
 
-# ── PHASE 3C: FIX 41.H-5 ────────────────────────────────────────────────────────────────────────────────
+# ── PHASE 3C: FIX 41.H-5 ────────────────────────────────────────────────────────────────────────────
 # get_full_mtf_analysis now resamples internally from bars_5m (or bars_1m if
 # provided) instead of requiring the caller to build the MTF dict. This
 # eliminates the 3 extra DB reads that occurred when sniper.py passed raw
