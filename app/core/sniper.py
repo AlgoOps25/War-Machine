@@ -263,6 +263,11 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
     """
     Thin dispatcher — delegates to sniper_pipeline._run_signal_pipeline.
     Kept here so scanner.py import surface stays unchanged.
+
+    FIX E (2026-03-26): Removed get_ticker_screener_metadata= and state= kwargs.
+      Those were part of the old all-in-one sniper.py signature before the pipeline
+      was extracted. sniper_pipeline absorbed them via **_unused_kwargs but passing
+      them is dead weight — removed to keep the call surface clean.
     """
     return _pipeline(
         ticker, direction, zone_low, zone_high,
@@ -272,8 +277,6 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
         bos_candle_type=bos_candle_type,
         spy_regime=spy_regime,
         skip_cfw6_confirmation=skip_cfw6_confirmation,
-        get_ticker_screener_metadata=get_ticker_screener_metadata,
-        state=_state,
     )
 
 
@@ -622,10 +625,15 @@ def process_ticker(ticker: str):
                     f"[{ticker}] 🔵 VWAP RECLAIM: {vr['direction'].upper()} "
                     f"@ ${vr['entry_price']:.2f} | VWAP=${vr['vwap']:.2f}"
                 )
+                # FIX F (2026-03-26): Pass 0.0 / 0.0 for or_high_ref / or_low_ref.
+                # No opening range was formed on VWAP-reclaim paths; synthetic
+                # entry_price * 1.005 / 0.995 values were misleading.
+                # compute_stop_and_targets() M8 guard already skips OR boundary
+                # comparison when or_high=0.0 / or_low=0.0.
                 _run_signal_pipeline(
                     ticker, vr["direction"],
                     vr["zone_low"], vr["zone_high"],
-                    vr["entry_price"] * 1.005, vr["entry_price"] * 0.995,
+                    0.0, 0.0,
                     "CFW6_INTRADAY",
                     bars_session, vr["reclaim_bar_idx"],
                     spy_regime=spy_regime,
