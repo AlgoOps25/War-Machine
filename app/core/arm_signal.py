@@ -28,10 +28,27 @@ def arm_ticker(
     bos_confirmation=None, bos_candle_type=None, mtf_result=None, metadata=None,
     vp_bias=None
 ):
-    """
+    """Phase 4 Funnel Fix: Wire record_signal_armed() into arm_ticker() (FIX 19.C-1)
     Arm a confirmed signal:
       1. Hard-reject if stop is tighter than 0.1% of entry.
       2. Open position via position_manager (risk-gated).
+          # Phase 4 Funnel: Record ARMED stage
+    try:
+        from app.signals.signal_analytics import signal_tracker
+        bars = 0
+        if metadata and isinstance(metadata, dict):
+            bars = metadata.get('bars_to_confirmation', 0)
+        
+        signal_tracker.record_signal_armed(
+            ticker=ticker,
+            final_confidence=confidence,
+            bars_to_confirmation=bars,
+            confirmation_type=bos_confirmation or 'retest'
+        )
+        logger.info(f"[ANALYTICS] 🎯 {ticker} ARMED stage recorded")
+    except Exception as _arm_err:
+        logger.info(f"[ANALYTICS] record_signal_armed error (non-fatal): {_arm_err}")
+
       3. Fire Discord alert only if position_id > 0.
       4. Persist to armed_signals_persist DB table.
       5. Record TRADED stage in signal_analytics (FIX Mar 16 2026).
