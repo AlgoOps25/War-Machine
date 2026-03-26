@@ -189,6 +189,10 @@ class RTHFilter:
         Returns:
             'pre_market' | 'open_chop' | 'morning' | 'lunch' |
             'afternoon' | 'close_chop' | 'after_hours'
+
+        FIX: after_hours (>= 16:00) is checked before close_chop (>= 15:55)
+        so times >= 16:00 correctly return 'after_hours' instead of
+        'close_chop'.
         """
         if dt is None:
             dt = datetime.now(ET)
@@ -198,12 +202,12 @@ class RTHFilter:
             return 'pre_market'
         if t < OPEN_CHOP_END:
             return 'open_chop'
-        if LUNCH_START <= t < LUNCH_END:
-            return 'lunch'
-        if t >= CLOSE_CHOP_START:
-            return 'close_chop'
         if t >= MARKET_CLOSE:
             return 'after_hours'
+        if t >= CLOSE_CHOP_START:
+            return 'close_chop'
+        if LUNCH_START <= t < LUNCH_END:
+            return 'lunch'
         return 'morning' if t < dtime(12, 0) else 'afternoon'
 
     def __repr__(self) -> str:
