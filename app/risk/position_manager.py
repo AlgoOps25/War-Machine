@@ -49,6 +49,13 @@ FIX #12 (MAR 25, 2026):
     and function name is_rth_now -> is_rth. Prior broken import caused
     _RTH_GUARD_ENABLED to always be False (silent fallback), disabling
     the RTH guard on every session.
+
+FIX #13 (MAR 26, 2026):
+  - get_win_rate() used _date_eq_today("exit_time") in a >= clause — the
+    name implied equality but was structurally a date extractor. Added
+    _date_col() alias to position_helpers.py and updated this call site.
+    No runtime behaviour change (the SQL fragment is identical); fixes
+    misleading code that could confuse future readers or tools.
 """
 from utils import config
 from datetime import datetime, timedelta
@@ -63,17 +70,18 @@ from app.data import db_connection
 from app.data.db_connection import get_conn, return_conn, ph, dict_cursor, serial_pk, USE_POSTGRES
 import time
 
-# ── Import helpers from position_helpers ──────────────────────────────────────────
+# ── Import helpers from position_helpers ───────────────────────────────────────────────────────────────────
 from app.risk.position_helpers import (
     SECTOR_GROUPS,
     _STATS_CACHE_TTL,
     _POSITIONS_CACHE_TTL,
+    _date_col,          # FIX #13: range queries (get_win_rate)
     _date_eq_today,
     _date_lt_today,
     _write_completed_at,
 )
 
-# ── VIX sizing (graceful fallback if module unavailable) ────────────────────────────
+# ── VIX sizing (graceful fallback if module unavailable) ──────────────────────────────────────────
 try:
     from app.risk.vix_sizing import get_vix_multiplier as _get_vix_mult
     _VIX_SIZING_ENABLED = True
@@ -118,18 +126,18 @@ class PositionManager:
         self.consecutive_losses = 0
         self.performance_multiplier = 1.0  # 0.5-1.5 range based on recent performance
 
-        # ── FIX #5: DB query result caches ─────────────────────────────────────────
+        # ── FIX #5: DB query result caches ─────────────────────────────────────────────────────────
         self._daily_stats_cache:     Optional[Dict] = None
         self._daily_stats_ts:        float          = 0.0
         self._open_positions_cache:  Optional[List] = None
         self._open_positions_ts:     float          = 0.0
-        # ────────────────────────────────────────────────────────────────────────────
+        # ─────────────────────────────────────────────────────────────────────────────
 
         self._initialize_database()
         self._close_stale_positions()
         self._load_session_state()
 
-    # ── FIX #5: cache invalidation helper ────────────────────────────────────────────
+    # ── FIX #5: cache invalidation helper ───────────────────────────────────────────────────────────
     def _invalidate_caches(self) -> None:
         """Bust both caches immediately after any write (open/close)."""
         self._daily_stats_cache    = None
@@ -147,7 +155,7 @@ class PositionManager:
             self.account_size = self.session_starting_balance + total_pnl
             self.intraday_high_water_mark = max(self.intraday_high_water_mark, self.account_size)
 
-            # ── C1 FIX: Re-populate in-memory cache from DB on restart ─────────────────────
+            # ── C1 FIX: Re-populate in-memory cache from DB on restart ──────────────────────────────
             open_db = self.get_open_positions()
             self.positions = [
                 {
@@ -173,7 +181,7 @@ class PositionManager:
                       f"from DB after restart: {tickers}")
             else:
                 logger.info("[RISK] \u2705 No open positions to reload \u2014 clean session start")
-            # ────────────────────────────────────────────────────────────────────────────
+            # ────────────────────────────────────────────────────────────────────────────────
 
             closed_trades = self.get_todays_closed_trades()
             if closed_trades:
@@ -311,7 +319,7 @@ class PositionManager:
 
         return True, "OK"
 
-    # ── FIX #6: testable risk-gate hook ─────────────────────────────────────────────────
+    # ── FIX #6: testable risk-gate hook ────────────────────────────────────────────────────────────────────────
     def _check_risk_limits(self, ticker: str, risk_dollars: float) -> Tuple[bool, str]:
         """
         Thin wrapper around can_open_position() so tests can monkeypatch
@@ -958,7 +966,8 @@ class PositionManager:
             conn   = get_conn()
             cursor = dict_cursor(conn)
             since  = (datetime.now(_ET) - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
-            date_col = _date_eq_today("exit_time")
+            # FIX #13: use _date_col() (range extractor) not _date_eq_today() (equality semantics)
+            date_col = _date_col("exit_time")
             cursor.execute(f"""
                 SELECT grade,
                        COUNT(*)                                  AS total,
@@ -1096,5 +1105,5 @@ class PositionManager:
         return summary
 
 
-# ── Global singleton ───────────────────────────────────────────────────────────────────────────────────
+# ── Global singleton ───────────────────────────────────────────────────────────────────────────────────────────────────────
 position_manager = PositionManager()
