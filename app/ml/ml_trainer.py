@@ -23,6 +23,18 @@ Key improvements (Mar 2026)
   - train_from_dataframe() now calls walk_forward_cv() internally.
   - Platt scaling (CalibratedClassifierCV) applied after walk-forward so
     predict_proba() outputs are proper calibrated probabilities.
+* FIX (Mar 26 2026) — issues #25 / #26 / #27:
+  - #25: train_model() (EOD live path) now uses walk_forward_cv() instead of a
+    single 80/20 split.  Platt calibration is applied on the last-fold val set
+    (not the test set used for eval metrics) to avoid data leakage — consistent
+    with train_from_dataframe() behaviour.
+  - #26: _fetch_training_data() now uses db_connection.get_conn() /
+    return_conn() instead of a raw psycopg2.connect().  The direct conn.close()
+    is gone; pool is used consistently throughout the codebase.
+  - #27: LIVE_FEATURE_COLS constant added below HIST_FEATURE_COLS to make the
+    feature-set divergence between the two training paths explicit and
+    searchable.  A WARNING is emitted at train_model() startup so the
+    difference is visible in logs.
 """
 import logging
 import os
@@ -41,6 +53,8 @@ from sklearn.metrics import (
     fbeta_score,
 )
 
+from app.data.db_connection import get_conn, return_conn
+
 logger = logging.getLogger(__name__)
 
 # ── Paths & constants ────────────────────────────────────────────────────────
@@ -51,6 +65,7 @@ MODEL_VERSION        = 'historical_v6'
 
 MIN_RECALL_FLOOR = 0.30
 
+# Feature set used by train_from_dataframe() — historical pre-training path.
 HIST_FEATURE_COLS = [
     'confidence',
     'rvol',
@@ -73,6 +88,20 @@ HIST_FEATURE_COLS = [
     'fvg_size_pct',
     'bos_strength',
 ]
+
+# Feature set used by train_model() — live EOD retrain path.
+# NOTE (#27): These two sets are intentionally different because the live DB
+# schema (signals table) does not yet expose all HIST_FEATURE_COLS columns.
+# If you hot-swap the historical model with the live EOD model the feature
+# vector will mismatch → silent wrong predictions.  Do not swap without
+# aligning features first.
+LIVE_FEATURE_COLS = [
+    'confidence', 'rvol', 'adx', 'time_minutes',
+    'spy_correlation', 'iv_rank', 'mtf_convergence',
+    # pattern_type and or_classification are one-hot encoded dynamically
+    # in _prepare_features() — do not add them here.
+]
+
 
 # ── Threshold tuning ─────────────────────────────────────────────────────────
 
@@ -396,8 +425,21 @@ def train_model(
     """
     Train ML model on live signal_outcomes from the PostgreSQL DB.
     Called by the EOD auto-retrain hook in scanner.py.
+
+    FIX #25 (Mar 26 2026): Now uses walk_forward_cv() (3-fold time-series CV)
+    instead of a single 80/20 random split.  Platt calibration is applied on
+    the last-fold val set — the same holdout used for threshold tuning — so
+    the calibration data is fully disjoint from both training and eval data.
+
+    NOTE (#27): This path uses LIVE_FEATURE_COLS (7 base + dummies), not
+    HIST_FEATURE_COLS (20 features).  Do not hot-swap the two model files
+    without aligning feature sets.
     """
     logger.info("[ML-TRAIN] Starting live retrain from DB...")
+    logger.warning(
+        "[ML-TRAIN] Live path uses LIVE_FEATURE_COLS — different from HIST_FEATURE_COLS. "
+        "Do NOT hot-swap historical and live model files without aligning features."
+    )
 
     try:
         df = _fetch_training_data()
@@ -420,8 +462,22 @@ def train_model(
         logger.error(f"[ML-TRAIN] Feature prep error: {exc}")
         return None, {'error': str(exc)}
 
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=test_size, random_state=42, stratify=y
+    # ── FIX #25: walk-forward CV instead of single split ─────────────────────
+    fold_metrics, X_last_val, y_last_val = walk_forward_cv(
+        X, y, n_folds=3, n_estimators=n_estimators
+    )
+
+    if not fold_metrics:
+        logger.error("[ML-TRAIN] All walk-forward folds failed — aborting")
+        return None, {'error': 'Walk-forward CV produced no valid folds'}
+
+    cv_acc  = float(np.mean([m['accuracy']  for m in fold_metrics]))
+    cv_prec = float(np.mean([m['precision'] for m in fold_metrics]))
+    cv_rec  = float(np.mean([m['recall']    for m in fold_metrics]))
+    cv_f1   = float(np.mean([m['f1']        for m in fold_metrics]))
+    logger.info(
+        f"[ML-TRAIN] WF-CV mean — Acc={cv_acc:.2%}  Prec={cv_prec:.2%}  "
+        f"Rec={cv_rec:.2%}  F1={cv_f1:.2%}"
     )
 
     try:
@@ -429,23 +485,22 @@ def train_model(
             max_iter=n_estimators, max_depth=4, learning_rate=0.05,
             l2_regularization=0.1, class_weight='balanced', random_state=42,
         )
-        base_model.fit(X_train, y_train)
-        # Platt-calibrate on test split
+        base_model.fit(X, y)
+        # FIX #25: calibrate on last-fold val set, not the eval split
         model = CalibratedClassifierCV(estimator=base_model, method='sigmoid', cv='prefit')
-        model.fit(X_test, y_test)
-        logger.info("[ML-TRAIN] ✅ Model trained + Platt-calibrated")
+        model.fit(X_last_val, y_last_val)
+        logger.info("[ML-TRAIN] ✅ Model trained on full dataset + Platt-calibrated on last-fold val")
     except Exception as exc:
         logger.error(f"[ML-TRAIN] Training failed: {exc}")
         return None, {'error': str(exc)}
 
-    opt_threshold = _find_optimal_threshold(model, X_test, y_test)
-    y_pred = predict_with_threshold(model, X_test, opt_threshold)
+    opt_threshold = _find_optimal_threshold(model, X_last_val, y_last_val)
+    y_pred = predict_with_threshold(model, X_last_val, opt_threshold)
 
-    accuracy  = accuracy_score(y_test, y_pred)
-    precision = precision_score(y_test, y_pred, zero_division=0)
-    recall    = recall_score(y_test, y_pred, zero_division=0)
-    cv_scores = cross_val_score(base_model, X, y, cv=5, scoring='accuracy')
-    cm        = confusion_matrix(y_test, y_pred)
+    accuracy  = accuracy_score(y_last_val, y_pred)
+    precision = precision_score(y_last_val, y_pred, zero_division=0)
+    recall    = recall_score(y_last_val, y_pred, zero_division=0)
+    cm        = confusion_matrix(y_last_val, y_pred)
 
     try:
         feature_importance = dict(zip(feature_names, base_model.feature_importances_))
@@ -458,13 +513,17 @@ def train_model(
         'precision':          precision,
         'recall':             recall,
         'threshold':          opt_threshold,
-        'cv_mean':            cv_scores.mean(),
-        'cv_std':             cv_scores.std(),
+        'cv_mean':            cv_acc,
+        'cv_std':             float(np.std([m['accuracy'] for m in fold_metrics])),
+        'cv_precision_mean':  cv_prec,
+        'cv_recall_mean':     cv_rec,
+        'cv_f1_mean':         cv_f1,
+        'fold_metrics':       fold_metrics,
         'confusion_matrix':   cm.tolist(),
         'feature_importance': dict(sorted_features[:10]),
         'feature_names':      feature_names,
-        'n_train':            len(X_train),
-        'n_val':              len(X_test),
+        'n_train':            len(X),
+        'n_val':              len(X_last_val),
         'calibrated':         True,
         'trained_at':         datetime.now().isoformat(),
         'model_version':      MODEL_VERSION,
@@ -473,7 +532,7 @@ def train_model(
 
     logger.info(
         f"[ML-TRAIN] Acc={accuracy:.2%}  Prec={precision:.2%}  "
-        f"Rec={recall:.2%}  CV={cv_scores.mean():.2%}  Thresh={opt_threshold:.3f}"
+        f"Rec={recall:.2%}  Thresh={opt_threshold:.3f}"
     )
 
     try:
@@ -498,18 +557,15 @@ def train_model(
 # ── DB helpers ───────────────────────────────────────────────────────────────
 
 def _fetch_training_data() -> Optional[pd.DataFrame]:
-    """Fetch historical signal outcomes from PostgreSQL."""
+    """
+    Fetch historical signal outcomes from PostgreSQL.
+    FIX #26 (Mar 26 2026): Uses db_connection pool (get_conn/return_conn)
+    instead of a raw psycopg2.connect() — consistent with the rest of the
+    codebase and benefits from pool config / SSL settings.
+    """
+    conn = None
     try:
-        import psycopg2
-        DATABASE_URL = os.getenv('DATABASE_URL')
-        if not DATABASE_URL:
-            logger.error("[ML-TRAIN] DATABASE_URL not set")
-            return None
-        conn_url = DATABASE_URL
-        if 'sslmode=' not in conn_url.lower():
-            sep = '&' if '?' in conn_url else '?'
-            conn_url = f"{conn_url}{sep}sslmode=require"
-        conn  = psycopg2.connect(conn_url)
+        conn = get_conn()
         query = """
             SELECT
                 confidence, rvol, adx,
@@ -525,18 +581,20 @@ def _fetch_training_data() -> Optional[pd.DataFrame]:
             ORDER BY signal_time DESC
         """
         df = pd.read_sql_query(query, conn)
-        conn.close()
         logger.info(f"[ML-TRAIN] Fetched {len(df)} completed signals from DB")
         return df
     except Exception as exc:
         logger.error(f"[ML-TRAIN] DB fetch failed: {exc}")
         return None
+    finally:
+        if conn:
+            return_conn(conn)
 
 
 def _prepare_features(df: pd.DataFrame) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], list]:
     """Prepare feature matrix X and labels y from live DB DataFrame."""
     try:
-        features = ['confidence', 'rvol', 'adx', 'time_minutes', 'spy_correlation', 'iv_rank', 'mtf_convergence']
+        features = list(LIVE_FEATURE_COLS)  # start from canonical live feature list
         if 'pattern_type' in df.columns:
             dummies = pd.get_dummies(df['pattern_type'], prefix='pattern')
             df = pd.concat([df, dummies], axis=1)
