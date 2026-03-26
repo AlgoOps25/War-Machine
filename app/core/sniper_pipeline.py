@@ -71,6 +71,8 @@ def _run_signal_pipeline(
             field; confidence is derived from scorecard score.
     FIX 3: grade passed from grade_signal_with_confirmations, not hardcoded.
     FIX 4: bars_1m_raw guard before MTF resample (None / empty check).
+    FIX 5: is_on_cooldown returns (bool, reason) tuple — unpack correctly
+            and pass direction arg. set_cooldown also requires direction.
     """
     # ── RVOL fetch ───────────────────────────────────────────────────────────
     try:
@@ -81,15 +83,15 @@ def _run_signal_pipeline(
     # ── Hard filters (Phase 1.38c/d) ────────────────────────────────────────
     now_et = _now_et()
     if now_et.time() > time(11, 0):
-        logger.info(f"[{ticker}] �UDEAB TIME GATE: {now_et.strftime('%H:%M')} > 11:00 AM — signal dropped")
+        logger.info(f"[{ticker}] 🚫 TIME GATE: {now_et.strftime('%H:%M')} > 11:00 AM — signal dropped")
         return False
 
     if rvol < RVOL_SIGNAL_GATE:
-        logger.info(f"[{ticker}] �UDEAB RVOL GATE: {rvol:.2f}x < {RVOL_SIGNAL_GATE}x floor — signal dropped")
+        logger.info(f"[{ticker}] 🚫 RVOL GATE: {rvol:.2f}x < {RVOL_SIGNAL_GATE}x floor — signal dropped")
         return False
 
     if rvol >= RVOL_CEILING:
-        logger.info(f"[{ticker}] �UDEAB RVOL CEILING: {rvol:.2f}x >= {RVOL_CEILING}x — signal dropped")
+        logger.info(f"[{ticker}] 🚫 RVOL CEILING: {rvol:.2f}x >= {RVOL_CEILING}x — signal dropped")
         return False
 
     # ── VWAP gate ────────────────────────────────────────────────────────────
@@ -97,21 +99,22 @@ def _run_signal_pipeline(
     entry_price = bars_session[-1]["close"]
     vwap_passed = passes_vwap_gate(entry_price, vwap_val, direction)
     if not vwap_passed:
-        logger.info(f"[{ticker}] �UDEAB VWAP GATE: price ${entry_price:.2f} failed vwap=${vwap_val:.2f}")
+        logger.info(f"[{ticker}] 🚫 VWAP GATE: price ${entry_price:.2f} failed vwap=${vwap_val:.2f}")
         return False
 
     # ── Dead zone / GEX pin gate ──────────────────────────────────────────────
     if is_dead_zone(now_et):
-        logger.info(f"[{ticker}] �UDEAB DEAD ZONE: {now_et.strftime('%H:%M')} — signal dropped")
+        logger.info(f"[{ticker}] 🚫 DEAD ZONE: {now_et.strftime('%H:%M')} — signal dropped")
         return False
 
     if is_in_gex_pin_zone(ticker):
-        logger.info(f"[{ticker}] �UDEAB GEX PIN ZONE — signal dropped")
+        logger.info(f"[{ticker}] 🚫 GEX PIN ZONE — signal dropped")
         return False
 
-    # ── Cooldown ──────────────────────────────────────────────────────────────
-    if is_on_cooldown(ticker):
-        logger.info(f"[{ticker}] �UDEAB COOLDOWN active — signal dropped")
+    # ── Cooldown (FIX 5: unpack tuple, pass direction) ────────────────────────
+    _cd_blocked, _cd_reason = is_on_cooldown(ticker, direction)
+    if _cd_blocked:
+        logger.info(f"[{ticker}] 🚫 COOLDOWN: {_cd_reason} — signal dropped")
         return False
 
     # ── CFW6 confirmation ──────────────────────────────────────────────────────
@@ -120,7 +123,7 @@ def _run_signal_pipeline(
             ticker, bars_session, breakout_idx, direction, zone_low, zone_high
         )
         if not confirmed:
-            logger.info(f"[{ticker}] �UDEAB CFW6 confirmation failed")
+            logger.info(f"[{ticker}] 🚫 CFW6 confirmation failed")
             return False
         grade, confidence_base = grade_signal_with_confirmations(confirmation_meta)
     else:
@@ -146,7 +149,7 @@ def _run_signal_pipeline(
                     else:
                         if rvol < 1.8:
                             logger.info(
-                                f"[{ticker}] �UDEAB MTF-RVOL GATE: Counter-trend "
+                                f"[{ticker}] 🚫 MTF-RVOL GATE: Counter-trend "
                                 f"rvol {rvol:.2f}x < 1.8x required — signal dropped"
                             )
                             return False
@@ -195,7 +198,7 @@ def _run_signal_pipeline(
 
     if _sc.score < SCORECARD_GATE_MIN:
         logger.info(
-            f"[{ticker}] �UDEAB SCORECARD-GATE: {_sc.score:.1f} "
+            f"[{ticker}] 🚫 SCORECARD-GATE: {_sc.score:.1f} "
             f"< {SCORECARD_GATE_MIN} — signal dropped"
         )
         return False
@@ -220,5 +223,5 @@ def _run_signal_pipeline(
         options_rec=options_rec,
     )
     if armed:
-        set_cooldown(ticker)
+        set_cooldown(ticker, direction)  # FIX 5: pass direction
     return armed
