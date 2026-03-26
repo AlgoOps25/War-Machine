@@ -16,6 +16,9 @@ sniper.py imports:
 Used via:
     check_performance_dashboard(_state, PHASE_4_ENABLED)
     check_performance_alerts(_state, PHASE_4_ENABLED, alert_manager, send_simple_message)
+
+FIX 49.A-5 (Mar 26 2026): print() in _print_dashboard() replaced with
+  logger.info() for Railway log stream consistency (#49).
 """
 
 from datetime import datetime, timedelta
@@ -152,8 +155,9 @@ def _print_dashboard():
     total_closed = _session['wins'] + _session['losses']
     win_rate = (_session['wins'] / total_closed * 100) if total_closed > 0 else 0.0
     now_str = datetime.now(_ET).strftime('%H:%M ET')
-    print(
-        f"[PERF-MONITOR] 📊 {now_str} | "
+    # FIX 49.A-5: was print() — use logger.info for Railway log stream
+    logger.info(
+        f"[PERF-MONITOR] \U0001f4ca {now_str} | "
         f"Generated:{_session['signals_generated']} "
         f"Armed:{_session['signals_armed']} "
         f"Rejected:{_session['signals_rejected']} | "
@@ -180,12 +184,12 @@ def _check_risk_alerts(send_fn) -> bool:
 
     if _session['total_pnl_pct'] < _MAX_DAILY_LOSS_PCT:
         alerts.append(
-            f"🚨 DAILY LOSS LIMIT: P&L={_session['total_pnl_pct']:+.2f}% < {_MAX_DAILY_LOSS_PCT}%"
+            f"\U0001f6a8 DAILY LOSS LIMIT: P&L={_session['total_pnl_pct']:+.2f}% < {_MAX_DAILY_LOSS_PCT}%"
         )
 
     if _session['max_drawdown_pct'] >= _MAX_DRAWDOWN_PCT:
         alerts.append(
-            f"⚠️ MAX DRAWDOWN: {_session['max_drawdown_pct']:.2f}% >= {_MAX_DRAWDOWN_PCT}%"
+            f"\u26a0\ufe0f MAX DRAWDOWN: {_session['max_drawdown_pct']:.2f}% >= {_MAX_DRAWDOWN_PCT}%"
         )
 
     for alert in alerts:

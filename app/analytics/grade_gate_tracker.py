@@ -12,6 +12,11 @@ sniper.py imports:
 Used via:
     grade_gate_tracker.record_gate_rejection(ticker, grade, confidence, threshold, signal_type)
     grade_gate_tracker.record_gate_pass(ticker, grade, confidence, threshold, signal_type)
+
+FIX 49.A-3 (Mar 26 2026): print() in record_gate_rejection() and record_gate_pass()
+  replaced with logger.info() for Railway log stream consistency (#47).
+FIX 49.A-4 (Mar 26 2026): Dead variable `label = 'passed' if False else 'rejected'`
+  in record_gate_rejection() removed — was always 'rejected' and never used (#48).
 """
 
 from datetime import datetime
@@ -113,17 +118,19 @@ def _record(ticker: str, grade: str, confidence: float, threshold: float,
 class GradeGateTracker:
     def record_gate_rejection(self, ticker: str, grade: str, confidence: float,
                                threshold: float, signal_type: str) -> None:
-        label = 'passed' if False else 'rejected'
-        print(
-            f"[GRADE-GATE] ❌ {ticker} | {grade} | {signal_type} | "
+        # FIX 49.A-4: removed dead `label = 'passed' if False else 'rejected'`
+        # FIX 49.A-3: was print() — use logger.info for Railway log stream
+        logger.info(
+            f"[GRADE-GATE] \u274c {ticker} | {grade} | {signal_type} | "
             f"{confidence:.2f} < {threshold:.2f}"
         )
         _record(ticker, grade, confidence, threshold, signal_type, passed=False)
 
     def record_gate_pass(self, ticker: str, grade: str, confidence: float,
                           threshold: float, signal_type: str) -> None:
-        print(
-            f"[GRADE-GATE] ✅ {ticker} | {grade} | {signal_type} | "
+        # FIX 49.A-3: was print() — use logger.info for Railway log stream
+        logger.info(
+            f"[GRADE-GATE] \u2705 {ticker} | {grade} | {signal_type} | "
             f"{confidence:.2f} >= {threshold:.2f}"
         )
         _record(ticker, grade, confidence, threshold, signal_type, passed=True)
@@ -147,7 +154,7 @@ class GradeGateTracker:
         if stats['total_evaluated'] == 0:
             return
         logger.info("\n" + "="*60)
-        logger.info("📊 GRADE GATE TRACKER — EOD REPORT")
+        logger.info("\U0001f4ca GRADE GATE TRACKER — EOD REPORT")
         logger.info("="*60)
         logger.info(f"  Evaluated : {stats['total_evaluated']}")
         logger.info(f"  Passed    : {stats['total_passed']} ({stats['pass_rate_pct']:.1f}%)")
@@ -155,11 +162,11 @@ class GradeGateTracker:
         if stats['by_grade']:
             logger.info("\n  By Grade:")
             for grade, counts in sorted(stats['by_grade'].items()):
-                logger.info(f"    {grade:<5}  ✅{counts['passed']}  ❌{counts['rejected']}")
+                logger.info(f"    {grade:<5}  \u2705{counts['passed']}  \u274c{counts['rejected']}")
         if stats['by_signal_type']:
             logger.info("\n  By Signal Type:")
             for st, counts in sorted(stats['by_signal_type'].items()):
-                logger.info(f"    {st:<18}  ✅{counts['passed']}  ❌{counts['rejected']}")
+                logger.info(f"    {st:<18}  \u2705{counts['passed']}  \u274c{counts['rejected']}")
         logger.info("="*60 + "\n")
 
     def reset_daily_stats(self) -> None:

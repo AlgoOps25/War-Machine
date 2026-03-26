@@ -11,6 +11,11 @@ FIX 13.C-1 (Mar 19 2026): All conn.close() calls replaced with return_conn(conn)
   inside try/finally blocks. Previously conn.close() on Postgres closed the
   physical socket instead of returning it to the pool, and the semaphore was
   never released — causing pool exhaustion over a trading session.
+
+FIX 49.A-1 (Mar 26 2026): print() in track_explosive_override() replaced with
+  logger.info() for Railway log stream consistency (#46).
+FIX 49.A-2 (Mar 26 2026): Inline __import__ Postgres detection in
+  get_daily_override_stats() replaced with ph() parameterisation (#50).
 """
 
 from datetime import datetime, time
@@ -120,8 +125,9 @@ def track_explosive_override(
              entry_price, grade, confidence, 'PENDING', None, now)
         )
         conn.commit()
-        print(
-            f"[EXPLOSIVE-OVERRIDE] 🚀 {ticker} {direction.upper()} tracked | "
+        # FIX 49.A-1: was print() — use logger.info for Railway log stream
+        logger.info(
+            f"[EXPLOSIVE-OVERRIDE] \U0001f680 {ticker} {direction.upper()} tracked | "
             f"Score: {score}, RVOL: {rvol:.1f}x ({tier}), "
             f"Regime: {regime_type} (VIX: {vix_level:.1f})"
         )
@@ -165,23 +171,21 @@ def update_override_outcome(ticker: str, outcome: str, pnl_pct: float):
 
 def get_daily_override_stats() -> Dict:
     """Get daily statistics for explosive overrides."""
-    from app.data.db_connection import get_conn, return_conn
+    from app.data.db_connection import get_conn, return_conn, ph as _ph
     conn = None
     try:
         conn = get_conn()
         cursor = conn.cursor()
         today = datetime.now(ZoneInfo("America/New_York")).date()
+        p = _ph()
 
+        # FIX 49.A-2: was inline __import__ Postgres detection; use ph() like everywhere else
         cursor.execute(
-            "SELECT COUNT(*) FROM explosive_mover_overrides WHERE DATE(timestamp) = %s"
-            if __import__('app.data.db_connection', fromlist=['USE_POSTGRES']).USE_POSTGRES
-            else "SELECT COUNT(*) FROM explosive_mover_overrides WHERE DATE(timestamp) = ?",
+            f"SELECT COUNT(*) FROM explosive_mover_overrides WHERE DATE(timestamp) = {p}",
             (today,)
         )
         total = cursor.fetchone()[0]
 
-        from app.data.db_connection import ph as _ph
-        p = _ph()
         cursor.execute(
             f"SELECT outcome, COUNT(*) FROM explosive_mover_overrides"
             f" WHERE DATE(timestamp) = {p} AND outcome != 'PENDING'"
@@ -224,7 +228,7 @@ def print_explosive_override_summary():
     if not stats or stats['total_overrides'] == 0:
         return
     logger.info("\n" + "="*80)
-    logger.info("🚀 EXPLOSIVE MOVER OVERRIDE - DAILY SUMMARY")
+    logger.info("\U0001f680 EXPLOSIVE MOVER OVERRIDE - DAILY SUMMARY")
     logger.info("="*80)
     logger.info(f"Total Overrides: {stats['total_overrides']}")
     logger.info(f"Closed Trades: {stats['wins'] + stats['losses']} (Pending: {stats['pending']})")
@@ -304,7 +308,7 @@ def print_threshold_recommendations():
     if not data:
         return
     logger.info("\n" + "="*80)
-    logger.info("🎯 EXPLOSIVE OVERRIDE THRESHOLD OPTIMIZATION (30 days)")
+    logger.info("\U0001f3af EXPLOSIVE OVERRIDE THRESHOLD OPTIMIZATION (30 days)")
     logger.info("="*80)
     logger.info("\nScore Bracket Analysis:")
     logger.info(f"{'Bracket':<12} {'Total':<8} {'Wins':<8} {'Win Rate':<12}")
@@ -316,7 +320,7 @@ def print_threshold_recommendations():
     logger.info("-" * 45)
     for bracket, stats in data['rvol_brackets'].items():
         logger.info(f"{bracket:<12} {stats['total']:<8} {stats['wins']:<8} {stats['win_rate']:.1f}%")
-    logger.info("\n💡 Recommendations:")
+    logger.info("\n\U0001f4a1 Recommendations:")
     logger.info("  - Review brackets with >60% win rate for threshold tightening")
     logger.info("  - Review brackets with <45% win rate for threshold loosening")
     logger.info("  - Minimum 20 samples per bracket for statistical significance")
