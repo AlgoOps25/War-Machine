@@ -1,4 +1,5 @@
-"""
+# Audit fixes applied March 26, 2026"""
+
 sniper_pipeline.py — CFW6 Signal Pipeline
 Extracted from sniper.py to keep that file under safe API size limits.
 All gate logic lives here: cooldown → RVOL → options → volume profile →
@@ -22,6 +23,8 @@ from app.core.arm_signal import arm_ticker
 from app.core.signal_scorecard import build_scorecard, SCORECARD_GATE_MIN
 from app.analytics.cooldown_tracker import is_on_cooldown, set_cooldown
 from app.ai.ai_learning import compute_confidence
+from app.ai.ml_confidence_boost import MLConfidenceBooster
+from app.ai.ai_learning import compute_confidence, AILearningEngine
 from app.options.dte_selector import get_ideal_dte
 from app.filters.dead_zone_suppressor import is_dead_zone
 from app.filters.gex_pin_gate import is_in_gex_pin_zone
@@ -142,27 +145,7 @@ except ImportError:
 # Resample helper (used by MTF bias gate)
 from collections import defaultdict
 
-def _resample_bars(bars_1m: list, minutes: int) -> list:
-    buckets = defaultdict(list)
-    for b in bars_1m:
-        dt = b["datetime"]
-        floored = dt.replace(minute=(dt.minute // minutes) * minutes, second=0, microsecond=0)
-        buckets[floored].append(b)
-    result = []
-    for ts in sorted(buckets):
-        bucket = buckets[ts]
-        result.append({
-            "datetime": ts,
-            "open":     bucket[0]["open"],
-            "high":     max(b["high"]   for b in bucket),
-            "low":      min(b["low"]    for b in bucket),
-            "close":    bucket[-1]["close"],
-            "volume":   sum(b["volume"] for b in bucket),
-        })
-    return result
-
-
-def _mult_to_adjustment(multiplier: float, base_conf: float) -> float:
+tment(multiplier: float, base_conf: float) -> float:
     if multiplier >= 1.0:
         return min((multiplier - 1.0) * base_conf * 0.75, base_conf * 0.10)
     else:
@@ -686,6 +669,27 @@ def _run_signal_pipeline(
         validation_result=validation_result,
         bos_confirmation=bos_confirmation,
         bos_candle_type=bos_candle_type,
+        def _resample_bars(bars_1m: list, minutes: int) -> list:
+    buckets = defaultdict(list)
+    for b in bars_1m:
+        dt = b["datetime"]
+        floored = dt.replace(minute=(dt.minute // minutes) * minutes, second=0, microsecond=0)
+        buckets[floored].append(b)
+    result = []
+    for ts in sorted(buckets):
+        bucket = buckets[ts]
+        result.append({
+            "datetime": ts,
+            "open":     bucket[0]["open"],
+            "high":     max(b["high"]   for b in bucket),
+            "low":      min(b["low"]    for b in bucket),
+            "close":    bucket[-1]["close"],
+            "volume":   sum(b["volume"] for b in bucket),
+        })
+    return result
+
+
+def _mult_to_adjus
         mtf_result=mtf_result, metadata=_meta,
         vp_bias=vp_bias,
     )
