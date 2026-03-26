@@ -6,7 +6,139 @@
 
 ---
 
-## 2026-03-26 — Critical Fix Session (app/core arm path)
+## 2026-03-26 — Session 2: Full Core Audit & arm_signal SyntaxError Fix
+
+### Overview
+Full file-by-file audit of the entire `app/core/` signal path in execution order:
+`sniper.py` → `sniper_pipeline.py` → `signal_scorecard.py` → `arm_signal.py` → `armed_signal_store.py` → `thread_safe_state.py`.
+Container boot confirmed clean (no errors, no crashes) after all fixes applied.
+
+---
+
+### FIX H — arm_signal.py: SyntaxError from mis-indented try blocks ❌→✅ FIXED
+
+**File:** `app/core/arm_signal.py` — commit `945029d`
+
+**Root cause:** Two `try:` blocks inside `arm_ticker()` were at column 0 (outside the function
+body). Python parsed them as module-level statements, causing a `SyntaxError` that crashed
+`app.core.arm_signal` on import. Since `sniper_pipeline.py` imports `arm_ticker` at the top
+level, this meant **the entire pipeline module was unimportable** — `arm_ticker()` was
+unreachable regardless of all other fixes.
+
+**Affected blocks (were at col 0):**
+- Discord alert production helper `try/except ImportError` block
+- Cooldown `try/except` block
+- Dead Phase 4 alert check stub (removed entirely as it had no effect)
+
+**Fix:** All `try:` blocks correctly indented inside `arm_ticker()` function body.
+`return True` (FIX G) preserved at end of success path.
+
+---
+
+### FIX G — arm_signal.py: arm_ticker() missing return True ❌→✅ FIXED
+
+**File:** `app/core/arm_signal.py` (applied in same commit as FIX H)
+
+**Root cause:** `arm_ticker()` had no explicit `return` statement on the success path —
+returned `None` implicitly. Any caller checking `if arm_ticker(...):` would always see `False`.
+
+**Fix:** `return True` added at end of success path. Failure paths (`stop too tight`,
+`position rejected`) continue to return `None` (falsy) intentionally.
+
+---
+
+### FIX F — sniper.py: VWAP reclaim path used synthetic OR refs ❌→✅ FIXED
+
+**File:** `app/core/sniper.py` (applied prior to session 2 commit)
+
+**Root cause:** VWAP reclaim path passed `entry_price * 1.005` and `entry_price * 0.995`
+as `or_high_ref` / `or_low_ref`. No opening range was formed on this path — synthetic
+values were misleading and could corrupt `compute_stop_and_targets()` OR-boundary logic.
+
+**Fix:** Pass `0.0, 0.0` explicitly. `compute_stop_and_targets()` M8 guard already skips
+OR boundary comparison when `or_high=0.0` / `or_low=0.0`.
+
+---
+
+### FIX E — sniper.py: dispatcher passed stale kwargs to _pipeline() ❌→✅ FIXED
+
+**File:** `app/core/sniper.py` (applied prior to session 2 commit)
+
+**Root cause:** The thin `_run_signal_pipeline()` dispatcher in `sniper.py` was passing
+`get_ticker_screener_metadata=` and `state=` as keyword args to `_pipeline()`. These were
+part of the old all-in-one `sniper.py` signature before pipeline extraction. The extracted
+`sniper_pipeline._run_signal_pipeline()` does not accept these kwargs, causing `TypeError`
+on every pipeline dispatch call.
+
+**Fix:** Removed both stale kwargs from the dispatcher call.
+
+---
+
+### FIX D — sniper_pipeline.py: arm_ticker() return value never checked ❌→✅ FIXED
+
+**File:** `app/core/sniper_pipeline.py` (applied in session 1)
+
+**Root cause:** `arm_ticker()` returned `None` implicitly. The pipeline had `if armed: ...`
+which was dead code — never `True`. The pipeline now returns `True` after calling
+`arm_ticker()` unconditionally (arm_ticker guards its own failure paths and logs them).
+Callers receive a meaningful bool for tracking pipeline completion.
+
+---
+
+### FIX C — sniper_pipeline.py: double cooldown call ❌→✅ FIXED
+
+**File:** `app/core/sniper_pipeline.py` (applied in session 1)
+
+**Root cause:** `sniper_pipeline.py` called `set_cooldown()` after `arm_ticker()` returned.
+`arm_ticker()` already calls `set_cooldown()` internally as its final step. This caused
+a redundant DB write and a duplicate cooldown log line on every successful arm.
+
+**Fix:** Removed outer `set_cooldown()` call and its import from the pipeline.
+`arm_signal.arm_ticker()` owns cooldown exclusively.
+
+---
+
+### FIX B — sniper_pipeline.py: options_rec missing default ❌→✅ FIXED
+
+**File:** `app/core/sniper_pipeline.py` (applied in session 1)
+
+**Root cause:** `options_rec` was a required parameter with no default. All callers in
+`sniper.py` call `_run_signal_pipeline()` without passing `options_rec`. Every call
+raised `TypeError: missing required argument`.
+
+**Fix:** `options_rec=None` default added. Scorecard and `arm_ticker()` both handle
+`None` gracefully (IVR/GEX fall back to neutral scores).
+
+---
+
+### FIX A — sniper_pipeline.py: **_unused_kwargs absorbs legacy kwargs ❌→✅ FIXED
+
+**File:** `app/core/sniper_pipeline.py` (applied in session 1)
+
+**Root cause:** `sniper.py` dispatcher passed `get_ticker_screener_metadata=` and `state=`
+kwargs that the extracted pipeline doesn't need. Without `**_unused_kwargs` the call
+raised `TypeError: unexpected keyword argument` on every invocation.
+
+**Fix:** `**_unused_kwargs` added to `_run_signal_pipeline()` signature. Subsequently
+the kwargs were removed from the dispatcher entirely (FIX E), making this a belt-and-
+suspenders defense against future unknown kwargs.
+
+---
+
+### Boot Confirmation — 2026-03-26 19:36 UTC
+
+Railway container boot post-fix:
+- ✅ No `SyntaxError`, no `ImportError`, no `TypeError` on startup
+- ✅ Screener loaded: 38 tickers | Tier A: 20, Tier B: 5, Tier C: 13
+- ✅ Watchlist locked at 10 tickers (15:36 ET)
+- ✅ WS feed live on 8 tickers, REST backfill running
+- ✅ Risk session loaded: $5,000 balance, $0 P&L, streak 0
+- ⚠️ Signal Analytics summary printing ~20x on startup — cosmetic only, no crash
+  (summary is called per-ticker thread instead of once globally; tracked as next issue)
+
+---
+
+## 2026-03-26 — Session 1: Critical Fix Session (app/core arm path)
 
 ### Issue 1 — arm_ticker() TypeError on every signal pass ❌→✅ FIXED
 
@@ -17,33 +149,28 @@ with a `TypeError`, silently killing all trade execution with no trade ever bein
 **Missing args:** `or_low`, `or_high`, `stop_price`, `t1`, `t2`, `grade`, `signal_type`
 
 **Fix applied (`app/core/sniper_pipeline.py` — commit `960bdfe`):**
-- Called `compute_stop_and_targets(bars_session, direction, or_high_ref, or_low_ref, entry_price, grade)` immediately before `arm_ticker()` to derive `stop_price`, `t1`, `t2` from live session bars (already imported)
-- Added guard: if `compute_stop_and_targets()` returns `None` (invalid stop — trade_calculator FIX 10.C-4 catches A+ high-vol tight-OR tape), signal is dropped with a `[STOP-INVALID]` log line instead of passing `None` to `arm_ticker()`
-- Passed `or_high_ref` / `or_low_ref` (already in scope from `_run_signal_pipeline()` caller) as `or_high` / `or_low` — passing `0.0` is safe (M8 fix in `trade_calculator.py`)
-- Passed `grade` (already derived from `grade_signal_with_confirmations()`) and `signal_type` (passed in from `sniper.py` caller)
-
-**No upstream gate logic changed.** All filters, scorecard, and confirmation logic unchanged.
+- Called `compute_stop_and_targets(bars_session, direction, or_high_ref, or_low_ref, entry_price, grade)` immediately before `arm_ticker()` to derive `stop_price`, `t1`, `t2` from live session bars
+- Added guard: if `compute_stop_and_targets()` returns `None`, signal dropped with `[STOP-INVALID]` log
+- Passed `or_high_ref` / `or_low_ref`, `grade`, and `signal_type` — all already in scope
 
 ---
 
 ### Issue 2 — ImportError on every arm attempt (sniper_log.py missing) ❌→✅ FIXED
 
 **Root cause:** `arm_signal.arm_ticker()` imported `log_proposed_trade` from `app.core.sniper_log`
-but that file never existed in the repo. This caused an `ImportError` inside `arm_ticker()`,
-blocking all trade execution independent of Issue 1.
+but that file never existed. `ImportError` blocked all trade execution.
 
 **Fix applied (`app/core/sniper_log.py` — commit `077352a`, new file):**
 - Created `app/core/sniper_log.py` with `log_proposed_trade(ticker, signal_type, direction, entry_price, confidence, grade)`
-- Writes a single structured `[PROPOSED-TRADE]` INFO log line immediately after the stop-tightness guard, before any external calls (position_manager, Discord)
-- Gives a grep-friendly pre-arm audit trail in Railway logs showing every signal that reached arming, regardless of whether position_manager accepts or rejects it
-- Exception-safe: the function wraps its own body in `try/except` so a logging call can never crash the arm path
+- Writes structured `[PROPOSED-TRADE]` INFO log line before external calls
+- Exception-safe: wrapped in `try/except` so logging can never crash the arm path
 
 ---
 
-### Combined effect
-Both issues together meant **zero trades could ever be executed** after the Phase 1.38d refactor
-introduced `sniper_pipeline.py`. The signal pipeline, scorecard, filters and confirmation logic
-were all functional but the final 2 steps (stop/target calculation → arm) were broken.
+### Combined effect (Sessions 1 + 2)
+All issues together meant **zero trades could ever be executed** after the Phase 1.38d refactor
+introduced `sniper_pipeline.py`. Signal detection, scanning, filters, scorecard, and confirmations
+were all functional — only the final arm steps were broken. All execution blockers are now resolved.
 
 ---
 
@@ -156,7 +283,7 @@ were all functional but the final 2 steps (stop/target calculation → arm) were
 **Files added:** `app/filters/correlation.py`, regime filter integrated into `sniper.py`  
 **What changed:**
 - Regime filter added to `process_ticker()` — checks VIX/SPY conditions, blocks trading in unfavorable regimes
-- Correlation check added to `arm_ticker()` — prevents >3 highly correlated positions simultaneously (e.g., NVDA + AMD + SMCI all long)
+- Correlation check added to `arm_ticker()` — prevents >3 highly correlated positions simultaneously
 - Both systems use try/except import guards — graceful fallback if unavailable
 - Config parameters: `MAX_SECTOR_EXPOSURE_PCT = 40.0`, `MAX_OPEN_POSITIONS = 5`
 
@@ -179,7 +306,7 @@ def is_safe_to_add_position(self, ticker, open_positions, proposed_risk_dollars=
 **What changed:**
 - ML-based confidence scoring layer added on top of rule-based CFW6 scoring
 - v1 scorer: Random Forest on CFW6 feature vectors
-- v2 scorer (production): Updated architecture + feature set — this is the active version
+- v2 scorer (production): Updated architecture + feature set — active version
 - `ml_confidence_boost.py` applies calibrated ±delta to sniper confidence before threshold gate
 - ML feedback loop: retrain daily at 4:00 PM on that day's labeled signal outcomes
 
@@ -192,7 +319,7 @@ def is_safe_to_add_position(self, ticker, open_positions, proposed_risk_dollars=
 - Deep options analysis engine added: scores contracts by liquidity, spread, OI, flow alignment
 - GEX (Gamma Exposure) calculator: identifies market-maker pinning vs explosive move zones
 - IV Rank tracker: rolling IV percentile per ticker, feeds `greeks_precheck.py`
-- Options data cache: all Tradier calls now routed through `options_data_manager.py` to prevent redundant API calls
+- Options data cache: all Tradier calls now routed through `options_data_manager.py`
 
 ---
 
@@ -203,7 +330,7 @@ def is_safe_to_add_position(self, ticker, open_positions, proposed_risk_dollars=
 - Full BOS + FVG detection engine across 1m/5m/15m/1H timeframes
 - `mtf_compression.py` compresses 1m WS bars to higher timeframes in memory — no extra EODHD REST calls
 - MTF bias object feeds sniper.py's C5 confirmation (MTF alignment)
-- `sniper_mtf_trend_patch.py` added as hot-patch during transition — to be absorbed once mtf_integration.py fully stable
+- `sniper_mtf_trend_patch.py` added as hot-patch during transition
 
 ---
 
@@ -211,8 +338,18 @@ def is_safe_to_add_position(self, ticker, open_positions, proposed_risk_dollars=
 
 | Date | Event | Notes |
 |------|-------|-------|
-| 2026-03-26 | Critical fix session | arm_ticker TypeError + sniper_log ImportError — 2 commits |
+| 2026-03-26 | Session 2 audit + FIX H (arm_signal SyntaxError) | Clean boot confirmed |
+| 2026-03-26 | Session 1 critical fix | arm_ticker TypeError + sniper_log ImportError — 2 commits |
 | 2026-03-16 | Batch A–E audit session | 19 changes applied, 5 files deleted, 4 files moved |
 | 2026-03-10 | Master registry compiled | 336 files catalogued |
 | 2026-02-25 | Feb 25 hotfix session | pnl column fix, Discord dedup fix |
 | Ongoing | Railway auto-deploy on push to main | Entrypoint: `python -m app.core.scanner` |
+
+---
+
+## Known Issues / Next Session
+
+| # | Issue | Severity | File |
+|---|-------|----------|------|
+| 1 | Signal Analytics summary prints ~20x on startup | Low (cosmetic) | `app/signals/signal_analytics.py` |
+| 2 | `_resample_bars()` duplicated in `sniper.py` and `sniper_pipeline.py` | Low (dead code in sniper.py) | `app/core/sniper.py` |
