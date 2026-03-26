@@ -6,6 +6,54 @@
 
 ---
 
+## 2026-03-26 — Critical Fix Session (app/core arm path)
+
+### Issue 1 — arm_ticker() TypeError on every signal pass ❌→✅ FIXED
+
+**Root cause:** `sniper_pipeline._run_signal_pipeline()` called `arm_ticker()` with only 7 of 13
+required positional args. Every signal that cleared the 60-pt scorecard gate crashed immediately
+with a `TypeError`, silently killing all trade execution with no trade ever being opened.
+
+**Missing args:** `or_low`, `or_high`, `stop_price`, `t1`, `t2`, `grade`, `signal_type`
+
+**Fix applied (`app/core/sniper_pipeline.py` — commit `960bdfe`):**
+- Called `compute_stop_and_targets(bars_session, direction, or_high_ref, or_low_ref, entry_price, grade)` immediately before `arm_ticker()` to derive `stop_price`, `t1`, `t2` from live session bars (already imported)
+- Added guard: if `compute_stop_and_targets()` returns `None` (invalid stop — trade_calculator FIX 10.C-4 catches A+ high-vol tight-OR tape), signal is dropped with a `[STOP-INVALID]` log line instead of passing `None` to `arm_ticker()`
+- Passed `or_high_ref` / `or_low_ref` (already in scope from `_run_signal_pipeline()` caller) as `or_high` / `or_low` — passing `0.0` is safe (M8 fix in `trade_calculator.py`)
+- Passed `grade` (already derived from `grade_signal_with_confirmations()`) and `signal_type` (passed in from `sniper.py` caller)
+
+**No upstream gate logic changed.** All filters, scorecard, and confirmation logic unchanged.
+
+---
+
+### Issue 2 — ImportError on every arm attempt (sniper_log.py missing) ❌→✅ FIXED
+
+**Root cause:** `arm_signal.arm_ticker()` imported `log_proposed_trade` from `app.core.sniper_log`
+but that file never existed in the repo. This caused an `ImportError` inside `arm_ticker()`,
+blocking all trade execution independent of Issue 1.
+
+**Fix applied (`app/core/sniper_log.py` — commit `077352a`, new file):**
+- Created `app/core/sniper_log.py` with `log_proposed_trade(ticker, signal_type, direction, entry_price, confidence, grade)`
+- Writes a single structured `[PROPOSED-TRADE]` INFO log line immediately after the stop-tightness guard, before any external calls (position_manager, Discord)
+- Gives a grep-friendly pre-arm audit trail in Railway logs showing every signal that reached arming, regardless of whether position_manager accepts or rejects it
+- Exception-safe: the function wraps its own body in `try/except` so a logging call can never crash the arm path
+
+---
+
+### Combined effect
+Both issues together meant **zero trades could ever be executed** after the Phase 1.38d refactor
+introduced `sniper_pipeline.py`. The signal pipeline, scorecard, filters and confirmation logic
+were all functional but the final 2 steps (stop/target calculation → arm) were broken.
+
+---
+
+## 2026-03-25 — Phase 1.38d-fix (Scorecard + RVOL ceiling)
+
+- `app/core/signal_scorecard.py` — FIX P2: crash handler now scores `SCORECARD_GATE_MIN - 1` (59) so a scorer exception blocks rather than passes through at exactly the gate boundary. Upgraded to `logger.warning`.
+- `app/core/signal_scorecard.py` — FIX P4: `_score_rvol_ceiling()` added. RVOL ≥ `RVOL_CEILING` (3.0x) deducts 20 pts. Backtest: RVOL ≥ 3.0x cohort is −32.23 Total R (582-trade audit).
+
+---
+
 ## 2026-03-16 — Audit Session (Batches A–E)
 
 ### Session 7 (Batch C) — Backtesting & Scripts Audit
@@ -163,6 +211,7 @@ def is_safe_to_add_position(self, ticker, open_positions, proposed_risk_dollars=
 
 | Date | Event | Notes |
 |------|-------|-------|
+| 2026-03-26 | Critical fix session | arm_ticker TypeError + sniper_log ImportError — 2 commits |
 | 2026-03-16 | Batch A–E audit session | 19 changes applied, 5 files deleted, 4 files moved |
 | 2026-03-10 | Master registry compiled | 336 files catalogued |
 | 2026-02-25 | Feb 25 hotfix session | pnl column fix, Discord dedup fix |
