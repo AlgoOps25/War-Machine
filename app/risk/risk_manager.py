@@ -41,7 +41,6 @@ from app.risk.vix_sizing import get_vix_regime, get_vix_multiplier
 from app.risk.dynamic_thresholds import get_dynamic_threshold, get_threshold_stats
 
 # ── Kill switch ───────────────────────────────────────────────────────────────
-# ── Kill switch ───────────────────────────────────────────────────────────────
 # Live-read on every evaluate_signal() call — toggleable via Railway env var
 # without a redeploy (no module-level constant).
 
@@ -76,7 +75,7 @@ def evaluate_signal(
       4. Position count ceiling
       5. Duplicate ticker check
       6. Confidence decay (penalise delayed confirmations)
-      7. Dynamic confidence threshold (time-of-day + VIX + win-rate adjusted)
+      7. Dynamic confidence threshold (time-of-day + VIX + win-rate + ATR adjusted)
       8. VIX regime hard block (crisis mode — VIX > 40 blocks new trades)
       9. Stop/target calculation — rejects if stop is None (tight tape guard)
      10. R:R validation
@@ -141,8 +140,8 @@ def evaluate_signal(
     # ── 6. Confidence decay ───────────────────────────────────────────────────────────
     decayed_confidence = apply_confidence_decay(confidence, candles_waited)
 
-    # ── 7. Dynamic confidence threshold ───────────────────────────────────────────
-    threshold = get_dynamic_threshold(signal_type, grade)
+    # ── 7. Dynamic confidence threshold (FIX #26: pass bars + ticker for ATR bucket) ─
+    threshold = get_dynamic_threshold(signal_type, grade, bars_session=bars, ticker=ticker)
     if decayed_confidence < threshold:
         return _reject(
             f"Confidence {decayed_confidence:.2f} below dynamic threshold {threshold:.2f} "
@@ -181,7 +180,7 @@ def evaluate_signal(
             decayed_confidence, entry_price, or_high, or_low, bars, direction, grade,
         )
 
-    print(
+    logger.info(
         f"[RISK] APPROVED {ticker} {direction.upper()} {grade} | "
         f"Conf: {decayed_confidence:.2f} >= {threshold:.2f} | "
         f"R:R: {rr_ratio:.2f} | VIX: {vix_regime['vix']:.1f} ({vix_regime['regime']})"

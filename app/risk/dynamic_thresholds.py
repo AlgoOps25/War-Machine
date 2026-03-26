@@ -7,13 +7,17 @@ Replaces static config thresholds with dynamic adjustments based on:
 - Market volatility (VIX level)
 - Intraday ATR volatility bucket (47.P6-2 Sprint 1)
 - Time of day (morning vs afternoon vs power hour)
-- Recent signal quality (last 5 signals)
+- Recent signal quality (last 5 signals) [STUB — Issue #25, not yet implemented]
 
 FIXED (Mar 10 2026): All get_conn() calls now use try/finally: return_conn(conn) — no leaks.
 UPDATED (Mar 19 2026): get_dynamic_threshold() wires live intraday ATR (47.P6-2).
 FIXED (Mar 25 2026): _get_winrate_adjustment() now uses ph() instead of hardcoded %s —
   raw %s caused ProgrammingError on SQLite, silently falling back to 0.00 and disabling
   win-rate influence on thresholds during local dev/testing.
+FIXED (Mar 26 2026): _get_winrate_adjustment() now filters by BOTH grade AND signal_type
+  (previously signal_type parameter was accepted but never used in the query — Issue #27).
+FIXED (Mar 26 2026): evaluate_signal() in risk_manager.py now passes bars_session + ticker
+  into get_dynamic_threshold() so the ATR bucket adjustment is live (Issue #26).
 """
 
 from datetime import datetime, time, timedelta
@@ -130,6 +134,11 @@ def _get_atr_volatility_adjustment(bars_session: list, ticker: str = "") -> tupl
 
 
 def _get_winrate_adjustment(signal_type, grade):
+    """
+    FIX #27 (Mar 26 2026): Query now filters on BOTH grade AND signal_type.
+    Previously signal_type was accepted as a parameter but never used in the
+    SQL query, so CFW6_OR A+ and CFW6_INTRADAY A+ returned identical win rates.
+    """
     try:
         from app.data.db_connection import get_conn, return_conn, dict_cursor, ph
 
@@ -142,10 +151,11 @@ def _get_winrate_adjustment(signal_type, grade):
             cursor.execute(f"""
                 SELECT pnl FROM positions
                 WHERE grade = {p}
+                  AND signal_type = {p}
                   AND status = 'CLOSED'
                 ORDER BY id DESC
                 LIMIT 20
-            """, (grade,))
+            """, (grade, signal_type))
 
             rows = cursor.fetchall()
         finally:
@@ -176,7 +186,10 @@ def _get_winrate_adjustment(signal_type, grade):
 
 
 def _get_recent_quality_adjustment():
-        return 0.00
+    # TODO (Issue #25): Implement rolling quality score based on last 5 signals.
+    # Intended to penalise threshold when recent signals have been low-confidence
+    # or frequently rejected downstream.  Currently returns 0.00 (no-op).
+    return 0.00
 
 
 def get_dynamic_threshold(signal_type: str, grade: str,
@@ -210,7 +223,7 @@ def get_dynamic_threshold(signal_type: str, grade: str,
     final_threshold = baseline + time_adj + vix_adj + winrate_adj + quality_adj + atr_adj
     final_threshold = max(config.CONFIDENCE_ABSOLUTE_FLOOR, min(final_threshold, 0.85))
 
-    print(
+    logger.info(
         f"[DYNAMIC-THRESH] {signal_type}/{grade}: "
         f"base={baseline:.2f} + time={time_adj:+.2f} + vix={vix_adj:+.2f} "
         f"+ wr={winrate_adj:+.2f} + qual={quality_adj:+.2f} "
