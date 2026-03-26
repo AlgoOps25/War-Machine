@@ -69,57 +69,21 @@ def _run_ticker_with_timeout(process_ticker_fn, ticker: str) -> bool:
         return False
 
 
-
+# FIX #30: Removed raw module-level analytics_conn psycopg2 connection and
+# _get_analytics_conn() reconnect helper. That connection was a parallel,
+# unmanaged socket that bypassed the db_connection.py semaphore pool entirely.
+# AnalyticsIntegration.__init__ accepts db_connection for API compatibility but
+# ignores it — SignalTracker manages its own pooled connection internally.
+# The old block also kept a bare psycopg2.connect() at import time which could
+# block Railway startup and left an unclosed socket on any crash.
 ANALYTICS_AVAILABLE = False
-analytics_conn      = None
-_analytics_conn_lock = __import__('threading').Lock()
 DATABASE_URL        = os.getenv('DATABASE_URL')
 
 if DATABASE_URL:
-    try:
-        import psycopg2
-        analytics_conn = psycopg2.connect(DATABASE_URL, connect_timeout=3)
-        analytics_conn.autocommit = True
-        logger.info("[DB] ✓ Connected - Analytics ONLINE")
-        ANALYTICS_AVAILABLE = True
-    except Exception as e:
-        logger.info(f"[DB] ✗ FAILED: {e}")
-        ANALYTICS_AVAILABLE = False
+    ANALYTICS_AVAILABLE = True
+    logger.info("[DB] ✓ DATABASE_URL present - Analytics ONLINE")
 else:
     logger.info("[DB] ✗ DATABASE_URL not set - Analytics DISABLED")
-
-
-def _get_analytics_conn():
-    global analytics_conn, ANALYTICS_AVAILABLE
-    if not DATABASE_URL:
-        return None
-    with _analytics_conn_lock:
-        if analytics_conn is not None:
-            try:
-                cur = analytics_conn.cursor()
-                cur.execute("SELECT 1")
-                cur.close()
-                return analytics_conn
-            except Exception:
-                try:
-                    analytics_conn.close()
-                except Exception:
-                    pass
-                analytics_conn = None
-        for attempt in range(1, 4):
-            try:
-                import psycopg2
-                analytics_conn = psycopg2.connect(DATABASE_URL, connect_timeout=10)
-                analytics_conn.autocommit = True
-                ANALYTICS_AVAILABLE = True
-                logger.info(f"[DB] Reconnected analytics connection (attempt {attempt})")
-                return analytics_conn
-            except Exception as e:
-                logger.warning(f"[DB] Reconnect attempt {attempt}/3 failed: {e}")
-                time.sleep(1)
-        logger.error("[DB] All reconnect attempts failed — analytics disabled for this cycle")
-        ANALYTICS_AVAILABLE = False
-        return None
 
 
 try:
@@ -131,11 +95,11 @@ except ImportError:
     signal_tracker = None
 
 analytics = None
-if ANALYTICS_AVAILABLE and analytics_conn:
+if ANALYTICS_AVAILABLE:
     try:
         from app.analytics import AnalyticsIntegration
         if AnalyticsIntegration is not None:
-            analytics = AnalyticsIntegration(analytics_conn, enable_ml=True, enable_discord=True)
+            analytics = AnalyticsIntegration(db_connection=None, enable_ml=True, enable_discord=True)
     except Exception as e:
         logger.warning(f"[SCANNER] ⚠️  Outcome tracking disabled: {e}")
 
@@ -196,6 +160,8 @@ def _get_stale_tickers(tickers: list) -> list:
 
 
 
+# NOTE #33: _extract_premarket_metrics() is defined but never called.
+# Retained for potential future Discord pre-market summary use.
 def _extract_premarket_metrics(watchlist_data: dict) -> dict:
     try:
         all_tickers = watchlist_data.get('all_tickers_with_scores', [])
@@ -340,7 +306,7 @@ def subscribe_and_prefetch_tickers(new_tickers: list):
         )
     except Exception as e:
         logger.error(f"[WS-SUBSCRIBE] ⚠ Error subscribing tickers: {e}")
-        import traceback; traceback.print_exc()
+        logger.exception(e)
 
 
 
@@ -535,7 +501,7 @@ def start_scanner_loop():
                         logger.info(f"[WS] Subscribed premarket watchlist ({len(premarket_watchlist)} tickers)")
                     except Exception as e:
                         logger.error(f"[PRE-MARKET] Funnel error: {e}")
-                        import traceback; traceback.print_exc()
+                        logger.exception(e)  # FIX #31: was traceback.print_exc()
                         premarket_watchlist = list(EMERGENCY_FALLBACK)
                         premarket_built     = True
                 else:
@@ -624,8 +590,7 @@ def start_scanner_loop():
 
                 if ANALYTICS_AVAILABLE and analytics:
                     def _run_analytics(conn=None):
-                        live_conn = _get_analytics_conn()
-                        if live_conn and analytics:
+                        if analytics:
                             def get_price(t):
                                 from app.data.ws_feed import get_current_bar_with_fallback
                                 bar = get_current_bar_with_fallback(t)
@@ -654,7 +619,7 @@ def start_scanner_loop():
                         _run_ticker_with_timeout(process_ticker, ticker)
                     except Exception as e:
                         logger.error(f"[SCANNER] Error on {ticker}: {e}")
-                        import traceback; traceback.print_exc()
+                        logger.exception(e)  # FIX #31: was traceback.print_exc()
                         continue
 
                 scan_interval = get_adaptive_scan_interval()
@@ -675,7 +640,7 @@ def start_scanner_loop():
                         run_eod_report(current_day)
                     except Exception as e:
                         logger.error(f"[EOD] eod_reporter failed: {e}")
-                        import traceback; traceback.print_exc()
+                        logger.exception(e)  # FIX #31: was traceback.print_exc()
 
                     if HAS_AI_LEARNING:
                         try:
@@ -716,6 +681,8 @@ def start_scanner_loop():
                     reset_funnel()
                     clear_armed_signals()
                     clear_watching_signals()
+                    # NOTE #32: _bos_watch_alerted is a private module-level set in sniper.py.
+                    # Cleared here directly — low risk but should be wrapped in clear_bos_alerts() long-term.
                     from app.core.sniper import _bos_watch_alerted; _bos_watch_alerted.clear()
                     try:
                         data_manager.clear_prev_day_cache()
@@ -734,7 +701,7 @@ def start_scanner_loop():
 
         except Exception as e:
             logger.error(f"[SCANNER] Critical error: {e}")
-            import traceback; traceback.print_exc()
+            logger.exception(e)  # FIX #31: was traceback.print_exc()
             try:
                 send_simple_message(f"⚠️ Scanner Error: {str(e)}")
             except Exception:

@@ -21,6 +21,7 @@ Public API (unchanged signatures so scanner.py needs no edits):
 
 import logging
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from typing import Dict, Optional, List
 
 try:
@@ -175,7 +176,11 @@ class AnalyticsIntegration:
 
     def check_scheduled_tasks(self):
         """Run time-based tasks (market open / EOD). Call once per minute."""
-        now = datetime.now()
+        # FIX #35: was datetime.now() (naive/UTC) — on Railway this caused the
+        # 9:30 AM ET reset to fire at 2:30 PM ET and EOD tasks at noon ET.
+        # All time checks must use ZoneInfo("America/New_York") to match the
+        # rest of the codebase.
+        now = datetime.now(ZoneInfo("America/New_York"))
 
         # Market open reset
         if now.hour == 9 and now.minute == 30 and not self.daily_reset_done:
