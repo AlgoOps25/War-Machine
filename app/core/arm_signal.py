@@ -20,10 +20,11 @@ FIX P3 (2026-03-25): vp_bias now passed in the fallback (non-production-helpers)
   whenever production_helpers was not available.
 
 FIX G (2026-03-26): Added explicit 'return True' at end of successful execution.
-  Previously returned None implicitly; sniper_pipeline.py worked around this (FIX D)
-  but arm_ticker itself should return a meaningful bool on success.
-  All failure paths (stop too tight, position rejected) return None (falsy) — only
-  the success path needed this explicit True.
+  Previously returned None implicitly; callers checking 'if armed:' would never
+  see True. All failure paths return None (falsy) intentionally.
+
+FIX H (2026-03-26): Corrected indentation SyntaxError — two try: blocks were
+  at column 0 (outside the function body), crashing the module on import.
 """
 
 
@@ -34,34 +35,17 @@ def arm_ticker(
     bos_confirmation=None, bos_candle_type=None, mtf_result=None, metadata=None,
     vp_bias=None
 ):
-    """Phase 4 Funnel Fix: Wire record_signal_armed() into arm_ticker() (FIX 19.C-1)
+    """
     Arm a confirmed signal:
       1. Hard-reject if stop is tighter than 0.1% of entry.
       2. Open position via position_manager (risk-gated).
-          # Phase 4 Funnel: Record ARMED stage
-    try:
-        from app.signals.signal_analytics import signal_tracker
-        bars = 0
-        if metadata and isinstance(metadata, dict):
-            bars = metadata.get('bars_to_confirmation', 0)
-        
-        signal_tracker.record_signal_armed(
-            ticker=ticker,
-            final_confidence=confidence,
-            bars_to_confirmation=bars,
-            confirmation_type=bos_confirmation or 'retest'
-        )
-        logger.info(f"[ANALYTICS] 🎯 {ticker} ARMED stage recorded")
-    except Exception as _arm_err:
-        logger.info(f"[ANALYTICS] record_signal_armed error (non-fatal): {_arm_err}")
-
       3. Fire Discord alert only if position_id > 0.
       4. Persist to armed_signals_persist DB table.
       5. Record TRADED stage in signal_analytics (FIX Mar 16 2026).
       6. Set per-ticker cooldown.
 
     Returns:
-        True  — position opened and all steps completed successfully (FIX G)
+        True  — position opened and all steps completed (FIX G)
         None  — stop too tight or position rejected by risk manager (falsy)
     """
     from app.risk.position_manager import position_manager
@@ -105,8 +89,7 @@ def arm_ticker(
         logger.info(f"[ARM] ❌ {ticker} position rejected by risk manager — Discord alert suppressed")
         return
 
-    # ── FIX (Mar 16 2026): Record TRADED stage in signal_analytics ───────────────────────
-    # Without this call get_funnel_stats()['traded'] was always 0.
+    # Record TRADED stage in signal_analytics (FIX Mar 16 2026)
     try:
         from app.signals.signal_analytics import signal_tracker
         signal_tracker.record_trade_executed(ticker, position_id)
@@ -114,8 +97,8 @@ def arm_ticker(
     except Exception as _analytics_err:
         logger.info(f"[ANALYTICS] record_trade_executed error (non-fatal): {_analytics_err}")
 
-    # ── Discord alert (production helper path) ──────────────────────────────────────────────
-try:
+    # Discord alert (FIX H: was at col 0, now correctly indented inside function)
+    try:
         from utils.production_helpers import _send_alert_safe
         PRODUCTION_HELPERS_ENABLED = True
     except ImportError:
@@ -137,8 +120,7 @@ try:
             vp_bias=vp_bias
         )
     else:
-        # FIX P3 (2026-03-25): vp_bias added to fallback path — was missing, causing
-        # VP bias data to be silently dropped from Discord alerts in this branch.
+        # FIX P3 (2026-03-25): vp_bias added to fallback path
         try:
             greeks_data = None
             if options_rec:
@@ -174,12 +156,12 @@ try:
                 composite_score=metadata.get('score'),
                 mtf_convergence=mtf_convergence_count,
                 explosive_mover=metadata.get('qualified', False),
-                vp_bias=vp_bias  # P3 FIX: was missing from fallback path
+                vp_bias=vp_bias
             )
         except Exception as e:
             logger.info(f"[DISCORD] ❌ Alert failed: {e}")
 
-    # ── Persist armed signal state ───────────────────────────────────────────────────────────────────────
+    # Persist armed signal state
     armed_signal_data = {
         "position_id":  position_id,
         "direction":    direction,
@@ -197,19 +179,11 @@ try:
 
     logger.info(f"[ARMED] {ticker} ID:{position_id}")
 
-    # ── Cooldown ────────────────────────────────────────────────────────────────────────────────────────────────
-try:
+    # Cooldown (FIX H: was at col 0, now correctly indented inside function)
+    try:
         from app.analytics.cooldown_tracker import set_cooldown as _set_cooldown
         _set_cooldown(ticker, direction, signal_type)
     except Exception as e:
         logger.info(f"[COOLDOWN] Warning: could not set cooldown for {ticker}: {e}")
-
-    # ── Phase 4 alert check ────────────────────────────────────────────────────────────────────────────
-try:
-        from app.analytics.performance_monitor import performance_monitor
-        from app.notifications.discord_helpers import send_simple_message
-        # alert_manager not available; skip
-    except Exception:
-        pass
 
     return True  # FIX G (2026-03-26): explicit success return
