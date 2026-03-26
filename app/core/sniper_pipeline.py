@@ -19,8 +19,6 @@ from app.filters.vwap_gate import compute_vwap, passes_vwap_gate
 from app.core.arm_signal import arm_ticker
 from app.core.signal_scorecard import build_scorecard, SCORECARD_GATE_MIN
 from app.analytics.cooldown_tracker import is_on_cooldown, set_cooldown
-from app.ai.ai_learning import compute_confidence, AILearningEngine
-from app.ai.ml_confidence_boost import MLConfidenceBooster
 from app.options.dte_selector import get_ideal_dte
 from app.filters.dead_zone_suppressor import is_dead_zone
 from app.filters.gex_pin_gate import is_in_gex_pin_zone
