@@ -414,7 +414,7 @@ def start_scanner_loop():
                 logger.info(f"[SCANNER] ✅ Loaded locked watchlist: {len(premarket_watchlist)} tickers")
             else:
                 premarket_watchlist = list(EMERGENCY_FALLBACK)
-                logger.warning("[SCANNER] ⚠️ No locked watchlist found — using emergency fallback")
+                logger.warning("[SCANNER] ⚠️ 442 found — using emergency fallback")
         except Exception as e:
             premarket_watchlist = list(EMERGENCY_FALLBACK)
             logger.warning(f"[SCANNER] ⚠️ Could not load locked watchlist ({e}) — using emergency fallback")
@@ -439,8 +439,10 @@ def start_scanner_loop():
         (premarket_watchlist if premarket_watchlist else list(EMERGENCY_FALLBACK)) + REGIME_TICKERS
     ))
 
+        logger.info("[WS-INIT] About to start WebSocket feed thread...")
     ws_thread = threading.Thread(target=lambda: start_ws_feed(startup_watchlist), daemon=True, name="start_ws_feed")
     ws_thread.start()
+    logger.info("[WS-INIT] Thread.start() called, now waiting for join...")
     ws_thread.join(timeout=20)
     logger.info("[WS] WebSocket feed started (or timed out gracefully)")
 
