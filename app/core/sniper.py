@@ -29,7 +29,8 @@ import logging
 logger = logging.getLogger(__name__)
 _ET = ZoneInfo("America/New_York")  # FIX: was NameError in process_ticker regime_age calc
 
-EXPLOSIVE_SCORE_THRESHOLD = 80 EXPLOSIVE_RVOL_THRESHOLD  = 3.0  # ── Optional: screener metadata ───────────────────────────────────────────
+EXPLOSIVE_SCORE_THRESHOLD = 80
+EXPLOSIVE_RVOL_THRESHOLD  = 3.0  # ── Optional: screener metadata ────────────────────────────────────────────────────────
 try:
     from app.screening.screener_integration import get_ticker_screener_metadata
     logger.info("[SNIPER] ✅ screener_integration loaded")
