@@ -105,6 +105,27 @@ FIX v3.9 (MAR 26, 2026) - Prevent empty watchlist lock on mid-session redeploy:
     scoring/filtering, do NOT commit the lock (_locked_at cleared). The
     next scanner tick retries the full live build instead of perpetually
     returning an empty locked list for the rest of the session.
+
+FIX v4.0 (MAR 26, 2026) - Phase 1.30 premarket gate blocks mid-session redeploy:
+  - ROOT CAUSE: premarket_scanner.scan_ticker() returns None for every ticker
+    when called outside the 04:00-09:30 ET window (Phase 1.30 gate). On a
+    cold mid-session container the premarket scanner cache is empty, so
+    run_momentum_screener() → scan_watchlist() → scan_ticker() returns None
+    for ALL candidates → scored_tickers=[] → watchlist=[] → v3.9 defers lock
+    → scanner retry loop exhausts 3 attempts → emergency fallback fires.
+    The 38 screener tickers visible in logs come from dynamic_screener
+    (unaffected by the gate) but never reach scoring.
+  - FIX: In _build_live_watchlist(), when run_momentum_screener() returns
+    empty (or fewer than MIN_SCORED_THRESHOLD tickers) AND we are outside
+    the premarket window, fall back to the raw dynamic_screener results
+    already in screener_results. These dicts have score/rvol/price/sector
+    fields computed by dynamic_screener._score_ticker() and are sufficient
+    to produce a valid locked watchlist without any additional API calls.
+  - _map_screener_result_to_scored() added: converts a dynamic_screener dict
+    to the subset of fields expected downstream by get_top_n_movers() and
+    _apply_relative_outlier_boost().
+  - MIN_SCORED_THRESHOLD = 3: if fewer than 3 tickers survive momentum
+    scoring, treat as effectively empty and trigger the fallback.
 """
 import sys
 from pathlib import Path
@@ -126,6 +147,10 @@ from utils import config
 from zoneinfo import ZoneInfo
 ET = ZoneInfo("America/New_York")
 
+# FIX v4.0: if momentum screener returns fewer than this many tickers,
+# treat as effectively empty and trigger the dynamic_screener fallback.
+MIN_SCORED_THRESHOLD = 3
+
 def _get_momentum_screener():
     """Lazy import to avoid circular dependency."""
     from app.screening import premarket_scanner
@@ -141,6 +166,49 @@ def _get_discord_helpers():
 def _normalise(watchlist: List[str]) -> List[str]:
     """Force all ticker symbols to uppercase. Single canonical normalisation point."""
     return [t.upper() for t in watchlist if t]
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# FIX v4.0: DYNAMIC_SCREENER RESULT MAPPER
+# Converts a dynamic_screener dict to the minimal scored-ticker shape expected
+# by get_top_n_movers() and _apply_relative_outlier_boost().
+# ════════════════════════════════════════════════════════════════════════════════
+
+def _map_screener_result_to_scored(t: Dict) -> Dict:
+    """
+    FIX v4.0: Map a dynamic_screener result dict to a premarket_scanner-style
+    scored ticker dict.
+
+    dynamic_screener fields used:
+      ticker, score, rvol, rvol_tier, price, avgvol_1d, sector,
+      refund_1d, refund_5d, dollar_vol_m, mktcap_b
+
+    The composite_score field is set to dynamic_screener's score so that
+    get_top_n_movers() (which sorts on composite_score) works correctly.
+    gap_data is populated with refund_1d so that _apply_relative_outlier_boost()
+    can compute the sector outlier delta.
+    """
+    return {
+        'ticker':           t['ticker'],
+        'composite_score':  float(t.get('score', 50)),
+        'rvol':             float(t.get('rvol', 1.0)),
+        'rvol_tier':        t.get('rvol_tier', 'C'),
+        'price':            float(t.get('price', 0)),
+        'volume':           int(t.get('avgvol_1d', 0)),
+        'volume_score':     float(t.get('score', 50)),
+        'gap_score':        0.0,
+        'catalyst_score':   0.0,
+        'sector_bonus':     0.0,
+        'dollar_volume':    float(t.get('dollar_vol_m', 0)) * 1_000_000,
+        'atr':              0.0,
+        'market_cap':       float(t.get('mktcap_b', 0)) * 1_000_000_000,
+        'float':            0,
+        'avg_daily_volume': int(t.get('avgvol_1d', 0)),
+        'gap_data':         {'size_pct': float(t.get('refund_1d', 0))},
+        'catalyst_data':    None,
+        'sector_data':      {'sector': t.get('sector', 'Unknown'), 'is_hot': False},
+        'timestamp':        datetime.now(),
+    }
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -594,6 +662,10 @@ class WatchlistFunnel:
         PHASE 1.19: Applies relative strength/weakness outlier boost before lock.
         FIX v3.8:   WS coverage filter drops zero-bar tickers before lock.
         FIX v3.9:   Do NOT lock an empty watchlist — defer to next tick.
+        FIX v4.0:   Fall back to dynamic_screener results when run_momentum_screener()
+                    returns empty due to the Phase 1.30 premarket window gate
+                    blocking all scan_ticker() calls after 9:30 AM ET on a cold
+                    mid-session container.
         """
         stage_config = self.stages["live"]
         screener_results = dynamic_screener.get_scored_tickers(
@@ -607,17 +679,73 @@ class WatchlistFunnel:
             use_cache=True
         )
         logger.info(f"[FUNNEL] {len(self.scored_tickers)} tickers passed scoring (min_score={stage_config['min_score']})")
+
+        # ── FIX v4.0: Phase 1.30 premarket gate bypass ───────────────────────
+        # If run_momentum_screener() returned fewer than MIN_SCORED_THRESHOLD
+        # tickers, the Phase 1.30 gate in scan_ticker() almost certainly blocked
+        # all fresh scans (we are past 9:30 ET on a cold container with an empty
+        # premarket scanner cache). Fall back to the dynamic_screener results
+        # which are already scored and require no additional API calls.
+        if len(self.scored_tickers) < MIN_SCORED_THRESHOLD and screener_results:
+            logger.warning(
+                f"[FUNNEL] ⚠️  run_momentum_screener() returned only "
+                f"{len(self.scored_tickers)} ticker(s) — likely Phase 1.30 premarket "
+                f"gate blocked all scan_ticker() calls (cold container, outside 04:00-09:30 ET). "
+                f"Falling back to {len(screener_results)} dynamic_screener results."
+            )
+            self.scored_tickers = [
+                _map_screener_result_to_scored(t)
+                for t in screener_results
+                if t.get('score', 0) >= stage_config["min_score"]
+            ]
+            # If even the dynamic_screener results are thin (e.g. market
+            # very slow day), lower the bar to ensure we lock something.
+            if len(self.scored_tickers) < MIN_SCORED_THRESHOLD:
+                logger.warning(
+                    f"[FUNNEL] ⚠️  dynamic_screener fallback also thin "
+                    f"({len(self.scored_tickers)} tickers at min_score="
+                    f"{stage_config['min_score']}). Lowering threshold to 30."
+                )
+                self.scored_tickers = [
+                    _map_screener_result_to_scored(t)
+                    for t in screener_results
+                    if t.get('score', 0) >= 30
+                ]
+            logger.info(
+                f"[FUNNEL] ✅ Phase 1.30 fallback: {len(self.scored_tickers)} tickers "
+                f"mapped from dynamic_screener for live lock."
+            )
+        # ── end FIX v4.0 ─────────────────────────────────────────────────────
+
         if len(self.scored_tickers) < 10:
             logger.info(f"[FUNNEL] \u26a0\ufe0f  Only {len(self.scored_tickers)} tickers — expanding search...")
             expanded_results = dynamic_screener.get_scored_tickers(
                 max_tickers=100, min_score=0, force_refresh=True
             )
             expanded_candidates = [t['ticker'] for t in expanded_results[:100]]
-            self.scored_tickers = _get_momentum_screener().run_momentum_screener(
+            extra = _get_momentum_screener().run_momentum_screener(
                 expanded_candidates,
                 min_composite_score=20.0,
                 use_cache=True
             )
+            # FIX v4.0: if expanded momentum screener also returns nothing
+            # (same Phase 1.30 gate), fall back to expanded dynamic_screener.
+            if not extra and expanded_results:
+                logger.warning(
+                    "[FUNNEL] ⚠️  Expanded run_momentum_screener() also empty "
+                    "— using expanded dynamic_screener fallback."
+                )
+                extra = [
+                    _map_screener_result_to_scored(t)
+                    for t in expanded_results
+                    if t.get('score', 0) >= 20
+                ]
+            # Merge without duplicates
+            existing_tickers = {t['ticker'] for t in self.scored_tickers}
+            for t in extra:
+                if t['ticker'] not in existing_tickers:
+                    self.scored_tickers.append(t)
+                    existing_tickers.add(t['ticker'])
             logger.info(f"[FUNNEL] Expanded: {len(self.scored_tickers)} tickers (min_score=20.0)")
 
         volume_signals = self.volume_analyzer.get_active_signals()
