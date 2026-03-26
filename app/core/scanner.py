@@ -1,5 +1,5 @@
 """
-scanner.py — Intelligent Watchlist Builder & Scanner Loop v1.38c
+scanner.py — Intelligent Watchlist Builder & Scanner Loop v1.38d
 Adaptive Watchlist Funnel, Pre-Market Scanner, Position Monitoring, DB Cleanup.
 WebSocket bar + quote feeds with candle cache (95%+ API reduction on redeploy).
 See CHANGELOG.md for full phase history.
@@ -361,7 +361,7 @@ def start_scanner_loop():
 
     # ── Startup banner (status only — see CHANGELOG.md for phase history) ─────
     logger.info("=" * 60)
-    logger.info("WAR MACHINE CFW6 SCANNER v1.38c - STARTUP")
+    logger.info("WAR MACHINE CFW6 SCANNER v1.38d - STARTUP")
     logger.info("=" * 60)
 
     try:
@@ -407,7 +407,7 @@ def start_scanner_loop():
 
     try:
         send_simple_message(
-            f"⚔️ WAR MACHINE ONLINE — CFW6 v1.38c | "
+            f"⚔️ WAR MACHINE ONLINE — CFW6 v1.38d | "
             f"{'Resuming intraday' if _booting_into_market_hours else 'OR window active'}"
         )
     except Exception as e:
@@ -421,22 +421,24 @@ def start_scanner_loop():
     _watchlist_lock_logged    = False
 
     # ── WS + backfill init (always runs first) ────────────────────────────────
-    # Use EMERGENCY_FALLBACK as the seed subscription list for mid-session
-    # redeployments so WS connects to something before we try to score tickers.
+    # FIX v1.38d: join(timeout=20) was blocking 20s PER thread even though both
+    # are daemon threads that never exit. Reduced to timeout=5 with a 2s head-start
+    # sleep so WS has a moment to connect before we move on. Total WS init cost
+    # is now ~7s instead of ~40s. Backfill always runs via _fire_and_forget.
     startup_watchlist = list(dict.fromkeys(
         list(EMERGENCY_FALLBACK) + REGIME_TICKERS
     ))
 
-    logger.info("[WS-INIT] About to start WebSocket feed thread...")
+    logger.info("[WS-INIT] Starting WebSocket feed thread...")
     ws_thread = threading.Thread(target=lambda: start_ws_feed(startup_watchlist), daemon=True, name="start_ws_feed")
     ws_thread.start()
-    logger.info("[WS-INIT] Thread.start() called, now waiting for join...")
-    ws_thread.join(timeout=20)
+    time.sleep(2)  # brief head-start so WS can connect before join races out
+    ws_thread.join(timeout=5)
     logger.info("[WS] WebSocket feed started (or timed out gracefully)")
 
     quote_thread = threading.Thread(target=lambda: start_quote_feed(startup_watchlist), daemon=True, name="start_quote_feed")
     quote_thread.start()
-    quote_thread.join(timeout=20)
+    quote_thread.join(timeout=5)
     logger.info("[QUOTE] Quote feed started (or timed out gracefully)")
 
     stale = _get_stale_tickers(startup_watchlist)
@@ -452,13 +454,14 @@ def start_scanner_loop():
     logger.info("[STARTUP] ✅ WS feeds up | backfill running in background | entering main loop")
 
     # ── Mid-session redeploy: load locked watchlist AFTER WS is up ───────────
-    # FIX v1.38c: previously this block ran BEFORE WS init, so the funnel had
-    # no session bars and locked []. Now we retry up to 3x (10s apart) after
-    # WS + backfill are running, giving the screener a warm start.
+    # FIX v1.38c: previously this block ran BEFORE WS init.
+    # FIX v1.38d: reduced retry wait 10s->3s and retries 3->2 (saves up to 26s
+    #             on the empty-watchlist path; if it's genuinely missing we fall
+    #             back to EMERGENCY_FALLBACK immediately instead of waiting 30s).
     if _booting_into_market_hours:
         logger.info("[SCANNER] ⚡ Redeploy detected during market hours — loading locked watchlist")
-        _REDEPLOY_RETRIES    = 3
-        _REDEPLOY_RETRY_WAIT = 10  # seconds between attempts
+        _REDEPLOY_RETRIES    = 2
+        _REDEPLOY_RETRY_WAIT = 3  # seconds between attempts
         for attempt in range(1, _REDEPLOY_RETRIES + 1):
             try:
                 watchlist_data      = get_watchlist_with_metadata(force_refresh=False)
