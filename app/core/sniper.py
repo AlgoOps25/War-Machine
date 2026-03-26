@@ -1,5 +1,5 @@
 """
-sniper.py — CFW6 Strategy Engine v1.38b
+sniper.py — CFW6 Strategy Engine v1.38d
 Two-path scanning: OR-Anchored + Intraday BOS+FVG fallback.
 Signal pipeline lives in app/core/sniper_pipeline.py.
 See CHANGELOG.md for full phase history.
@@ -290,9 +290,6 @@ def process_ticker(ticker: str):
                 metadata = get_ticker_screener_metadata(ticker)
                 if metadata['qualified']:
                     if TRACKERS_ENABLED and track_explosive_override is not None:
-                        # FIX: use track_explosive_override() directly so real regime/VIX
-                        # data is written to DB instead of legacy dummy values.
-                        # direction is "pre-scan" — not yet determined at this gate (intentional).
                         state_r = regime_filter.get_regime_state()
                         track_explosive_override(
                             ticker=ticker,
@@ -351,28 +348,16 @@ def process_ticker(ticker: str):
             try:
                 spy_regime = get_market_regime()
                 regime_age = (datetime.now(_ET) - spy_regime.get("ts", datetime.now(_ET))).total_seconds()
-                if regime_age < 2:  # just refreshed — log once
+                if regime_age < 2:
                     print_market_regime(spy_regime)
             except Exception as e:
                 logger.info(f"[{ticker}] SPY EMA context error: {e}")
 
+        # FIX v1.38d: run_eod_report() only accepts session_date (str|None).
+        # The previous call passed 11 stale kwargs that were never part of
+        # eod_reporter.run_eod_report() — every call raised TypeError.
         if is_force_close_time(bars_session[-1]):
-            run_eod_report(
-                bars_session[-1],
-                validator_enabled=True,
-                validator_test_mode=False,
-                sd_zone_enabled=SD_ZONE_ENABLED,
-                trackers_enabled=TRACKERS_ENABLED,
-                cooldown_tracker=cooldown_tracker,
-                explosive_tracker=explosive_tracker,
-                grade_gate_tracker=grade_gate_tracker,
-                phase_4_enabled=PHASE_4_ENABLED,
-                signal_tracker=signal_tracker,
-                performance_monitor=performance_monitor,
-                hourly_gate_enabled=True,
-                regime_filter_enabled=REGIME_FILTER_ENABLED,
-                order_block_enabled=ORDER_BLOCK_ENABLED,
-            )
+            run_eod_report()
             return
 
         _is_watching = _state.ticker_is_watching(ticker)
