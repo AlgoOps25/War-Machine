@@ -3,6 +3,17 @@
 sniper_pipeline.py - CFW6 Signal Pipeline
 Phase 1.38d-fix: Corrected build_scorecard call (all required args), removed
 orphan run_signal_pipeline stub, fixed _sc.confidence AttributeError.
+
+FIX (2026-03-26 / Issue #1):
+    arm_ticker() was called with only 7 of 13 required args, causing a
+    TypeError on every signal that passed the scorecard gate.
+    Fixed by:
+      - Calling compute_stop_and_targets() before arm_ticker() to derive
+        stop_price, t1, t2 from the live session bars.
+      - Guarding None return from compute_stop_and_targets() (invalid stop,
+        e.g. A+ high-vol tight-OR — FIX 10.C-4 in trade_calculator.py).
+      - Passing grade, signal_type, or_high_ref, or_low_ref to arm_ticker()
+        (all already in scope from the pipeline call).
 """
 from __future__ import annotations
 import logging
@@ -73,57 +84,62 @@ def _run_signal_pipeline(
     FIX 4: bars_1m_raw guard before MTF resample (None / empty check).
     FIX 5: is_on_cooldown returns (bool, reason) tuple — unpack correctly
             and pass direction arg. set_cooldown also requires direction.
+    FIX 6 (2026-03-26): arm_ticker() now receives all 13 required args.
+            compute_stop_and_targets() called to derive stop_price / t1 / t2
+            from live bars before arm_ticker(). Signal dropped (with log) if
+            compute_stop_and_targets() returns None (invalid stop guard,
+            trade_calculator FIX 10.C-4). grade and signal_type now forwarded.
     """
-    # ── RVOL fetch ───────────────────────────────────────────────────────────
+    # ── RVOL fetch ──────────────────────────────────────────────────────────────────────
     try:
         rvol = data_manager.get_rvol(ticker) or 1.0
     except Exception:
         rvol = 1.0
 
-    # ── Hard filters (Phase 1.38c/d) ────────────────────────────────────────
+    # ── Hard filters (Phase 1.38c/d) ──────────────────────────────────────────────────────
     now_et = _now_et()
     if now_et.time() > time(11, 0):
-        logger.info(f"[{ticker}] 🚫 TIME GATE: {now_et.strftime('%H:%M')} > 11:00 AM — signal dropped")
+        logger.info(f"[{ticker}] \U0001f6ab TIME GATE: {now_et.strftime('%H:%M')} > 11:00 AM — signal dropped")
         return False
 
     if rvol < RVOL_SIGNAL_GATE:
-        logger.info(f"[{ticker}] 🚫 RVOL GATE: {rvol:.2f}x < {RVOL_SIGNAL_GATE}x floor — signal dropped")
+        logger.info(f"[{ticker}] \U0001f6ab RVOL GATE: {rvol:.2f}x < {RVOL_SIGNAL_GATE}x floor — signal dropped")
         return False
 
     if rvol >= RVOL_CEILING:
-        logger.info(f"[{ticker}] 🚫 RVOL CEILING: {rvol:.2f}x >= {RVOL_CEILING}x — signal dropped")
+        logger.info(f"[{ticker}] \U0001f6ab RVOL CEILING: {rvol:.2f}x >= {RVOL_CEILING}x — signal dropped")
         return False
 
-    # ── VWAP gate ────────────────────────────────────────────────────────────
+    # ── VWAP gate ──────────────────────────────────────────────────────────────────────────
     vwap_val = compute_vwap(bars_session)
     entry_price = bars_session[-1]["close"]
     vwap_passed = passes_vwap_gate(entry_price, vwap_val, direction)
     if not vwap_passed:
-        logger.info(f"[{ticker}] 🚫 VWAP GATE: price ${entry_price:.2f} failed vwap=${vwap_val:.2f}")
+        logger.info(f"[{ticker}] \U0001f6ab VWAP GATE: price ${entry_price:.2f} failed vwap=${vwap_val:.2f}")
         return False
 
-    # ── Dead zone / GEX pin gate ──────────────────────────────────────────────
+    # ── Dead zone / GEX pin gate ───────────────────────────────────────────────────────
     if is_dead_zone(now_et):
-        logger.info(f"[{ticker}] 🚫 DEAD ZONE: {now_et.strftime('%H:%M')} — signal dropped")
+        logger.info(f"[{ticker}] \U0001f6ab DEAD ZONE: {now_et.strftime('%H:%M')} — signal dropped")
         return False
 
     if is_in_gex_pin_zone(ticker):
-        logger.info(f"[{ticker}] 🚫 GEX PIN ZONE — signal dropped")
+        logger.info(f"[{ticker}] \U0001f6ab GEX PIN ZONE — signal dropped")
         return False
 
-    # ── Cooldown (FIX 5: unpack tuple, pass direction) ────────────────────────
+    # ── Cooldown (FIX 5: unpack tuple, pass direction) ────────────────────────────
     _cd_blocked, _cd_reason = is_on_cooldown(ticker, direction)
     if _cd_blocked:
-        logger.info(f"[{ticker}] 🚫 COOLDOWN: {_cd_reason} — signal dropped")
+        logger.info(f"[{ticker}] \U0001f6ab COOLDOWN: {_cd_reason} — signal dropped")
         return False
 
-    # ── CFW6 confirmation ──────────────────────────────────────────────────────
+    # ── CFW6 confirmation ───────────────────────────────────────────────────────────
     if not skip_cfw6_confirmation:
         confirmed, confirmation_meta = wait_for_confirmation(
             ticker, bars_session, breakout_idx, direction, zone_low, zone_high
         )
         if not confirmed:
-            logger.info(f"[{ticker}] 🚫 CFW6 confirmation failed")
+            logger.info(f"[{ticker}] \U0001f6ab CFW6 confirmation failed")
             return False
         grade, confidence_base = grade_signal_with_confirmations(confirmation_meta)
     else:
@@ -131,7 +147,7 @@ def _run_signal_pipeline(
         confidence_base = 0.65
         confirmation_meta = {}
 
-    # ── MTF trend bias (Phase 1.38d) ──────────────────────────────────────────
+    # ── MTF trend bias (Phase 1.38d) ──────────────────────────────────────────────────
     _mtf_bias_adj = 0.0
     if getattr(config, "MTF_TREND_ENABLED", True):
         try:
@@ -145,30 +161,30 @@ def _run_signal_pipeline(
                     )
                     if _is_aligned:
                         _mtf_bias_adj = 0.05
-                        logger.info(f"[{ticker}] ✅ MTF-TREND: Aligned — +5% bias")
+                        logger.info(f"[{ticker}] \u2705 MTF-TREND: Aligned — +5% bias")
                     else:
                         if rvol < 1.8:
                             logger.info(
-                                f"[{ticker}] 🚫 MTF-RVOL GATE: Counter-trend "
+                                f"[{ticker}] \U0001f6ab MTF-RVOL GATE: Counter-trend "
                                 f"rvol {rvol:.2f}x < 1.8x required — signal dropped"
                             )
                             return False
                         else:
                             logger.info(
-                                f"[{ticker}] ⚠️ MTF-TREND: Counter-trend — "
+                                f"[{ticker}] \u26a0\ufe0f MTF-TREND: Counter-trend — "
                                 f"High RVOL {rvol:.2f}x overrides"
                             )
         except Exception as _mtf_err:
             logger.warning(f"[{ticker}] MTF bias check skipped (non-fatal): {_mtf_err}")
 
-    # ── SMC enrichment delta ─────────────────────────────────────────────────
+    # ── SMC enrichment delta ─────────────────────────────────────────────────────────────
     try:
         from app.filters.sd_zone_confluence import get_smc_delta
         smc_delta = get_smc_delta(ticker, direction)
     except Exception:
         smc_delta = None
 
-    # ── Sweep / OB detection ─────────────────────────────────────────────────
+    # ── Sweep / OB detection ─────────────────────────────────────────────────────────────
     try:
         from app.filters.liquidity_sweep import has_sweep
         sweep_detected = has_sweep(ticker, bars_session, direction)
@@ -181,7 +197,7 @@ def _run_signal_pipeline(
     except Exception:
         ob_detected = False
 
-    # ── Scorecard (Phase 1.38d — FIX 1: all required args supplied) ──────────
+    # ── Scorecard (Phase 1.38d — FIX 1: all required args supplied) ───────────────────
     _sc = build_scorecard(
         ticker=ticker,
         direction=direction,
@@ -198,29 +214,60 @@ def _run_signal_pipeline(
 
     if _sc.score < SCORECARD_GATE_MIN:
         logger.info(
-            f"[{ticker}] 🚫 SCORECARD-GATE: {_sc.score:.1f} "
+            f"[{ticker}] \U0001f6ab SCORECARD-GATE: {_sc.score:.1f} "
             f"< {SCORECARD_GATE_MIN} — signal dropped"
         )
         return False
 
-    # ── Confidence from scorecard score (FIX 2: no .confidence attr) ─────────
+    # ── Confidence from scorecard score (FIX 2: no .confidence attr) ─────────────
     # Map 60-85+ pts linearly to 0.60-0.85 confidence
     _confidence = min(0.85, max(0.60, _sc.score / 100.0))
 
     logger.info(
-        f"[{ticker}] ✅ SCORECARD PASS: {_sc.score:.1f}pts "
+        f"[{ticker}] \u2705 SCORECARD PASS: {_sc.score:.1f}pts "
         f"confidence={_confidence:.2f} grade={grade}"
     )
 
-    # ── Arm the ticker ────────────────────────────────────────────────────────
+    # ── Stop / Targets (FIX 6: compute before arm_ticker call) ──────────────────────
+    # compute_stop_and_targets() uses session bars + grade to derive ATR-based
+    # stop. or_high_ref / or_low_ref are passed so OR boundary is respected
+    # when the opening range has formed (0.0 values are safe — M8 fix).
+    stop_price, t1, t2 = compute_stop_and_targets(
+        bars=bars_session,
+        direction=direction,
+        or_high=or_high_ref or 0.0,
+        or_low=or_low_ref or 0.0,
+        entry_price=entry_price,
+        grade=grade,
+    )
+
+    if stop_price is None:
+        # trade_calculator FIX 10.C-4: stop at/above entry on bull (or at/below
+        # on bear) — happens on A+ high-vol tight-OR tape. Drop cleanly.
+        logger.info(
+            f"[{ticker}] \U0001f6ab STOP-INVALID: compute_stop_and_targets returned None "
+            f"(entry=${entry_price:.2f} grade={grade} direction={direction}) — signal dropped"
+        )
+        return False
+
+    # ── Arm the ticker (FIX 6: all 13 required args now supplied) ───────────────
     armed = arm_ticker(
         ticker=ticker,
         direction=direction,
         zone_low=zone_low,
         zone_high=zone_high,
+        or_low=or_low_ref or 0.0,
+        or_high=or_high_ref or 0.0,
         entry_price=entry_price,
+        stop_price=stop_price,
+        t1=t1,
+        t2=t2,
         confidence=_confidence,
+        grade=grade,
         options_rec=options_rec,
+        signal_type=signal_type,
+        bos_confirmation=bos_confirmation,
+        bos_candle_type=bos_candle_type,
     )
     if armed:
         set_cooldown(ticker, direction)  # FIX 5: pass direction
