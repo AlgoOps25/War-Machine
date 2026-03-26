@@ -6,17 +6,22 @@ CONSOLIDATED: Now includes learning_policy functions (compute_confidence, grade_
 FIXED (Mar 10 2026): All get_conn() calls now use try/finally: return_conn(conn) — no leaks.
 FIXED (Mar 16 2026): Extended _GRADE_BASE to all 9 grades (A+/A/A-/B+/B/B-/C+/C/C-).
                      Fixed bare 'import db_connection' -> 'from app.data import db_connection'.
+FIXED (Mar 26 2026): record_trade() print() → logger.info() (Issue #37).
+                     save_data() last_update timestamp naive → ZoneInfo ET (Issue #38).
 """
 
 import json
 import os
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from typing import Dict, List
 import numpy as np
 from app.data import db_connection
 from utils import config
 import logging
 logger = logging.getLogger(__name__)
+
+ET = ZoneInfo("America/New_York")
 
 
 # =============================================================================
@@ -84,7 +89,7 @@ def grade_to_label(confidence: float) -> str:
     elif confidence >= 0.50: return "C"
     elif confidence >= 0.45: return "C-"
     else:                    return "reject"
-    
+
 # =============================================================================
 # AI LEARNING ENGINE
 # =============================================================================
@@ -165,7 +170,9 @@ class AILearningEngine:
 
     def save_data(self):
         """Save learning data to PostgreSQL or JSON file."""
-        self.data["last_update"] = datetime.now().isoformat()
+        # FIX #38: datetime.now() was naive (UTC on Railway).
+        # Use ZoneInfo ET for consistent timestamps across the codebase.
+        self.data["last_update"] = datetime.now(ET).isoformat()
 
         if db_connection.USE_POSTGRES:
             conn = None
@@ -196,7 +203,7 @@ class AILearningEngine:
     def record_trade(self, trade: Dict):
         """Record a completed trade for learning."""
         trade_record = {
-            "timestamp":      datetime.now().isoformat(),
+            "timestamp":      datetime.now(ET).isoformat(),
             "ticker":         trade["ticker"],
             "direction":      trade["direction"],
             "grade":          trade["grade"],
@@ -215,8 +222,11 @@ class AILearningEngine:
         self.update_performance_metrics(trade_record)
         self.save_data()
 
-        print(f"[AI] Trade recorded: {trade['ticker']} {trade['direction']} -> "
-              f"{'WIN' if trade_record['win'] else 'LOSS'} ${trade['pnl']:+.2f}")
+        # FIX #37: print() → logger.info() — consistent with rest of codebase.
+        logger.info(
+            f"[AI] Trade recorded: {trade['ticker']} {trade['direction']} -> "
+            f"{'WIN' if trade_record['win'] else 'LOSS'} ${trade['pnl']:+.2f}"
+        )
 
     def update_performance_metrics(self, trade: Dict):
         """Update performance tracking by pattern, ticker, timeframe."""

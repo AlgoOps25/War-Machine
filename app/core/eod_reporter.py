@@ -19,8 +19,8 @@ ADDED (Phase 1.32 — Mar 17 2026):
   - Replaces the 30-line inline EOD Discord block in scanner.py
 
 FIX (Mar 19 2026):
-  - get_daily_summary() output now sent to both print() AND logger.info()
-    so test_daily_summary_printed_to_stdout (capsys) captures it correctly.
+  - get_daily_summary() output now sent via logger.info() only.
+    Railway captures stdout from the logger handler; print() was redundant.
 """
 from __future__ import annotations
 
@@ -50,7 +50,7 @@ def run_eod_report(session_date: str | None = None) -> None:
 
     logger.info(f"[EOD-REPORTER] Generating EOD report for {session_date}")
 
-    # ── 1. Trade / P&L stats ─────────────────────────────────────────────────
+    # ── 1. Trade / P&L stats ──────────────────────────────────────────────
     try:
         session     = get_session_status()
         daily_stats = session.get("daily_stats", {})
@@ -82,7 +82,7 @@ def run_eod_report(session_date: str | None = None) -> None:
     except Exception as e:
         logger.error(f"[EOD-REPORTER] Trade stats error: {e}")
 
-    # ── 2. Signal analytics funnel block ─────────────────────────────────────
+    # ── 2. Signal analytics funnel block ─────────────────────────────────
     try:
         from app.signals.signal_analytics import signal_tracker
 
@@ -91,9 +91,8 @@ def run_eod_report(session_date: str | None = None) -> None:
             send_simple_message(discord_msg)
             logger.info("[EOD-REPORTER] ✅ Signal funnel block sent to Discord")
 
-        # Print full summary to stdout for ops visibility (Railway logs + capsys)
+        # FIX #36: print() removed — logger routes to stdout already (Railway captures it).
         full_summary = signal_tracker.get_daily_summary(session_date)
-        print(full_summary)
         logger.info(full_summary)
 
         # Clear session cache for next trading day
