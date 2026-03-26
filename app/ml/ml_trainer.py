@@ -35,6 +35,11 @@ Key improvements (Mar 2026)
     feature-set divergence between the two training paths explicit and
     searchable.  A WARNING is emitted at train_model() startup so the
     difference is visible in logs.
+* FIX (Mar 26 2026) — issues #39 / #40:
+  - #39: should_retrain() datetime.now() naive/UTC → datetime.now(ET) so
+    model age calculation is correct on Railway (UTC host).
+  - #40: trained_at timestamps in both train_model() and train_from_dataframe()
+    now use datetime.now(ET).isoformat() for consistency across the codebase.
 """
 import logging
 import os
@@ -42,6 +47,7 @@ import joblib
 import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from typing import Optional, Tuple, List
 from sklearn.inspection import permutation_importance
 from sklearn.ensemble import HistGradientBoostingClassifier
@@ -56,8 +62,9 @@ from sklearn.metrics import (
 from app.data.db_connection import get_conn, return_conn
 
 logger = logging.getLogger(__name__)
+ET = ZoneInfo("America/New_York")
 
-# ── Paths & constants ────────────────────────────────────────────────────────
+# ── Paths & constants ─────────────────────────────────────────────
 MODEL_PATH           = os.path.join(os.path.dirname(__file__), '..', '..', 'ml_model.joblib')
 MIN_TRAINING_SAMPLES = 100
 RETRAIN_THRESHOLD    = 50
@@ -103,7 +110,7 @@ LIVE_FEATURE_COLS = [
 ]
 
 
-# ── Threshold tuning ─────────────────────────────────────────────────────────
+# ── Threshold tuning ─────────────────────────────────────────────
 
 def _find_optimal_threshold(
     model,
@@ -165,7 +172,7 @@ def predict_with_threshold(model, X: np.ndarray, threshold: float = 0.50) -> np.
     return (model.predict_proba(X)[:, 1] >= threshold).astype(int)
 
 
-# ── Walk-forward cross-validation (FIX: 3-fold, not single split) ────────────
+# ── Walk-forward cross-validation (FIX: 3-fold, not single split) ───────────
 
 def walk_forward_cv(
     X: np.ndarray,
@@ -239,7 +246,7 @@ def walk_forward_cv(
     return fold_metrics, X_last_val, y_last_val
 
 
-# ── Main training function (historical pre-training path) ────────────────────
+# ── Main training function (historical pre-training path) ──────────────────
 
 def train_from_dataframe(
     train_df:     pd.DataFrame,
@@ -298,7 +305,7 @@ def train_from_dataframe(
         f"(WIN={int(y_all.sum())}, LOSS={len(y_all)-int(y_all.sum())})"
     )
 
-    # ── Step 1: 3-fold walk-forward CV for honest metrics ────────────────────
+    # ── Step 1: 3-fold walk-forward CV for honest metrics ─────────────────
     fold_metrics, X_last_val, y_last_val = walk_forward_cv(
         X_all, y_all, n_folds=3, n_estimators=n_estimators
     )
@@ -316,7 +323,7 @@ def train_from_dataframe(
         f"Rec={cv_rec:.2%}  F1={cv_f1:.2%}"
     )
 
-    # ── Step 2: Final model — train on ALL data ───────────────────────────────
+    # ── Step 2: Final model — train on ALL data ─────────────────────────────
     try:
         base_model = HistGradientBoostingClassifier(
             max_iter=n_estimators, max_depth=4, learning_rate=0.05,
@@ -328,9 +335,7 @@ def train_from_dataframe(
         logger.error(f"[ML-TRAIN-DF] Training failed: {exc}")
         return None, {'error': str(exc)}
 
-    # ── Step 3: Platt scaling (CalibratedClassifierCV, sigmoid) ─────────────
-    # cv='prefit' means the base model is already fitted; calibration is done
-    # on the last-fold val set to avoid data leakage.
+    # ── Step 3: Platt scaling (CalibratedClassifierCV, sigmoid) ───────────
     try:
         model = CalibratedClassifierCV(estimator=base_model, method='sigmoid', cv='prefit')
         model.fit(X_last_val, y_last_val)
@@ -339,7 +344,7 @@ def train_from_dataframe(
         logger.warning(f"[ML-TRAIN-DF] Platt scaling failed ({exc}) — using uncalibrated model")
         model = base_model
 
-    # ── Step 4: Threshold tuning on last-fold val set ────────────────────────
+    # ── Step 4: Threshold tuning on last-fold val set ────────────────────
     opt_threshold = _find_optimal_threshold(model, X_last_val, y_last_val)
     y_pred_opt    = predict_with_threshold(model, X_last_val, opt_threshold)
     accuracy      = accuracy_score(y_last_val, y_pred_opt)
@@ -348,7 +353,7 @@ def train_from_dataframe(
     f1            = f1_score(y_last_val, y_pred_opt, zero_division=0)
     cm            = confusion_matrix(y_last_val, y_pred_opt)
 
-    # ── Step 5: Permutation importance on last-fold val set ──────────────────
+    # ── Step 5: Permutation importance on last-fold val set ───────────────
     try:
         pi = permutation_importance(
             model, X_last_val, y_last_val,
@@ -360,6 +365,7 @@ def train_from_dataframe(
         feat_imp = {col: 0.0 for col in available_feats}
     feat_imp_sorted = dict(sorted(feat_imp.items(), key=lambda x: x[1], reverse=True))
 
+    # FIX #40: datetime.now() naive/UTC → datetime.now(ET)
     metrics = {
         'accuracy':           accuracy,
         'precision':          precision,
@@ -378,7 +384,7 @@ def train_from_dataframe(
         'n_train':            len(X_all),
         'n_val':              len(X_last_val),
         'calibrated':         True,
-        'trained_at':         datetime.now().isoformat(),
+        'trained_at':         datetime.now(ET).isoformat(),
         'source':             'historical_pretraining',
         'model_version':      MODEL_VERSION,
         'model_type':         'HistGradientBoostingClassifier+PlattScaling',
@@ -415,7 +421,7 @@ def train_from_dataframe(
     return model, metrics
 
 
-# ── Live EOD retrain path ────────────────────────────────────────────────────
+# ── Live EOD retrain path ────────────────────────────────────────────
 
 def train_model(
     min_samples:  int   = MIN_TRAINING_SAMPLES,
@@ -425,15 +431,6 @@ def train_model(
     """
     Train ML model on live signal_outcomes from the PostgreSQL DB.
     Called by the EOD auto-retrain hook in scanner.py.
-
-    FIX #25 (Mar 26 2026): Now uses walk_forward_cv() (3-fold time-series CV)
-    instead of a single 80/20 random split.  Platt calibration is applied on
-    the last-fold val set — the same holdout used for threshold tuning — so
-    the calibration data is fully disjoint from both training and eval data.
-
-    NOTE (#27): This path uses LIVE_FEATURE_COLS (7 base + dummies), not
-    HIST_FEATURE_COLS (20 features).  Do not hot-swap the two model files
-    without aligning feature sets.
     """
     logger.info("[ML-TRAIN] Starting live retrain from DB...")
     logger.warning(
@@ -462,7 +459,6 @@ def train_model(
         logger.error(f"[ML-TRAIN] Feature prep error: {exc}")
         return None, {'error': str(exc)}
 
-    # ── FIX #25: walk-forward CV instead of single split ─────────────────────
     fold_metrics, X_last_val, y_last_val = walk_forward_cv(
         X, y, n_folds=3, n_estimators=n_estimators
     )
@@ -486,7 +482,6 @@ def train_model(
             l2_regularization=0.1, class_weight='balanced', random_state=42,
         )
         base_model.fit(X, y)
-        # FIX #25: calibrate on last-fold val set, not the eval split
         model = CalibratedClassifierCV(estimator=base_model, method='sigmoid', cv='prefit')
         model.fit(X_last_val, y_last_val)
         logger.info("[ML-TRAIN] ✅ Model trained on full dataset + Platt-calibrated on last-fold val")
@@ -508,6 +503,7 @@ def train_model(
         feature_importance = {col: 0.0 for col in feature_names}
     sorted_features = sorted(feature_importance.items(), key=lambda x: x[1], reverse=True)
 
+    # FIX #40: datetime.now() naive/UTC → datetime.now(ET)
     metrics = {
         'accuracy':           accuracy,
         'precision':          precision,
@@ -525,7 +521,7 @@ def train_model(
         'n_train':            len(X),
         'n_val':              len(X_last_val),
         'calibrated':         True,
-        'trained_at':         datetime.now().isoformat(),
+        'trained_at':         datetime.now(ET).isoformat(),
         'model_version':      MODEL_VERSION,
         'model_type':         'HistGradientBoostingClassifier+PlattScaling',
     }
@@ -554,7 +550,7 @@ def train_model(
     return model, metrics
 
 
-# ── DB helpers ───────────────────────────────────────────────────────────────
+# ── DB helpers ──────────────────────────────────────────────────────────
 
 def _fetch_training_data() -> Optional[pd.DataFrame]:
     """
@@ -594,7 +590,7 @@ def _fetch_training_data() -> Optional[pd.DataFrame]:
 def _prepare_features(df: pd.DataFrame) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], list]:
     """Prepare feature matrix X and labels y from live DB DataFrame."""
     try:
-        features = list(LIVE_FEATURE_COLS)  # start from canonical live feature list
+        features = list(LIVE_FEATURE_COLS)
         if 'pattern_type' in df.columns:
             dummies = pd.get_dummies(df['pattern_type'], prefix='pattern')
             df = pd.concat([df, dummies], axis=1)
@@ -615,7 +611,7 @@ def _prepare_features(df: pd.DataFrame) -> Tuple[Optional[np.ndarray], Optional[
         return None, None, []
 
 
-# ── Retrain check ────────────────────────────────────────────────────────────
+# ── Retrain check ──────────────────────────────────────────────────
 
 def should_retrain() -> bool:
     """Check if model should be retrained based on new data availability."""
@@ -624,8 +620,17 @@ def should_retrain() -> bool:
             logger.info("[ML-TRAIN] No existing model — training recommended")
             return True
         model_data = joblib.load(MODEL_PATH)
-        trained_at = datetime.fromisoformat(model_data['trained_at'])
-        days_old   = (datetime.now() - trained_at).days
+        # FIX #39: datetime.now() naive/UTC → datetime.now(ET) so model age
+        # is correct on Railway (UTC host). fromisoformat() handles tz-aware strings.
+        trained_at_str = model_data['trained_at']
+        try:
+            trained_at = datetime.fromisoformat(trained_at_str)
+            if trained_at.tzinfo is None:
+                # Legacy naive timestamp — treat as ET
+                trained_at = trained_at.replace(tzinfo=ET)
+        except ValueError:
+            trained_at = datetime.now(ET)  # fallback: treat as just-trained
+        days_old = (datetime.now(ET) - trained_at).days
         if days_old > 30:
             logger.info(f"[ML-TRAIN] Model is {days_old}d old — retraining recommended")
             return True
