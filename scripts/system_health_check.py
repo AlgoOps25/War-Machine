@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-War Machine - Comprehensive System Health Check  v1.18
+War Machine - Comprehensive System Health Check  v1.19
 
 All imports match the CURRENT codebase. Run from repo root:
     python scripts/system_health_check.py
@@ -41,7 +41,7 @@ def test_component(name: str, test_func) -> Tuple[bool, str]:
         return False, msg
 
 print("\n" + "="*80)
-print("WAR MACHINE - COMPREHENSIVE SYSTEM HEALTH CHECK  v1.18")
+print("WAR MACHINE - COMPREHENSIVE SYSTEM HEALTH CHECK  v1.19")
 print("="*80)
 print(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
 
@@ -53,33 +53,41 @@ print("\n[1/15] DATABASE CONNECTION")
 print("-"*80)
 
 def test_db_connection():
-    from app.data.db_connection import get_conn
+    """FIX MAR 26: use return_conn() not conn.close() to avoid semaphore leak."""
+    from app.data.db_connection import get_conn, return_conn
     conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("SELECT 1")
-    assert cur.fetchone()[0] == 1
-    conn.close()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT 1")
+        assert cur.fetchone()[0] == 1
+    finally:
+        return_conn(conn)  # properly releases semaphore + rolls back + returns to pool
 
 test_component("Database Connection", test_db_connection)
 
 def test_db_tables():
-    from app.data.db_connection import get_conn
+    """FIX MAR 26: use return_conn() not conn.close()."""
+    from app.data.db_connection import get_conn, return_conn
     conn = get_conn()
-    cur = conn.cursor()
     try:
-        cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
-        tables = [r[0] for r in cur.fetchall()]
-        db_type = "SQLite"
-    except Exception:
-        cur.execute("""
-            SELECT table_name FROM information_schema.tables
-            WHERE table_schema = 'public'
-        """)
-        tables = [r[0] for r in cur.fetchall()]
-        db_type = "PostgreSQL"
-    conn.close()
-    print(f"   [{db_type}] Found {len(tables)} tables: {', '.join(tables[:8])}{'...' if len(tables)>8 else ''}")
-    return True
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            tables = [r[0] for r in cur.fetchall()]
+            db_type = "SQLite"
+        except Exception:
+            conn.rollback()  # clear any aborted state before retrying
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT table_name FROM information_schema.tables
+                WHERE table_schema = 'public'
+            """)
+            tables = [r[0] for r in cur.fetchall()]
+            db_type = "PostgreSQL"
+        print(f"   [{db_type}] Found {len(tables)} tables: {', '.join(tables[:8])}{'...' if len(tables)>8 else ''}")
+        return True
+    finally:
+        return_conn(conn)
 
 test_component("Database Tables Exist", test_db_tables)
 

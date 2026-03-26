@@ -95,6 +95,22 @@ FIX (MAR 25, 2026): SEMAPHORE LIMIT INCREASE 12 → 14
   single leaked slot from triggering the crash again.
 - Still well below POOL_MAX=15 and Railway's ~20 connection cap.
 
+FIX (MAR 26, 2026): ROLLBACK BEFORE PUTCONN IN return_conn()
+- Any caller whose query raised an exception left the connection in Postgres'
+  InFailedSqlTransaction state before calling return_conn(). putconn() returned
+  the dirty connection to the pool, and the next caller to check it out received
+  a connection that failed every query with:
+    InFailedSqlTransaction: current transaction is aborted,
+    commands ignored until end of transaction block
+  The _validate_conn() SELECT 1 on checkout catches stale SSL sockets but does
+  NOT catch aborted-transaction state (SELECT 1 can succeed in aborted state on
+  some psycopg2 versions, and even when it fails the reconnect path only handles
+  SSL EOF, not transaction state).
+- Fix: call conn.rollback() inside return_conn() before putconn(). This is
+  standard psycopg2 pool practice — always rollback on return to guarantee a
+  clean idle state for the next borrower. rollback() on a clean (non-aborted)
+  connection is a no-op, so there is zero cost when no error occurred.
+
 NOTE: Railway provides DATABASE_URL as postgres:// — psycopg2 requires
 postgresql:// — we normalize it automatically here.
 """
@@ -398,6 +414,15 @@ def return_conn(conn):
     """
     Return a connection to the pool (PostgreSQL) or close it (SQLite).
     Releases the semaphore slot.
+
+    FIX MAR 26, 2026: rollback before putconn so any aborted transaction
+    state is cleared before the connection is recycled to the pool.
+    Without this, a caller whose query raised an exception would return
+    a dirty connection, and the next borrower would immediately hit:
+      InFailedSqlTransaction: current transaction is aborted,
+      commands ignored until end of transaction block
+    rollback() on a clean connection is a no-op — zero cost when no
+    error occurred.
     """
     if conn is None:
         return
@@ -426,6 +451,13 @@ def return_conn(conn):
                     )
                     with _stats_lock:
                         _pool_stats["timeouts"] += 1
+
+                # FIX MAR 26, 2026: always rollback before returning to pool
+                # to clear any aborted transaction state left by a failed query.
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
 
                 _connection_pool.putconn(conn)
 
