@@ -11,6 +11,13 @@ Contents:
   - _POSITIONS_CACHE_TTL  : get_open_positions() cache TTL constant
   - _date_eq_today()      : Postgres / SQLite-compatible "= today" SQL fragment
   - _date_lt_today()      : Postgres / SQLite-compatible "< today" SQL fragment
+  - _date_col()           : Raw date-extract fragment (no implied comparator).
+                            Use this for range / >= queries such as get_win_rate().
+                            FIX #13 (2026-03-26): get_win_rate() previously called
+                            _date_eq_today() in a >= clause — the name implied
+                            equality but the fragment is structurally a date extractor.
+                            Added _date_col() as a semantically-correct alias so
+                            range comparisons read clearly at the call site.
   - _write_completed_at() : Write completed_at / outcome / exit_price to ml_signals
 """
 import logging
@@ -23,7 +30,7 @@ logger = logging.getLogger(__name__)
 _ET = ZoneInfo("America/New_York")
 
 
-# ── Sector / ticker concentration mapping ──────────────────────────────────────────
+# ── Sector / ticker concentration mapping ───────────────────────────────────────────────────────
 SECTOR_GROUPS = {
     "TECH":       ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "TSLA", "AMD", "INTC", "CRM"],
     "FINANCE":    ["JPM", "BAC", "WFC", "GS", "MS", "C"],
@@ -34,19 +41,50 @@ SECTOR_GROUPS = {
 }
 
 
-# ── Cache TTL constants ───────────────────────────────────────────────────────────────
+# ── Cache TTL constants ────────────────────────────────────────────────────────────────────────
+SECTOR_GROUPS = {
+    "TECH":       ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "TSLA", "AMD", "INTC", "CRM"],
+    "FINANCE":    ["JPM", "BAC", "WFC", "GS", "MS", "C"],
+    "ENERGY":     ["XOM", "CVX", "COP", "SLB", "EOG"],
+    "HEALTHCARE": ["JNJ", "UNH", "PFE", "ABBV", "MRK", "TMO"],
+    "INDICES":    ["SPY", "QQQ", "IWM", "DIA"],
+    "VOLATILITY": ["VIX", "UVXY", "SVXY", "VXX"],
+}
+
 _STATS_CACHE_TTL     = 10  # get_daily_stats()     — re-query at most every 10s
 _POSITIONS_CACHE_TTL =  5  # get_open_positions()  — re-query at most every 5s
 
 
-# ── FIX #11: SQLite-compatible date-filter helpers ─────────────────────────────────
+# ── FIX #11: SQLite-compatible date-filter helpers ────────────────────────────────────────────
+
+def _date_col(col: str) -> str:
+    """
+    FIX #13 (2026-03-26): Semantically-correct alias for date extraction.
+
+    Returns a SQL fragment that extracts the date part from a TIMESTAMP column
+    with NO implied comparator.  Use this for range queries (>=, <=, BETWEEN)
+    where _date_eq_today() would be misleading.
+
+    Examples:
+        WHERE {_date_col('exit_time')} >= {p}   -- lookback range in get_win_rate()
+        WHERE {_date_col('entry_time')} BETWEEN {p} AND {p}
+
+    Postgres:  DATE(col AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')
+    SQLite:    date(col)
+    """
+    if USE_POSTGRES:
+        return f"DATE({col} AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')"
+    return f"date({col})"
+
 
 def _date_eq_today(col: str) -> str:
     """
     Return a SQL fragment that compares `col` (TIMESTAMP) to today's ET date.
 
-    Postgres:  DATE(col AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York') = %s
-    SQLite:    date(col) = ?   (timestamps stored naive-ET locally)
+    Intended for: WHERE {_date_eq_today('exit_time')} = {p}  -- p bound to today's date string
+
+    Postgres:  DATE(col AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')
+    SQLite:    date(col)
     """
     if USE_POSTGRES:
         return f"DATE({col} AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')"
@@ -57,15 +95,17 @@ def _date_lt_today(col: str) -> str:
     """
     Return a SQL fragment that checks `col` is strictly before today's ET date.
 
-    Postgres:  DATE(col AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York') < %s
-    SQLite:    date(col) < ?
+    Intended for: WHERE {_date_lt_today('entry_time')} < {p}  -- p bound to today's date string
+
+    Postgres:  DATE(col AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')
+    SQLite:    date(col)
     """
     if USE_POSTGRES:
         return f"DATE({col} AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')"
     return f"date({col})"
 
 
-# ── FIX #4: completed_at write-back helper ───────────────────────────────────────────
+# ── FIX #4: completed_at write-back helper ────────────────────────────────────────────────────
 
 def _write_completed_at(
     ticker:     str,
