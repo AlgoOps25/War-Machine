@@ -1,5 +1,5 @@
 """
-scanner.py — Intelligent Watchlist Builder & Scanner Loop v1.38b
+scanner.py — Intelligent Watchlist Builder & Scanner Loop v1.38c
 Adaptive Watchlist Funnel, Pre-Market Scanner, Position Monitoring, DB Cleanup.
 WebSocket bar + quote feeds with candle cache (95%+ API reduction on redeploy).
 See CHANGELOG.md for full phase history.
@@ -361,7 +361,7 @@ def start_scanner_loop():
 
     # ── Startup banner (status only — see CHANGELOG.md for phase history) ─────
     logger.info("=" * 60)
-    logger.info("WAR MACHINE CFW6 SCANNER v1.38b - STARTUP")
+    logger.info("WAR MACHINE CFW6 SCANNER v1.38c - STARTUP")
     logger.info("=" * 60)
 
     try:
@@ -405,24 +405,9 @@ def start_scanner_loop():
     premarket_watchlist = []
     premarket_built     = False
 
-    if _booting_into_market_hours:
-        logger.info("[SCANNER] ⚡ Redeploy detected during market hours — loading locked watchlist")
-        try:
-            watchlist_data      = get_watchlist_with_metadata(force_refresh=False)
-            premarket_watchlist = watchlist_data.get('watchlist', [])
-            if premarket_watchlist:
-                logger.info(f"[SCANNER] ✅ Loaded locked watchlist: {len(premarket_watchlist)} tickers")
-            else:
-                premarket_watchlist = list(EMERGENCY_FALLBACK)
-                logger.warning("[SCANNER] ⚠️ No locked watchlist found — using emergency fallback")
-        except Exception as e:
-            premarket_watchlist = list(EMERGENCY_FALLBACK)
-            logger.warning(f"[SCANNER] ⚠️ Could not load locked watchlist ({e}) — using emergency fallback")
-        premarket_built = True
-
     try:
         send_simple_message(
-            f"⚔️ WAR MACHINE ONLINE — CFW6 v1.38b | "
+            f"⚔️ WAR MACHINE ONLINE — CFW6 v1.38c | "
             f"{'Resuming intraday' if _booting_into_market_hours else 'OR window active'}"
         )
     except Exception as e:
@@ -435,8 +420,11 @@ def start_scanner_loop():
     _or_window_logged         = False
     _watchlist_lock_logged    = False
 
+    # ── WS + backfill init (always runs first) ────────────────────────────────
+    # Use EMERGENCY_FALLBACK as the seed subscription list for mid-session
+    # redeployments so WS connects to something before we try to score tickers.
     startup_watchlist = list(dict.fromkeys(
-        (premarket_watchlist if premarket_watchlist else list(EMERGENCY_FALLBACK)) + REGIME_TICKERS
+        list(EMERGENCY_FALLBACK) + REGIME_TICKERS
     ))
 
     logger.info("[WS-INIT] About to start WebSocket feed thread...")
@@ -462,6 +450,49 @@ def start_scanner_loop():
     set_backfill_complete()
     last_subscribed_watchlist = set(startup_watchlist)
     logger.info("[STARTUP] ✅ WS feeds up | backfill running in background | entering main loop")
+
+    # ── Mid-session redeploy: load locked watchlist AFTER WS is up ───────────
+    # FIX v1.38c: previously this block ran BEFORE WS init, so the funnel had
+    # no session bars and locked []. Now we retry up to 3x (10s apart) after
+    # WS + backfill are running, giving the screener a warm start.
+    if _booting_into_market_hours:
+        logger.info("[SCANNER] ⚡ Redeploy detected during market hours — loading locked watchlist")
+        _REDEPLOY_RETRIES    = 3
+        _REDEPLOY_RETRY_WAIT = 10  # seconds between attempts
+        for attempt in range(1, _REDEPLOY_RETRIES + 1):
+            try:
+                watchlist_data      = get_watchlist_with_metadata(force_refresh=False)
+                premarket_watchlist = watchlist_data.get('watchlist', [])
+                if premarket_watchlist:
+                    logger.info(
+                        f"[SCANNER] ✅ Loaded locked watchlist: "
+                        f"{len(premarket_watchlist)} tickers (attempt {attempt})"
+                    )
+                    break
+                else:
+                    logger.warning(
+                        f"[SCANNER] ⚠️ Watchlist empty on attempt {attempt}/{_REDEPLOY_RETRIES} "
+                        f"— {'retrying in ' + str(_REDEPLOY_RETRY_WAIT) + 's' if attempt < _REDEPLOY_RETRIES else 'giving up'}"
+                    )
+                    if attempt < _REDEPLOY_RETRIES:
+                        time.sleep(_REDEPLOY_RETRY_WAIT)
+            except Exception as e:
+                logger.warning(
+                    f"[SCANNER] ⚠️ Watchlist load error on attempt {attempt}/{_REDEPLOY_RETRIES}: {e}"
+                )
+                if attempt < _REDEPLOY_RETRIES:
+                    time.sleep(_REDEPLOY_RETRY_WAIT)
+
+        if not premarket_watchlist:
+            premarket_watchlist = list(EMERGENCY_FALLBACK)
+            logger.warning("[SCANNER] ⚠️ No locked watchlist found after retries — using emergency fallback")
+
+        # Subscribe the real watchlist now that we have it
+        combined = list(dict.fromkeys(premarket_watchlist + REGIME_TICKERS))
+        subscribe_tickers(combined)
+        subscribe_quote_tickers(combined)
+        last_subscribed_watchlist = set(combined)
+        premarket_built = True
 
     while True:
         try:
