@@ -176,10 +176,9 @@ class AnalyticsIntegration:
 
     def check_scheduled_tasks(self):
         """Run time-based tasks (market open / EOD). Call once per minute."""
-        # FIX #35: was datetime.now() (naive/UTC) — on Railway this caused the
-        # 9:30 AM ET reset to fire at 2:30 PM ET and EOD tasks at noon ET.
-        # All time checks must use ZoneInfo("America/New_York") to match the
-        # rest of the codebase.
+        # FIX #35: datetime.now() is naive and reads UTC on Railway.
+        # 9:30 AM reset would fire at 2:30 PM ET; EOD tasks at noon.
+        # Use ZoneInfo("America/New_York") to match all other time checks.
         now = datetime.now(ZoneInfo("America/New_York"))
 
         # Market open reset
