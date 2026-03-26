@@ -126,6 +126,20 @@ FIX v4.0 (MAR 26, 2026) - Phase 1.30 premarket gate blocks mid-session redeploy:
     _apply_relative_outlier_boost().
   - MIN_SCORED_THRESHOLD = 3: if fewer than 3 tickers survive momentum
     scoring, treat as effectively empty and trigger the fallback.
+
+FIX v4.1 (MAR 26, 2026) - Skip expansion block after v4.0 fallback to prevent hang:
+  - ROOT CAUSE: After the v4.0 fallback fires and maps 38 dynamic_screener
+    results into scored_tickers, the expansion block ("if len < 10") runs
+    immediately because the count check fires before min_score is applied.
+    The expansion calls get_scored_tickers(force_refresh=True) which runs
+    all 4 EODHD API passes (up to 60s of blocking HTTP on the main thread),
+    causing the container to hang with no further log output visible in Railway.
+  - FIX: Added _used_fallback flag. When the v4.0 fallback fires, set
+    _used_fallback=True and skip the expansion block entirely. The fallback
+    already provides a full screener-quality set — no expansion is needed.
+  - SECONDARY: Changed expansion block force_refresh=True -> force_refresh=False.
+    Expansion should never re-run live API passes since dynamic_screener cache
+    was populated moments earlier in the same function call.
 """
 import sys
 from pathlib import Path
@@ -666,6 +680,9 @@ class WatchlistFunnel:
                     returns empty due to the Phase 1.30 premarket window gate
                     blocking all scan_ticker() calls after 9:30 AM ET on a cold
                     mid-session container.
+        FIX v4.1:   Skip the expansion block when v4.0 fallback was used — the
+                    fallback already provides a full screener-quality set and the
+                    expansion's force_refresh=True would hang the container.
         """
         stage_config = self.stages["live"]
         screener_results = dynamic_screener.get_scored_tickers(
@@ -686,6 +703,7 @@ class WatchlistFunnel:
         # all fresh scans (we are past 9:30 ET on a cold container with an empty
         # premarket scanner cache). Fall back to the dynamic_screener results
         # which are already scored and require no additional API calls.
+        _used_fallback = False  # FIX v4.1: track whether fallback fired
         if len(self.scored_tickers) < MIN_SCORED_THRESHOLD and screener_results:
             logger.warning(
                 f"[FUNNEL] ⚠️  run_momentum_screener() returned only "
@@ -715,12 +733,18 @@ class WatchlistFunnel:
                 f"[FUNNEL] ✅ Phase 1.30 fallback: {len(self.scored_tickers)} tickers "
                 f"mapped from dynamic_screener for live lock."
             )
+            _used_fallback = True  # FIX v4.1: signal to skip expansion below
         # ── end FIX v4.0 ─────────────────────────────────────────────────────
 
-        if len(self.scored_tickers) < 10:
+        # FIX v4.1: Skip expansion when fallback was used — we already have a
+        # full dynamic_screener set. The old expansion block called
+        # get_scored_tickers(force_refresh=True) which ran all 4 EODHD API
+        # passes (~60s blocking) and caused the container to hang silently.
+        # Also changed force_refresh=True -> False as a secondary safety net.
+        if not _used_fallback and len(self.scored_tickers) < 10:
             logger.info(f"[FUNNEL] \u26a0\ufe0f  Only {len(self.scored_tickers)} tickers — expanding search...")
             expanded_results = dynamic_screener.get_scored_tickers(
-                max_tickers=100, min_score=0, force_refresh=True
+                max_tickers=100, min_score=0, force_refresh=False  # FIX v4.1: was force_refresh=True
             )
             expanded_candidates = [t['ticker'] for t in expanded_results[:100]]
             extra = _get_momentum_screener().run_momentum_screener(
