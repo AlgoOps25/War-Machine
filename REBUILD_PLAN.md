@@ -23,7 +23,7 @@ You own the **EOD+Intraday All-World Extended + US Stock Options** plan.
 
 | EODHD Endpoint | Current Status | Action Needed |
 |---|---|---|
-| `/api/intraday/{ticker}.US` (1m bars) | ✅ Used — WS-first, REST fallback | Keep. Extend to build 2m/3m bars from 1m. |
+| `/api/intraday/{ticker}.US` (1m bars) | ✅ Used — WS-first, REST fallback | Keep. 2m/3m resampled from 1m in-process. |
 | `/api/eod/{ticker}.US` (daily OHLC) | ✅ Used — prior-day context | Keep. |
 | `/api/real-time/{ticker}.US` (snapshots) | ✅ Used — bulk 50-ticker quotes | Keep. |
 | WebSocket feed (`ws_feed.py`) | ✅ Used — live bar stream | Keep. |
@@ -41,31 +41,59 @@ Options were planned for Tradier but EODHD provides this natively on the current
 
 ### Current State
 ```
-sniper.py
-  → scan_bos_fvg()        [bos_fvg_engine.py]  ← 1m bars only, single timeframe
-  → enrich_signal_with_smc() [smc_engine.py]   ← confidence deltas: CHoCH, OB, Phase, Inducement
-  → validation pipeline   [validation.py]
-  → options_intelligence  [options_intelligence.py]  ← Tradier (NOT connected)
-  → Discord alert         [discord_helpers.py]  ← fires, but options recommendation is empty/wrong
+scanner.py:start_scanner_loop()
+  → for ticker in watchlist:
+      process_ticker(ticker)                      [sniper.py]
+        → Path A: ORB path
+            detect_breakout_after_or()            [opening_range.py]  ← OR high/low breakout
+            detect_fvg_after_break()              [opening_range.py]  ← 1m bars only
+            _run_signal_pipeline()                [sniper_pipeline.py]
+        → Path B: Intraday BOS+FVG fallback
+            scan_bos_fvg()                        [bos_fvg_engine.py]  ← 1m bars only
+            get_full_mtf_analysis()               [mtf_fvg_priority.py]  ← called, BUT passes bars_5m=bars_session (1m bars!)
+            _run_signal_pipeline()                [sniper_pipeline.py]
+        → Path C: VWAP reclaim
+            detect_vwap_reclaim()                 [vwap_reclaim.py]
+            _run_signal_pipeline()                [sniper_pipeline.py]
 ```
 
-**Problems identified:**
-1. `bos_fvg_engine.py` only scans 1m bars — no 2m/3m/5m timeframe hierarchy
-2. No CRT (Candle Range Theory) engine exists anywhere in the repo
-3. EODHD Technical Indicator API never called live — local calculations only
-4. Options chain pulling from wrong source (Tradier stub, not EODHD)
-5. Discord alert does not include full options recommendation
+**Critical bugs found in sniper.py:**
+1. **MTF analysis is broken:** `get_full_mtf_analysis(bars_5m=bars_session)` is passing 1m session bars as if they were 5m bars. The MTF engine is receiving the wrong data and doing nothing useful.
+2. **`_resample_bars()` already exists in sniper.py** (line ~175) but is NEVER called. Dead code.
+3. **No CRT engine** anywhere in the repo.
+4. **No EODHD Technical API calls** anywhere in the live pipeline.
+5. **No options recommendation** in the live alert path (options_intelligence exists but options chain source is broken).
+
+**Critical bugs found in scanner.py:**
+1. `scanner.py` calls `process_ticker(ticker)` serially with a 45s timeout — one ticker at a time. This is fine.
+2. Scan intervals: 5s (9:30-9:40), 45s (9:40-11:00), 180s (11:00-14:00), 60s (14:00-15:30), 45s (15:30-16:00). CRT needs ≤ 60s scan interval to catch 3-candle patterns on 1m bars.
+3. Watchlist size: 30 tickers at open, 50 mid-session, 35 close. Acceptable.
+4. `_run_ticker_with_timeout()` uses a `ThreadPoolExecutor(max_workers=1)` — only 1 concurrent ticker possible. Fine for serial execution.
 
 ### Target State
 ```
-sniper.py
-  → eodhd_indicators.py   ← NEW: fetch RSI/ADX/MACD/EMA live from EODHD per scan cycle
-  → scan_bos_fvg_mtf()    ← EXTENDED: scan 1m, 2m, 3m, 5m; score by timeframe weight
-  → scan_crt_mtf()        ← NEW: CRT engine, same 4-timeframe scan
-  → enrich_signal_with_smc() [smc_engine.py]  ← existing, keep
-  → indicator_confidence_boost()  ← NEW: apply EODHD indicator values to conf_score
-  → eodhd_options.py      ← NEW: fetch live options chain + pick best contract
-  → Discord alert         ← UPDATED: full options recommendation in embed
+scanner.py:start_scanner_loop()    [NO CHANGES needed to scanner.py]
+  → for ticker in watchlist:
+      process_ticker(ticker)                      [sniper.py — MODIFIED]
+        → Fetch EODHD indicators (cached 5m TTL)  [eodhd_indicators.py — NEW]
+        → Resample: 1m → 2m, 3m (using _resample_bars already in sniper.py)
+        → Path A: ORB path                        [NO CHANGES — keep as-is]
+        → Path B: MTF BOS+FVG                     [FIXED: pass correct TF bars]
+            scan_bos_fvg(bars_1m)  → score * 1.0x
+            scan_bos_fvg(bars_2m)  → score * 1.15x
+            scan_bos_fvg(bars_3m)  → score * 1.25x
+            scan_bos_fvg(bars_5m)  → score * 1.50x
+            merge_mtf_signals()    → best TF + confluence boost
+        → Path D: MTF CRT scan                   [NEW — crt_engine.py]
+            scan_crt(bars_1m)  → score * 1.0x
+            scan_crt(bars_2m)  → score * 1.15x
+            scan_crt(bars_3m)  → score * 1.25x
+            scan_crt(bars_5m)  → score * 1.50x
+        → Merge BOS+FVG + CRT signals             [same direction = best score wins + +0.05 confluence]
+        → Apply indicator confidence modifiers    [eodhd_indicators.py]
+        → _run_signal_pipeline()                  [sniper_pipeline.py — pass enriched signal_data]
+            → eodhd_options.py                   [NEW — fetch chain + select contract]
+            → discord_helpers.py                 [UPDATED — full options alert format]
 ```
 
 ---
@@ -74,9 +102,9 @@ sniper.py
 
 ### Source
 Nitro Trades YouTube series:
-- [This ONE Candle Will Change Your Trading | CRT](https://youtu.be/v-Au32NSfS8?si=jWvlO3Lh2AxVKl-r) (10:57)
-- [The ONLY Trading Strategy You Need For Futures | CRT](https://youtu.be/MJsEFxo1Apg?si=Uq7TFZxt-xbDhW-Q) (12:08)
-- [The "ONE CANDLE" Trading Strategy That Works Everyday | CRT](https://youtu.be/rQzxUldYKuk?si=6t3c7gyygZx7pu3Z) (14:27)
+- [This ONE Candle Will Change Your Trading | CRT](https://youtu.be/v-Au32NSfS8?si=jWvlO3Lh2AxVKl-r)
+- [The ONLY Trading Strategy You Need For Futures | CRT](https://youtu.be/MJsEFxo1Apg?si=Uq7TFZxt-xbDhW-Q)
+- [The "ONE CANDLE" Trading Strategy That Works Everyday | CRT](https://youtu.be/rQzxUldYKuk?si=6t3c7gyygZx7pu3Z)
 
 ### CRT Pattern Rules (Nitro Trades / Community Consensus)
 
@@ -138,9 +166,9 @@ CRT is a **3-candle AMD sequence** (Accumulation → Manipulation → Distributi
 
 ### Bar Construction
 - 1m bars: native from EODHD WebSocket + REST
-- 2m bars: built from 1m (aggregate every 2 bars)
-- 3m bars: built from 1m (aggregate every 3 bars)
-- 5m bars: already materialized in `intraday_bars_5m` table
+- 2m bars: `_resample_bars(bars_1m, 2)` — **function already exists in sniper.py, just not called**
+- 3m bars: `_resample_bars(bars_1m, 3)` — same
+- 5m bars: already materialized in `intraday_bars_5m` table; fetch via `data_manager.get_today_session_bars_5m(ticker)` (or resample from 1m as fallback)
 
 ### Signal Confidence Weight by Timeframe
 | Timeframe | BOS+FVG Weight | CRT Weight | Notes |
@@ -224,11 +252,20 @@ Returns: full chain with strikes, expiration dates, bid/ask, OI, IV, delta, gamm
 ### Modified Files
 | File | Change |
 |---|---|
-| `app/mtf/bos_fvg_engine.py` | Add timeframe parameter; make `scan_bos_fvg()` accept pre-built bars of any TF |
-| `app/core/sniper.py` | Wire MTF loop: call BOS+FVG and CRT on 1m/2m/3m/5m bars per tick; merge scores |
+| `app/mtf/bos_fvg_engine.py` | Verify `scan_bos_fvg()` is timeframe-agnostic (just takes a list of bars) — it likely already is |
+| `app/core/sniper.py` | **Fix MTF bug** (pass correct TF bars to `get_full_mtf_analysis`); wire `_resample_bars()` for 2m/3m; add CRT scan loop; add indicator boost; pass options rec to pipeline |
+| `app/core/sniper_pipeline.py` | Accept `options_rec` in signal_data dict; pass to discord_helpers |
 | `app/notifications/discord_helpers.py` | Update alert embed to include CRT context, MTF scores, indicators, full options rec |
-| `app/data/data_manager.py` | Add `get_resampled_bars(ticker, timeframe)` to build 2m/3m from 1m on-the-fly |
-| `utils/config.py` | Add `EODHD_INDICATOR_CACHE_TTL`, `CRT_MIN_SWEEP_PCT`, `MTF_CONFLUENCE_BOOST` |
+| `utils/config.py` | Add `CRT_MIN_SWEEP_PCT`, `MTF_CONFLUENCE_BOOST`, `EODHD_INDICATOR_CACHE_TTL` |
+
+### Files NOT to touch
+| File | Reason |
+|---|---|
+| `scanner.py` | Scan loop, timing, watchlist are all correct. Zero changes needed. |
+| `app/mtf/smc_engine.py` | SMC enrichment is correct and additive. Keep untouched. |
+| `app/data/data_manager.py` | `_resample_bars()` is already in sniper.py. No changes needed to data_manager. |
+| All filter modules | `filters/` layer is correct and well-tested. Do not touch. |
+| All validation modules | `validation/` layer is correct. Do not touch. |
 
 ---
 
@@ -236,15 +273,14 @@ Returns: full chain with strikes, expiration dates, bid/ask, OI, IV, delta, gamm
 
 > **Rule:** Each item must be independently testable before wiring into the live pipeline.
 
-- [ ] **Step 1:** `app/data/eodhd_indicators.py` — EODHD indicator fetcher + tests
-- [ ] **Step 2:** `app/data/data_manager.py` — add `get_resampled_bars()` for 2m/3m
-- [ ] **Step 3:** `app/mtf/bos_fvg_engine.py` — add timeframe param, test on all 4 TFs
-- [ ] **Step 4:** `app/signals/crt_engine.py` — full CRT engine from spec above, with tests
-- [ ] **Step 5:** `app/options/eodhd_options.py` — live options chain + contract selector
-- [ ] **Step 6:** `app/core/sniper.py` — wire MTF BOS+FVG + CRT + indicator boost
-- [ ] **Step 7:** `app/notifications/discord_helpers.py` — update alert format to full spec
-- [ ] **Step 8:** End-to-end test in paper mode — validate all components fire correctly
-- [ ] **Step 9:** Deploy to Railway — monitor first live session
+- [ ] **Step 1:** `app/data/eodhd_indicators.py` — EODHD indicator fetcher with 5m TTL cache + unit test
+- [ ] **Step 2:** `app/signals/crt_engine.py` — full CRT engine from spec above, with unit tests on known bar sequences
+- [ ] **Step 3:** `app/options/eodhd_options.py` — live options chain fetcher + contract selector + unit test
+- [ ] **Step 4:** `app/core/sniper.py` — wire all three: fix MTF bug, add CRT loop, add indicator boost, pass options_rec
+- [ ] **Step 5:** `app/core/sniper_pipeline.py` — accept + forward options_rec in signal_data dict
+- [ ] **Step 6:** `app/notifications/discord_helpers.py` — update alert format to full spec
+- [ ] **Step 7:** End-to-end test in paper mode — validate all components fire correctly on known symbols
+- [ ] **Step 8:** Deploy to Railway — monitor first live session
 
 ---
 
@@ -257,11 +293,13 @@ Returns: full chain with strikes, expiration dates, bid/ask, OI, IV, delta, gamm
 | CRT source | Nitro Trades 3-video series — AMD 3-candle sweep pattern |
 | CRT entry method | FVG entry on lower TF preferred over MSS or breakout |
 | Timeframes | 1m (base), 2m, 3m, 5m — 5m signal = 1.5× confidence weight |
+| Bar resampling | `_resample_bars()` already in sniper.py — use it, don't rebuild |
 | Indicator source | EODHD `/api/technical/` for live values; local calcs remain for backtesting |
 | Indicator role | Confidence modifiers only — no hard blocks from indicator values |
-| BOS+FVG engine | Existing `bos_fvg_engine.py` logic is correct (fixes 40.H-1/2/3 validated) — extend, don't rewrite |
+| BOS+FVG engine | Existing `bos_fvg_engine.py` logic is correct — extend, don't rewrite |
 | SMC engine | Existing `smc_engine.py` is correct and additive — keep untouched |
 | CRT + BOS+FVG | Complementary signals — both can fire, merge into single signal_data dict with combined score |
+| scanner.py | **No changes needed** — scan timing, watchlist, loop structure are all correct |
 
 ---
 
@@ -271,8 +309,9 @@ Returns: full chain with strikes, expiration dates, bid/ask, OI, IV, delta, gamm
 |---|---|---|
 | 1 | Does EODHD `/api/technical/` return live intraday values or only EOD? Need to verify response for `function=rsi&period=14` during market hours | 🔲 Needs test |
 | 2 | Does EODHD `/api/options/` return same-day 0DTE contracts during RTH? | 🔲 Needs test |
-| 3 | What does `sniper.py` look like? Need to read before wiring MTF loop | 🔲 Read next session |
-| 4 | Is `ENABLE_WEBSOCKET_FEED` set to True on Railway currently? | 🔲 Verify env |
+| 3 | Does `bos_fvg_engine.scan_bos_fvg()` accept any bar list regardless of timeframe, or is it hardcoded to 1m? | 🔲 Read next |
+| 4 | What does `sniper_pipeline.py` look like? Need to see how signal_data dict is built before wiring options_rec | 🔲 Read next |
+| 5 | Is `ENABLE_WEBSOCKET_FEED` set to True on Railway currently? | 🔲 Verify env |
 
 ---
 
@@ -281,3 +320,4 @@ Returns: full chain with strikes, expiration dates, bid/ask, OI, IV, delta, gamm
 | Date | Work Done |
 |---|---|
 | 2026-03-26 | Full system audit — identified unused EODHD endpoints, confirmed BOS+FVG engine state, confirmed CRT does not exist, documented full CRT spec from Nitro Trades, defined MTF scoring model, designed options alert format, created this document |
+| 2026-03-26 | Read sniper.py + scanner.py in full. Found critical MTF bug: `get_full_mtf_analysis(bars_5m=bars_session)` is passing 1m bars as 5m bars — MTF analysis is broken. Found `_resample_bars()` already exists in sniper.py but is dead code. Confirmed scanner.py needs zero changes. Updated build plan: 8 steps, 3 new files, 5 modified files. |
