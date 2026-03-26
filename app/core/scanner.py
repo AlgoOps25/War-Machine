@@ -414,7 +414,7 @@ def start_scanner_loop():
                 logger.info(f"[SCANNER] ✅ Loaded locked watchlist: {len(premarket_watchlist)} tickers")
             else:
                 premarket_watchlist = list(EMERGENCY_FALLBACK)
-                logger.warning("[SCANNER] ⚠️ 442 found — using emergency fallback")
+                                    logger.warning("[SCANNER] ⚠️ No locked watchlist found — using emergency fallback")
         except Exception as e:
             premarket_watchlist = list(EMERGENCY_FALLBACK)
             logger.warning(f"[SCANNER] ⚠️ Could not load locked watchlist ({e}) — using emergency fallback")
