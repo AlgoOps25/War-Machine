@@ -16,6 +16,10 @@ Design decisions:
   - Third-party noisy loggers (websocket, urllib3, httpx) are quieted to
     WARNING so they don't drown out trading signals.
   - Idempotent: safe to call multiple times (only configures once).
+
+AUDIT 2026-03-27:
+  - Removed 'asyncio' from _QUIET_LOGGERS — War Machine is fully synchronous
+    (threads only, no async/await). The entry was dead and misleading.
 """
 
 import logging
@@ -33,7 +37,6 @@ _QUIET_LOGGERS = [
     "httpcore",
     "requests",
     "charset_normalizer",
-    "asyncio",
     "psycopg2",
 ]
 
@@ -51,11 +54,11 @@ def setup_logging() -> None:
     if _CONFIGURED:
         return
 
-    # ── Level ────────────────────────────────────────────────────────────────
+    # ── Level ────────────────────────────────────────────────────────────────────────────
     raw_level = os.getenv("LOG_LEVEL", "INFO").upper().strip()
     level     = getattr(logging, raw_level, logging.INFO)
 
-    # ── Format ───────────────────────────────────────────────────────────────
+    # ── Format ───────────────────────────────────────────────────────────────────
     # Default: 15:04:22 [INFO ] app.core.scanner: [SCANNER] Cycle #42 | ...
     fmt = os.getenv(
         "LOG_FORMAT",
@@ -63,13 +66,13 @@ def setup_logging() -> None:
     )
     datefmt = "%H:%M:%S"
 
-    # ── Handler ──────────────────────────────────────────────────────────────
+    # ── Handler ──────────────────────────────────────────────────────────────────
     # Single StreamHandler → stdout (Railway captures stdout for log viewer)
     handler = logging.StreamHandler(sys.stdout)
     handler.setLevel(level)
     handler.setFormatter(logging.Formatter(fmt, datefmt=datefmt))
 
-    # ── Root logger ──────────────────────────────────────────────────────────
+    # ── Root logger ────────────────────────────────────────────────────────────────
     root = logging.getLogger()
     root.setLevel(level)
 
@@ -77,7 +80,7 @@ def setup_logging() -> None:
     root.handlers.clear()
     root.addHandler(handler)
 
-    # ── Quiet noisy third-party loggers ──────────────────────────────────────
+    # ── Quiet noisy third-party loggers ───────────────────────────────────────────
     for name in _QUIET_LOGGERS:
         logging.getLogger(name).setLevel(logging.WARNING)
 

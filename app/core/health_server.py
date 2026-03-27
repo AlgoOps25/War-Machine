@@ -32,6 +32,11 @@ FIX #54 (2026-03-27):
   different code paths would both attempt to bind the same PORT, causing
   'OSError: [Errno 98] Address already in use' on Railway.
   Guard makes the second call a no-op.
+
+AUDIT 2026-03-27:
+  _build_response() previously called _is_market_hours() twice per request
+  (once for threshold, once for the response body field). Refactored to
+  call once and reuse the result.
 """
 
 import json
@@ -83,16 +88,17 @@ def _build_response() -> tuple[int, dict]:
     with _lock:
         last_hb = _last_heartbeat
 
-    age_s    = time.monotonic() - last_hb
-    uptime_s = int(time.monotonic() - _start_time)
-    threshold = _MARKET_HOURS_STALE if _is_market_hours() else _OFF_HOURS_STALE
+    age_s      = time.monotonic() - last_hb
+    uptime_s   = int(time.monotonic() - _start_time)
+    in_market  = _is_market_hours()   # call once, reuse below
+    threshold  = _MARKET_HOURS_STALE if in_market else _OFF_HOURS_STALE
 
     body = {
         "status":               "ok" if age_s <= threshold else "stalled",
         "uptime_s":             uptime_s,
         "last_heartbeat_age_s": round(age_s, 1),
         "threshold_s":          threshold,
-        "market_hours":         _is_market_hours(),
+        "market_hours":         in_market,
         "timestamp":            datetime.now(ET).isoformat(),
     }
     status_code = 200 if age_s <= threshold else 503
