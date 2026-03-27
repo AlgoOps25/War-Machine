@@ -1,7 +1,7 @@
 # War Machine — Remediation Tracker
 **Audit Scope:** Batches 1–46 | ~850 findings across the full codebase  
 **Tracker Created:** 2026-03-18  
-**Last Updated:** 2026-03-19 (post-deploy clean boot confirmed)
+**Last Updated:** 2026-03-27 (file-by-file line-by-line audit begun)
 
 > This file is updated after **every committed fix**. Each row tracks finding ID,
 > file, description, status, commit SHA, and date resolved.
@@ -222,30 +222,44 @@
 > The codebase is now structurally sound. Phase 6 shifts from bug-fixing to
 > precision improvements — the goal is to raise signal win rate to ≥65% and
 > reduce false-positive rate to <20% of generated signals.
-> See `signal_logic_audit_batch47.md` for full specification.
 
 | Status | ID | Area | Description | Target File(s) |
 |--------|----|------|-------------|----------------|
 | ⬜ | 47.P1-1 | Signal Scoring | Replace flat confidence score with **weighted multi-factor scorecard** (RVOL, MTF, Greeks, GEX, UOA, regime) — output: composite score 0–100, only fire at ≥72 | `app/core/sniper.py`, `app/validation/validation.py` |
-| ⬜ | 47.P1-2 | Signal Scoring | **Dead-zone suppressor**: suppress all signals when VIX > 30 AND SPY 5m trend is opposing direction. Current system fires into chop | `app/filters/market_regime_context.py` |
-| ⬜ | 47.P1-3 | Signal Scoring | **GEX pin-zone gate**: if price is within ±0.3% of GEX gamma-flip level, suppress signal — market makers will pin price, directional moves fail | `app/options/gex_engine.py`, `app/validation/validation.py` |
-| ⬜ | 47.P2-1 | Options Selection | **IV Rank filter**: only take signals where IVR < 50 for debit spreads, IVR > 60 for credit structures. Current system ignores IV context entirely | `app/options/iv_tracker.py`, `app/options/options_optimizer.py` |
-| ⬜ | 47.P2-2 | Options Selection | **Delta-adjusted strike selector**: use intraday ATR (not daily) to select strikes that are delta-optimal (0.35–0.45Δ for directional, 0.20–0.30Δ for high-IV entries) | `app/options/options_dte_selector.py`, `app/validation/greeks_precheck.py` |
-| ⬜ | 47.P2-3 | Options Selection | **0-DTE vs 1-DTE regime switch**: force 1-DTE when VIX > 22 (0-DTE decay too fast in volatile regime), force 0-DTE when IVR < 25 AND within 60 min of close | `app/options/options_dte_selector.py` |
-| ⬜ | 47.P3-1 | ML Confidence | **Retrain ML model** on post-fix signal data — all pre-fix signal records are corrupted (wrong direction labels, 0-RVOL, stale MTF). Gate: only retrain after 50 clean signals | `app/ml/ml_trainer.py`, `app/ml/ml_confidence_boost.py` |
-| ⬜ | 47.P3-2 | ML Confidence | **Feature engineering**: add GEX_distance, IVR, time_to_close, SPY_5m_bias, RVOL_ratio as ML features. Current model only uses OHLCV derivatives | `app/ml/ml_trainer.py` |
-| ⬜ | 47.P3-3 | ML Confidence | **Confidence floor raise**: reject signals where ML confidence < 0.55 (current floor is 0.45 — too permissive, passes weak setups) | `app/ml/ml_confidence_boost.py`, `app/core/sniper.py` |
-| ⬜ | 47.P4-1 | Backtesting | **Run walk-forward backtest** on 90 days of EODHD data for top-5 screener tickers to validate Phase 1–5 fix impact vs pre-fix baseline | `scripts/backtesting/unified_production_backtest.py` |
-| ⬜ | 47.P4-2 | Backtesting | **Per-hour win-rate map**: replace fabricated `HOURLY_WIN_RATES` with real computed map from backtest results — feed into `entry_timing.py` | `app/validation/entry_timing.py`, `scripts/backtesting/` |
-| ⬜ | 47.P4-3 | Backtesting | **Sweep parameter optimization**: use `backtest_sweep.py` (already exists) to find optimal `MIN_CONFIDENCE`, `FVG_MIN_SIZE_PCT`, `RVOL_MIN` — existing NVDA sweeps show parameter sensitivity | `backtest_sweep.py`, `utils/config.py` |
-| ⬜ | 47.P5-1 | Risk | **Dynamic position sizing via IVR**: scale contract count down when IVR > 60 (options are expensive — reduce size). Currently static 1-contract | `app/risk/vix_sizing.py`, `app/risk/trade_calculator.py` |
-| ⬜ | 47.P5-2 | Risk | **Profit-lock trailing stop**: once position is +50% of max gain, move stop to breakeven. Prevents giving back winners — options decay fast | `app/risk/position_manager.py` |
-| ⬜ | 47.P5-3 | Risk | **Session loss limit**: halt new signals after 2 consecutive losses (not just daily $ limit). Pattern: third trade after 2 losses has -40% win rate (tilt) | `app/risk/risk_manager.py` |
-| ⬜ | 47.P6-1 | Data Quality | **EODHD bar quality validator**: before passing bars to any signal engine, assert: monotonic timestamps, no zero-volume bars in RTH, no gaps > 2 min. Drop bad bars. | `app/data/data_manager.py`, `app/data/candle_cache.py` |
-| ⬜ | 47.P6-2 | Data Quality | **Intraday ATR compute**: calculate true intraday ATR from live 1m bars (rolling 14-bar ATR). Replace all `fetch_atr()` daily-ATR calls in hot-path with intraday ATR | `app/indicators/technical_indicators_extended.py`, `app/signals/breakout_detector.py` |
-| ⬜ | 47.P7-1 | Observability | **Signal scorecard Discord embed**: upgrade Discord alert to include full signal scorecard — RVOL, MTF confluences, IVR, GEX distance, ML confidence, composite score. Enables rapid human review | `app/notifications/discord_helpers.py` |
-| ⬜ | 47.P7-2 | Observability | **EOD signal quality report**: automated EOD Discord summary — signals generated / gated / fired, avg composite score, phase funnel drop-off rates | `app/core/eod_reporter.py` |
-| ⬜ | 47.P7-3 | Observability | **Backtest result auto-archive**: after each sweep run, save summary row to `backtest_results` DB table with params + metrics. Build trend over time | `backtest_sweep.py`, `app/data/db_connection.py` |
+| ⬜ | 47.P1-2 | Signal Scoring | **Dead-zone suppressor**: suppress all signals when VIX > 30 AND SPY 5m trend is opposing direction | `app/filters/market_regime_context.py` |
+| ⬜ | 47.P1-3 | Signal Scoring | **GEX pin-zone gate**: if price is within ±0.3% of GEX gamma-flip level, suppress signal | `app/options/gex_engine.py`, `app/validation/validation.py` |
+| ⬜ | 47.P2-1 | Options Selection | **IV Rank filter**: only take signals where IVR < 50 for debit spreads, IVR > 60 for credit structures | `app/options/iv_tracker.py`, `app/options/options_optimizer.py` |
+| ⬜ | 47.P2-2 | Options Selection | **Delta-adjusted strike selector**: use intraday ATR to select delta-optimal strikes (0.35–0.45Δ directional, 0.20–0.30Δ high-IV) | `app/options/options_dte_selector.py`, `app/validation/greeks_precheck.py` |
+| ⬜ | 47.P2-3 | Options Selection | **0-DTE vs 1-DTE regime switch**: force 1-DTE when VIX > 22, force 0-DTE when IVR < 25 AND within 60 min of close | `app/options/options_dte_selector.py` |
+| ⬜ | 47.P3-1 | ML Confidence | **Retrain ML model** on post-fix signal data — all pre-fix records corrupted. Gate: retrain after 50 clean signals | `app/ml/ml_trainer.py`, `app/ml/ml_confidence_boost.py` |
+| ⬜ | 47.P3-2 | ML Confidence | **Feature engineering**: add GEX_distance, IVR, time_to_close, SPY_5m_bias, RVOL_ratio as ML features | `app/ml/ml_trainer.py` |
+| ⬜ | 47.P3-3 | ML Confidence | **Confidence floor raise**: reject signals where ML confidence < 0.55 (current floor 0.45 too permissive) | `app/ml/ml_confidence_boost.py`, `app/core/sniper.py` |
+| ⬜ | 47.P4-1 | Backtesting | **Walk-forward backtest** on 90 days EODHD data for top-5 tickers to validate Phase 1–5 fix impact | `scripts/backtesting/unified_production_backtest.py` |
+| ⬜ | 47.P4-2 | Backtesting | **Per-hour win-rate map**: replace fabricated `HOURLY_WIN_RATES` with real computed map from backtest | `app/validation/entry_timing.py`, `scripts/backtesting/` |
+| ⬜ | 47.P4-3 | Backtesting | **Sweep parameter optimization**: find optimal `MIN_CONFIDENCE`, `FVG_MIN_SIZE_PCT`, `RVOL_MIN` | `backtest_sweep.py`, `utils/config.py` |
+| ⬜ | 47.P5-1 | Risk | **Dynamic position sizing via IVR**: scale contract count down when IVR > 60 | `app/risk/vix_sizing.py`, `app/risk/trade_calculator.py` |
+| ⬜ | 47.P5-2 | Risk | **Profit-lock trailing stop**: once +50% of max gain, move stop to breakeven | `app/risk/position_manager.py` |
+| ⬜ | 47.P5-3 | Risk | **Session loss limit**: halt new signals after 2 consecutive losses | `app/risk/risk_manager.py` |
+| ⬜ | 47.P6-1 | Data Quality | **EODHD bar quality validator**: assert monotonic timestamps, no zero-volume RTH bars, no gaps > 2 min | `app/data/data_manager.py`, `app/data/candle_cache.py` |
+| ⬜ | 47.P6-2 | Data Quality | **Intraday ATR compute**: rolling 14-bar ATR from live 1m bars — replace all daily-ATR hot-path calls | `app/indicators/technical_indicators_extended.py`, `app/signals/breakout_detector.py` |
+| ⬜ | 47.P7-1 | Observability | **Signal scorecard Discord embed**: full scorecard in alert — RVOL, MTF, IVR, GEX distance, ML confidence | `app/notifications/discord_helpers.py` |
+| ⬜ | 47.P7-2 | Observability | **EOD signal quality report**: automated EOD Discord summary — signals generated/gated/fired, avg score, funnel drop-off | `app/core/eod_reporter.py` |
+| ⬜ | 47.P7-3 | Observability | **Backtest result auto-archive**: save summary row to `backtest_results` DB table after each sweep | `backtest_sweep.py`, `app/data/db_connection.py` |
+
+---
+
+## Phase 7 — File-by-File Line-by-Line Audit (IN PROGRESS 🔄)
+> Full structural audit of every file in the repo. Goal: confirm all files are
+> logically consistent, cross-references are correct, and no dead/phantom files exist.
+> Audit order: app/core → app/data → app/risk → app/signals → app/screening →
+> app/validation → app/filters → app/options → app/analytics → app/mtf → app/ml →
+> app/ai → app/indicators → app/notifications → app/backtesting → migrations →
+> utils → scripts → tests → docs
+
+| Status | ID | File | Finding | Action | Commit SHA | Date |
+|--------|----|------|---------|--------|------------|------|
+| ✅ | A-001 | `app/core/__main__.py` | Stale comment referenced `psycopg2.connect` blocking ~10s — raw connect was replaced by pool init in fix 14.C-1 | Updated comment to accurately describe DB pool initialization | TBD | 2026-03-27 |
+| ✅ | A-002 | `CODEBASE_DOCUMENTATION.md` | 9 phantom files listed under `app/core` that do not exist in repo: `config_validator.py`, `failover.py`, `health_monitor.py`, `lifecycle.py`, `main.py`, `market_hours.py`, `scheduler.py`, `session_manager.py`, `signal_pipeline.py` | Removed phantom entries; added 8 real files that were missing: `arm_signal.py`, `armed_signal_store.py`, `logging_config.py`, `signal_scorecard.py`, `sniper_log.py`, `sniper_pipeline.py`, `thread_safe_state.py`, `watch_signal_store.py` | TBD | 2026-03-27 |
 
 ---
 
@@ -269,12 +283,9 @@
 | Phase 4D — Screening | 2 | 2 | **0** ✅ |
 | Phase 4E — Indicators | 4 | 4 | **0** ✅ |
 | Phase 5 — Code Quality | 10 | 10 | **0** ✅ |
-| **Phase 6 — High-Probability Architecture** | **19** | **0** | **19** 🎯 |
-| **TOTAL** | **103** | **84** | **19** |
-
-> **Phases 1–5 are complete.** The system is structurally correct, crash-free, and
-> running cleanly on Railway. Phase 6 is the precision layer — shifting from
-> "fix bugs" to "maximize signal quality."
+| Phase 6 — High-Probability Architecture | 19 | 0 | **19** 🎯 |
+| Phase 7 — File-by-File Audit | 2 | 2 | **0** ✅ |
+| **TOTAL** | **105** | **86** | **19** |
 
 ---
 
@@ -288,7 +299,8 @@
 | 2026-03-19 | `242a37a` | `app/data/db_connection.py` | 14.C-1 — Lazy pool init |
 | 2026-03-19 | `26d6528` | `app/data/data_manager.py` | 15.C-1, 15.C-2 — Migration gate + TZ fix |
 | 2026-03-19 | `9b53fa0` | `app/mtf/bos_fvg_engine.py`, `app/mtf/mtf_integration.py` | 40.H-1,2,3,4 + 40.M-7 — BOS/FVG + MTF cache |
-| 2026-03-19 | `7e58a8d` | `app/backtesting/__init__.py`, `app/backtesting/backtest_engine.py`, `app/indicators/technical_indicators_extended.py` | Phase 5 — `import logging` placement fixes (3 files) |
+| 2026-03-19 | `7e58a8d` | `app/backtesting/__init__.py`, `app/backtesting/backtest_engine.py`, `app/indicators/technical_indicators_extended.py` | Phase 5 — `import logging` placement fixes |
+| 2026-03-27 | TBD | `app/core/__main__.py`, `CODEBASE_DOCUMENTATION.md`, `docs/remediation_tracker.md` | A-001, A-002 — Stale comment fix + phantom file cleanup in master doc |
 
 ---
 

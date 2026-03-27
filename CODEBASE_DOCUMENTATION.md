@@ -1,6 +1,6 @@
 # War Machine — Complete Codebase Documentation
 
-> Auto-generated: 2026-03-26  
+> Last updated: 2026-03-27  
 > Repository: [AlgoOps25/War-Machine](https://github.com/AlgoOps25/War-Machine)
 
 ---
@@ -54,23 +54,27 @@ The pipeline flows from pre-market scanning and watchlist construction, through 
 
 ## app/core
 
-The central orchestration layer. Manages the main event loop, scheduler, system lifecycle, and analytics integration.
+The central orchestration layer. Manages the main event loop, boot sequence, health server, scanner, sniper pipeline, signal state stores, scoring, and analytics integration.
 
 | File | Size | Description |
 |------|------|-------------|
 | `__init__.py` | 22 B | Package init |
-| `__main__.py` | 1.4 KB | Entry point — boots the main application loop |
+| `__main__.py` | 1.4 KB | Entry point — boots logging → health server → scanner loop in correct Railway-safe order |
 | `analytics_integration.py` | 9.2 KB | Bridges core pipeline with analytics tracking modules |
-| `config_validator.py` | — | Validates environment config on startup |
-| `eod_reporter.py` | — | End-of-day performance report generator |
-| `failover.py` | — | Handles feed/API failover logic |
-| `health_monitor.py` | — | System health checks and watchdog |
-| `lifecycle.py` | — | Manages startup/shutdown sequences |
-| `main.py` | — | Primary application orchestrator |
-| `market_hours.py` | — | Market session time utilities |
-| `scheduler.py` | — | Task scheduler for timed jobs |
-| `session_manager.py` | — | Manages intraday session state |
-| `signal_pipeline.py` | — | Central signal processing pipeline coordinator |
+| `arm_signal.py` | 8.1 KB | Arms a validated signal — transitions it from watch state to armed/ready-to-fire state |
+| `armed_signal_store.py` | 8.6 KB | Thread-safe store for armed signals pending entry confirmation |
+| `eod_reporter.py` | 4.3 KB | End-of-day performance report generator — sends EOD Discord summary |
+| `health_server.py` | 5.4 KB | Lightweight HTTP health server bound to $PORT for Railway liveness probe |
+| `logging_config.py` | 3.6 KB | Centralized logging configuration — called once at boot in `__main__.py` |
+| `scanner.py` | 31.6 KB | Main scan loop — orchestrates premarket scan, OR window, and intraday signal cycles |
+| `signal_scorecard.py` | 10.2 KB | Computes composite signal scorecard (0–100) from RVOL, MTF, Greeks, GEX, regime factors |
+| `sniper.py` | 27.9 KB | Sniper engine — evaluates armed signals tick-by-tick for precise entry triggers |
+| `sniper_log.py` | 2.4 KB | Structured logger for sniper decisions and entry/exit events |
+| `sniper_pipeline.py` | 13.7 KB | Sniper pipeline orchestrator — coordinates sniper evaluation across all armed signals |
+| `thread_safe_state.py` | 10.8 KB | Thread-safe shared state container used across scanner, sniper, and data threads |
+| `watch_signal_store.py` | 9.9 KB | Thread-safe store for signals in watch state (detected but not yet armed) |
+
+> **Note:** The following files listed in earlier documentation do not exist in the repository and were removed or never built: `config_validator.py`, `failover.py`, `health_monitor.py`, `lifecycle.py`, `main.py`, `market_hours.py`, `scheduler.py`, `session_manager.py`, `signal_pipeline.py`.
 
 ---
 
@@ -462,4 +466,4 @@ Pytest-based test suite covering core pipeline components.
 
 ---
 
-*Documentation generated from full repository scan — AlgoOps25/War-Machine — 2026-03-26*
+*Documentation maintained manually — update after every structural change to the codebase. Last audited: 2026-03-27.*
