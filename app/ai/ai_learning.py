@@ -11,6 +11,12 @@ FIXED (Mar 26 2026): record_trade() print() → logger.info() (Issue #37).
 FIXED (Mar 27 2026): get_options_flow_weight() imported options_dm from options_data_manager
                      (wrong module — dead import, always fell back to 1.0 with no effect).
                      Now correctly imports from options_intelligence (Issue #39 part 1).
+FIX #46 (Mar 27 2026): generate_performance_report() now calls logger.info() so the
+                     EOD report is surfaced in Railway logs when invoked, while still
+                     returning the string for callers that need it.
+FIX #47 (Mar 27 2026): AILearningEngine.__init__() self.data = self.load_data() wrapped
+                     in try/except with fallback to default_data — prevents Railway
+                     startup crash if Postgres row is malformed or JSON file is corrupt.
 """
 
 import json
@@ -97,11 +103,35 @@ def grade_to_label(confidence: float) -> str:
 # AI LEARNING ENGINE
 # =============================================================================
 
+# Default learning state — used as fallback if load_data() fails at startup.
+_DEFAULT_DATA: Dict = {
+    "trades": [],
+    "pattern_performance": {},
+    "ticker_performance": {},
+    "timeframe_performance": {},
+    "confirmation_weights": {
+        "vwap": 1.0, "prev_day": 1.0,
+        "institutional": 1.0, "options_flow": 1.0
+    },
+    "fvg_size_optimal": 0.002,
+    "or_break_threshold_optimal": 0.001,
+    "last_update": None
+}
+
+
 class AILearningEngine:
     def __init__(self, db_path: str = "learning_data.json"):
         self.db_path = db_path
         self._init_learning_table()
-        self.data = self.load_data()
+        # FIX #47: wrap load_data() — if Postgres row is malformed or JSON file
+        # is corrupt this previously crashed the module-level singleton and took
+        # down Railway startup. Fallback to clean default_data so the engine
+        # always initialises successfully.
+        try:
+            self.data = self.load_data()
+        except Exception as e:
+            logger.info(f"[AI] load_data() failed at init — starting with defaults: {e}")
+            self.data = dict(_DEFAULT_DATA)
 
     def _init_learning_table(self):
         """Create AI learning state table in PostgreSQL."""
@@ -128,19 +158,7 @@ class AILearningEngine:
 
     def load_data(self) -> Dict:
         """Load learning data from PostgreSQL or JSON file."""
-        default_data = {
-            "trades": [],
-            "pattern_performance": {},
-            "ticker_performance": {},
-            "timeframe_performance": {},
-            "confirmation_weights": {
-                "vwap": 1.0, "prev_day": 1.0,
-                "institutional": 1.0, "options_flow": 1.0
-            },
-            "fvg_size_optimal": 0.002,
-            "or_break_threshold_optimal": 0.001,
-            "last_update": None
-        }
+        default_data = dict(_DEFAULT_DATA)
 
         if db_connection.USE_POSTGRES:
             conn = None
@@ -361,6 +379,11 @@ class AILearningEngine:
         Now correctly imports from options_intelligence where options_dm is
         the backward-compat alias for OptionsIntelligence.
 
+        NOTE (Issue #45): except clause catches ImportError but not
+        AttributeError explicitly. If options_dm imports but get_options_score
+        is missing, it falls into the general except and logs. This is
+        acceptable for now — flagged for a future cleanup pass.
+
         Returns:
             1.0 if options_intelligence unavailable (neutral, no penalty)
             0.7-1.3 based on options score (0-100 scale)
@@ -391,9 +414,10 @@ class AILearningEngine:
         }
 
     def generate_performance_report(self) -> str:
-        """Generate human-readable performance report."""
+        """Generate and log human-readable performance report. Also returns the string."""
         total_trades = len(self.data["trades"])
         if total_trades == 0:
+            logger.info("[AI] Performance report: No trades recorded yet.")
             return "No trades recorded yet."
 
         wins      = sum(1 for t in self.data["trades"] if t["win"])
@@ -427,6 +451,12 @@ class AILearningEngine:
                          f"{ticker_wr:.1f}% WR, ${perf['total_pnl']:+.2f}\n")
 
         report += f"{'='*60}\n"
+
+        # FIX #46: log the report to Railway — previously returned silently.
+        # logger.info splits on newlines so each line appears as a separate log entry.
+        for line in report.splitlines():
+            logger.info(f"[AI] {line}")
+
         return report
 
 
