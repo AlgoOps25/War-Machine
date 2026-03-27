@@ -24,6 +24,14 @@ Usage (scanner.py already wires this):
     start_health_server()          # call once at startup
     # inside main loop:
     health_heartbeat()             # call each cycle
+
+FIX #54 (2026-03-27):
+  Added _started guard to start_health_server().
+  scanner.py calls start_health_server() at module level (before imports)
+  for Railway probe timing. __main__.py also called it.  Two calls on
+  different code paths would both attempt to bind the same PORT, causing
+  'OSError: [Errno 98] Address already in use' on Railway.
+  Guard makes the second call a no-op.
 """
 
 import json
@@ -41,6 +49,10 @@ ET = ZoneInfo("America/New_York")
 _start_time = time.monotonic()
 _last_heartbeat: float = time.monotonic()   # updated by scanner loop
 _lock = threading.Lock()
+
+# FIX #54: guard against double-call (scanner module-level + __main__.py)
+_started = False
+_started_lock = threading.Lock()
 
 # Staleness thresholds (seconds)
 _MARKET_HOURS_STALE   = 5  * 60   # 5 min during RTH
@@ -111,15 +123,23 @@ class _HealthHandler(BaseHTTPRequestHandler):
         pass
 
 
-def start_health_server(port: int | None = None) -> threading.Thread:
+def start_health_server(port: int | None = None) -> threading.Thread | None:
     """
     Start the health HTTP server in a background daemon thread.
 
     Port is read from the PORT environment variable (Railway sets this
     automatically).  Falls back to 8080 if PORT is not set.
 
-    Returns the Thread object (daemon=True, joins on process exit).
+    Returns the Thread object (daemon=True, joins on process exit),
+    or None if the server was already started (FIX #54 guard).
     """
+    global _started
+    with _started_lock:
+        if _started:
+            logger.debug("[HEALTH] start_health_server() called again — already running, skipping")
+            return None
+        _started = True
+
     if port is None:
         port = int(os.environ.get("PORT", 8080))
 

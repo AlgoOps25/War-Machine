@@ -9,6 +9,7 @@ from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from utils.time_helpers import _now_et, _bar_time, _strip_tz
+from utils.bar_utils import resample_bars as _resample_bars  # FIX #53: was a local duplicate
 from app.notifications.discord_helpers import send_simple_message
 from app.validation.validation import get_validator, get_regime_filter
 from app.validation.cfw6_confirmation import wait_for_confirmation, grade_signal_with_confirmations
@@ -197,30 +198,6 @@ _bos_watch_alerted: set = set()
 
 # OR classification cache — populated at 9:40
 _orb_classifications = {}
-
-
-# ─────────────────────────────────────────────────────────────────────────────────
-from collections import defaultdict
-
-def _resample_bars(bars_1m: list, minutes: int) -> list:
-    """Resample 1m bars into a higher timeframe bucket."""
-    buckets = defaultdict(list)
-    for b in bars_1m:
-        dt = b["datetime"]
-        floored = dt.replace(minute=(dt.minute // minutes) * minutes, second=0, microsecond=0)
-        buckets[floored].append(b)
-    result = []
-    for ts in sorted(buckets):
-        bucket = buckets[ts]
-        result.append({
-            "datetime": ts,
-            "open":   bucket[0]["open"],
-            "high":   max(b["high"]   for b in bucket),
-            "low":    min(b["low"]    for b in bucket),
-            "close":  bucket[-1]["close"],
-            "volume": sum(b["volume"] for b in bucket),
-        })
-    return result
 
 
 def _log_bos_event(ticker: str, direction: str, bos_price: float, signal_type: str):
@@ -625,11 +602,6 @@ def process_ticker(ticker: str):
                     f"[{ticker}] 🔵 VWAP RECLAIM: {vr['direction'].upper()} "
                     f"@ ${vr['entry_price']:.2f} | VWAP=${vr['vwap']:.2f}"
                 )
-                # FIX F (2026-03-26): Pass 0.0 / 0.0 for or_high_ref / or_low_ref.
-                # No opening range was formed on VWAP-reclaim paths; synthetic
-                # entry_price * 1.005 / 0.995 values were misleading.
-                # compute_stop_and_targets() M8 guard already skips OR boundary
-                # comparison when or_high=0.0 / or_low=0.0.
                 _run_signal_pipeline(
                     ticker, vr["direction"],
                     vr["zone_low"], vr["zone_high"],

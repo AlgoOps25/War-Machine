@@ -9,6 +9,12 @@
 #   had no equivalent lock — two threads could both see is_watches_loaded()==False
 #   simultaneously and both execute _load_watches_from_db(), duplicating watch
 #   state in memory. Now matches the pattern used by armed_signal_store.py.
+#
+# FIX #55 (2026-03-27): Corrected 3 wrong _state method names in public wrappers.
+#   add_watching_signal()  -> _state.set_watching_signal()   (correct ThreadSafeState API)
+#   is_watching()          -> _state.ticker_is_watching()    (correct ThreadSafeState API)
+#   get_watching_signals() -> _state.get_all_watching_signals() (correct ThreadSafeState API)
+#   The old names did not exist on ThreadSafeState — every call was a latent AttributeError.
 
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -236,7 +242,7 @@ def clear_watching_signals():
 def add_watching_signal(ticker: str, data: dict):
     """Add a ticker to the watching signals state and persist to DB."""
     _maybe_load_watches()
-    _state.add_watching_signal(ticker, data)
+    _state.set_watching_signal(ticker, data)   # FIX #55: was _state.add_watching_signal()
     _persist_watch(ticker, data)
 
 
@@ -249,10 +255,10 @@ def remove_watching_signal(ticker: str):
 def get_watching_signals() -> dict:
     """Return the current watching signals dict."""
     _maybe_load_watches()
-    return _state.get_watching_signals()
+    return _state.get_all_watching_signals()   # FIX #55: was _state.get_watching_signals()
 
 
 def is_watching(ticker: str) -> bool:
     """Return True if ticker is currently in watch mode."""
     _maybe_load_watches()
-    return _state.is_watching(ticker)
+    return _state.ticker_is_watching(ticker)   # FIX #55: was _state.is_watching()

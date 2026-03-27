@@ -1,6 +1,14 @@
-# Phase 1.38d-fix-2 — March 26 2026
+# Phase 1.38d-fix-3 — March 27 2026
 """
 app/core/sniper_pipeline.py — CFW6 Signal Pipeline
+
+FIX HISTORY (2026-03-27):
+
+  FIX #53: Removed local _resample_bars() duplicate.
+    utils/bar_utils.py already defines resample_bars() (the canonical version,
+    added in Issue #3). sniper.py had its own _resample_bars() and
+    sniper_pipeline.py had another copy — three identical implementations.
+    Both now import from utils.bar_utils. The local copy here is removed.
 
 FIX HISTORY (2026-03-26, session 2):
 
@@ -41,6 +49,7 @@ from zoneinfo import ZoneInfo
 from utils import config
 from utils.config import RVOL_SIGNAL_GATE, RVOL_CEILING, BEAR_SIGNALS_ENABLED
 from utils.time_helpers import _now_et
+from utils.bar_utils import resample_bars as _resample_bars  # FIX #53: was a local duplicate
 from app.data.data_manager import data_manager
 from app.validation.validation import get_regime_filter
 from app.validation.cfw6_confirmation import wait_for_confirmation, grade_signal_with_confirmations
@@ -54,31 +63,6 @@ from app.filters.gex_pin_gate import is_in_gex_pin_zone
 
 logger = logging.getLogger(__name__)
 _ET = ZoneInfo("America/New_York")
-
-
-def _resample_bars(bars_1m: list, minutes: int) -> list:
-    """Resample 1m bars into higher-timeframe buckets."""
-    from collections import defaultdict
-    buckets = defaultdict(list)
-    for b in bars_1m:
-        dt = b["datetime"]
-        floored = dt.replace(
-            minute=(dt.minute // minutes) * minutes,
-            second=0, microsecond=0
-        )
-        buckets[floored].append(b)
-    result = []
-    for ts in sorted(buckets):
-        bucket = buckets[ts]
-        result.append({
-            "datetime": ts,
-            "open":   bucket[0]["open"],
-            "high":   max(b["high"] for b in bucket),
-            "low":    min(b["low"]  for b in bucket),
-            "close":  bucket[-1]["close"],
-            "volume": sum(b["volume"] for b in bucket),
-        })
-    return result
 
 
 def _run_signal_pipeline(
@@ -265,8 +249,6 @@ def _run_signal_pipeline(
     )
 
     # ── 13. Stop / Targets ────────────────────────────────────────────────────
-    # Passing or_high=0 / or_low=0 is safe — trade_calculator M8 fix skips
-    # the OR boundary comparison when the range has not formed.
     stop_price, t1, t2 = compute_stop_and_targets(
         bars=bars_session,
         direction=direction,
@@ -277,8 +259,6 @@ def _run_signal_pipeline(
     )
 
     if stop_price is None:
-        # trade_calculator FIX 10.C-4: stop at/above entry (bull) or at/below
-        # entry (bear) — A+ high-vol tight-OR tape. Drop cleanly.
         logger.info(
             f"[{ticker}] ⛔ STOP-INVALID: compute_stop_and_targets returned None "
             f"(entry=${entry_price:.2f} grade={grade} direction={direction}) — signal dropped"
@@ -286,11 +266,6 @@ def _run_signal_pipeline(
         return False
 
     # ── 14. Arm ───────────────────────────────────────────────────────────────
-    # arm_ticker() guards all its own failure paths (stop tightness, position
-    # manager rejection, Discord errors) and logs them. It also calls
-    # set_cooldown() internally — do NOT call it here (FIX C).
-    # arm_ticker() has no return statement (returns None implicitly) —
-    # we return True to signal pipeline completion to the caller (FIX D).
     arm_ticker(
         ticker=ticker,
         direction=direction,
