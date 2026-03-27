@@ -3,8 +3,16 @@ Options DTE Selector - Data-Driven Expiration Selection with Historical Learning
 
 Integrates:
 - Historical win rates from positions DB (40% weight)
-- Live options market data from EODHD (35% weight) 
+- Live options market data from EODHD (35% weight)
 - Regime context: ADX + VIX + target distance (25% weight)
+
+Architecture note (Phase 2, Mar 26 2026):
+  This class is the DTE decision layer — it decides whether to use 0DTE or 1DTE
+  based on a weighted combination of historical performance, live chain quality,
+  and market regime. It does NOT select specific strikes (that is
+  OptionsDataManager / options_strike_selector.py's job).
+
+  Callers: app/core/sniper_pipeline.py (indirectly via dte_selector global instance)
 """
 from typing import Dict, List, Optional
 from datetime import datetime, timedelta, date
@@ -21,13 +29,13 @@ class OptionsDTESelector:
         self.api_key = eodhd_api_key or os.getenv('EODHD_API_KEY')
         if not self.api_key:
             raise ValueError("EODHD_API_KEY required")
-        
+
         self.min_open_interest = 100
         self.min_volume = 50
         self.min_total_volume = 25
         self.max_spread_pct = 10.0
         self.max_iv_premium_pct = 20.0
-        
+
         # Try to import historical advisor
         try:
             from app.options.dte_historical_advisor import dte_advisor
@@ -35,22 +43,22 @@ class OptionsDTESelector:
         except:
             self.historical_advisor = None
             logger.info("[OPTIONS-DTE] Historical advisor unavailable")
-        
+
         logger.info("[OPTIONS-DTE] Initialized with data-driven approach")
-    
+
     def calculate_optimal_dte(self, ticker: str, entry_price: float, direction: str, confidence: float,
                              adx: float = None, vix: float = None, t1_price: float = None, t2_price: float = None,
                              current_time: Optional[datetime] = None) -> Dict:
         """Calculate optimal DTE using historical + live + regime data."""
         if current_time is None:
             current_time = datetime.now(ET)
-        
+
         market_close = current_time.replace(hour=16, minute=0, second=0, microsecond=0)
         time_remaining_hours = (market_close - current_time).total_seconds() / 3600
-        
+
         if time_remaining_hours <= 0:
             return self._create_skip_response("Market closed", time_remaining_hours)
-        
+
         # Fetch options data from EODHD
         try:
             options_data = self.fetch_options_chain(ticker, entry_price, direction)
@@ -58,28 +66,28 @@ class OptionsDTESelector:
                 return self._create_regime_fallback(time_remaining_hours, adx, vix, t1_price, entry_price, "No options data")
         except Exception as e:
             return self._create_regime_fallback(time_remaining_hours, adx, vix, t1_price, entry_price, f"API error: {e}")
-        
+
         dte_0_contracts = [opt for opt in options_data if opt['dte'] == 0]
         dte_1_contracts = [opt for opt in options_data if opt['dte'] == 1]
-        
+
         if not dte_0_contracts and not dte_1_contracts:
             return self._create_regime_fallback(time_remaining_hours, adx, vix, t1_price, entry_price, "No contracts")
-        
+
         # Score using combined approach
         final_dte, reasoning, confidence_pct = self._calculate_combined_score(
             dte_0_contracts, dte_1_contracts, time_remaining_hours,
             adx, vix, t1_price, entry_price, direction, current_time
         )
-        
+
         if final_dte is None:
             return self._create_skip_response("No viable DTE", time_remaining_hours)
-        
+
         selected_contracts = dte_0_contracts if final_dte == 0 else dte_1_contracts
         best_strikes = self.select_best_strikes(selected_contracts, entry_price, direction)
-        
+
         if not best_strikes:
             return self._create_regime_fallback(time_remaining_hours, adx, vix, t1_price, entry_price, f"No {final_dte}DTE strikes")
-        
+
         return {
             'dte': final_dte,
             'expiry_date': best_strikes[0]['exp_date'],
@@ -88,13 +96,13 @@ class OptionsDTESelector:
             'time_remaining_hours': round(time_remaining_hours, 2),
             'confidence_pct': round(confidence_pct, 1)
         }
-    
+
     def _calculate_combined_score(self, dte_0, dte_1, time_remaining_hours, adx, vix, t1_price, entry_price, direction, current_time):
         """Combine historical + live options + regime scores."""
         scores = {'0dte': 0.0, '1dte': 0.0}
         weights = {'historical': 0.40, 'options': 0.35, 'regime': 0.25}
         reasoning_parts = []
-        
+
         # Historical score (40%)
         if self.historical_advisor and adx and vix and t1_price:
             target_pct = abs((t1_price - entry_price) / entry_price * 100)
@@ -108,14 +116,14 @@ class OptionsDTESelector:
                 reasoning_parts.append(f"📊 Historical: {rec_dte}DTE ({hist_rec['reason']})")
             else:
                 reasoning_parts.append(f"📊 Historical: No preference ({hist_rec['reason']})")
-        
+
         # Live options score (35%)
         if dte_0:
             factors = self._analyze_dte_factors(dte_0, dte_1, time_remaining_hours)
             live_score = self._calculate_dte_score(factors)
             scores['0dte'] += (live_score / 10.5) * weights['options'] * 100
             reasoning_parts.append(f"💹 Live Options: 0DTE scored {live_score:.1f}/10.5")
-        
+
         # Regime score (25%)
         if adx and vix and t1_price:
             regime_score = self._calculate_regime_score(adx, vix, t1_price, entry_price, time_remaining_hours)
@@ -124,7 +132,7 @@ class OptionsDTESelector:
             else:
                 scores['1dte'] += regime_score['score'] * weights['regime'] * 100
             reasoning_parts.append(f"🎯 Regime: Favors {regime_score['favors']}DTE ({regime_score['reason']})")
-        
+
         # Final decision
         if scores['0dte'] > scores['1dte'] and scores['0dte'] > 50:
             return 0, "\n".join(["✅ SELECTED: 0DTE"] + reasoning_parts), scores['0dte']
@@ -132,13 +140,20 @@ class OptionsDTESelector:
             return 1, "\n".join(["📅 SELECTED: 1DTE"] + reasoning_parts), scores['1dte']
         else:
             return None, "Scores too low", 0
-    
+
     def _calculate_regime_score(self, adx, vix, t1_price, entry_price, time_remaining):
-        """Score DTE based on market regime."""
+        """Score DTE based on market regime.
+
+        FIX #19 (Mar 27 2026): Added `favors = 0` safe default at top of function.
+        Previously, if VIX was in the neutral 15-25 range AND target distance was
+        in the neutral 0.5-1.2% range, neither branch assigned `favors`, causing
+        a NameError at `return {'favors': favors, ...}`.
+        """
         target_pct = abs((t1_price - entry_price) / entry_price * 100)
         score = 0.0
         reasons = []
-        
+        favors = 0  # FIX #19: safe default — 0DTE favored unless a branch overrides
+
         # ADX: Choppy markets need more time
         if adx < 15:
             score += 0.3
@@ -151,7 +166,7 @@ class OptionsDTESelector:
         else:
             score += 0.2
             favors = 0 if time_remaining > 3 else 1
-        
+
         # VIX: High volatility needs buffer
         if vix > 25:
             score += 0.3
@@ -163,7 +178,8 @@ class OptionsDTESelector:
             reasons.append("low VIX")
         else:
             score += 0.2
-        
+            # neutral VIX — favors unchanged from ADX decision
+
         # Target distance: Larger moves need more time
         if target_pct > 1.2:
             score += 0.4
@@ -175,31 +191,26 @@ class OptionsDTESelector:
             reasons.append("tight target")
         else:
             score += 0.2
-        
+            # neutral target — favors unchanged from prior decisions
+
         return {'favors': favors, 'score': min(score, 1.0), 'reason': ", ".join(reasons)}
-    
+
     def _create_regime_fallback(self, time_remaining, adx, vix, t1_price, entry_price, reason):
         """Fallback using regime scoring only."""
         if not adx or not vix or not t1_price:
-            # Pure time-based if no regime data
             dte = 0 if time_remaining >= 3.0 else (1 if time_remaining >= 1.0 else None)
             if dte is None:
                 return self._create_skip_response("Too late", time_remaining)
             return {'dte': dte, 'expiry_date': None, 'recommended_strikes': [],
                     'reasoning': f"⚠️ Fallback (time-based): {dte}DTE\n{reason}",
                     'time_remaining_hours': round(time_remaining, 2), 'confidence_pct': 30}
-        
+
         regime = self._calculate_regime_score(adx, vix, t1_price, entry_price, time_remaining)
         dte = regime['favors']
         return {'dte': dte, 'expiry_date': None, 'recommended_strikes': [],
                 'reasoning': f"⚠️ Fallback (regime-based): {dte}DTE\n{reason}\n🎯 {regime['reason']}",
                 'time_remaining_hours': round(time_remaining, 2), 'confidence_pct': 40}
-    
-    # [Keep all existing helper methods: fetch_options_chain, _analyze_dte_factors, 
-    #  _check_liquidity, _check_theta_decay, _check_bid_ask_spread, _check_iv_levels,
-    #  _check_volume, _calculate_dte_score, select_best_strikes, _get_next_trading_day,
-    #  _create_skip_response - unchanged]
-    
+
     def fetch_options_chain(self, ticker, price, direction):
         today = datetime.now(ET).date()
         dte_0_date = self._get_next_trading_day(today, 0)
@@ -235,20 +246,20 @@ class OptionsDTESelector:
             except:
                 continue
         return contracts
-    
+
     def _analyze_dte_factors(self, dte_0, dte_1, time_remaining):
         return {'time_adequate': time_remaining >= 1.5, 'dte_0_liquid': self._check_liquidity(dte_0),
                 'dte_0_theta_acceptable': self._check_theta_decay(dte_0, time_remaining),
                 'dte_0_spread_tight': self._check_bid_ask_spread(dte_0),
                 'iv_favorable': self._check_iv_levels(dte_0, dte_1), 'volume_sufficient': self._check_volume(dte_0)}
-    
+
     def _check_liquidity(self, contracts):
         if not contracts:
             return False
         avg_oi = sum(c.get('open_interest', 0) for c in contracts) / len(contracts)
         avg_volume = sum(c.get('volume', 0) for c in contracts) / len(contracts)
         return avg_oi > self.min_open_interest and avg_volume > self.min_volume
-    
+
     def _check_theta_decay(self, contracts, time_remaining):
         if not contracts:
             return False
@@ -259,7 +270,7 @@ class OptionsDTESelector:
             return avg_theta < 0.15
         else:
             return avg_theta < 0.08
-    
+
     def _check_bid_ask_spread(self, contracts):
         if not contracts:
             return False
@@ -271,7 +282,7 @@ class OptionsDTESelector:
                 spread_pct = ((ask - bid) / mid) * 100
                 tight_spreads.append(spread_pct < self.max_spread_pct)
         return len(tight_spreads) > 0 and sum(tight_spreads) / len(tight_spreads) > 0.7
-    
+
     def _check_iv_levels(self, dte_0, dte_1):
         if not dte_0 or not dte_1:
             return True
@@ -281,12 +292,12 @@ class OptionsDTESelector:
             return True
         iv_premium = ((avg_iv_0 - avg_iv_1) / avg_iv_1) * 100
         return iv_premium < self.max_iv_premium_pct
-    
+
     def _check_volume(self, contracts):
         if not contracts:
             return False
         return sum(c.get('volume', 0) for c in contracts) > self.min_total_volume
-    
+
     def _calculate_dte_score(self, factors):
         score = 0.0
         score += 3.0 if factors['time_adequate'] else 0
@@ -296,7 +307,7 @@ class OptionsDTESelector:
         score += 1.0 if factors['iv_favorable'] else 0
         score += 1.0 if factors['volume_sufficient'] else 0
         return score
-    
+
     def select_best_strikes(self, contracts, entry_price, direction):
         scored = []
         for c in contracts:
@@ -312,15 +323,15 @@ class OptionsDTESelector:
                           'spread_pct': round(spread, 2), 'open_interest': oi, 'score': round(delta_score + oi_score + spread_score, 2)})
         scored.sort(key=lambda x: x['score'], reverse=True)
         return scored
-    
+
     def _get_next_trading_day(self, start_date, offset=0):
         current = start_date + timedelta(days=offset)
         while current.weekday() >= 5:
             current += timedelta(days=1)
         return current
-    
+
     def _create_skip_response(self, reason, time_remaining):
-        return {'dte': None, 'expiry_date': None, 'recommended_strikes': [], 
+        return {'dte': None, 'expiry_date': None, 'recommended_strikes': [],
                 'reasoning': f"🚫 SKIP: {reason}", 'time_remaining_hours': round(time_remaining, 2), 'confidence_pct': 0}
 
 try:
