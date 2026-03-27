@@ -1,17 +1,24 @@
 #!/usr/bin/env python3
 """
-War Machine - Comprehensive System Health Check  v1.20
+War Machine - Comprehensive System Health Check  v1.21
 
 All imports match the CURRENT codebase. Run from repo root:
     python scripts/system_health_check.py
+
+v1.21 (Mar 27 2026):
+  - [7/15] Updated Options DM test: imports OptionsDataManager from
+    options_data_manager (still valid path) and renamed label to
+    'Options Strike Selector' to reflect its actual purpose.
+    Follows Issue #39 rename tracking (options_data_manager →
+    options_strike_selector planned for Phase 3 cleanup).
 """
 import sys
 import os
 
-# ── Repo root on path ───────────────────────────────────────────────────────────
+# ── Repo root on path ──────────────────────────────────────────────────────────────────────
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-# ── Auto-load .env if present ────────────────────────────────────────────────
+# ── Auto-load .env if present ────────────────────────────────────────────────────────────
 try:
     from dotenv import load_dotenv
     load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
@@ -41,7 +48,7 @@ def test_component(name: str, test_func) -> Tuple[bool, str]:
         return False, msg
 
 print("\n" + "="*80)
-print("WAR MACHINE - COMPREHENSIVE SYSTEM HEALTH CHECK  v1.20")
+print("WAR MACHINE - COMPREHENSIVE SYSTEM HEALTH CHECK  v1.21")
 print("="*80)
 print(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
 
@@ -61,7 +68,7 @@ def test_db_connection():
         cur.execute("SELECT 1")
         assert cur.fetchone()[0] == 1
     finally:
-        return_conn(conn)  # properly releases semaphore + rolls back + returns to pool
+        return_conn(conn)
 
 test_component("Database Connection", test_db_connection)
 
@@ -76,7 +83,7 @@ def test_db_tables():
             tables = [r[0] for r in cur.fetchall()]
             db_type = "SQLite"
         except Exception:
-            conn.rollback()  # clear any aborted state before retrying
+            conn.rollback()
             cur = conn.cursor()
             cur.execute("""
                 SELECT table_name FROM information_schema.tables
@@ -139,14 +146,7 @@ def test_dynamic_screener():
 test_component("Dynamic Screener Module (v3.1)", test_dynamic_screener)
 
 def test_screener_integration():
-    """screener_integration was removed — soft-warn instead of hard-fail.
-
-    FIX v1.20: broadened from `except ModuleNotFoundError` to `except Exception`.
-    The module may exist but fail on a chained sub-import inside it, raising a
-    ModuleNotFoundError or ImportError that bypasses the narrower handler and
-    gets caught by test_component's outer except as a hard failure.
-    Any import-chain failure now soft-warns and returns True.
-    """
+    """screener_integration was removed — soft-warn instead of hard-fail."""
     try:
         from app.screening.screener_integration import get_ticker_screener_metadata
         meta = get_ticker_screener_metadata('AAPL')
@@ -234,11 +234,18 @@ def test_options_package():
 test_component("Options Package", test_options_package)
 
 def test_options_dm():
+    """Smoke-test OptionsDataManager (strike selector).
+
+    NOTE (v1.21, Mar 27 2026): Issue #39 tracks renaming this file to
+    options_strike_selector.py in a future cleanup pass. Import path
+    will be updated at that time. For now the file still lives at its
+    original location so this test continues to pass unchanged.
+    """
     from app.options.options_data_manager import OptionsDataManager
     dm = OptionsDataManager()
     assert dm is not None
 
-test_component("Options Data Manager", test_options_dm)
+test_component("Options Strike Selector (options_data_manager)", test_options_dm)
 
 
 # ============================================================================
@@ -295,7 +302,6 @@ def test_signal_cooldown():
     print(f"   is_on_cooldown params: {params}")
 
     result = is_on_cooldown('TEST', 'bull')
-    # is_on_cooldown returns (bool, Optional[str]) — check tuple[0] is bool
     if isinstance(result, tuple):
         blocked, reason = result
         assert isinstance(blocked, bool), \
