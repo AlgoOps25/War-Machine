@@ -30,8 +30,14 @@ import logging
 logger = logging.getLogger(__name__)
 _ET = ZoneInfo("America/New_York")  # FIX: was NameError in process_ticker regime_age calc
 
+# ── Constants ──────────────────────────────────────────────────────────
 EXPLOSIVE_SCORE_THRESHOLD = 80
-EXPLOSIVE_RVOL_THRESHOLD  = 3.0  # ── Optional: screener metadata ────────────────────────────────────────────────────────
+EXPLOSIVE_RVOL_THRESHOLD  = 3.0
+MIN_RVOL_TO_SIGNAL         = config.RVOL_SIGNAL_GATE
+MAX_WATCH_BARS             = 12
+REGIME_FILTER_ENABLED      = True
+
+# ── Optional: screener metadata ────────────────────────────────────────────────────────
 try:
     from app.screening.screener_integration import get_ticker_screener_metadata
     logger.info("[SNIPER] ✅ screener_integration loaded")
@@ -186,13 +192,6 @@ except ImportError:
 from app.core.thread_safe_state import get_state
 _state = get_state()
 
-# ── Constants ──────────────────────────────────────────────────────────
-EXPLOSIVE_SCORE_THRESHOLD = 80
-EXPLOSIVE_RVOL_THRESHOLD  = 3.0
-MIN_RVOL_TO_SIGNAL         = config.RVOL_SIGNAL_GATE
-MAX_WATCH_BARS             = 12
-REGIME_FILTER_ENABLED      = True
-
 # BOS watch alert dedup — cleared EOD alongside watching_signals
 _bos_watch_alerted: set = set()
 
@@ -334,8 +333,6 @@ def process_ticker(ticker: str):
                 logger.info(f"[{ticker}] SPY EMA context error: {e}")
 
         # FIX v1.38d: run_eod_report() only accepts session_date (str|None).
-        # The previous call passed 11 stale kwargs that were never part of
-        # eod_reporter.run_eod_report() — every call raised TypeError.
         if is_force_close_time(bars_session[-1]):
             run_eod_report()
             return
@@ -615,5 +612,4 @@ def process_ticker(ticker: str):
                 logger.info(f"[{ticker}] — No VWAP reclaim signal")
 
     except Exception as e:
-        logger.info(f"process_ticker error {ticker}: {e}")
-        traceback.print_exc()
+        logger.error(f"process_ticker error {ticker}: {e}", exc_info=True)
