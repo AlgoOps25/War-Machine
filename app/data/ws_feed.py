@@ -173,7 +173,7 @@ def _on_tick(ticker: str, price: float, volume: int, epoch_ms: int, msg: dict = 
     """
     # Gate 1: basic bounds (fast path, no lock needed)
     if price <= 0 or volume < 0 or price > 100_000:
-        logger.info(f"[WS] ⚠️ Bad tick rejected: {ticker} p={price} v={volume}")
+        logger.info(f"[WS] \u26a0\ufe0f Bad tick rejected: {ticker} p={price} v={volume}")
         return
 
     if msg:
@@ -205,8 +205,8 @@ def _on_tick(ticker: str, price: float, volume: int, epoch_ms: int, msg: dict = 
         if cur is not None:
             deviation = abs(price - cur["close"]) / cur["close"]
             if deviation > SPIKE_THRESHOLD:
-                print(
-                    f"[WS] ⚠️ Spike rejected: {ticker} "
+                logger.info(
+                    f"[WS] \u26a0\ufe0f Spike rejected: {ticker} "
                     f"p={price:.2f} vs close={cur['close']:.2f} "
                     f"({deviation:.1%} > {SPIKE_THRESHOLD:.0%})"
                 )
@@ -296,7 +296,7 @@ def _flush_open():
     if now - _last_heartbeat >= HEARTBEAT_INTERVAL:
         ts = datetime.now(ET).strftime("%H:%M:%S")
         active = len(snapshot)
-        logger.info(f"[WS] ♥ live | {active} tickers | {ts} ET")
+        logger.info(f"[WS] \u2665 live | {active} tickers | {ts} ET")
         _last_heartbeat = now
 
 
@@ -347,8 +347,10 @@ def subscribe_tickers(tickers: list):
         return
 
     if _event_loop is None or _ws_connection is None:
-        print(f"[WS] subscribe_tickers: WS not ready — "
-              f"{len(new)} ticker(s) queued for next connect")
+        logger.info(
+            f"[WS] subscribe_tickers: WS not ready — "
+            f"{len(new)} ticker(s) queued for next connect"
+        )
         return
 
     try:
@@ -384,8 +386,10 @@ async def _ws_run():
 
                 _connected = True
                 rth_status = "RTH-only" if ENFORCE_RTH_ONLY else "all-hours"
-                print(f"[WS] Live | {len(_subscribed)} tickers subscribed | "
-                      f"{rth_status} | waiting for ticks...")
+                logger.info(
+                    f"[WS] Live | {len(_subscribed)} tickers subscribed | "
+                    f"{rth_status} | waiting for ticks..."
+                )
 
                 async for raw in ws:
                     try:
@@ -432,8 +436,10 @@ def start_ws_feed(tickers: list):
     global _event_loop, _all_tickers, _started
 
     if not _HAS_WEBSOCKETS:
-        print("[WS] WARNING: 'websockets' package missing — "
-              "install with: pip install 'websockets>=12.0'")
+        logger.warning(
+            "[WS] WARNING: 'websockets' package missing — "
+            "install with: pip install 'websockets>=12.0'"
+        )
         return
 
     if _started:
@@ -456,8 +462,10 @@ def start_ws_feed(tickers: list):
 
     threading.Thread(target=_event_loop_thread, name="ws-feed",  daemon=True).start()
     threading.Thread(target=_flush_loop,         name="ws-flush", daemon=True).start()
-    print(f"[WS] Feed initializing | {len(tickers)} seed tickers | "
-          f"DB flush every {FLUSH_INTERVAL}s")
+    logger.info(
+        f"[WS] Feed initializing | {len(tickers)} seed tickers | "
+        f"DB flush every {FLUSH_INTERVAL}s"
+    )
 
 
 # ── REST Failover ─────────────────────────────────────────────────────────────────────────────────────
@@ -547,7 +555,7 @@ def get_current_bar_with_fallback(ticker: str) -> dict | None:
         if cached is not None and (now - cached["fetched_at"]) < REST_CACHE_TTL:
             return cached["bar"]
 
-    print(
+    logger.info(
         f"[WS-FAILOVER] WS down — fetching {ticker} via REST "
         f"(session fetches so far: {_rest_hits + 1})"
     )

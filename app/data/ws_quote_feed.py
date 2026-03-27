@@ -250,8 +250,10 @@ def subscribe_quote_tickers(tickers: list):
         return
 
     if _event_loop is None or _ws_connection is None:
-        print(f"[QUOTE] subscribe_quote_tickers: WS not ready — "
-              f"{len(new)} ticker(s) queued for next connect")
+        logger.info(
+            f"[QUOTE] subscribe_quote_tickers: WS not ready — "
+            f"{len(new)} ticker(s) queued for next connect"
+        )
         return
 
     try:
@@ -286,15 +288,19 @@ def _handle_server_msg(msg: dict, consecutive_500s: list) -> str:
         consecutive_500s[0] = count
         # Log first occurrence and every 10th after that to suppress spam
         if count == 1:
-            print(f"[QUOTE] ⚠️  Server 500 (#{count}): {text} — will back off after "
-                  f"{SERVER_500_BACKOFF_THRESHOLD} consecutive errors")
+            logger.warning(
+                f"[QUOTE] \u26a0\ufe0f  Server 500 (#{count}): {text} — will back off after "
+                f"{SERVER_500_BACKOFF_THRESHOLD} consecutive errors"
+            )
         elif count % 10 == 0:
-            logger.info(f"[QUOTE] ⚠️  Server 500 (#{count}, suppressed repeats): {text}")
+            logger.info(f"[QUOTE] \u26a0\ufe0f  Server 500 (#{count}, suppressed repeats): {text}")
         return "count_500"
 
     # Any other non-200 code (401 Unauthorized, 403 Forbidden, 429 rate-limit, etc.)
-    print(f"[QUOTE] 🚫 Server returned status {code}: {text} — "
-          f"quote feed disabled (check EODHD us-quote entitlement)")
+    logger.warning(
+        f"[QUOTE] \U0001f6ab Server returned status {code}: {text} — "
+        f"quote feed disabled (check EODHD us-quote entitlement)"
+    )
     return "fatal"
 
 
@@ -327,8 +333,10 @@ async def _ws_run():
 
     while True:
         try:
-            print(f"[QUOTE] Connecting -> {QUOTE_WS_BASE_URL}"
-                  + (f" (attempt {attempt + 1})" if attempt > 0 else ""))
+            logger.info(
+                f"[QUOTE] Connecting -> {QUOTE_WS_BASE_URL}"
+                + (f" (attempt {attempt + 1})" if attempt > 0 else "")
+            )
 
             async with websockets.connect(
                 url, ping_interval=20, ping_timeout=10, close_timeout=5
@@ -349,8 +357,10 @@ async def _ws_run():
                 await _do_subscribe(ws, master)
 
                 _connected = True
-                print(f"[QUOTE] Live | {len(_subscribed)} tickers | "
-                      f"spread gate: {MAX_SPREAD_PCT:.2f}% max")
+                logger.info(
+                    f"[QUOTE] Live | {len(_subscribed)} tickers | "
+                    f"spread gate: {MAX_SPREAD_PCT:.2f}% max"
+                )
 
                 # Per-connection 500 counter — reset to [0] on each new connection
                 consecutive_500s = [0]
@@ -367,8 +377,10 @@ async def _ws_run():
                                 # Auth/entitlement failure — no point retrying
                                 _connected     = False
                                 _ws_connection = None
-                                print("[QUOTE] Feed permanently disabled — "
-                                      "verify EODHD us-quote WebSocket entitlement.")
+                                logger.warning(
+                                    "[QUOTE] Feed permanently disabled — "
+                                    "verify EODHD us-quote WebSocket entitlement."
+                                )
                                 return  # exits _ws_run entirely
 
                             if action == "count_500":
@@ -407,9 +419,11 @@ async def _ws_run():
 
                 if hard_backoff_triggered:
                     attempt += 1
-                    print(f"[QUOTE] 🔴 {consecutive_500s[0]} consecutive 500s — "
-                          f"hard backoff {SERVER_500_HARD_BACKOFF}s before retry "
-                          f"(attempt {attempt})")
+                    logger.warning(
+                        f"[QUOTE] \U0001f534 {consecutive_500s[0]} consecutive 500s — "
+                        f"hard backoff {SERVER_500_HARD_BACKOFF}s before retry "
+                        f"(attempt {attempt})"
+                    )
                     await asyncio.sleep(SERVER_500_HARD_BACKOFF)
 
         except Exception as exc:
@@ -418,8 +432,10 @@ async def _ws_run():
 
             delay   = min(2 ** attempt, RECONNECT_DELAY_MAX)
             attempt += 1
-            print(f"[QUOTE] Disconnected ({exc}) — reconnecting in {delay}s "
-                  f"(attempt {attempt})")
+            logger.info(
+                f"[QUOTE] Disconnected ({exc}) — reconnecting in {delay}s "
+                f"(attempt {attempt})"
+            )
             await asyncio.sleep(delay)
 
 
@@ -439,8 +455,10 @@ def start_quote_feed(tickers: list):
     global _event_loop, _all_tickers, _started
 
     if not _HAS_WEBSOCKETS:
-        print("[QUOTE] WARNING: 'websockets' package missing — "
-              "install with: pip install 'websockets>=12.0'")
+        logger.warning(
+            "[QUOTE] WARNING: 'websockets' package missing — "
+            "install with: pip install 'websockets>=12.0'"
+        )
         return
 
     if _started:
@@ -464,8 +482,10 @@ def start_quote_feed(tickers: list):
     threading.Thread(
         target=_event_loop_thread, name="quote-feed", daemon=True
     ).start()
-    print(f"[QUOTE] Feed initializing | {len(tickers)} seed tickers | "
-          f"spread gate: {MAX_SPREAD_PCT:.2f}% max")
+    logger.info(
+        f"[QUOTE] Feed initializing | {len(tickers)} seed tickers | "
+        f"spread gate: {MAX_SPREAD_PCT:.2f}% max"
+    )
 
 
 # ── Module self-test ──────────────────────────────────────────────────────────
@@ -496,9 +516,11 @@ if __name__ == "__main__":
                 if q:
                     ok, spread = is_spread_acceptable(ticker)
                     avg        = get_avg_spread_pct(ticker)
-                    status     = "✅ OK" if ok else "🚫 WIDE"
-                    print(f"  {ticker:6s}  bid={q['bid']:.2f}  ask={q['ask']:.2f}  "
-                          f"spread={q['spread_pct']:.3f}%  avg={avg:.3f}%  {status}")
+                    status     = "\u2705 OK" if ok else "\U0001f6ab WIDE"
+                    logger.info(
+                        f"  {ticker:6s}  bid={q['bid']:.2f}  ask={q['ask']:.2f}  "
+                        f"spread={q['spread_pct']:.3f}%  avg={avg:.3f}%  {status}"
+                    )
                 else:
                     logger.info(f"  {ticker:6s}  waiting for quote...")
 
@@ -508,5 +530,7 @@ if __name__ == "__main__":
         if summary:
             logger.info("\nFinal spread snapshot:")
             for ticker, data in sorted(summary.items()):
-                print(f"  {ticker:6s}  {data['spread_pct']:.3f}%  "
-                      f"mid={data['mid']:.2f}")
+                logger.info(
+                    f"  {ticker:6s}  {data['spread_pct']:.3f}%  "
+                    f"mid={data['mid']:.2f}"
+                )
