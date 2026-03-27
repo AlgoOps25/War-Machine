@@ -31,6 +31,11 @@ Phase 1.17 Fixes (Mar 10, 2026):
   - lookback_bars default: 12 -> 20  (20 min of 1m context is more appropriate)
   - session_anchored flag added to signal dict for log transparency
 
+Mar 27, 2026 Fixes:
+  - __init__: print() -> logger.info() for confirmation bars line.
+    Raw stdout bypassed Railway structured logging entirely (no timestamp,
+    no log level). Now captured consistently with all other [BREAKOUT] logs.
+
 Risk Management:
   - Stop: ATR-based dynamic stop (typically 1.5-2x ATR)
   - T1: 1.5R (take 50% position, secure gains)
@@ -88,8 +93,8 @@ class BreakoutDetector:
         self._pdh_pdl_cache: Dict[str, Tuple[float, float]] = {}
 
         logger.info(f"[BREAKOUT] Split targets: T1={t1_reward_ratio}R (50%), T2={t2_reward_ratio}R (50%)")
-        print(f"[BREAKOUT] Confirmation bars: {min_bars_since_breakout} "
-              f"({'first-break signal' if min_bars_since_breakout == 0 else 'wait-for-confirm'})")
+        logger.info(f"[BREAKOUT] Confirmation bars: {min_bars_since_breakout} "
+                    f"({'first-break signal' if min_bars_since_breakout == 0 else 'wait-for-confirm'})")
         logger.info(f"[BREAKOUT] Lookback: {lookback_bars} bars | Session anchoring: ENABLED")
 
     # =================================================================
