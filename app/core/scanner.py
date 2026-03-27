@@ -628,6 +628,14 @@ def start_scanner_loop():
 
             else:
                 if last_report_day != current_day:
+                    # FIX #50 (Mar 27 2026): Set last_report_day BEFORE any code that can
+                    # throw. Previously this was set at the END of the EOD block — if
+                    # run_eod_report() or any cleanup step raised an exception the top-level
+                    # except caught it, slept 30s, and looped back. Because last_report_day
+                    # was never updated the EOD block fired again immediately on the next
+                    # iteration, causing the runaway Discord report spam seen Mar 27 2026.
+                    last_report_day = current_day
+
                     logger.info(f"[EOD] Market Closed — Generating Reports for {current_day}")
 
                     session        = get_session_status()
@@ -670,7 +678,6 @@ def start_scanner_loop():
                         logger.error(f"[CLEANUP] Candle cache cleanup error: {e}")
 
                     logger.info("[SIGNALS] Daily reset complete")
-                    last_report_day           = current_day
                     premarket_watchlist       = []
                     premarket_built           = False
                     cycle_count               = 0
