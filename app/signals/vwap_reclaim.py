@@ -10,9 +10,17 @@ FIX 43.M-10 (Mar 19 2026): Synthetic FVG zone was hardcoded at ±0.15% around
   a $10 ticker would get $0.015 — both using the same 0.15% regardless
   of ATR or price regime. Fixed to call get_adaptive_fvg_threshold() and
   use its result as the half-width of the synthetic FVG zone.
+
+FIX (Mar 27 2026):
+  - print() calls in detect_vwap_reclaim() replaced with logger.info().
+    Raw stdout bypassed Railway structured logging entirely (no timestamp,
+    no log level). Now captured consistently with all other [VWAP-RECLAIM] logs.
 """
+import logging
 from typing import Dict, List, Optional, Tuple
 from utils import config
+
+logger = logging.getLogger(__name__)
 
 
 def _get_adaptive_threshold(ticker: str, current_price: float, bars: List[Dict]) -> float:
@@ -85,9 +93,9 @@ def detect_vwap_reclaim(
             reclaim = bar['close'] > vwap
             in_zone = zone_low <= bar['close'] <= zone_high
             if swept and reclaim and in_zone:
-                print(
+                logger.info(
                     f"[VWAP-RECLAIM] {ticker} BULL reclaim @ ${bar['close']:.2f} "
-                    f"| zone ${zone_low:.2f}–${zone_high:.2f} | VWAP ${vwap:.2f}"
+                    f"| zone ${zone_low:.2f}\u2013${zone_high:.2f} | VWAP ${vwap:.2f}"
                 )
                 return {
                     'direction':   direction,
@@ -102,9 +110,9 @@ def detect_vwap_reclaim(
             reclaim = bar['close'] < vwap
             in_zone = zone_low <= bar['close'] <= zone_high
             if swept and reclaim and in_zone:
-                print(
+                logger.info(
                     f"[VWAP-RECLAIM] {ticker} BEAR reclaim @ ${bar['close']:.2f} "
-                    f"| zone ${zone_low:.2f}–${zone_high:.2f} | VWAP ${vwap:.2f}"
+                    f"| zone ${zone_low:.2f}\u2013${zone_high:.2f} | VWAP ${vwap:.2f}"
                 )
                 return {
                     'direction':   direction,
