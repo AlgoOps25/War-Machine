@@ -2,6 +2,11 @@
 # Extracted from sniper.py (Phase 2 refactor)
 # Owns: _ensure_armed_db, _persist_armed_signal, _remove_armed_from_db,
 #       _cleanup_stale_armed_signals, _load_armed_signals_from_db, _maybe_load_armed_signals
+#
+# AUDIT 2026-03-27:
+#   - Promoted logger.info → logger.warning on all error paths so they surface
+#     visibly in Railway logs.
+#   - Replaced stray print() in _load_armed_signals_from_db() with logger.info().
 
 import json
 from datetime import datetime
@@ -44,7 +49,7 @@ def _ensure_armed_db():
         """)
         conn.commit()
     except Exception as e:
-        logger.info(f"[ARMED-DB] Init error: {e}")
+        logger.warning(f"[ARMED-DB] Init error: {e}")
     finally:
         if conn:
             return_conn(conn)
@@ -96,7 +101,7 @@ def _persist_armed_signal(ticker: str, data: dict):
         ))
         conn.commit()
     except Exception as e:
-        logger.info(f"[ARMED-DB] Persist error for {ticker}: {e}")
+        logger.warning(f"[ARMED-DB] Persist error for {ticker}: {e}")
     finally:
         if conn:
             return_conn(conn)
@@ -112,7 +117,7 @@ def _remove_armed_from_db(ticker: str):
         safe_execute(cursor, f"DELETE FROM armed_signals_persist WHERE ticker = {p}", (ticker,))
         conn.commit()
     except Exception as e:
-        logger.info(f"[ARMED-DB] Remove error for {ticker}: {e}")
+        logger.warning(f"[ARMED-DB] Remove error for {ticker}: {e}")
     finally:
         if conn:
             return_conn(conn)
@@ -142,7 +147,7 @@ def _cleanup_stale_armed_signals():
             conn.commit()
             logger.info(f"[ARMED-DB] 🧹 Auto-cleaned {len(stale_tickers)} closed position(s): {', '.join(stale_tickers)}")
     except Exception as e:
-        logger.info(f"[ARMED-DB] Cleanup error: {e}")
+        logger.warning(f"[ARMED-DB] Cleanup error: {e}")
     finally:
         if conn:
             return_conn(conn)
@@ -193,13 +198,13 @@ def _load_armed_signals_from_db() -> dict:
                 "validation":   validation
             }
         if loaded:
-            print(
+            logger.info(
                 f"[ARMED-DB] 📄 Reloaded {len(loaded)} armed signal(s) from DB after restart: "
                 f"{', '.join(loaded.keys())}"
             )
         return loaded
     except Exception as e:
-        logger.info(f"[ARMED-DB] Load error: {e}")
+        logger.warning(f"[ARMED-DB] Load error: {e}")
         return {}
     finally:
         if conn:
@@ -230,7 +235,7 @@ def clear_armed_signals():
         safe_execute(cursor, "DELETE FROM armed_signals_persist")
         conn.commit()
     except Exception as e:
-        logger.info(f"[ARMED-DB] Clear error: {e}")
+        logger.warning(f"[ARMED-DB] Clear error: {e}")
     finally:
         if conn:
             return_conn(conn)

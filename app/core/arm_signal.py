@@ -25,6 +25,9 @@ FIX G (2026-03-26): Added explicit 'return True' at end of successful execution.
 
 FIX H (2026-03-26): Corrected indentation SyntaxError — two try: blocks were
   at column 0 (outside the function body), crashing the module on import.
+
+AUDIT 2026-03-27: Promoted logger.info → logger.warning on all error/rejection
+  paths so they stand out in Railway logs.
 """
 
 
@@ -58,7 +61,7 @@ def arm_ticker(
     _state = get_state()
 
     if abs(entry_price - stop_price) < entry_price * 0.001:
-        logger.info(f"[ARM] ⚠️ {ticker} stop too tight — skipping")
+        logger.warning(f"[ARM] ⚠️ {ticker} stop too tight — skipping")
         return
 
     mode_label = " [OR]" if signal_type == "CFW6_OR" else " [INTRADAY]"
@@ -86,7 +89,7 @@ def arm_ticker(
     )
 
     if position_id == -1:
-        logger.info(f"[ARM] ❌ {ticker} position rejected by risk manager — Discord alert suppressed")
+        logger.warning(f"[ARM] ❌ {ticker} position rejected by risk manager — Discord alert suppressed")
         return
 
     # Record TRADED stage in signal_analytics (FIX Mar 16 2026)
@@ -95,7 +98,7 @@ def arm_ticker(
         signal_tracker.record_trade_executed(ticker, position_id)
         logger.info(f"[ANALYTICS] 📊 {ticker} TRADED stage recorded (position_id={position_id})")
     except Exception as _analytics_err:
-        logger.info(f"[ANALYTICS] record_trade_executed error (non-fatal): {_analytics_err}")
+        logger.warning(f"[ANALYTICS] record_trade_executed error (non-fatal): {_analytics_err}")
 
     # Discord alert (FIX H: was at col 0, now correctly indented inside function)
     try:
@@ -142,7 +145,7 @@ def arm_ticker(
                             }
                         }
                 except Exception as greeks_err:
-                    logger.info(f"[ARM] Greeks data extraction error (non-fatal): {greeks_err}")
+                    logger.warning(f"[ARM] Greeks data extraction error (non-fatal): {greeks_err}")
 
             send_options_signal_alert(
                 ticker=ticker, direction=direction,
@@ -159,7 +162,7 @@ def arm_ticker(
                 vp_bias=vp_bias
             )
         except Exception as e:
-            logger.info(f"[DISCORD] ❌ Alert failed: {e}")
+            logger.warning(f"[DISCORD] ❌ Alert failed: {e}")
 
     # Persist armed signal state
     armed_signal_data = {
@@ -184,6 +187,6 @@ def arm_ticker(
         from app.analytics.cooldown_tracker import set_cooldown as _set_cooldown
         _set_cooldown(ticker, direction, signal_type)
     except Exception as e:
-        logger.info(f"[COOLDOWN] Warning: could not set cooldown for {ticker}: {e}")
+        logger.warning(f"[COOLDOWN] Warning: could not set cooldown for {ticker}: {e}")
 
     return True  # FIX G (2026-03-26): explicit success return
