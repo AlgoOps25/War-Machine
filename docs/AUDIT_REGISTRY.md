@@ -1,7 +1,7 @@
 # War Machine — Full Repo Audit Registry
 
 > **Purpose:** Master reference for the file-by-file audit of all tracked files.  
-> **Last updated:** 2026-03-25 Session 10 — Hotfixes + Pending Queue Progress  
+> **Last updated:** 2026-03-27 Session 11 — BUG-ML-1/2/6 fixed; app/ml deep audit complete  
 > **Auditor:** Perplexity AI (interactive audit with Michael)  
 > **Status legend:** ✅ KEEP | ⚠️ REVIEW | 🔀 MERGE → target | 🗃️ QUARANTINE | ❌ DELETE | 🔧 FIXED | 📦 MOVED  
 > **Prohibited (runtime-critical) directories:** `app/core`, `app/data`, `app/risk`, `app/signals`, `app/validation`, `app/filters`, `app/mtf`, `app/notifications`, `utils/`, `migrations/`  
@@ -17,13 +17,14 @@
 | A1 | `app/core` | 15 | ✅ Complete — reconciled Session 9 |
 | A2 | `app/risk`, `app/data`, `app/signals`, `app/validation`, `app/filters`, `app/mtf`, `app/notifications` | 47 | ✅ Complete — reconciled Session 9 |
 | S4-S5 | Signal quality metrics deep audit | 7 | ✅ Complete |
-| B | `app/ml`, `app/analytics`, `app/ai` | 27 | ✅ Complete |
+| B | `app/ml`, `app/analytics`, `app/ai` | 27 | ✅ Complete — **app/ml deep-audited Session 11** |
 | C | `app/backtesting/`, `scripts/` (all subfolders) | 55 | ✅ Complete |
 | D | `app/screening`, `app/options`, `app/indicators`, `utils/` | 27 | ✅ Complete — reconciled Session 9 |
 | E | `tests/`, `docs/`, `migrations/`, `models/`, root files | 30 | ✅ Complete |
 | Cross-Batch | Overlap analysis across all batches | all | ✅ Current |
 | **Session 9** | **Full live-repo reconciliation vs registry** | **all** | **✅ Complete 2026-03-25** |
 | **Session 10** | **Hotfix logging + pending queue #8/#9/#10 closed** | **3 items** | **✅ Complete 2026-03-25** |
+| **Session 11** | **app/ml line-by-line deep audit — BUG-ML-1/2/6 fixed** | **3 fixes + 1 new file** | **✅ Complete 2026-03-27** |
 
 ---
 
@@ -58,6 +59,9 @@
 | 25 | 2026-03-25 | S10 | `app/screening/watchlist_funnel.py` | 🔧 FIXED: `TypeError: 'datetime.datetime' object is not callable` — spurious `()` after `datetime.now(tz=ET)` on log line ~394. | manual patch | Critical runtime crash fix — was crashing every pre-market cycle |
 | 26 | 2026-03-25 | S10 | `app/core/scanner.py` | 🔧 FIXED: `_run_analytics() takes 0 positional arguments but 1 was given` — added `conn=None` parameter so `_db_operation_safe` can pass its conn arg. | manual patch | Critical runtime crash fix — analytics monitor was crashing every market-hours cycle |
 | 27 | 2026-03-25 | S10 | `app/ml/metrics_cache.py` | 🔧 FIXED: Replaced raw SQLAlchemy `create_engine()` with production `get_conn()`/`return_conn()` pool. `datetime.utcnow()` → `datetime.now(ET)`. | manual patch | Connection leak eliminated — was allocating a new pool on every call |
+| 28 | 2026-03-27 | S11 | `app/ml/metrics_cache.py` | 🔧 FIXED BUG-ML-2: `%(since)s` named param → `ph()` positional placeholder + tuple. Fixes `sqlite3.ProgrammingError` on SQLite fallback that silently returned `{}`, poisoning `ticker_win_rate=0.0` for every ticker in ML features. | `900e211` | ML feature correctness |
+| 29 | 2026-03-27 | S11 | `app/ml/ml_signal_scorer_v2.py` | 🔧 FIXED BUG-ML-1: **Created new file.** Gate 5 in `cfw6_gate_validator.py` was importing this missing file; `ImportError` was swallowed silently every run — `ml_adjustment=0.0` always, ML layer had zero effect on any signal. New file wires HistGBM + XGBoost booster into Gate 5's `MLSignalScorerV2` interface. Model resolution order: HistGBM → XGBoost booster → neutral fallback. | `0fad513` | **Gate 5 ML now functional** |
+| 30 | 2026-03-27 | S11 | `app/analytics/performance_monitor.py` | 🔧 FIXED BUG-ML-6: `_consecutive_losses` counter declared but never incremented. `record_trade_outcome()` now increments on loss, resets on win. `_check_risk_alerts()` now fires Discord alert when streak `>= _MAX_CONSECUTIVE_LOSS (3)`. Also exposed `consecutive_losses` in `get_daily_stats()`. | `74ce832` | Risk control now active |
 
 ---
 
@@ -82,6 +86,15 @@
 | 15 | 🟢 LOW | `market_memory.db` | Verify if replaced by PostgreSQL on Railway or still active | ⏳ Open |
 | 16 | 🟢 LOW | `scripts/war_machine.db` | Verify if stale vs root `war_machine.db` | ⏳ Open |
 | 17 | 🟢 LOW | `audit_reports/venv/` | Venv accidentally committed inside audit_reports — should be gitignored/removed | ⏳ Open |
+| 18 | ✅ DONE | `app/ml/metrics_cache.py` | BUG-ML-2: ph() named param fix | ✅ S11 |
+| 19 | ✅ DONE | `app/ml/ml_signal_scorer_v2.py` | BUG-ML-1: Create missing file — Gate 5 dead | ✅ S11 |
+| 20 | ✅ DONE | `app/analytics/performance_monitor.py` | BUG-ML-6: Wire _consecutive_losses counter + alert | ✅ S11 |
+| 21 | 🟡 MEDIUM | `app/ml/ml_trainer.py` | BUG-ML-3: Platt calibration + threshold tuning on same slice — data leakage. Hold out separate slice for threshold tuning. | ⏳ Open |
+| 22 | 🟡 MEDIUM | `app/validation/cfw6_gate_validator.py` | BUG-ML-4: `get_validation_stats()` is permanent stub — wire to `grade_gate_tracker.get_daily_stats()` or delete | ⏳ Open |
+| 23 | 🟢 LOW | `app/ml/ml_confidence_boost.py` | BUG-ML-5: `.iterrows()` in logging loop — replace with `itertuples()` or zip | ⏳ Open |
+| 24 | 🔴 HIGH | `app/mtf/` | Full line-by-line deep audit (Session 12 next) | ⏳ Open |
+| 25 | 🔴 HIGH | `app/core/sniper.py` | Full line-by-line deep audit (largest file, highest risk) | ⏳ Open |
+| 26 | 🔴 HIGH | `app/core/scanner.py` | Full line-by-line deep audit | ⏳ Open |
 
 ---
 
@@ -109,8 +122,8 @@ No other local-only files found on GitHub. `ws_feed.py.backup`, `discord_helpers
 |------|------|------|---------|---------|-------|
 | `__init__.py` | 22 B | Package marker | All importers of `app.core` | ✅ KEEP | |
 | `__main__.py` | 177 B | Railway entrypoint shim | Railway start command | ✅ KEEP | |
-| `scanner.py` | 42 KB | Main scan loop | Entrypoint | ✅ KEEP | **PROHIBITED** — 🔧 FIXED S10: `_run_analytics(conn=None)` |
-| `sniper.py` | 72 KB | Signal detection engine | `scanner.py` | ✅ KEEP | **PROHIBITED** |
+| `scanner.py` | 42 KB | Main scan loop | Entrypoint | ✅ KEEP | **PROHIBITED** — 🔧 FIXED S10: `_run_analytics(conn=None)`. **Deep audit pending (S12+)** |
+| `sniper.py` | 72 KB | Signal detection engine | `scanner.py` | ✅ KEEP | **PROHIBITED** — **Deep audit pending (S12+)** |
 | `arm_signal.py` | 7 KB | Signal arming | `sniper.py` | ✅ KEEP | `record_trade_executed()` wired (S4) |
 | `armed_signal_store.py` | 8 KB | Armed signal store | `sniper.py`, `scanner.py` | ✅ KEEP | |
 | `watch_signal_store.py` | 7.6 KB | Pre-armed signal store | `sniper.py`, `scanner.py` | ✅ KEEP | |
@@ -209,14 +222,14 @@ No other local-only files found on GitHub. `ws_feed.py.backup`, `discord_helpers
 | File | Role | Connected To | Verdict | Notes |
 |------|------|-------------|---------|-------|
 | `__init__.py` | Package marker + re-exports | All importers | ✅ KEEP | |
-| `bos_fvg_engine.py` | Break-of-structure + fair-value-gap detection | `sniper.py`, `mtf_validator.py` | ✅ KEEP | **PROHIBITED** |
-| `mtf_validator.py` | Multi-timeframe signal validation gate | `sniper.py` | ✅ KEEP | **PROHIBITED** |
-| `mtf_integration.py` | Wires MTF data fetch into validator | `mtf_validator.py`, `data_manager.py` | ✅ KEEP | |
-| `mtf_compression.py` | Compresses lower-TF candles to higher TF | `mtf_integration.py` | ✅ KEEP | |
-| `mtf_fvg_priority.py` | Ranks FVG zones by timeframe priority | `bos_fvg_engine.py`, `sniper.py` | ✅ KEEP | |
-| `smc_engine.py` | Smart money concepts: CHoCH, inducement zones | `sniper.py`, `liquidity_sweep.py` | ✅ KEEP | |
+| `bos_fvg_engine.py` | Break-of-structure + fair-value-gap detection | `sniper.py`, `mtf_validator.py` | ✅ KEEP | **PROHIBITED** — **Deep audit pending (S12)** |
+| `mtf_validator.py` | Multi-timeframe signal validation gate | `sniper.py` | ✅ KEEP | **PROHIBITED** — **Deep audit pending (S12)** |
+| `mtf_integration.py` | Wires MTF data fetch into validator | `mtf_validator.py`, `data_manager.py` | ✅ KEEP | **Deep audit pending (S12)** |
+| `mtf_compression.py` | Compresses lower-TF candles to higher TF | `mtf_integration.py` | ✅ KEEP | **Deep audit pending (S12)** |
+| `mtf_fvg_priority.py` | Ranks FVG zones by timeframe priority | `bos_fvg_engine.py`, `sniper.py` | ✅ KEEP | **Deep audit pending (S12)** |
+| `smc_engine.py` | Smart money concepts: CHoCH, inducement zones | `sniper.py`, `liquidity_sweep.py` | ✅ KEEP | **Deep audit pending (S12)** |
 
-**app/mtf: 7/7 KEEP.**
+**app/mtf: 7/7 KEEP. Full deep audit scheduled for Session 12.**
 
 ### `app/validation/`
 
@@ -224,7 +237,7 @@ No other local-only files found on GitHub. `ws_feed.py.backup`, `discord_helpers
 |------|------|-------------|---------|-------|
 | `__init__.py` | Package marker | All importers | ✅ KEEP | |
 | `validation.py` | Master validation orchestrator | `sniper.py` | ✅ KEEP | **PROHIBITED** |
-| `cfw6_gate_validator.py` | CFW6 confirmation gate | `validation.py`, `sniper.py` | ✅ KEEP | **PROHIBITED** |
+| `cfw6_gate_validator.py` | CFW6 confirmation gate | `validation.py`, `sniper.py` | ✅ KEEP | **PROHIBITED** — Gate 5 now live (BUG-ML-1 fixed S11). BUG-ML-4 (`get_validation_stats()` stub) pending. |
 | `cfw6_confirmation.py` | CFW6 confirmation signals | `cfw6_gate_validator.py` | 🔧 FIXED (S0) | VWAP formula corrected. `95be3ae` |
 | `greeks_precheck.py` | Options Greeks pre-validation (delta, IV, OI) | `validation.py`, `options_intelligence.py` | 🔧 FIXED (S9) | Missing `ZoneInfo` import added. `08648df`. Supersedes deleted `options_dte_filter.py` |
 | `hourly_gate.py` | Hourly session quality gate | `sniper.py` | ✅ KEEP | |
@@ -237,30 +250,31 @@ No other local-only files found on GitHub. `ws_feed.py.backup`, `discord_helpers
 
 ## BATCH B — ML, Analytics, AI
 
-> **Completed 2026-03-16 Session 6. metrics_cache.py fixed Session 10.**
+### `app/ml/` — 7 active files (was 9 + 1 new = 10 → 3 moved → 7)
 
-### `app/ml/` — 6 active files (was 9)
+> **Session 11 deep audit:** Line-by-line review complete. 3 bugs found and fixed (BUG-ML-1/2/6). BUG-ML-3/4/5 queued.
 
 | File | Role | Connected To | Verdict | Notes |
 |------|------|-------------|---------|-------|
 | `__init__.py` | Package marker | All importers | ✅ KEEP | |
 | `README.md` | ML module documentation | Dev reference | ✅ KEEP | |
 | `INTEGRATION.md` | ML wiring guide | Dev reference | ✅ KEEP | |
-| `ml_trainer.py` | RF/GBM model training engine | `scripts/ml/train_historical.py`, `historical_trainer.py` | ✅ KEEP | |
-| `ml_confidence_boost.py` | Applies ML delta to signal confidence score | `sniper.py` via `signal_boosters.py` | ✅ KEEP | |
-| `metrics_cache.py` | Rolling per-ticker win rate cache | `sniper.py`, `ml_confidence_boost.py` | ✅ KEEP | 🔧 FIXED S10: replaced raw SQLAlchemy `create_engine()` with `get_conn()`/`return_conn()` pool; `datetime.utcnow()` → `datetime.now(ET)` |
+| `ml_trainer.py` | RF/GBM model training engine | `scripts/ml/train_historical.py`, `historical_trainer.py` | ✅ KEEP | ⚠️ BUG-ML-3: Platt + threshold on same slice — data leakage. Pending fix. |
+| `ml_confidence_boost.py` | Applies ML delta to signal confidence score | `sniper.py` via `signal_boosters.py` | ✅ KEEP | ⚠️ BUG-ML-5: `.iterrows()` in logging loop. Low priority. |
+| `metrics_cache.py` | Rolling per-ticker win rate cache | `sniper.py`, `ml_confidence_boost.py` | ✅ KEEP | 🔧 FIXED S10 (pool) + 🔧 FIXED S11 BUG-ML-2 (ph() param fix). Commit `900e211`. |
+| `ml_signal_scorer_v2.py` | Gate 5 adapter — wires HistGBM + XGBoost booster into `cfw6_gate_validator.py` Gate 5 | `cfw6_gate_validator.py` | ✅ KEEP | 🔧 CREATED S11 BUG-ML-1 — **new file.** Gate 5 now functional. Commit `0fad513`. |
 | `analyze_signal_failures.py` | 📦 MOVED (S6) | → `scripts/analysis/` | Zero import callers. `42126d5` / `f6254b5` |
 | `train_from_analytics.py` | 📦 MOVED (S6) | → `scripts/ml/` | CLI tool. `42126d5` / `2f586e6` |
 | `train_historical.py` | 📦 MOVED (S6) | → `scripts/ml/` | CLI tool. `42126d5` / `dc9a8db` |
 
-**app/ml: 6/9 active KEEP. 3 MOVED to scripts/. 1 FIXED (metrics_cache).**
+**app/ml: 7/10 active KEEP (3 MOVED to scripts/). 1 CREATED (ml_signal_scorer_v2). 2 FIXED (metrics_cache x2). Session 11 complete.**
 
 ### `app/analytics/`
 
 | File | Role | Connected To | Verdict | Notes |
 |------|------|-------------|---------|-------|
 | `__init__.py` | Re-exports | All callers | ✅ KEEP | |
-| `performance_monitor.py` | Live P&L metrics — Sharpe, drawdown, win rate | `analytics_integration.py`, `eod_reporter.py` | ✅ KEEP | Distinct from backtesting `performance_metrics.py` |
+| `performance_monitor.py` | Live P&L metrics — Sharpe, drawdown, win rate, consecutive loss alert | `analytics_integration.py`, `eod_reporter.py` | ✅ KEEP | 🔧 FIXED S11 BUG-ML-6: `_consecutive_losses` now wired. Commit `74ce832`. |
 | `funnel_analytics.py` | **CANONICAL** funnel DB tracker (SCANNED → TRADED stages) | `sniper.py`, `analytics_integration.py` | ✅ KEEP | |
 | `funnel_tracker.py` | CI fallback shim over `funnel_analytics.py` | `tests/test_funnel_analytics.py` | ✅ KEEP (shim) | |
 | `ab_test_framework.py` | **CANONICAL** A/B test engine for strategy variants | `analytics_integration.py` | ✅ KEEP | |
@@ -270,7 +284,7 @@ No other local-only files found on GitHub. `ws_feed.py.backup`, `discord_helpers
 | `cooldown_tracker.py` | Per-ticker trade cooldown enforcement | `sniper.py`, `arm_signal.py` | ✅ KEEP | |
 | `grade_gate_tracker.py` | Grade-level gate tracking (A/B/C grade signals) | `sniper.py`, `analytics_integration.py` | ✅ KEEP | |
 
-**app/analytics: 10/10 KEEP.**
+**app/analytics: 10/10 KEEP. 1 FIXED (performance_monitor).**
 
 ### `app/ai/`
 
@@ -285,7 +299,7 @@ No other local-only files found on GitHub. `ws_feed.py.backup`, `discord_helpers
 
 ## BATCH C — Backtesting & Scripts
 
-> **Completed 2026-03-16 Session 7. No changes in Session 9/10.**
+> **Completed 2026-03-16 Session 7. No changes in Session 9/10/11.**
 
 ### `app/backtesting/`
 
@@ -373,7 +387,7 @@ Batch C fully audited. Summary: 55/55 KEEP (net), 1 QUARANTINE pending (`scripts
 
 ## BATCH E — Tests, Docs, Migrations, Models, Root Files
 
-> **Completed 2026-03-17 Session 8. No changes in Session 9/10.**
+> **Completed 2026-03-17 Session 8. No changes in Session 9/10/11.**
 
 ### `tests/`
 
@@ -433,18 +447,18 @@ All unchanged from Session 8. Refer to prior registry entries. Open items remain
 
 ---
 
-## Files Cleared (Full Count — Session 10 Current)
+## Files Cleared (Full Count — Session 11 Current)
 
 - **app/core:** 12 active KEEP, 4 DELETED (confidence_model, gate_stats, sniper_log, error_recovery), 2 NEW (logging_config, signal_scorecard)
 - **app/risk:** 6 KEEP
 - **app/data:** 9 KEEP
 - **app/signals:** 5 KEEP (1 NEW: vwap_reclaim), 1 FIXED (breakout_detector)
 - **app/filters:** 12 KEEP (3 NEW: dead_zone_suppressor, gex_pin_gate, mtf_bias), 2 DELETED
-- **app/mtf:** 7 KEEP
+- **app/mtf:** 7 KEEP — deep audit pending (Session 12)
 - **app/validation:** 7 KEEP, 2 FIXED (cfw6_confirmation, greeks_precheck)
 - **app/notifications:** 2 KEEP
-- **app/ml:** 6 KEEP, 3 MOVED, 1 FIXED (metrics_cache)
-- **app/analytics:** 10 KEEP
+- **app/ml:** 7 KEEP (1 CREATED: ml_signal_scorer_v2), 3 MOVED, 2 FIXED (metrics_cache x2) — **Session 11 complete**
+- **app/analytics:** 10 KEEP, 1 FIXED (performance_monitor)
 - **app/ai:** 2 KEEP
 - **app/backtesting:** 7 KEEP
 - **app/screening:** 8 KEEP, 1 FIXED (watchlist_funnel)
@@ -458,10 +472,10 @@ All unchanged from Session 8. Refer to prior registry entries. Open items remain
 - **docs/:** All KEEP
 - **Root files:** All KEEP / noted
 
-**Total actions to date: 7 DELETED, 4 MOVED, 5 FIXED (S9/S10), 1 FIXED (S0), 3 CONFIRMED (S10), 4 shims confirmed, 2 open REVIEW flags, 3 LOCAL ACTIONS pending.**
+**Total actions to date: 7 DELETED, 4 MOVED, 8 FIXED (S9/S10/S11), 1 FIXED (S0), 3 CONFIRMED (S10), 4 shims confirmed, 2 open REVIEW flags, 3 LOCAL ACTIONS pending, 1 CREATED (ml_signal_scorer_v2).**
 
-**Registry last verified against live repo HEAD: 2026-03-25 Session 10. Every tracked file accounted for.**
+**Registry last verified against live repo HEAD: 2026-03-27 Session 11. Every tracked file accounted for.**
 
 ---
 
-*Updated: Session 10, 2026-03-25. Hotfixes #25/#26/#27 logged. Pending items #8/#9/#10 closed.*
+*Updated: Session 11, 2026-03-27. BUG-ML-1/2/6 fixed. Commits: `900e211`, `0fad513`, `74ce832`. Next: Session 12 — `app/mtf/` deep audit.*
