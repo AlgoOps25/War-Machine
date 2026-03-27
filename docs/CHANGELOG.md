@@ -6,6 +6,85 @@
 
 ---
 
+## 2026-03-27 — Session Handoff: Issue #12 Backlog Formalized
+
+### Overview
+Session handoff documentation update. No code changes this session.  
+Phase 1.38d-fix is complete — all 8 execution blockers (FIX A–H) are resolved.  
+War Machine can now execute trades end-to-end for the first time since the `sniper_pipeline.py` refactor.  
+Issue #12 GitHub issues are closed; 6 remaining sub-items are tracked in code and formalized in `docs/remediation_tracker.md` Phase 7.
+
+---
+
+### Session Summary
+
+#### Session 2 (2026-03-26) Outcomes
+- Full file-by-file audit of `app/core/` signal path in execution order
+- FIX H: `arm_signal.py` SyntaxError from mis-indented try blocks — entire pipeline was unimportable
+- FIX G: `arm_signal.py` `arm_ticker()` missing `return True` — success path always returned `None`
+- FIX F: `sniper.py` VWAP reclaim path used synthetic OR refs — now passes `0.0, 0.0` explicitly
+- FIX E: `sniper.py` dispatcher passed stale kwargs to `_pipeline()` — removed `get_ticker_screener_metadata=` and `state=`
+- Clean boot confirmed 2026-03-26 19:36 UTC ✅
+
+#### Session 1 (2026-03-26) Outcomes
+- FIX D: `sniper_pipeline.py` `arm_ticker()` return value never checked
+- FIX C: `sniper_pipeline.py` double `set_cooldown()` call removed
+- FIX B: `sniper_pipeline.py` `options_rec` missing default — `options_rec=None` added
+- FIX A: `sniper_pipeline.py` `**_unused_kwargs` absorbs legacy kwargs
+- Root fix: `arm_ticker()` called with only 7 of 13 required args — `compute_stop_and_targets()` wired before arm call
+- `app/core/sniper_log.py` created (was an `ImportError` on every arm attempt)
+
+#### Combined Effect (Sessions 1 + 2)
+All issues together meant **zero trades could ever be executed** after the Phase 1.38d refactor.  
+Signal detection, scanning, filters, scorecard, and confirmations were all functional — only the final arm steps were broken.  
+All 8 execution blockers are now resolved.
+
+---
+
+### Phase 1.38d-fix Patch Summary
+
+| Fix | File | Description | Status |
+|-----|------|-------------|--------|
+| FIX A | `sniper_pipeline.py` | `**_unused_kwargs` absorbs legacy kwargs | ✅ |
+| FIX B | `sniper_pipeline.py` | `options_rec=None` default added | ✅ |
+| FIX C | `sniper_pipeline.py` | Double `set_cooldown()` removed | ✅ |
+| FIX D | `sniper_pipeline.py` | `arm_ticker()` return value now checked | ✅ |
+| FIX E | `sniper.py` | Stale kwargs removed from dispatcher | ✅ |
+| FIX F | `sniper.py` | VWAP reclaim OR refs corrected to `0.0, 0.0` | ✅ |
+| FIX G | `arm_signal.py` | `return True` added to success path | ✅ |
+| FIX H | `arm_signal.py` | SyntaxError from mis-indented try blocks fixed | ✅ |
+
+---
+
+### Issue #12 Backlog Status
+
+All GitHub issues under Issue #12 are **closed**. 6 sub-items remain tracked in code and formalized as Phase 7 findings in `docs/remediation_tracker.md`.
+
+| Priority | Item | File |
+|----------|------|------|
+| 🔴 P1 | Duplicate `compute_stop_and_targets` call (Step 8 + Step 9) | `sniper_pipeline.py` |
+| 🔴 P1 | Asymmetric multiplier caps (+15%/-20%) — propose +20%/-15% | `sniper_pipeline.py` |
+| 🔴 P1 | Static `mode_decay = 0.95` — wire to live win-rate data | `sniper_pipeline.py` |
+| 🔵 P2 | Flat `MIN_OR_RANGE_PCT = 3%` — needs price-tiered thresholds | `utils/config.py` |
+| 🔵 P2 | Pre-market range computed but discarded — integrate or delete | `sniper.py` |
+| 🔵 P2 | `MAX_WATCH_BARS = 12` hardcoded — make adaptive by grade | `sniper_pipeline.py` |
+
+---
+
+### Known Cosmetic Issues (Low Priority)
+
+| Issue | File |
+|-------|------|
+| Signal Analytics summary prints ~20x on startup | `app/signals/signal_analytics.py` |
+| `_resample_bars()` duplicated in `sniper.py` and `sniper_pipeline.py` | `app/core/sniper.py`, `app/core/sniper_pipeline.py` |
+
+---
+
+### Next Recommended Action
+Start on Issue #12 P1 item #1: **duplicate `compute_stop_and_targets` call** in `sniper_pipeline.py` — estimated 15 min, zero risk.
+
+---
+
 ## 2026-03-26 — Session 2: Full Core Audit & arm_signal SyntaxError Fix
 
 ### Overview
@@ -338,6 +417,7 @@ def is_safe_to_add_position(self, ticker, open_positions, proposed_risk_dollars=
 
 | Date | Event | Notes |
 |------|-------|-------|
+| 2026-03-27 | Session handoff doc update | Issue #12 backlog formalized in remediation_tracker Phase 7 |
 | 2026-03-26 | Session 2 audit + FIX H (arm_signal SyntaxError) | Clean boot confirmed |
 | 2026-03-26 | Session 1 critical fix | arm_ticker TypeError + sniper_log ImportError — 2 commits |
 | 2026-03-16 | Batch A–E audit session | 19 changes applied, 5 files deleted, 4 files moved |
