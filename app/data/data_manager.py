@@ -54,6 +54,13 @@ FIX 15.C-2 (MAR 19, 2026): INVERTED TZ LOGIC IN startup_backfill_with_cache()
   - Fix: if naive, attach ET; if already tz-aware, leave as-is. Both branches
     result in a tz-aware datetime that subtracts cleanly against now_et.
   - Same bug patched in background_cache_sync().
+
+AUDIT 2026-03-27:
+  - Replaced all print() calls with logger.info() — logging is configured before
+    DataManager() is instantiated, so logger is always ready.
+  - Promoted logger.info → logger.warning on all error/exception paths.
+  - NOTE: _UPDATE_TTL / _last_update are declared at module level but never
+    read or written in update_ticker(). Dead code — flagged for future cleanup.
 """
 import time
 import os
@@ -73,7 +80,8 @@ ET = ZoneInfo("America/New_York")
 
 _logged_skip = set()  # Track tickers we've logged skip messages for
 
-# Per-ticker update TTL — prevents hammering EODHD during rapid scan cycles.
+# Per-ticker update TTL — declared but not yet wired into update_ticker().
+# TODO: connect _last_update reads/writes in update_ticker() or remove.
 _last_update: Dict[str, datetime] = {}
 UPDATE_TTL = timedelta(minutes=2)
 
@@ -203,11 +211,6 @@ class DataManager:
             ) if row else 0
 
             if current_version < 2:
-                # FIX 15.C-1: Never wipe bar history without an explicit opt-in.
-                # A transient DB error makes current_version default to 0, which
-                # previously triggered DELETEs on all intraday_bars mid-session.
-                # Migration is a one-time operation on a fresh DB — set
-                # FORCE_MIGRATION=true before the very first deploy, then unset it.
                 force_migration = os.getenv("FORCE_MIGRATION", "").strip().lower() == "true"
                 if force_migration:
                     cursor.execute("DELETE FROM intraday_bars")
@@ -217,11 +220,9 @@ class DataManager:
                     cursor.execute("INSERT INTO db_version (version) VALUES (2)")
                     logger.info("[DATA] Migration v2: Cleared UTC bars — switching to ET-naive storage")
                 else:
-                    # Stamp v2 so this branch never fires again on this DB.
-                    # The data is already ET-naive on Railway; no wipe needed.
                     cursor.execute("DELETE FROM db_version")
                     cursor.execute("INSERT INTO db_version (version) VALUES (2)")
-                    print(
+                    logger.warning(
                         "[DATA] db_version was <2 but FORCE_MIGRATION not set — "
                         "stamped v2 without deleting bars. "
                         "Set FORCE_MIGRATION=true only on a brand-new empty DB."
@@ -268,7 +269,7 @@ class DataManager:
                     missing = [k for k in required if k not in bar or bar[k] is None]
 
                     if missing:
-                        logger.info(f"[DATA] {ticker}: Skipping bar with missing fields: {missing}")
+                        logger.warning(f"[DATA] {ticker}: Skipping bar with missing fields: {missing}")
                         continue
 
                     dt_et = datetime.fromtimestamp(
@@ -284,16 +285,16 @@ class DataManager:
                         "volume":   int(bar["volume"])
                     })
                 except (ValueError, TypeError, KeyError) as e:
-                    logger.info(f"[DATA] Bar parse error for {ticker}: {e}")
+                    logger.warning(f"[DATA] Bar parse error for {ticker}: {e}")
                     continue
 
             return bars
 
         except requests.exceptions.HTTPError as e:
-            logger.info(f"[DATA] API Error for {ticker}: {e}")
+            logger.warning(f"[DATA] API Error for {ticker}: {e}")
             return []
         except Exception as e:
-            logger.info(f"[DATA] Unexpected error for {ticker}: {e}")
+            logger.warning(f"[DATA] Unexpected error for {ticker}: {e}")
             return []
 
     # =============================================================
@@ -309,8 +310,8 @@ class DataManager:
         from_ts = int((today_midnight - timedelta(days=30)).timestamp())
         to_ts   = int((today_midnight - timedelta(seconds=1)).timestamp())
 
-        print(f"\n[DATA] Startup backfill: {len(tickers)} tickers | "
-              f"30 days history -> yesterday (WebSocket handles today's bars)")
+        logger.info(f"[DATA] Startup backfill: {len(tickers)} tickers | "
+                    f"30 days history -> yesterday (WebSocket handles today's bars)")
 
         for idx, ticker in enumerate(tickers, 1):
             try:
@@ -318,15 +319,15 @@ class DataManager:
                 if bars:
                     self.store_bars(ticker, bars)
                     self.materialize_5m_bars(ticker)
-                    print(f"[DATA] [{idx}/{len(tickers)}] {ticker}: "
-                          f"{len(bars)} historical bars stored")
+                    logger.info(f"[DATA] [{idx}/{len(tickers)}] {ticker}: "
+                                f"{len(bars)} historical bars stored")
                 else:
-                    print(f"[DATA] [{idx}/{len(tickers)}] {ticker}: "
-                          f"no historical bars returned")
+                    logger.info(f"[DATA] [{idx}/{len(tickers)}] {ticker}: "
+                                f"no historical bars returned")
             except Exception as e:
-                logger.info(f"[DATA] [{idx}/{len(tickers)}] {ticker} backfill error: {e}")
+                logger.warning(f"[DATA] [{idx}/{len(tickers)}] {ticker} backfill error: {e}")
 
-        logger.info("[DATA] Startup backfill complete — WebSocket feed handles today's bars\n")
+        logger.info("[DATA] Startup backfill complete — WebSocket feed handles today's bars")
 
     def startup_intraday_backfill_today(self, tickers: List[str]):
         """
@@ -338,8 +339,8 @@ class DataManager:
         from_ts  = int(from_dt.replace(tzinfo=ET).timestamp())
         to_ts    = int(now_et.timestamp())
 
-        print(f"[DATA] Today's REST backfill: {len(tickers)} tickers | "
-              f"04:00 ET -> {now_et.strftime('%H:%M ET')} (best-effort, WS is primary)")
+        logger.info(f"[DATA] Today's REST backfill: {len(tickers)} tickers | "
+                    f"04:00 ET -> {now_et.strftime('%H:%M ET')} (best-effort, WS is primary)")
 
         filled = 0
         for ticker in tickers:
@@ -351,12 +352,12 @@ class DataManager:
                     self.materialize_5m_bars(ticker)
                     filled += 1
             except Exception as e:
-                logger.info(f"[DATA] Today REST backfill error for {ticker}: {e}")
+                logger.warning(f"[DATA] Today REST backfill error for {ticker}: {e}")
 
         if filled:
-            logger.info(f"[DATA] Today REST backfill complete: {filled}/{len(tickers)} tickers\n")
+            logger.info(f"[DATA] Today REST backfill complete: {filled}/{len(tickers)} tickers")
         else:
-            logger.info(f"[DATA] Today REST backfill: no same-day data from EODHD — WS-only session\n")
+            logger.info(f"[DATA] Today REST backfill: no same-day data from EODHD — WS-only session")
 
     # =============================================================
     # CACHE-AWARE STARTUP & SYNC
@@ -381,7 +382,7 @@ class DataManager:
         now_et = datetime.now(ET)
         timeframe = '1m'
 
-        logger.info(f"\n[CACHE] Smart startup backfill: {len(tickers)} tickers | {days} days")
+        logger.info(f"[CACHE] Smart startup backfill: {len(tickers)} tickers | {days} days")
 
         cache_hits = 0
         cache_misses = 0
@@ -405,10 +406,6 @@ class DataManager:
                         self.materialize_5m_bars(ticker)
                         total_cached_bars += len(cached_bars)
 
-                        # FIX 15.C-2: Use _to_aware_et() — the previous inline
-                        # `.replace(tzinfo=ET if last_cached.tzinfo is None else None)`
-                        # was inverted: tz-aware datetimes had tzinfo stripped to None,
-                        # then TypeError fired subtracting naive from tz-aware now_et.
                         age_minutes = (
                             now_et - _to_aware_et(last_cached)
                         ).total_seconds() / 60
@@ -424,14 +421,14 @@ class DataManager:
                                 self.materialize_5m_bars(ticker)
                                 total_api_bars += len(new_bars)
                                 gap_fills += 1
-                                print(f"[CACHE] [{idx}/{len(tickers)}] {ticker}: "
-                                      f"{len(cached_bars)} from cache + {len(new_bars)} new bars")
+                                logger.info(f"[CACHE] [{idx}/{len(tickers)}] {ticker}: "
+                                            f"{len(cached_bars)} from cache + {len(new_bars)} new bars")
                             else:
-                                print(f"[CACHE] [{idx}/{len(tickers)}] {ticker}: "
-                                      f"{len(cached_bars)} bars from cache (up-to-date)")
+                                logger.info(f"[CACHE] [{idx}/{len(tickers)}] {ticker}: "
+                                            f"{len(cached_bars)} bars from cache (up-to-date)")
                         else:
-                            print(f"[CACHE] [{idx}/{len(tickers)}] {ticker}: "
-                                  f"{len(cached_bars)} bars from cache (fresh)")
+                            logger.info(f"[CACHE] [{idx}/{len(tickers)}] {ticker}: "
+                                        f"{len(cached_bars)} bars from cache (fresh)")
 
                         cache_hits += 1
                         continue
@@ -448,15 +445,15 @@ class DataManager:
                     self.store_bars(ticker, bars, quiet=True)
                     self.materialize_5m_bars(ticker)
                     total_api_bars += len(bars)
-                    print(f"[CACHE] [{idx}/{len(tickers)}] {ticker}: "
-                          f"{len(bars)} bars fetched and cached")
+                    logger.info(f"[CACHE] [{idx}/{len(tickers)}] {ticker}: "
+                                f"{len(bars)} bars fetched and cached")
                 else:
                     logger.info(f"[CACHE] [{idx}/{len(tickers)}] {ticker}: no data returned")
 
             except Exception as e:
-                logger.info(f"[CACHE] [{idx}/{len(tickers)}] {ticker} error: {e}")
+                logger.warning(f"[CACHE] [{idx}/{len(tickers)}] {ticker} error: {e}")
 
-        logger.info(f"\n[CACHE] Startup complete!")
+        logger.info(f"[CACHE] Startup complete!")
         logger.info(f"[CACHE] Stats:")
         logger.info(f"[CACHE]   - Cache hits: {cache_hits}/{len(tickers)} ({cache_hits/len(tickers)*100:.1f}%)")
         logger.info(f"[CACHE]   - Cache misses: {cache_misses}")
@@ -483,16 +480,13 @@ class DataManager:
                 from app.data.candle_cache import candle_cache
                 candle_cache.cache_candles(ticker, '1m', bars, quiet=True)
             except Exception as e:
-                logger.info(f"[CACHE] Auto-cache failed for {ticker}: {e}")
+                logger.warning(f"[CACHE] Auto-cache failed for {ticker}: {e}")
 
         return result
 
     def background_cache_sync(self, tickers: List[str]):
         """
         Hourly background task to sync cache with latest data.
-
-        Run this every 60 minutes to keep cache fresh without
-        impacting real-time scanning performance.
         """
         from app.data.candle_cache import candle_cache
 
@@ -514,7 +508,6 @@ class DataManager:
                 if isinstance(last_cached, str):
                     last_cached = datetime.fromisoformat(last_cached)
 
-                # FIX 15.C-2: same inverted-TZ bug as startup_backfill_with_cache()
                 age_minutes = (
                     now_et - _to_aware_et(last_cached)
                 ).total_seconds() / 60
@@ -529,7 +522,7 @@ class DataManager:
                         synced += 1
 
             except Exception as e:
-                logger.info(f"[CACHE] Background sync error for {ticker}: {e}")
+                logger.warning(f"[CACHE] Background sync error for {ticker}: {e}")
 
         if synced > 0:
             logger.info(f"[CACHE] Background sync complete: {synced}/{len(tickers)} updated")
@@ -556,9 +549,9 @@ class DataManager:
                 else:
                     logger.info(f"[CACHE] [{idx}/{len(tickers)}] {ticker}: no data")
             except Exception as e:
-                logger.info(f"[CACHE] [{idx}/{len(tickers)}] {ticker} error: {e}")
+                logger.warning(f"[CACHE] [{idx}/{len(tickers)}] {ticker} error: {e}")
 
-        logger.info(f"[CACHE] Warmup complete!\n")
+        logger.info(f"[CACHE] Warmup complete!")
 
     # =============================================================
     # INCREMENTAL UPDATE
@@ -660,8 +653,8 @@ class DataManager:
                                (ticker, latest_bar_dt, len(bars)))
                 conn.commit()
                 if not quiet:
-                    print(f"[DATA] Stored {len(bars)} bars for {ticker} "
-                          f"(latest: {latest_bar_dt.strftime('%m/%d %H:%M')} ET)")
+                    logger.info(f"[DATA] Stored {len(bars)} bars for {ticker} "
+                                f"(latest: {latest_bar_dt.strftime('%m/%d %H:%M')} ET)")
                 return len(bars)
             except Exception as e:
                 if conn:
@@ -669,15 +662,15 @@ class DataManager:
                         conn.rollback()
                     except Exception:
                         pass
-                print(f"[DATA] Store attempt {attempt+1}/{max_retries} "
-                      f"failed for {ticker}: {e}")
+                logger.warning(f"[DATA] Store attempt {attempt+1}/{max_retries} "
+                               f"failed for {ticker}: {e}")
                 if attempt < max_retries - 1:
                     time.sleep(1)
             finally:
                 if conn:
                     return_conn(conn)
 
-        logger.info(f"[DATA] All {max_retries} store attempts failed for {ticker}")
+        logger.warning(f"[DATA] All {max_retries} store attempts failed for {ticker}")
         return 0
 
     def materialize_5m_bars(self, ticker: str):
@@ -723,7 +716,7 @@ class DataManager:
             cursor.executemany(upsert_bar_5m_sql(), data)
             conn.commit()
         except Exception as e:
-            logger.info(f"[DATA] 5m materialization error for {ticker}: {e}")
+            logger.warning(f"[DATA] 5m materialization error for {ticker}: {e}")
             if conn:
                 try:
                     conn.rollback()
@@ -883,7 +876,7 @@ class DataManager:
                 "volume": int(bar["volume"])
             }
         except Exception as e:
-            logger.info(f"[DATA] Error fetching daily OHLC for {ticker} on {target_date}: {e}")
+            logger.warning(f"[DATA] Error fetching daily OHLC for {ticker} on {target_date}: {e}")
             return None
 
     def get_previous_day_ohlc(self, ticker: str, as_of_date=None) -> Optional[Dict]:
@@ -966,12 +959,12 @@ class DataManager:
 
             ws_count = len(result) - len([t for t in tickers_needing_api if t in result])
             api_count = len([t for t in tickers_needing_api if t in result])
-            print(f"[LIVE] Bulk snapshot: {len(result)}/{len(tickers)} tickers "
-                  f"(WS: {ws_count}, API: {api_count})")
+            logger.info(f"[LIVE] Bulk snapshot: {len(result)}/{len(tickers)} tickers "
+                        f"(WS: {ws_count}, API: {api_count})")
             return result
 
         except Exception as e:
-            logger.info(f"[LIVE] Bulk snapshot error: {e}")
+            logger.warning(f"[LIVE] Bulk snapshot error: {e}")
             return result
 
     # =============================================================
@@ -1111,7 +1104,7 @@ class DataManager:
             return None
 
         except Exception as e:
-            logger.info(f"[DATA-MGR] VIX fetch error: {e}")
+            logger.warning(f"[DATA-MGR] VIX fetch error: {e}")
             return None
 
 
