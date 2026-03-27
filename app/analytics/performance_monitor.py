@@ -23,6 +23,11 @@ FIX #44 (Mar 27 2026): Hardcoded risk constants (_MAX_DAILY_LOSS_PCT,
   _MAX_DRAWDOWN_PCT, _MAX_CONSECUTIVE_LOSS) documented with a dedicated
   config block. No logic or values changed — maintainability improvement
   so tuning location is obvious without searching the file.
+FIX BUG-ML-6 (Mar 27 2026 — Session 11): _consecutive_losses counter
+  was declared and documented but never incremented. record_trade_outcome()
+  now increments on loss and resets on win. _check_risk_alerts() now
+  fires a Discord alert when streak >= _MAX_CONSECUTIVE_LOSS.
+  Previously this risk control was completely silent in production.
 """
 
 from datetime import datetime, timedelta
@@ -53,13 +58,12 @@ _alert_cycle_counter = 0
 #   _MAX_DRAWDOWN_PCT     : Discord alert when peak-to-trough drawdown
 #                           exceeds this value. Currently 4.0%.
 #   _MAX_CONSECUTIVE_LOSS : Discord alert after this many consecutive losses.
-#                           Currently 3. NOTE: counter is declared but
-#                           consecutive-loss logic is not yet wired into
-#                           _check_risk_alerts() — future enhancement.
+#                           Currently 3. Counter is live — wired in
+#                           record_trade_outcome() and _check_risk_alerts().
 # ─────────────────────────────────────────────────────────────────────────────
 _MAX_DAILY_LOSS_PCT    = -3.0   # stop signaling if daily P&L < -3%
 _MAX_DRAWDOWN_PCT      = 4.0    # alert if drawdown exceeds 4%
-_MAX_CONSECUTIVE_LOSS  = 3      # alert after 3 losses in a row (not yet wired)
+_MAX_CONSECUTIVE_LOSS  = 3      # alert after 3 losses in a row
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Session state
@@ -125,10 +129,13 @@ def record_signal_rejected():
     _session['signals_rejected'] += 1
 
 def record_trade_outcome(pnl_pct: float):
+    global _consecutive_losses
     if pnl_pct >= 0:
         _session['wins'] += 1
+        _consecutive_losses = 0   # FIX BUG-ML-6: reset streak on win
     else:
         _session['losses'] += 1
+        _consecutive_losses += 1  # FIX BUG-ML-6: increment streak on loss
     _session['total_pnl_pct'] += pnl_pct
     if _session['total_pnl_pct'] > _session['peak_pnl_pct']:
         _session['peak_pnl_pct'] = _session['total_pnl_pct']
@@ -180,7 +187,6 @@ def _print_dashboard():
     total_closed = _session['wins'] + _session['losses']
     win_rate = (_session['wins'] / total_closed * 100) if total_closed > 0 else 0.0
     now_str = datetime.now(_ET).strftime('%H:%M ET')
-    # FIX 49.A-5: was print() — use logger.info for Railway log stream
     logger.info(
         f"[PERF-MONITOR] \U0001f4ca {now_str} | "
         f"Generated:{_session['signals_generated']} "
@@ -199,17 +205,25 @@ def _print_dashboard():
 # ─────────────────────────────────────────────────────────────────────────────
 def _check_risk_alerts(send_fn) -> bool:
     """Returns True if a halt condition is active."""
-    global _consecutive_losses
     alerts = []
+    halt = False
 
     if _session['total_pnl_pct'] < _MAX_DAILY_LOSS_PCT:
         alerts.append(
             f"\U0001f6a8 DAILY LOSS LIMIT: P&L={_session['total_pnl_pct']:+.2f}% < {_MAX_DAILY_LOSS_PCT}%"
         )
+        halt = True
 
     if _session['max_drawdown_pct'] >= _MAX_DRAWDOWN_PCT:
         alerts.append(
             f"\u26a0\ufe0f MAX DRAWDOWN: {_session['max_drawdown_pct']:.2f}% >= {_MAX_DRAWDOWN_PCT}%"
+        )
+
+    # FIX BUG-ML-6: consecutive loss alert now fires (was declared but never checked)
+    if _consecutive_losses >= _MAX_CONSECUTIVE_LOSS:
+        alerts.append(
+            f"\U0001f534 CONSECUTIVE LOSSES: {_consecutive_losses} in a row "
+            f"(limit={_MAX_CONSECUTIVE_LOSS}) — review before next entry"
         )
 
     for alert in alerts:
@@ -221,7 +235,7 @@ def _check_risk_alerts(send_fn) -> bool:
             except Exception:
                 pass
 
-    return _session['total_pnl_pct'] < _MAX_DAILY_LOSS_PCT
+    return halt
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -247,6 +261,7 @@ class PerformanceMonitor:
             **_session,
             'win_rate_pct': win_rate,
             'total_closed': total_closed,
+            'consecutive_losses': _consecutive_losses,
         }
 
     def print_eod_report(self) -> None:
@@ -254,6 +269,8 @@ class PerformanceMonitor:
         _persist_snapshot()
 
     def reset_daily_stats(self) -> None:
+        global _consecutive_losses
+        _consecutive_losses = 0
         _session.update({
             'signals_generated': 0, 'signals_armed': 0, 'signals_rejected': 0,
             'wins': 0, 'losses': 0, 'total_pnl_pct': 0.0,
