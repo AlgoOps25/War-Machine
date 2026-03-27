@@ -98,7 +98,7 @@ class CandleCache:
                 ON cache_metadata(cache_status, last_cache_time)
             """)
             conn.commit()
-            logger.info("[CACHE] ✅ Candle cache tables initialized")
+            logger.info("[CACHE] \u2705 Candle cache tables initialized")
         finally:
             if conn:
                 return_conn(conn)
@@ -167,8 +167,10 @@ class CandleCache:
             conn.commit()
             last_bar = max(b["datetime"] for b in bars)
             if not quiet:
-                print(f"[CACHE] Stored {len(bars)} {timeframe} bars for {ticker} "
-                      f"(latest: {last_bar.strftime('%m/%d %H:%M ET')})")
+                logger.info(
+                    f"[CACHE] Stored {len(bars)} {timeframe} bars for {ticker} "
+                    f"(latest: {last_bar.strftime('%m/%d %H:%M ET')})"
+                )
             return len(bars)
         except Exception as e:
             if conn:
@@ -287,8 +289,10 @@ class CandleCache:
                 "close":  bucket[-1]["close"],
                 "volume": sum(b["volume"] for b in bucket)
             })
-        print(f"[CACHE] Aggregated {len(source_bars)} {source_tf} -> "
-              f"{len(agg_bars)} {target_tf} bars for {ticker}")
+        logger.info(
+            f"[CACHE] Aggregated {len(source_bars)} {source_tf} -> "
+            f"{len(agg_bars)} {target_tf} bars for {ticker}"
+        )
         return agg_bars
 
     # =============================================================
@@ -316,8 +320,10 @@ class CandleCache:
             """)
             orphans = cursor.rowcount
             conn.commit()
-            print(f"[CLEANUP] Removed {deleted} candle cache bars older than {days_to_keep} days"
-                  + (f" | {orphans} orphaned metadata rows pruned" if orphans > 0 else ""))
+            logger.info(
+                f"[CLEANUP] Removed {deleted} candle cache bars older than {days_to_keep} days"
+                + (f" | {orphans} orphaned metadata rows pruned" if orphans > 0 else "")
+            )
             return deleted
         finally:
             if conn:
