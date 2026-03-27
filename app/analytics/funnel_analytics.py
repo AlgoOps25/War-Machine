@@ -21,6 +21,12 @@ Usage:
   # Get daily report
   report = funnel_tracker.get_daily_report()
   logger.info(report)
+
+FIX #42 (Mar 27 2026): _initialize_database() finally block was calling
+  return_conn(conn) without a None guard. If get_conn() itself raised,
+  conn would still be None and return_conn(None) would fire a second
+  exception masking the original. Fixed to `if conn: return_conn(conn)` —
+  consistent with the defensive pattern used across the entire repo.
 """
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -84,7 +90,9 @@ class FunnelTracker:
         except Exception as e:
             logger.info(f"[FUNNEL] Init error: {e}")
         finally:
-            return_conn(conn)
+            # FIX #42: guard against conn=None if get_conn() itself raised
+            if conn:
+                return_conn(conn)
     
     def _get_session(self) -> str:
         """Get current session date."""
