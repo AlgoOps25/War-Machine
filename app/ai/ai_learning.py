@@ -8,6 +8,9 @@ FIXED (Mar 16 2026): Extended _GRADE_BASE to all 9 grades (A+/A/A-/B+/B/B-/C+/C/
                      Fixed bare 'import db_connection' -> 'from app.data import db_connection'.
 FIXED (Mar 26 2026): record_trade() print() → logger.info() (Issue #37).
                      save_data() last_update timestamp naive → ZoneInfo ET (Issue #38).
+FIXED (Mar 27 2026): get_options_flow_weight() imported options_dm from options_data_manager
+                     (wrong module — dead import, always fell back to 1.0 with no effect).
+                     Now correctly imports from options_intelligence (Issue #39 part 1).
 """
 
 import json
@@ -340,28 +343,30 @@ class AILearningEngine:
 
         win_rate = perf["wins"] / perf["count"]
 
-        if win_rate >= 0.75:
-            return 1.10
-        elif win_rate >= 0.65:
-            return 1.05
-        elif win_rate >= 0.55:
-            return 1.0
-        elif win_rate >= 0.45:
-            return 0.95
-        else:
-            return 0.90
+        if win_rate >= 0.75:   return 1.10
+        elif win_rate >= 0.65: return 1.05
+        elif win_rate >= 0.55: return 1.0
+        elif win_rate >= 0.45: return 0.95
+        else:                  return 0.90
 
     def get_options_flow_weight(self, ticker: str) -> float:
         """
-        Get options flow confidence weight from options_data_manager.
+        Get options flow confidence weight from options_intelligence.
         Returns a multiplier in range [0.7, 1.3] based on options score.
 
+        FIX #39 part 1 (Mar 27 2026): Previously imported options_dm from
+        options_data_manager (the old EODHD strike selector — wrong module).
+        That class has no get_options_score() so every call raised ImportError
+        or AttributeError, was silently caught, and always returned 1.0.
+        Now correctly imports from options_intelligence where options_dm is
+        the backward-compat alias for OptionsIntelligence.
+
         Returns:
-            1.0 if options_data_manager unavailable (neutral, no penalty)
+            1.0 if options_intelligence unavailable (neutral, no penalty)
             0.7-1.3 based on options score (0-100 scale)
         """
         try:
-            from app.options.options_data_manager import options_dm
+            from app.options.options_intelligence import options_dm
             score_data = options_dm.get_options_score(ticker)
 
             if not score_data.get('tradeable'):
