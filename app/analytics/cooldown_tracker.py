@@ -27,6 +27,11 @@ FIX 43.M-12 (Mar 19 2026): expires_at uses datetime.now(timezone.utc)
   Both are TZ-aware and psycopg2 handles either correctly, but UTC is the
   explicit convention that matches how Postgres stores/returns TIMESTAMPTZ,
   eliminating any ambiguity.
+
+FIX #43 (Mar 27 2026): stray print() in print_cooldown_summary() row loop
+  replaced with logger.info(). All header/footer lines already used
+  logger.info(); the per-ticker data row was the only bare print() remaining.
+  On Railway, stdout prints bypass the logging pipeline (no timestamp/level).
 """
 
 from datetime import datetime, timedelta, timezone
@@ -42,7 +47,7 @@ _cooldowns_loaded = False
 _cooldown_cache: Dict[str, Dict] = {}
 
 
-# ── DB helpers ────────────────────────────────────────────────────────────────
+# ── DB helpers ─────────────────────────────────────────────────────────────────────────────
 
 def _ensure_cooldown_table():
     from app.data.db_connection import get_conn, return_conn
@@ -166,7 +171,7 @@ def _load_cooldowns_from_db() -> Dict[str, Dict]:
                 "expires_at":  raw_exp,
             }
         if loaded:
-            logger.info(f"[COOLDOWN-DB] 📄 Reloaded {len(loaded)} cooldown(s): {', '.join(loaded.keys())}")
+            logger.info(f"[COOLDOWN-DB] 📔 Reloaded {len(loaded)} cooldown(s): {', '.join(loaded.keys())}")
         return loaded
     except Exception as e:
         logger.info(f"[COOLDOWN-DB] Load error: {e}")
@@ -185,7 +190,7 @@ def _maybe_load_cooldowns():
     _cooldown_cache.update(_load_cooldowns_from_db())
 
 
-# ── Public API ────────────────────────────────────────────────────────────────
+# ── Public API ────────────────────────────────────────────────────────────────────────────
 
 def is_on_cooldown(ticker: str, direction: str) -> tuple[bool, Optional[str]]:
     _maybe_load_cooldowns()
@@ -282,14 +287,15 @@ def print_cooldown_summary():
     logger.info("-"*80)
     for ticker, d in sorted(active.items(), key=lambda x: x[1]['expires_at']):
         exp_et = d['expires_at'].astimezone(ZoneInfo("America/New_York"))
-        print(
+        # FIX #43: was bare print() — all other lines in this function use logger.info()
+        logger.info(
             f"{ticker:<8} {d['direction']:<10} {d['signal_type']:<16} "
             f"{exp_et.strftime('%I:%M %p ET'):<17} {d['minutes_remaining']}m"
         )
     logger.info("="*80 + "\n")
 
 
-# ── Legacy class shim ─────────────────────────────────────────────────────────
+# ── Legacy class shim ───────────────────────────────────────────────────────────────────────
 
 class CooldownTracker:
     def __init__(self, cooldown_minutes: int = 15):
