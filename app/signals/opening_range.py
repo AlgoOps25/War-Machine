@@ -54,6 +54,12 @@ PHASE B1 BUG FIX (MAR 17, 2026):
                   to guard against future tick/timestamp corruption in price fields.
            Same ET-coercion fix applied to _extract_or_bars() and _extract_session_bars()
            for consistency (those paths were less affected due to earlier window times).
+
+MAR 27, 2026:
+  - All print() calls replaced with logger.info() / logger.debug().
+    Affected: classify_secondary_range() (5 sites), clear_cache() (1),
+    _classify_from_bars() (1), detect_fvg_after_break() (4).
+    No logic changes.
 """
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime, time, timedelta
@@ -209,14 +215,14 @@ class OpeningRangeDetector:
             logger.info(f"[OR] {ticker} DYNAMIC cache expired — re-evaluating with accumulated bars")
             del self.or_cache[ticker]
 
-        # ── Get today's session bars ──────────────────────────────────
+        # ── Get today's session bars ─────────────────────────────────────────────
         bars_1m = data_manager.get_today_session_bars(ticker)
 
         if not bars_1m:
             logger.info(f"[OR] {ticker} - No session bars available")
             return None
 
-        # ── Try to extract the real 9:30-9:40 OR first ───────────────────
+        # ── Try to extract the real 9:30-9:40 OR first ───────────────────────────────
         or_bars = self._extract_or_bars(bars_1m)
 
         if or_bars:
@@ -225,7 +231,7 @@ class OpeningRangeDetector:
             return self._classify_from_bars(ticker, or_bars, classification_label=None,
                                             current_time=current_time)
 
-        # ── Fallback: mid-session restart, OR was missed ──────────────
+        # ── Fallback: mid-session restart, OR was missed ──────────────────────────
         logger.info(f"[OR] {ticker} - OR window missed (mid-session restart) — using DYNAMIC session range")
         session_bars = self._extract_session_bars(bars_1m)
 
@@ -320,13 +326,13 @@ class OpeningRangeDetector:
         sr_bars = self._extract_secondary_bars(bars_1m)
 
         if len(sr_bars) < config.SECONDARY_RANGE_MIN_BARS:
-            print(
+            logger.info(
                 f"[OR-SR] {ticker} — only {len(sr_bars)} bars in 10:00-10:30 "
                 f"(need {config.SECONDARY_RANGE_MIN_BARS}) — skipping secondary range"
             )
             return None
 
-        # ── Price sanity clamp (Phase B1 Bug Fix #6) ─────────────────
+        # ── Price sanity clamp (Phase B1 Bug Fix #6) ────────────────────────────────
         # Estimate a reference price from the median close of valid bars,
         # then discard any bar whose high exceeds reference * SR_PRICE_SANITY_MULT.
         # This catches timestamp-leaked-into-price corruption (e.g. $1336 for TSEM).
@@ -340,14 +346,14 @@ class OpeningRangeDetector:
             ]
             discarded = len(sr_bars) - len(sane_bars)
             if discarded > 0:
-                print(
+                logger.debug(
                     f"[OR-SR] {ticker} ⚠️  Discarded {discarded} bar(s) with "
                     f"corrupted price (ref=${ref_price:.2f}, mult={SR_PRICE_SANITY_MULT}x)"
                 )
             sr_bars = sane_bars
 
         if len(sr_bars) < config.SECONDARY_RANGE_MIN_BARS:
-            print(
+            logger.info(
                 f"[OR-SR] {ticker} — only {len(sr_bars)} sane bars after price clamp "
                 f"(need {config.SECONDARY_RANGE_MIN_BARS}) — skipping secondary range"
             )
@@ -359,7 +365,7 @@ class OpeningRangeDetector:
         sr_range_pct = (sr_range / sr_low) * 100 if sr_low > 0 else 0
 
         if (sr_range / sr_low) < config.SECONDARY_RANGE_MIN_PCT:
-            print(
+            logger.info(
                 f"[OR-SR] {ticker} — secondary range {sr_range_pct:.2f}% "
                 f"< min {config.SECONDARY_RANGE_MIN_PCT*100:.1f}% — too tight, skipping"
             )
@@ -395,7 +401,7 @@ class OpeningRangeDetector:
             "SECONDARY_WIDE":   "\u26a0\ufe0f",
         }
         emoji = emoji_map.get(classification, "\u2705")
-        print(
+        logger.info(
             f"[OR-SR] {ticker} {emoji} {classification} | "
             f"Range: ${sr_range:.3f} ({sr_range_pct:.2f}%) | "
             f"ATR Ratio: {sr_range_atr:.2f}x | Bars: {len(sr_bars)} | "
@@ -511,7 +517,7 @@ class OpeningRangeDetector:
         self.or_cache.clear()
         self.alerts_sent.clear()
         self.sr_cache.clear()
-        print(
+        logger.info(
             f"[OR] Session cache cleared "
             f"({or_count} OR entries, {sr_count} secondary entries, {alert_count} alerts reset)"
         )
@@ -652,13 +658,15 @@ class OpeningRangeDetector:
         # Cache it
         self.or_cache[ticker] = result
 
-        # Log
+        # Log the result
         emoji_map = {'TIGHT': '\U0001f3af', 'WIDE': '\u26a0\ufe0f',
                      'DYNAMIC': '\U0001f504', 'NORMAL': '\u2705'}
         emoji = emoji_map.get(classification, '\u2705')
-        print(f"[OR] {ticker} {emoji} {classification} | "
-              f"Range: ${or_range:.2f} ({or_range_pct:.2f}%) | "
-              f"ATR Ratio: {or_range_atr:.2f}x | Bars: {len(bars)}")
+        logger.info(
+            f"[OR] {ticker} {emoji} {classification} | "
+            f"Range: ${or_range:.2f} ({or_range_pct:.2f}%) | "
+            f"ATR Ratio: {or_range_atr:.2f}x | Bars: {len(bars)}"
+        )
 
         if classification == 'TIGHT':
             logger.info(f"[OR]   \U0001f680 Expansion breakout likely — scanning every {scan_frequency}s")
@@ -850,7 +858,7 @@ def detect_breakout_after_or(bars, or_high, or_low):
         bt = _bar_time(bar)
         if bt is None or bt < time(9, 45):
             continue
-        if bt >= time(11, 0):          # ← add this hard ceiling
+        if bt >= time(11, 0):
             break
         if bar["close"] > or_high * (1 + config.ORB_BREAK_THRESHOLD):
             logger.info(f"[BREAKOUT] BULL idx {i} ${bar['close']:.2f}")
@@ -889,12 +897,12 @@ def detect_fvg_after_break(bars, breakout_idx, direction, soft_fvg_pct=None):
             gap = c2["low"] - c0["high"]
             c1_body = abs(c1["close"] - c1["open"])
             if gap > 0 and (gap / c0["high"]) >= min_pct:
-                print(f"[FVG] BULL hard ${c0['high']:.2f}—${c2['low']:.2f}")
+                logger.debug(f"[FVG] BULL hard ${c0['high']:.2f}—${c2['low']:.2f}")
                 return c0["high"], c2["low"]
             if gap < 0 and abs(gap) / c0["high"] <= soft_fvg_pct:
                 if c1_body > 0 and abs(gap) > c1_body * 0.4:
                     continue
-                print(f"[FVG] BULL soft ${c2['low']:.2f}—${c0['high']:.2f} (gap={gap:.4f})")
+                logger.debug(f"[FVG] BULL soft ${c2['low']:.2f}—${c0['high']:.2f} (gap={gap:.4f})")
                 return c2["low"], c0["high"]
 
         elif direction == "bear":
@@ -903,12 +911,12 @@ def detect_fvg_after_break(bars, breakout_idx, direction, soft_fvg_pct=None):
             gap = c0["low"] - c2["high"]
             c1_body = abs(c1["close"] - c1["open"])
             if gap > 0 and (gap / c0["low"]) >= min_pct:
-                print(f"[FVG] BEAR hard ${c2['high']:.2f}—${c0['low']:.2f}")
+                logger.debug(f"[FVG] BEAR hard ${c2['high']:.2f}—${c0['low']:.2f}")
                 return c2["high"], c0["low"]
             if gap < 0 and abs(gap) / c0["low"] <= soft_fvg_pct:
                 if c1_body > 0 and abs(gap) > c1_body * 0.4:
                     continue
-                print(f"[FVG] BEAR soft ${c0['low']:.2f}—${c2['high']:.2f} (gap={gap:.4f})")
+                logger.debug(f"[FVG] BEAR soft ${c0['low']:.2f}—${c2['high']:.2f} (gap={gap:.4f})")
                 return c0["low"], c2["high"]
 
     return None, None
