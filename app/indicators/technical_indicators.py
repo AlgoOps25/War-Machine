@@ -2,7 +2,7 @@
 Technical Indicators Module - EODHD API Integration
 
 Fetches pre-calculated technical indicators from EODHD API.
-Includes aggressive caching to minimize API calls (each indicator = 5 API credits).
+Includes aggressive caching to minimise API calls (each indicator = 5 API credits).
 
 Supported Indicators:
   - ADX  - trend strength (>25 trending, >40 strong)
@@ -14,7 +14,7 @@ Supported Indicators:
   - SAR  - Parabolic SAR trailing stops
   - STOCH- Stochastic oscillator + crossover detection
   - RSI  - Relative Strength Index (>70 overbought, <30 oversold)
-  - RSI DIVERGENCE - Bearish/Bullish divergence detection [NEW]
+  - RSI DIVERGENCE - Bearish/Bullish divergence detection
   - EMA  - Exponential Moving Average (50, 200 period filters)
 
 Cache Strategy:
@@ -29,13 +29,18 @@ Fine-Tuning Notes:
   - EMA 50/200 added as macro trend filter layer
   - MACD crossover detects momentum shifts vs raw MACD value
   - Stochastic crossover detects precise K/D inflection points
-  - RVOL (relative volume) added: today volume vs same time yesterday
+  - RVOL (relative volume) — see volume_indicators.check_rvol()
   - RSI divergence warns of exhaustion before reversal
 
 M6 FIX (Mar 10 2026): Added _ensure_oldest_first() defensive sort guard.
   Raw bar lists from data_manager have no guaranteed sort order.
-  check_rsi_divergence() and check_rvol() now normalise to oldest-first
-  before any index-based high/low or volume lookups.
+  check_rsi_divergence() now normalises to oldest-first before any
+  index-based high/low lookups.
+
+Phase 1 (Mar 26 2026):
+  - check_rvol() body moved to volume_indicators.py (it is a volume metric).
+    A backwards-compatible shim remains here so all existing callers continue
+    to work without any import changes.
 
 MOVED: app/analytics/technical_indicators.py → app/indicators/technical_indicators.py
 """
@@ -73,12 +78,12 @@ def _ensure_oldest_first(bars: list) -> list:
     elif 'date' in sample:
         key = 'date'
     else:
-        return bars  # no sortable key — return unchanged
+        return bars
 
     try:
         return sorted(bars, key=lambda b: b[key])
     except Exception:
-        return bars  # sorting failed — return unchanged
+        return bars
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -306,16 +311,16 @@ def batch_fetch_indicators(
     """
     results = {}
     indicator_map = {
-        'adx': fetch_adx,
-        'bbands': fetch_bbands,
-        'avgvol': fetch_avgvol,
-        'cci': fetch_cci,
-        'dmi': fetch_dmi,
-        'macd': fetch_macd,
-        'sar': fetch_sar,
+        'adx':        fetch_adx,
+        'bbands':     fetch_bbands,
+        'avgvol':     fetch_avgvol,
+        'cci':        fetch_cci,
+        'dmi':        fetch_dmi,
+        'macd':       fetch_macd,
+        'sar':        fetch_sar,
         'stochastic': fetch_stochastic,
-        'rsi': fetch_rsi,
-        'ema': fetch_ema,
+        'rsi':        fetch_rsi,
+        'ema':        fetch_ema,
     }
 
     for ticker in tickers:
@@ -420,7 +425,7 @@ def get_trend_direction(ticker: str) -> Optional[str]:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# NEW ANALYSIS HELPERS – RSI, EMA, MACD crossover, Stochastic crossover, RVOL
+# NEW ANALYSIS HELPERS – RSI, EMA, MACD crossover, Stochastic crossover
 # ══════════════════════════════════════════════════════════════════════════════
 
 def check_rsi_zone(
@@ -484,10 +489,9 @@ def check_rsi_divergence(
 
     Types:
       - Bearish Divergence: Price makes higher high, RSI makes lower high
-        → Warns of uptrend exhaustion, favor SELL signals
-      
+        → Warns of uptrend exhaustion, favour SELL signals
       - Bullish Divergence: Price makes lower low, RSI makes higher low
-        → Warns of downtrend exhaustion, favor BUY signals
+        → Warns of downtrend exhaustion, favour BUY signals
 
     Args:
         ticker: Stock symbol
@@ -497,7 +501,7 @@ def check_rsi_divergence(
     Returns:
         (divergence_result, details_dict)
         divergence_result: 'BEARISH_DIV' | 'BULLISH_DIV' | 'NO_DIV' | None
-        
+
         This is a SOFT signal (warning), not a hard filter.
         Use to BOOST counter-trend signals or WARN on exhausted trends.
 
@@ -526,14 +530,12 @@ def check_rsi_divergence(
 
         recent_bars = bars[-lookback_bars:]
 
-        # Extract prices and RSI values
         prices     = [b['close'] for b in recent_bars]
         rsi_values = [r.get('rsi') for r in recent_rsi if r.get('rsi') is not None]
 
         if len(prices) != len(rsi_values) or len(prices) < lookback_bars:
             return None, None
 
-        # Find price highs/lows and RSI highs/lows
         price_high_idx = prices.index(max(prices))
         price_low_idx  = prices.index(min(prices))
         rsi_high_idx   = rsi_values.index(max(rsi_values))
@@ -548,7 +550,6 @@ def check_rsi_divergence(
         }
 
         # BEARISH DIVERGENCE: Price higher high, RSI lower high
-        # In oldest-first order: higher index = more recent
         if price_high_idx > rsi_high_idx:
             if prices[price_high_idx] > prices[rsi_high_idx]:
                 if rsi_values[price_high_idx] < rsi_values[rsi_high_idx]:
@@ -640,7 +641,6 @@ def check_macd_crossover(
     if not macd_data or len(macd_data) < lookback + 1:
         return None, None
 
-    # Newest first (index 0 = latest)
     recent  = macd_data[:lookback]
     prev    = macd_data[lookback]
 
@@ -740,69 +740,36 @@ def check_stochastic_crossover(
     return result, details
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# RVOL  (Phase 1 shim — body lives in volume_indicators.py)
+# ══════════════════════════════════════════════════════════════════════════════
+
 def check_rvol(
     ticker: str,
     bars_today: list,
     min_rvol: float = 1.2
 ) -> Tuple[Optional[float], bool]:
     """
-    Calculate Relative Volume (RVOL) – today's volume vs same time yesterday.
+    Relative Volume (RVOL) – today's volume vs same-time yesterday.
 
-    RVOL > 1.0 = more active than usual at this time of day
-    RVOL > 1.5 = significantly elevated (institutional interest)
-    RVOL > 2.0 = exceptional (news/catalyst likely)
+    RVOL > 1.0  = more active than usual at this time of day
+    RVOL > 1.5  = significantly elevated (institutional interest)
+    RVOL > 2.0  = exceptional (news / catalyst likely)
+
+    Backwards-compatible shim: delegates to volume_indicators.check_rvol().
+    The canonical implementation moved to volume_indicators.py in Phase 1
+    (Mar 26 2026) because RVOL is a volume metric, not an EODHD API fetch.
 
     Args:
-        ticker: Stock symbol
+        ticker:     Stock symbol
         bars_today: Today's bars (from data_manager)
-        min_rvol: Minimum RVOL to flag as elevated (default 1.2)
+        min_rvol:   Minimum RVOL to flag as elevated (default 1.2)
 
     Returns:
         (rvol_value, is_elevated)
-
-    M6: Both bars_today and bars_yesterday are normalised to oldest-first
-    before taking cumulative volume so the comparison uses the same number
-    of bars from the START of each session regardless of how data_manager
-    returns them.
     """
-    if not bars_today:
-        return None, False
-
-    try:
-        from app.data.data_manager import data_manager
-        from datetime import datetime, timedelta
-        from zoneinfo import ZoneInfo
-
-        et = ZoneInfo("America/New_York")
-        yesterday = (datetime.now(et) - timedelta(days=1)).strftime('%Y-%m-%d')
-
-        bars_yesterday = data_manager.get_bars_for_date(ticker, yesterday)
-        if not bars_yesterday:
-            return None, False
-
-        # M6: sort both lists oldest-first before comparing
-        sorted_today     = _ensure_oldest_first(bars_today)
-        sorted_yesterday = _ensure_oldest_first(bars_yesterday)
-
-        n = len(sorted_today)
-        bars_yesterday_same = sorted_yesterday[:n]
-
-        if not bars_yesterday_same:
-            return None, False
-
-        vol_today     = sum(b.get('volume', 0) for b in sorted_today)
-        vol_yesterday = sum(b.get('volume', 0) for b in bars_yesterday_same)
-
-        if vol_yesterday == 0:
-            return None, False
-
-        rvol        = vol_today / vol_yesterday
-        is_elevated = rvol >= min_rvol
-
-        return round(rvol, 2), is_elevated
-
-    except Exception:
-        return None, False
+    from app.indicators.volume_indicators import check_rvol as _check_rvol
+    return _check_rvol(ticker, bars_today, min_rvol)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
