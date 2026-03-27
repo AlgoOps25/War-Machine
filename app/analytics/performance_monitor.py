@@ -19,6 +19,10 @@ Used via:
 
 FIX 49.A-5 (Mar 26 2026): print() in _print_dashboard() replaced with
   logger.info() for Railway log stream consistency (#49).
+FIX #44 (Mar 27 2026): Hardcoded risk constants (_MAX_DAILY_LOSS_PCT,
+  _MAX_DRAWDOWN_PCT, _MAX_CONSECUTIVE_LOSS) documented with a dedicated
+  config block. No logic or values changed — maintainability improvement
+  so tuning location is obvious without searching the file.
 """
 
 from datetime import datetime, timedelta
@@ -38,6 +42,26 @@ _dashboard_cycle_counter = 0
 _alert_cycle_counter = 0
 
 # ─────────────────────────────────────────────────────────────────────────────
+# ⚠️  RISK CONSTANTS — single place to tune risk appetite
+#
+# These are intentionally hardcoded (not env-var overridable) so that
+# risk limits cannot be accidentally widened via a Railway config change.
+# To adjust thresholds, edit this block and redeploy.
+#
+#   _MAX_DAILY_LOSS_PCT   : halt all new signals when daily P&L drops below
+#                           this value. Currently -3.0% of account.
+#   _MAX_DRAWDOWN_PCT     : Discord alert when peak-to-trough drawdown
+#                           exceeds this value. Currently 4.0%.
+#   _MAX_CONSECUTIVE_LOSS : Discord alert after this many consecutive losses.
+#                           Currently 3. NOTE: counter is declared but
+#                           consecutive-loss logic is not yet wired into
+#                           _check_risk_alerts() — future enhancement.
+# ─────────────────────────────────────────────────────────────────────────────
+_MAX_DAILY_LOSS_PCT    = -3.0   # stop signaling if daily P&L < -3%
+_MAX_DRAWDOWN_PCT      = 4.0    # alert if drawdown exceeds 4%
+_MAX_CONSECUTIVE_LOSS  = 3      # alert after 3 losses in a row (not yet wired)
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Session state
 # ─────────────────────────────────────────────────────────────────────────────
 _session: Dict = {
@@ -52,6 +76,7 @@ _session: Dict = {
     'last_dashboard_ts': None,
     'risk_alerts_fired': 0,
 }
+_consecutive_losses = 0
 
 # ─────────────────────────────────────────────────────────────────────────────
 # DB bootstrap
@@ -172,11 +197,6 @@ def _print_dashboard():
 # ─────────────────────────────────────────────────────────────────────────────
 # Risk alert checks
 # ─────────────────────────────────────────────────────────────────────────────
-_MAX_DAILY_LOSS_PCT    = -3.0   # stop signaling if daily P&L < -3%
-_MAX_DRAWDOWN_PCT      = 4.0    # alert if drawdown exceeds 4%
-_MAX_CONSECUTIVE_LOSS  = 3      # alert after 3 losses in a row
-_consecutive_losses    = 0
-
 def _check_risk_alerts(send_fn) -> bool:
     """Returns True if a halt condition is active."""
     global _consecutive_losses
