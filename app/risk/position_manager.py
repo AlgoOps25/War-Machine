@@ -177,7 +177,7 @@ class PositionManager:
             ]
             if self.positions:
                 tickers = ", ".join(p["ticker"] for p in self.positions)
-                print(f"[RISK] \U0001f504 Reloaded {len(self.positions)} open position(s) "
+                logger.info(f"[RISK] \U0001f504 Reloaded {len(self.positions)} open position(s) "
                       f"from DB after restart: {tickers}")
             else:
                 logger.info("[RISK] \u2705 No open positions to reload \u2014 clean session start")
@@ -187,7 +187,7 @@ class PositionManager:
             if closed_trades:
                 self._update_performance_streak(closed_trades)
 
-            print(f"[RISK] Session loaded | Balance: ${self.account_size:,.0f} | "
+            logger.info(f"[RISK] Session loaded | Balance: ${self.account_size:,.0f} | "
                   f"P&L: ${total_pnl:+.0f} | Streak: {self._format_streak()}")
 
         except Exception as e:
@@ -479,7 +479,7 @@ class PositionManager:
             logger.info(f"[POSITION] \u26a0\ufe0f  Found {len(stale)} stale position(s) \u2014 force closing before session")
             for pos in stale:
                 pos = dict(pos)
-                print(f"[POSITION] Force closing {pos['ticker']} {pos['direction'].upper()} "
+                logger.info(f"[POSITION] Force closing {pos['ticker']} {pos['direction'].upper()} "
                       f"(ID: {pos['id']}) entered @ ${pos['entry_price']:.2f} \u2014 STALE EOD")
                 self.close_position(pos["id"], pos["entry_price"], "STALE_EOD")
         finally:
@@ -517,7 +517,7 @@ class PositionManager:
 
         if abs(vix_mult - 1.0) >= 0.10:
             direction = "reduced" if vix_mult < 1.0 else "increased"
-            print(f"[VIX] Sizing {direction}: {risk_pct*100:.1f}% base \u2192 "
+            logger.info(f"[VIX] Sizing {direction}: {risk_pct*100:.1f}% base \u2192 "
                   f"{adjusted_risk_pct*100:.1f}% adjusted ({vix_mult:.2f}\u00d7)")
 
         position_risk = account_size * adjusted_risk_pct
@@ -648,9 +648,9 @@ class PositionManager:
 
             sector = self._get_ticker_sector(ticker) or "UNKNOWN"
             logger.info(f"[POSITION] Opened {ticker} {direction.upper()} - ID {position_id}")
-            print(f"  Entry: {entry_price:.2f}  Stop: {stop_price:.2f}  "
+            logger.info(f"  Entry: {entry_price:.2f}  Stop: {stop_price:.2f}  "
                   f"T1: {t1:.2f}  T2: {t2:.2f}  R:R: {risk_reward:.2f}:1")
-            print(f"  Contracts: {contracts}  Grade: {grade}  "
+            logger.info(f"  Contracts: {contracts}  Grade: {grade}  "
                   f"Confidence: {confidence:.1%}  Risk: ${risk_dollars:.0f} "
                   f"({sizing['risk_percentage']:.1f}%)  "
                   f"Perf: x{sizing['performance_adj']:.2f}  VIX: x{sizing['vix_mult']:.2f}")
