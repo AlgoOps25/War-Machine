@@ -165,7 +165,7 @@ def wait_for_confirmation(
             from app.data.data_manager import data_manager
             bars = data_manager.get_today_5m_bars(ticker)
         except Exception as e:
-            logger.info(f"[CFW6] Error fetching bars: {e}")
+            logger.warning(f"[CFW6] Error fetching bars: {e}")
             time.sleep(60)
             candles_waited += 1
             continue
@@ -207,7 +207,7 @@ def wait_for_confirmation(
                 if grade != "reject":
                     entry_price = bar["close"]
                     candle_time = bar.get("datetime", "N/A")
-                    print(
+                    logger.info(
                         f"[CFW6] CONFIRMED: {grade} setup at ${entry_price:.2f} "
                         f"(cycle {candles_waited}, {candle_time})"
                     )
