@@ -74,7 +74,7 @@ class MLSignalScorerV2:
             return
         if self._try_load_booster_model():
             return
-        logger.info("[ML-SCORER-V2] No trained model found — heuristic fallback active")
+        logger.warning("[ML-SCORER-V2] No trained model found — heuristic fallback active")
 
     def _try_load_hist_model(self) -> bool:
         """Load ml_model.joblib (HistGradientBoosting + Platt)."""
