@@ -57,7 +57,6 @@ class BreakoutDetector:
                  volume_multiplier: float = 2.0,
                  atr_period: int = 14,
                  atr_stop_multiplier: float = 1.5,
-                 risk_reward_ratio: float = 2.0,
                  t1_reward_ratio: float = 1.5,
                  t2_reward_ratio: float = 2.5,
                  min_candle_body_pct: float = 0.4,
