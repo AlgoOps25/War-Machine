@@ -224,7 +224,7 @@ def get_vix_regime() -> Dict:
 
 def clear_cache():
     """Clear VIX cache (useful for testing)."""
-    global _cached_vix, _cached_timestamp, _cached_regime
+    global _cached_vix, _cached_timestamp
     with _cache_lock:
         _cached_vix       = None
         _cached_timestamp = None
