@@ -1,7 +1,7 @@
 # War Machine — Full Repo Audit Registry
 
 > **Purpose:** Master reference for the file-by-file audit of all tracked files.  
-> **Last updated:** 2026-03-30 Session 14 — position_manager.py pulled, BUG-PM-1/2/3 pre-logged  
+> **Last updated:** 2026-03-30 Session 14 — position_manager.py ✅ CLEAN, sniper_pipeline.py pulled  
 > **Auditor:** Perplexity AI (interactive audit with Michael)  
 > **Status legend:** ✅ KEEP | ⚠️ REVIEW | 🔀 MERGE → target | 🗃️ QUARANTINE | ❌ DELETE | 🔧 FIXED | 📦 MOVED  
 > **Prohibited (runtime-critical) directories:** `app/core`, `app/data`, `app/risk`, `app/signals`, `app/validation`, `app/filters`, `app/mtf`, `app/notifications`, `utils/`, `migrations/`  
@@ -28,7 +28,7 @@
 | **Session 11** | **app/ml line-by-line deep audit — BUG-ML-1/2/6 fixed** | **3 fixes + 1 new file** | **✅ Complete 2026-03-27** |
 | **Session 12** | **app/mtf line-by-line deep audit — BUG-MTF-1/2/3 fixed** | **3 fixes across 2 files** | **✅ Complete 2026-03-27** |
 | **Session 13** | **app/core/sniper.py + scanner.py deep audit — 2 confirmed fixes, 3 already-clean** | **2 new items confirmed** | **✅ Complete 2026-03-29** |
-| **Session 14** | **app/risk deep audit — risk_manager.py ✅, position_manager.py 🔍 IN AUDIT, sniper_pipeline.py ⏳** | **1 fix so far** | **⏳ In progress 2026-03-30** |
+| **Session 14** | **app/risk deep audit — risk_manager.py ✅, position_manager.py ✅ CLEAN, sniper_pipeline.py 🔍 IN AUDIT** | **1 fix (BUG-RISK-1)** | **⏳ In progress 2026-03-30** |
 
 ---
 
@@ -77,6 +77,7 @@
 | 39 | 2026-03-30 | S14-pre | `s16_trade.txt` | ❌ DELETED root staging file — confirmed duplicate of live `app/risk/trade_calculator.py`. | `09f25f8` | Root cleaned |
 | 40 | 2026-03-30 | S14-pre | `s16_vix.txt` | ❌ DELETED root staging file — confirmed duplicate of live `app/risk/vix_sizing.py`. | `72abc33` | Root cleaned |
 | 41 | 2026-03-30 | S14 | `app/risk/risk_manager.py` | 🔧 FIXED BUG-RISK-1: `_reject()` refactored — removed redundant `compute_stop_and_targets()` call on every early-gate rejection. Now accepts optional pre-computed `stop/t1/t2` kwargs (default 0.0). Gates 1–8 short-circuit with zeros; Gate 10 (R:R) passes in already-computed values. Eliminated wasted ATR math on kill switch / circuit breaker / position count rejections. | `5f651ff` | Perf + correctness |
+| 42 | 2026-03-30 | S14 | `app/risk/position_manager.py` | ✅ AUDIT COMPLETE — no new bugs found. BUG-PM-1/2/3 confirmed fixed in file. Post-close circuit breaker block confirmed informational-only by design (live check fires on next `can_open_position()` call). All DB calls use `get_conn()`/`return_conn()`, caches busted on every write, FIX #4/7/8/9/12/13 all confirmed present and correct. | live | No changes needed |
 
 ---
 
@@ -100,21 +101,32 @@
 | 27 | ✅ DONE | `app/core/sniper.py` | S13 full audit complete | ✅ |
 | 28 | ✅ DONE | `app/core/scanner.py` | S13 full audit complete | ✅ |
 | 29 | ✅ DONE | `app/risk/risk_manager.py` | S14 full audit complete — BUG-RISK-1 fixed (`5f651ff`) | ✅ Closed 2026-03-30 |
-| 30 | 🔴 HIGH | `app/risk/position_manager.py` | Full line-by-line deep audit — **FILE PULLED, AUDIT IN PROGRESS** | 🔍 Active — Session 14 |
-| 31 | 🟡 MEDIUM | `app/core/sniper_pipeline.py` | Full line-by-line deep audit (extracted pipeline) | ⏳ Open — Session 14 |
+| 30 | ✅ DONE | `app/risk/position_manager.py` | S14 full audit complete — no new bugs. BUG-PM-1/2/3 confirmed fixed. | ✅ Closed 2026-03-30 |
+| 31 | 🔴 HIGH | `app/core/sniper_pipeline.py` | Full line-by-line deep audit — **FILE PULLED, AUDIT IN PROGRESS** | 🔍 Active — Session 14 |
 | 38–40 | ✅ DONE | `s16_helpers.txt`, `s16_trade.txt`, `s16_vix.txt` | Deleted — staging duplicates of live `app/risk/` files. | ✅ Closed 2026-03-30 |
 
 ---
 
-## position_manager.py — Pre-Audit Findings (S14, 2026-03-30)
+## position_manager.py — Audit Results (S14, 2026-03-30)
 
-> File pulled. The module docstring already documents 3 fixes applied earlier today (BUG-PM-1/2/3). Logging these here before the full line-by-line audit begins.
+> Full line-by-line audit complete. No new bugs found.
 
-| Bug ID | Location | Finding | Status |
-|--------|----------|---------|--------|
-| BUG-PM-1 | `generate_report()` | Used stale `self.account_size` (startup only) for max drawdown % — always showed 0.00% after any trade. Fixed: now uses `current_balance = session_starting_balance + total_pnl` (mirrors `get_risk_summary()`). | 🔧 Already fixed in file |
-| BUG-PM-2 | `position_helpers.py` | `_date_col()` and `_date_eq_today()` produce identical SQL at runtime. Docstring clarification added to prevent future confusion. | 🔧 Already fixed in file |
-| BUG-PM-3 | `calculate_position_size()` | Odd contract count silently bumped to next even number with no log output. Added `logger.info()` when bump fires. | 🔧 Already fixed in file |
+| Check | Result |
+|-------|--------|
+| BUG-PM-1 `generate_report()` drawdown math | ✅ Fixed — uses `current_balance = session_starting_balance + total_pnl` |
+| BUG-PM-2 `_date_col()` / `_date_eq_today()` docstring | ✅ Fixed — clarification note present |
+| BUG-PM-3 odd contract bump logging | ✅ Fixed — `logger.info()` fires when bump fires |
+| FIX #4 `_write_completed_at()` in `close_position()` | ✅ Confirmed |
+| FIX #7 f-string backslash pre-compute | ✅ Confirmed |
+| FIX #8 real session P&L for circuit breaker post-close | ✅ Confirmed |
+| FIX #9 DB re-read of `t1_hit` after `_scale_out()` | ✅ Confirmed |
+| FIX #12 RTH import path | ✅ Confirmed |
+| FIX #13 `_date_col()` for range query in `get_win_rate()` | ✅ Confirmed |
+| All DB calls use `get_conn()`/`return_conn()` in `finally` | ✅ Confirmed |
+| Cache busted on every write (open/close/scale) | ✅ Confirmed |
+| Post-close circuit breaker block informational-only | ✅ By design — live check fires on next `can_open_position()` |
+| C1 Fix: positions re-hydrated from DB on restart | ✅ Confirmed |
+| M5 Fix: EOD streak reset in `close_all_eod()` | ✅ Confirmed |
 
 ---
 
@@ -132,7 +144,7 @@
 | `__main__.py` | 177 B | Railway entrypoint shim | Railway start | ✅ KEEP | |
 | `scanner.py` | 42 KB | Main scan loop | Entrypoint | ✅ KEEP | **PROHIBITED** — 🔧 FIXED S10. ✅ S13 AUDIT COMPLETE — no bugs. `clear_bos_alerts()` wired at EOD. All dead functions absent. |
 | `sniper.py` | 72 KB | Signal detection engine | `scanner.py` | ✅ KEEP | **PROHIBITED** — ✅ S13 AUDIT COMPLETE — `clear_bos_alerts()` API confirmed. `_orb_classifications` dead block absent. All 3 scan paths clean. |
-| `sniper_pipeline.py` | ~TBD | Signal pipeline (extracted) | `sniper.py` | ✅ KEEP | **PROHIBITED** — Deep audit pending S14 |
+| `sniper_pipeline.py` | ~TBD | Signal pipeline (extracted) | `sniper.py` | ✅ KEEP | **PROHIBITED** — 🔍 S14 AUDIT IN PROGRESS |
 | `arm_signal.py` | 7 KB | Signal arming | `sniper.py` | ✅ KEEP | `record_trade_executed()` wired S4 |
 | `armed_signal_store.py` | 8 KB | Armed signal store | `sniper.py`, `scanner.py` | ✅ KEEP | |
 | `watch_signal_store.py` | 7.6 KB | Pre-armed signal store | `sniper.py`, `scanner.py` | ✅ KEEP | |
@@ -159,7 +171,7 @@
 | `__init__.py` | — | Package marker | ✅ KEEP | |
 | `dynamic_thresholds.py` | — | Adaptive confidence floor per signal type + grade | ✅ KEEP | **PROHIBITED** |
 | `position_helpers.py` | — | Shared sizing helpers | ✅ KEEP | **PROHIBITED** — BUG-PM-2 docstring clarification applied |
-| `position_manager.py` | ~24 KB | Sizing, circuit breaker, P&L tracking, DB writes | ✅ KEEP | **PROHIBITED** — 🔍 S14 AUDIT IN PROGRESS. BUG-PM-1/2/3 already fixed in file. |
+| `position_manager.py` | ~24 KB | Sizing, circuit breaker, P&L tracking, DB writes | ✅ KEEP | **PROHIBITED** — ✅ S14 AUDIT COMPLETE. No new bugs. BUG-PM-1/2/3 confirmed fixed. All DB/cache patterns correct. |
 | `risk_manager.py` | ~14 KB | Unified risk orchestration — single entry point | ✅ KEEP | **PROHIBITED** — ✅ S14 AUDIT COMPLETE. 🔧 FIXED BUG-RISK-1 (`5f651ff`). Gate chain clean. Kill switch live-read correct. DB stats fetched once. |
 | `trade_calculator.py` | — | ATR-based stops, targets, confidence decay | ✅ KEEP | **PROHIBITED** |
 | `vix_sizing.py` | — | VIX regime multiplier | ✅ KEEP | **PROHIBITED** |
