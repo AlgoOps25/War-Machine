@@ -191,7 +191,7 @@ class PositionManager:
                   f"P&L: ${total_pnl:+.0f} | Streak: {self._format_streak()}")
 
         except Exception as e:
-            logger.info(f"[RISK] Session state load error: {e}")
+            logger.warning(f"[RISK] Session state load error: {e}")
 
     def _update_performance_streak(self, trades: List[Dict]) -> None:
         """Update consecutive win/loss streak for dynamic sizing."""
@@ -405,7 +405,7 @@ class PositionManager:
             return streak >= max_consecutive_losses
 
         except Exception as e:
-            logger.info(f"[POSITION] Loss-streak check error: {e}")
+            logger.warning(f"[POSITION] Loss-streak check error: {e}")
             return False
         finally:
             if conn:
@@ -644,7 +644,7 @@ class PositionManager:
                         position_id=position_id
                     )
                 except Exception as e:
-                    logger.info(f"[POSITION] Signal tracking error: {e}")
+                    logger.warning(f"[POSITION] Signal tracking error: {e}")
 
             sector = self._get_ticker_sector(ticker) or "UNKNOWN"
             logger.info(f"[POSITION] Opened {ticker} {direction.upper()} - ID {position_id}")
@@ -726,7 +726,7 @@ class PositionManager:
             row = cursor.fetchone()
             return bool(row["t1_hit"]) if row else False
         except Exception as e:
-            logger.info(f"[POSITION] _get_t1_hit_from_db error (non-fatal): {e}")
+            logger.warning(f"[POSITION] _get_t1_hit_from_db error (non-fatal): {e}")
             return False
         finally:
             if conn:
@@ -784,7 +784,7 @@ class PositionManager:
                 send_scaling_alert(ticker, exit_price, contracts_to_close,
                                    contracts_left, partial_pnl, entry_price)
             except Exception as e:
-                logger.info(f"[POSITION] Discord scale alert failed: {e}")
+                logger.warning(f"[POSITION] Discord scale alert failed: {e}")
         finally:
             if conn:
                 return_conn(conn)
@@ -856,13 +856,13 @@ class PositionManager:
                         "timeframe": "5m"
                     })
                 except Exception as e:
-                    logger.info(f"[POSITION] AI record error: {e}")
+                    logger.warning(f"[POSITION] AI record error: {e}")
 
             try:
                 from app.notifications.discord_helpers import send_exit_alert
                 send_exit_alert(ticker, exit_price, exit_reason, final_pnl)
             except Exception as e:
-                logger.info(f"[POSITION] Discord exit alert failed: {e}")
+                logger.warning(f"[POSITION] Discord exit alert failed: {e}")
 
             # FIX #8: use real session P&L from DB (cache already busted above)
             session_stats = self.get_daily_stats()
