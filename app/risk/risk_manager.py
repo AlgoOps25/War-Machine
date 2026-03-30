@@ -75,11 +75,17 @@ def evaluate_signal(
       3. Max drawdown from intraday high water mark
       4. Position count ceiling
       5. Duplicate ticker check
-      6. Confidence decay (penalise delayed confirmations)
-      7. Dynamic confidence threshold (time-of-day + VIX + win-rate + ATR adjusted)
-      8. VIX regime hard block (crisis mode — VIX > 40 blocks new trades)
-      9. Stop/target calculation — rejects if stop is None (tight tape guard)
-     10. R:R validation
+      6. Dead zone / time-of-day block (11:30–14:00 ET quiet window)
+      7. Confidence decay (penalise delayed confirmations)
+      8. Dynamic confidence threshold (time-of-day + VIX + win-rate + ATR adjusted)
+      9. VIX regime hard block (crisis mode — VIX > 40 blocks new trades)
+     10. Stop/target calculation — rejects if stop is None (tight tape guard)
+     11. R:R validation
+
+    BUG-RISK-2 fix (2026-03-30): Gate 6 (dead zone) was executing AFTER Gate 7
+    (confidence decay / VWAP threshold), meaning dead-zone signals were wasting
+    CPU on decay math and DB threshold lookups before being blocked.  Moved dead
+    zone check to Gate 6 so it short-circuits before any heavy computation.
 
     Args:
         ticker:         Stock symbol
@@ -131,10 +137,17 @@ def evaluate_signal(
         if pos["ticker"] == ticker:
             return _reject(f"Position already open for {ticker}", confidence)
 
-    # ── 6. Confidence decay ─────────────────────────────────────────────────
+    # ── 6. Dead zone / time-of-day block ─────────────────────────────────────
+    # BUG-RISK-2 fix (2026-03-30): was Gate 7 (after confidence decay).
+    # Moved here so we bail before any heavy decay/threshold/DB computation.
+    allowed, dz_reason = position_manager.is_trading_allowed()
+    if not allowed:
+        return _reject(dz_reason, confidence)
+
+    # ── 7. Confidence decay ─────────────────────────────────────────────────
     decayed_confidence = apply_confidence_decay(confidence, candles_waited)
 
-    # ── 7. Dynamic confidence threshold (FIX #26: pass bars + ticker for ATR bucket) ─
+    # ── 8. Dynamic confidence threshold (FIX #26: pass bars + ticker for ATR bucket) ─
     threshold = get_dynamic_threshold(signal_type, grade, bars_session=bars, ticker=ticker)
     if decayed_confidence < threshold:
         return _reject(
@@ -143,7 +156,7 @@ def evaluate_signal(
             decayed_confidence,
         )
 
-    # ── 8. VIX crisis block ────────────────────────────────────────────────
+    # ── 9. VIX crisis block ────────────────────────────────────────────────
     vix_regime = get_vix_regime()
     if vix_regime["regime"] == "crisis":
         return _reject(
@@ -152,7 +165,7 @@ def evaluate_signal(
             vix_regime=vix_regime,
         )
 
-    # ── 9. Stop/target calculation ─────────────────────────────────────────────
+    # ── 10. Stop/target calculation ─────────────────────────────────────────────
     # FIX P0 (2026-03-25): compute_stop_and_targets() returns (None, None, None) when
     # calculate_stop_loss_by_grade() fires the 10.C-4 guard (stop >= entry on bull, or
     # stop <= entry on bear).  This happens on A+ signals during tight high-vol tape.
@@ -166,7 +179,7 @@ def evaluate_signal(
             vix_regime=vix_regime,
         )
 
-    # ── 10. R:R validation ─────────────────────────────────────────────────
+    # ── 11. R:R validation ─────────────────────────────────────────────────
     rr_valid, rr_ratio = position_manager.validate_risk_reward(entry_price, stop, t2)
     if not rr_valid:
         return _reject(
@@ -207,9 +220,9 @@ def _reject(
 
     BUG-RISK-1 fix (2026-03-30): signature changed from accepting raw bar/price
     args and recomputing stop internally, to accepting pre-computed stop/t1/t2
-    as optional kwargs (defaulting to 0.0).  Early-gate rejections (Gates 1–8)
+    as optional kwargs (defaulting to 0.0).  Early-gate rejections (Gates 1–9)
     never compute stop at all — they short-circuit here with zeros.  Late-gate
-    rejections (Gate 10 R:R failure) pass in the already-computed values.
+    rejections (Gate 11 R:R failure) pass in the already-computed values.
     This eliminates the redundant ATR/stop calc on every early rejection.
     """
     logger.info(f"[RISK] REJECTED — {reason}")
