@@ -60,8 +60,6 @@ VIX_FALLBACK         = 20.0
 _cache_lock       = threading.Lock()
 _cached_vix:      Optional[float]    = None
 _cached_timestamp: Optional[datetime] = None
-_cached_regime:   Optional[Dict]     = None
-
 
 # ── Market-hours helper ───────────────────────────────────────────────────────
 
@@ -140,10 +138,9 @@ def _fetch_vix_from_eodhd() -> Optional[float]:
         if _is_market_hours_now():
             logger.info(f"[VIX] Fetched VIX={vix_level:.2f} (field='{source_field}')")
         else:
-            logger.debug.getLogger(__name__).debug(
+            logger.debug(
                 f"[VIX] After-hours fetch: VIX={vix_level:.2f} (field='{source_field}')"
             )
-
         return vix_level
 
     except requests.exceptions.RequestException as exc:
@@ -231,8 +228,6 @@ def clear_cache():
     with _cache_lock:
         _cached_vix       = None
         _cached_timestamp = None
-        _cached_regime    = None
-
 
 # ── Diagnostic ───────────────────────────────────────────────────────────────
 
