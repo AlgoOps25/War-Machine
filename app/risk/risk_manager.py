@@ -28,7 +28,7 @@ from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-# ── Internal risk modules ───────────────────────────────────────────────────
+# ── Internal risk modules ─────────────────────────────────────────────
 from app.risk.position_manager import position_manager
 from app.risk.trade_calculator import (
     compute_stop_and_targets,
@@ -41,7 +41,7 @@ from app.risk.vix_sizing import get_vix_regime, get_vix_multiplier
 from app.risk.dynamic_thresholds import get_dynamic_threshold, get_threshold_stats
 from utils import config as _cfg
 
-# ── Kill switch ───────────────────────────────────────────────────────────────
+# ── Kill switch ────────────────────────────────────────────────────────────────────
 # Live-read on every evaluate_signal() call — toggleable via Railway env var
 # without a redeploy (no module-level constant).
 
@@ -105,39 +105,33 @@ def evaluate_signal(
           threshold  (float)  — Dynamic confidence threshold used
     """
 
-    # ── 1. Kill switch (live re-read — P1 fix 2026-03-25) ──────────────────────────
+    # ── 1. Kill switch (live re-read — P1 fix 2026-03-25) ──────────────────────
     if _kill_switch_live():
-        return _reject("KILL SWITCH active — no new positions", confidence, entry_price, or_high, or_low, bars, direction, grade)
+        return _reject("KILL SWITCH active — no new positions", confidence)
 
     # ── 2 & 3: Fetch stats once; pass into both circuit-breaker and drawdown ─
     stats = position_manager.get_daily_stats()
 
     breached, reason = position_manager.check_circuit_breaker(stats=stats)
     if breached:
-        return _reject(reason, confidence, entry_price, or_high, or_low, bars, direction, grade)
+        return _reject(reason, confidence)
 
     breached, reason = position_manager.check_max_drawdown(stats=stats)
     if breached:
-        return _reject(reason, confidence, entry_price, or_high, or_low, bars, direction, grade)
+        return _reject(reason, confidence)
 
-    # ── 4. Position count ────────────────────────────────────────────────────────────
+    # ── 4. Position count ───────────────────────────────────────────────────
     open_positions = position_manager.get_open_positions()
     max_pos = getattr(_cfg, "MAX_OPEN_POSITIONS", 5)
     if len(open_positions) >= max_pos:
-        return _reject(
-            f"Max open positions reached ({max_pos})",
-            confidence, entry_price, or_high, or_low, bars, direction, grade,
-        )
+        return _reject(f"Max open positions reached ({max_pos})", confidence)
 
-    # ── 5. Duplicate ticker check ────────────────────────────────────────────────────
+    # ── 5. Duplicate ticker check ────────────────────────────────────────────
     for pos in open_positions:
         if pos["ticker"] == ticker:
-            return _reject(
-                f"Position already open for {ticker}",
-                confidence, entry_price, or_high, or_low, bars, direction, grade,
-            )
+            return _reject(f"Position already open for {ticker}", confidence)
 
-    # ── 6. Confidence decay ───────────────────────────────────────────────────────────
+    # ── 6. Confidence decay ─────────────────────────────────────────────────
     decayed_confidence = apply_confidence_decay(confidence, candles_waited)
 
     # ── 7. Dynamic confidence threshold (FIX #26: pass bars + ticker for ATR bucket) ─
@@ -146,19 +140,19 @@ def evaluate_signal(
         return _reject(
             f"Confidence {decayed_confidence:.2f} below dynamic threshold {threshold:.2f} "
             f"({signal_type}/{grade})",
-            decayed_confidence, entry_price, or_high, or_low, bars, direction, grade,
+            decayed_confidence,
         )
 
-    # ── 8. VIX crisis block ──────────────────────────────────────────────────────────
+    # ── 8. VIX crisis block ────────────────────────────────────────────────
     vix_regime = get_vix_regime()
     if vix_regime["regime"] == "crisis":
         return _reject(
             f"VIX CRISIS MODE ({vix_regime['vix']:.1f}) — all new positions blocked",
-            decayed_confidence, entry_price, or_high, or_low, bars, direction, grade,
+            decayed_confidence,
             vix_regime=vix_regime,
         )
 
-    # ── 9. Stop/target calculation ────────────────────────────────────────────────────
+    # ── 9. Stop/target calculation ─────────────────────────────────────────────
     # FIX P0 (2026-03-25): compute_stop_and_targets() returns (None, None, None) when
     # calculate_stop_loss_by_grade() fires the 10.C-4 guard (stop >= entry on bull, or
     # stop <= entry on bear).  This happens on A+ signals during tight high-vol tape.
@@ -168,16 +162,17 @@ def evaluate_signal(
     if stop is None:
         return _reject(
             f"Invalid stop computed (stop >= entry) — tight tape {grade} signal rejected",
-            decayed_confidence, entry_price, or_high, or_low, bars, direction, grade,
+            decayed_confidence,
             vix_regime=vix_regime,
         )
 
-    # ── 10. R:R validation ───────────────────────────────────────────────────────────
+    # ── 10. R:R validation ─────────────────────────────────────────────────
     rr_valid, rr_ratio = position_manager.validate_risk_reward(entry_price, stop, t2)
     if not rr_valid:
         return _reject(
             f"R:R {rr_ratio:.2f} below minimum {position_manager.min_risk_reward_ratio:.2f}",
-            decayed_confidence, entry_price, or_high, or_low, bars, direction, grade,
+            decayed_confidence,
+            stop=stop, t1=t1, t2=t2,
         )
 
     logger.info(
@@ -202,23 +197,21 @@ def evaluate_signal(
 def _reject(
     reason: str,
     confidence: float,
-    entry_price: float,
-    or_high: float,
-    or_low: float,
-    bars: List[Dict],
-    direction: str,
-    grade: str,
+    stop: float = 0.0,
+    t1: float = 0.0,
+    t2: float = 0.0,
     vix_regime: Optional[Dict] = None,
 ) -> Dict:
-    """Build a standardised rejection response."""
-    stop, t1, t2 = (0.0, 0.0, 0.0)
-    try:
-        _s, _t1, _t2 = compute_stop_and_targets(bars, direction, or_high, or_low, entry_price, grade)
-        if _s is not None:
-            stop, t1, t2 = _s, _t1, _t2
-    except Exception:
-        pass
+    """
+    Build a standardised rejection response.
 
+    BUG-RISK-1 fix (2026-03-30): signature changed from accepting raw bar/price
+    args and recomputing stop internally, to accepting pre-computed stop/t1/t2
+    as optional kwargs (defaulting to 0.0).  Early-gate rejections (Gates 1–8)
+    never compute stop at all — they short-circuit here with zeros.  Late-gate
+    rejections (Gate 10 R:R failure) pass in the already-computed values.
+    This eliminates the redundant ATR/stop calc on every early rejection.
+    """
     logger.info(f"[RISK] REJECTED — {reason}")
     return {
         "approved":   False,
