@@ -1,6 +1,6 @@
 # 🧠 WAR MACHINE — CONTEXT.md
 > **This file is the single source of truth for AI sessions. Update after every commit.**
-> Last updated: 2026-03-24
+> Last updated: 2026-03-30
 
 ---
 
@@ -56,7 +56,7 @@ War-Machine/
 ## 🔧 Filter Registry (`app/filters/`)
 
 | Filter | File | Purpose |
-|--------|------|---------|
+|--------|------|---------| 
 | RTH Filter | `rth_filter.py` | Block trades outside Regular Trading Hours |
 | VWAP Gate | `vwap_gate.py` | Only enter when price is on correct side of VWAP |
 | Market Regime | `market_regime_context.py` | Bull/bear/chop detection via SPY trend |
@@ -184,7 +184,7 @@ T2_MULTIPLIER    = 3.5   # unchanged
 
 ---
 
-## 🗓️ Current Development State (as of 2026-03-24)
+## 🗓️ Current Development State (as of 2026-03-30)
 
 ### ✅ Completed
 - 90-day backtest across 51 tickers with full per-symbol summaries
@@ -195,20 +195,43 @@ T2_MULTIPLIER    = 3.5   # unchanged
 - EODHD 5m bar backfill complete
 - Grid search backtest complete (107 trades, RVOL gate validated at 1.2x)
 - Scorecard tuning: gate lowered to 60, A+ weight flattened to 15, inversion warning wired
+- **S14 Audit — `app/risk/risk_manager.py`**: BUG-RISK-1 fixed (redundant `compute_stop_and_targets` calls on gate rejections), audit complete ✅
+- **S14 Audit — `app/risk/position_manager.py`**: BUG-PM-1/2/3 confirmed fixed in file, no new bugs found, audit complete ✅
 
 ### 🔄 In Progress
+- **S14 Audit — `app/core/sniper_pipeline.py`**: File pulled, audit active 🔄
 - ML confidence scoring (`app/ml/`) — training data generation done, model training next
 - MTF bias ablation testing (need per-filter win rate tracking)
 - Dead zone boundary refinement (test 11:30 vs 12:00 cutoff)
 - Monitor Railway logs for `⚠️ CONFIDENCE-INVERSION` entries post-deploy
 
 ### 📋 Next Steps
-1. Run filter ablation: backtest with each filter toggled OFF to measure individual impact
-2. Improve regime filter — currently too permissive (1.20 PF target is 1.50+)
-3. Add per-signal R-tracking to live system for real-time filter scoring
-4. Expand high-performing ticker list (AAOI, FSLY, HYMC profiles)
-5. ML model training with generated features
-6. Next backtest cycle: check for `CONFIDENCE-INVERSION` A+ low-RVOL patterns
+1. Complete S14 audit: `sniper_pipeline.py` → `sniper.py` → `scanner.py`
+2. Run filter ablation: backtest with each filter toggled OFF to measure individual impact
+3. Improve regime filter — currently too permissive (1.20 PF target is 1.50+)
+4. Add per-signal R-tracking to live system for real-time filter scoring
+5. Expand high-performing ticker list (AAOI, FSLY, HYMC profiles)
+6. ML model training with generated features
+
+---
+
+## 🔍 S14 Audit Log
+
+| # | File | Status | Bugs Found | Notes |
+|---|------|--------|------------|-------|
+| 1 | `app/risk/risk_manager.py` | ✅ COMPLETE | BUG-RISK-1 (fixed) | Redundant compute_stop_and_targets on gate rejections removed |
+| 2 | `app/risk/position_manager.py` | ✅ COMPLETE | BUG-PM-1/2/3 (all confirmed fixed) | generate_report balance fix, scale-out remainder fix, sizing bump — all verified in file |
+| 3 | `app/core/sniper_pipeline.py` | 🔄 ACTIVE | — | Pulled 2026-03-30 |
+
+### Known Fixed Bugs (pre-audit, confirmed in files)
+| Bug ID | File | Description | Status |
+|--------|------|-------------|--------|
+| BUG-RISK-1 | `risk_manager.py` | `_reject()` called `compute_stop_and_targets` on every gate kill — now only called at Gate 10 (R:R) | ✅ Fixed |
+| BUG-PM-1 | `position_manager.py` | `generate_report()` used `self.account_size` instead of `current_balance` | ✅ Fixed |
+| BUG-PM-2 | `position_manager.py` | `_scale_out()` used integer division on odd contract counts | ✅ Fixed |
+| BUG-PM-3 | `position_manager.py` | `calculate_position_size()` bump applied before contracts floor, producing size=0 edge case | ✅ Fixed |
+| BUG-SP-1 | `sniper_pipeline.py` | TIME gate ran after RVOL fetch — wasted DB call on post-11am signals | ✅ Fixed |
+| BUG-SP-2 | `sniper_pipeline.py` | `confidence_base` from CFW6 was computed then discarded, not wired into scorecard | ✅ Fixed |
 
 ---
 
@@ -227,6 +250,8 @@ T2_MULTIPLIER    = 3.5   # unchanged
 ## 📝 Commit Log (recent)
 | Date | Commit Message | Files Changed |
 |------|---------------|---------------|
+| 2026-03-30 | `fix: risk_manager _reject() — remove redundant compute_stop_and_targets on gate kills` | `app/risk/risk_manager.py` |
+| 2026-03-30 | `docs: S14 audit — position_manager.py ✅ CLEAN, sniper_pipeline.py active` | `CONTEXT.md` |
 | 2026-03-24 | `fix: wire rvol=_signal_rvol into build_scorecard() call` | `app/core/sniper.py` |
 | 2026-03-24 | `tune: scorecard gate 60, A+ weight 15, inversion warning` | `app/core/signal_scorecard.py` |
 | 2026-03-24 | `config: RVOL_SIGNAL_GATE=1.2, T1_MULTIPLIER=2.0 from grid search` | `utils/config.py` |
