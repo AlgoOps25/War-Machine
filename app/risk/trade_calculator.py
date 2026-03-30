@@ -114,7 +114,7 @@ def get_adaptive_fvg_threshold(bars: List[Dict], ticker: str, rvol: float = None
         from app.data.intraday_atr import get_atr_for_breakout
         atr_val, atr_source = get_atr_for_breakout(bars, ticker)
     except Exception as _atr_err:
-        logger.info(f"[ADAPTIVE] {ticker} intraday ATR error (falling back): {_atr_err}")
+        logger.warning(f"[ADAPTIVE] {ticker} intraday ATR error (falling back): {_atr_err}")
 
     # Fallback: session-filtered ATR if intraday ATR returned 0
     if atr_val <= 0:
@@ -220,7 +220,7 @@ def apply_confidence_decay(base_confidence: float, candles_waited: int) -> float
     if candles_waited > 5:
         logger.info(f"[DECAY] Waited {candles_waited} candles - Confidence reduced by {decay*100:.1f}%")
         logger.info(f"  {base_confidence:.2%} -> {adjusted_confidence:.2%}")
-    return max(adjusted_confidence, 0.50)
+    return max(adjusted_confidence, config.CONFIDENCE_ABSOLUTE_FLOOR)
 
 # ============================================================================
 # STOP LOSS & TARGETS
