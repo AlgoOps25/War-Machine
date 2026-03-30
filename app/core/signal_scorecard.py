@@ -14,7 +14,7 @@
 #       logger.info(f"[{ticker}] 🚫 SCORECARD-GATE: {scorecard.score:.1f} < {SCORECARD_GATE_MIN}")
 #       return False
 #
-# SCORE BREAKDOWN (max 85 + RVOL ceiling deduction):
+# SCORE BREAKDOWN (max 95 + RVOL ceiling deduction):
 #   Grade quality          0-15   (A+ = 15, A = 13, A- = 11, B+ = 11, B = 10)
 #                          NOTE: grade weight intentionally flattened — backtest shows
 #                          B+ / B grades outperform A+ when RVOL ≥ 1.2x. Old 25pt
@@ -27,6 +27,10 @@
 #   Liquidity sweep        0-5    (detected = 5, else = 0)
 #   OB retest              0-5    (detected = 5, else = 0)
 #   SPY regime             0-5    (STRONG_BULL/BEAR aligned = 5, BULL/BEAR = 3, else = 1)
+#   CFW6 confidence base   0-10   (BUG-SP-2 fix 2026-03-30)
+#                                  confidence_base >= 0.80 = 10, >= 0.70 = 7,
+#                                  >= 0.60 = 5, >= 0.50 = 3, else = 0.
+#                                  skip_cfw6=True path uses default 0.65 → 5pts.
 #   RVOL ceiling penalty   -20    (RVOL >= config.RVOL_CEILING → deduct 20 pts)
 #                                  Enforces config.RVOL_CEILING (3.0x) at scorecard layer.
 #
@@ -47,6 +51,12 @@
 #   deducts 20pts from scorecard total — enough to push any signal below the
 #   60-pt gate. Enforces backtest finding that RVOL >= 3.0x destroys P&L
 #   (-32.23 Total R combined across 3.0–4.0x and 4.0x+ cohorts).
+#
+# BUG-SP-2 FIX (2026-03-30): cfw6_confidence_base parameter added.
+#   Previously confidence_base from grade_signal_with_confirmations() was
+#   computed in sniper_pipeline.py and immediately discarded — it never
+#   influenced the scorecard or final confidence value. Now scored 0-10pts
+#   and included in the breakdown string.
 
 from dataclasses import dataclass, field
 from typing import Optional
@@ -59,16 +69,17 @@ SCORECARD_GATE_MIN = 60   # lowered from 72 — grid search shows B-grade setups
 @dataclass
 class SignalScorecard:
     # Raw contributor scores
-    grade_score:        float = 0.0
-    ivr_score:          float = 0.0
-    gex_score:          float = 0.0
-    mtf_trend_score:    float = 0.0
-    smc_score:          float = 0.0
-    vwap_score:         float = 0.0
-    sweep_score:        float = 0.0
-    ob_score:           float = 0.0
-    regime_score:       float = 0.0
-    rvol_ceiling_score: float = 0.0   # P4: 0 normally, -20 when RVOL >= RVOL_CEILING
+    grade_score:          float = 0.0
+    ivr_score:            float = 0.0
+    gex_score:            float = 0.0
+    mtf_trend_score:      float = 0.0
+    smc_score:            float = 0.0
+    vwap_score:           float = 0.0
+    sweep_score:          float = 0.0
+    ob_score:             float = 0.0
+    regime_score:         float = 0.0
+    cfw6_score:           float = 0.0   # BUG-SP-2: CFW6 confidence_base contributor
+    rvol_ceiling_score:   float = 0.0   # P4: 0 normally, -20 when RVOL >= RVOL_CEILING
 
     # Computed total
     score: float = 0.0
@@ -90,6 +101,7 @@ class SignalScorecard:
             + self.sweep_score
             + self.ob_score
             + self.regime_score
+            + self.cfw6_score
             + self.rvol_ceiling_score
         )
         self.breakdown = (
@@ -102,6 +114,7 @@ class SignalScorecard:
             f"sweep={self.sweep_score:.0f} "
             f"ob={self.ob_score:.0f} "
             f"regime={self.regime_score:.0f} "
+            f"cfw6={self.cfw6_score:.0f} "
             f"rvol_ceil={self.rvol_ceiling_score:.0f} "
             f"= {self.score:.1f}"
         )
@@ -152,6 +165,26 @@ def _score_smc(smc_delta: Optional[float]) -> float:
     if smc_delta > 0.0:
         return 7.0
     return 3.0
+
+
+def _score_cfw6_confidence(confidence_base: Optional[float]) -> float:
+    """
+    BUG-SP-2 fix (2026-03-30): Score CFW6 confirmation quality (0-10pts).
+    confidence_base comes from grade_signal_with_confirmations() in
+    cfw6_confirmation.py. Was previously computed and discarded.
+    skip_cfw6=True path defaults confidence_base=0.65 → 5pts.
+    """
+    if confidence_base is None:
+        return 5.0  # neutral fallback — no confirmation data ≠ bad signal
+    if confidence_base >= 0.80:
+        return 10.0
+    if confidence_base >= 0.70:
+        return 7.0
+    if confidence_base >= 0.60:
+        return 5.0
+    if confidence_base >= 0.50:
+        return 3.0
+    return 0.0
 
 
 def _score_regime(spy_regime: Optional[dict], direction: str) -> float:
@@ -218,6 +251,7 @@ def build_scorecard(
     ob_detected: bool,
     spy_regime: Optional[dict],
     rvol: Optional[float] = None,
+    cfw6_confidence_base: Optional[float] = None,  # BUG-SP-2 fix
 ) -> "SignalScorecard":
     """
     Build and return a computed SignalScorecard from all pipeline contributors.
@@ -228,6 +262,10 @@ def build_scorecard(
 
     FIX P4 (2026-03-25): rvol parameter now passed to _score_rvol_ceiling() to
     enforce config.RVOL_CEILING at the scorecard layer.
+
+    BUG-SP-2 FIX (2026-03-30): cfw6_confidence_base now scored 0-10pts via
+    _score_cfw6_confidence(). Previously was computed in sniper_pipeline.py
+    and silently discarded before this function was called.
     """
     try:
         # Fire inversion warning before scoring
@@ -246,6 +284,7 @@ def build_scorecard(
             sweep_score=5.0 if sweep_detected else 0.0,
             ob_score=5.0 if ob_detected else 0.0,
             regime_score=_score_regime(spy_regime, direction),
+            cfw6_score=_score_cfw6_confidence(cfw6_confidence_base),  # BUG-SP-2
             rvol_ceiling_score=_score_rvol_ceiling(rvol),  # P4
         )
         sc.compute()
@@ -257,4 +296,3 @@ def build_scorecard(
         sc = SignalScorecard(ticker=ticker, direction=direction, grade=grade)
         sc.score = SCORECARD_GATE_MIN - 1  # 59 — fails gate, does not pass through
         return sc
-
