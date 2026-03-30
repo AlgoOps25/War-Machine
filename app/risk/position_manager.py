@@ -56,6 +56,23 @@ FIX #13 (MAR 26, 2026):
     _date_col() alias to position_helpers.py and updated this call site.
     No runtime behaviour change (the SQL fragment is identical); fixes
     misleading code that could confuse future readers or tools.
+
+BUG-PM-1 (MAR 30, 2026):
+  - generate_report() used self.account_size (set only at startup) for drawdown
+    math. After trades closed intraday self.account_size was stale, causing
+    max_dd_pct to always display 0.00%. Fixed to use live current_balance =
+    session_starting_balance + total_pnl, mirroring get_risk_summary().
+
+BUG-PM-2 (MAR 30, 2026):
+  - _date_col() and _date_eq_today() in position_helpers.py are byte-for-byte
+    identical at runtime. Added explicit clarifying note in both docstrings so
+    future maintainers are not surprised that they produce the same SQL fragment
+    despite carrying different semantic intent.
+
+BUG-PM-3 (MAR 30, 2026):
+  - calculate_position_size() silently bumped odd contract counts to the next
+    even number with no log output. Added logger.info() when the bump fires so
+    every sizing adjustment appears in session logs.
 """
 from utils import config
 from datetime import datetime, timedelta
@@ -522,7 +539,15 @@ class PositionManager:
 
         position_risk = account_size * adjusted_risk_pct
         contracts     = max(1, int(position_risk / (risk_per_share * 100)))
+
+        # BUG-PM-3 FIX: log when odd contract count is bumped to next even number
+        # so every sizing adjustment is visible in session logs. The bump ensures
+        # _scale_out() (remaining // 2) always closes exactly half the position.
         if contracts > 1 and contracts % 2 != 0:
+            logger.info(
+                f"[SIZING] Odd contract count {contracts} \u2192 {contracts + 1} "
+                f"(bumped to even for clean T1 scale-out split)"
+            )
             contracts += 1
 
         max_contracts = getattr(config, "MAX_CONTRACTS", 10)
@@ -1007,7 +1032,12 @@ class PositionManager:
         win_rate  = stats.get("win_rate",  0.0)
 
         daily_return_pct = (total_pnl / self.session_starting_balance) * 100
-        max_dd_pct = ((self.account_size - self.intraday_high_water_mark) /
+
+        # BUG-PM-1 FIX: use live current_balance (session_starting_balance + today's P&L)
+        # instead of self.account_size which is only set at startup and goes stale after
+        # the first trade closes intraday. Mirrors the same pattern in get_risk_summary().
+        current_balance = self.session_starting_balance + total_pnl
+        max_dd_pct = ((current_balance - self.intraday_high_water_mark) /
                       self.intraday_high_water_mark) * 100
 
         lines = [
@@ -1107,4 +1137,3 @@ class PositionManager:
 
 # ── Global singleton ───────────────────────────────────────────────────────────────────────────────────────────────────────
 position_manager = PositionManager()
-

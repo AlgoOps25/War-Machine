@@ -19,6 +19,14 @@ Contents:
                             Added _date_col() as a semantically-correct alias so
                             range comparisons read clearly at the call site.
   - _write_completed_at() : Write completed_at / outcome / exit_price to ml_signals
+
+BUG-PM-2 (2026-03-30):
+  _date_col() and _date_eq_today() intentionally produce IDENTICAL SQL fragments
+  at runtime. They exist as separate named functions purely for call-site readability:
+    - _date_eq_today()  signals "I am comparing to today" (equality context)
+    - _date_col()       signals "I am just extracting a date for a range" (>= / BETWEEN)
+  Do NOT assume they diverge in output — they do not. If a future dialect change is
+  needed (e.g. adding UTC→ET offset for a new DB), update BOTH functions together.
 """
 import logging
 from datetime import datetime
@@ -47,6 +55,8 @@ _POSITIONS_CACHE_TTL =  5  # get_open_positions()  — re-query at most every 5s
 
 
 # ── FIX #11: SQLite-compatible date-filter helpers ────────────────────────────────────────────
+# BUG-PM-2 NOTE: _date_col() and _date_eq_today() produce IDENTICAL SQL output.
+# They are separate names only for call-site semantic clarity. See module docstring.
 
 def _date_col(col: str) -> str:
     """
@@ -55,6 +65,9 @@ def _date_col(col: str) -> str:
     Returns a SQL fragment that extracts the date part from a TIMESTAMP column
     with NO implied comparator.  Use this for range queries (>=, <=, BETWEEN)
     where _date_eq_today() would be misleading.
+
+    NOTE (BUG-PM-2): Produces the SAME SQL fragment as _date_eq_today() at runtime.
+    The distinction is semantic only — use this name at range-query call sites.
 
     Examples:
         WHERE {_date_col('exit_time')} >= {p}   -- lookback range in get_win_rate()
@@ -73,6 +86,9 @@ def _date_eq_today(col: str) -> str:
     Return a SQL fragment that compares `col` (TIMESTAMP) to today's ET date.
 
     Intended for: WHERE {_date_eq_today('exit_time')} = {p}  -- p bound to today's date string
+
+    NOTE (BUG-PM-2): Produces the SAME SQL fragment as _date_col() at runtime.
+    The distinction is semantic only — use this name at equality-comparison call sites.
 
     Postgres:  DATE(col AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')
     SQLite:    date(col)
