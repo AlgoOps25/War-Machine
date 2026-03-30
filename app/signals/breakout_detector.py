@@ -283,6 +283,7 @@ class BreakoutDetector:
             lower_wick    = open_price - low
             has_rejection = (lower_wick / total_range) > 0.4
         else:
+            # Bear candle: upper wick = rejection of upward move (high - open)
             upper_wick    = high - open_price
             has_rejection = (upper_wick / total_range) > 0.4
 

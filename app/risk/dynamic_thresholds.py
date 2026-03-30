@@ -184,14 +184,6 @@ def _get_winrate_adjustment(signal_type, grade):
         logger.info(f"[DYNAMIC-THRESH] Win rate lookup error: {e}")
         return 0.00
 
-
-def _get_recent_quality_adjustment():
-    # TODO (Issue #25): Implement rolling quality score based on last 5 signals.
-    # Intended to penalise threshold when recent signals have been low-confidence
-    # or frequently rejected downstream.  Currently returns 0.00 (no-op).
-    return 0.00
-
-
 def get_dynamic_threshold(signal_type: str, grade: str,
                           bars_session: list = None, ticker: str = "") -> float:
     """
@@ -217,16 +209,14 @@ def get_dynamic_threshold(signal_type: str, grade: str,
     time_adj    = _get_time_of_day_adjustment()
     vix_adj     = _get_vix_adjustment()
     winrate_adj = _get_winrate_adjustment(signal_type, grade)
-    quality_adj = _get_recent_quality_adjustment()
     atr_adj, atr_label = _get_atr_volatility_adjustment(bars_session or [], ticker)
 
-    final_threshold = baseline + time_adj + vix_adj + winrate_adj + quality_adj + atr_adj
+    final_threshold = baseline + time_adj + vix_adj + winrate_adj + atr_adj
     final_threshold = max(config.CONFIDENCE_ABSOLUTE_FLOOR, min(final_threshold, 0.85))
 
     logger.info(
         f"[DYNAMIC-THRESH] {signal_type}/{grade}: "
         f"base={baseline:.2f} + time={time_adj:+.2f} + vix={vix_adj:+.2f} "
-        f"+ wr={winrate_adj:+.2f} + qual={quality_adj:+.2f} "
         f"+ {atr_label}={atr_adj:+.2f} = {final_threshold:.2f}"
     )
 
