@@ -1,6 +1,23 @@
-# Phase 1.38d-fix-3 — March 27 2026
+# Phase 1.38d-fix-4 — March 30 2026
 """
 app/core/sniper_pipeline.py — CFW6 Signal Pipeline
+
+FIX HISTORY (2026-03-30):
+
+  BUG-SP-1: TIME gate moved above RVOL fetch.
+    RVOL was fetched from data_manager before the TIME gate ran, meaning
+    every post-11am signal attempt wasted a data_manager.get_rvol() call
+    before being killed. TIME gate now runs first — zero DB/cache work
+    on rejected time-window signals. Gate order comment updated to match.
+
+  BUG-SP-2: confidence_base from grade_signal_with_confirmations() wired
+    into build_scorecard() as cfw6_confidence_base parameter.
+    Previously, confidence_base was computed and immediately discarded —
+    the final confidence used by arm_ticker() was derived solely from the
+    scorecard score (min 0.60, max 0.85). CFW6 confirmation quality now
+    contributes to scoring. signal_scorecard.py updated to accept and
+    score the new parameter (max +10pts for confidence_base >= 0.80,
+    scaled linearly down to 0pts for confidence_base <= 0.50).
 
 FIX HISTORY (2026-03-27):
 
@@ -83,34 +100,35 @@ def _run_signal_pipeline(
         True  — pipeline ran to completion and arm_ticker() was called
         False — signal was dropped by any upstream gate
 
-    Gate order:
-      1. TIME gate (< 11:00 AM ET)
-      2. RVOL floor gate
-      3. RVOL ceiling gate
-      4. VWAP gate
-      5. Dead zone gate
-      6. GEX pin gate
-      7. Cooldown gate
-      8. CFW6 confirmation (skipped for INTRADAY / VWAP-reclaim paths)
-      9. MTF trend bias (counter-trend rejected if RVOL < 1.8x)
-     10. SMC delta / Sweep / OB enrichment
-     11. SignalScorecard (gate: 60 pts)
-     12. compute_stop_and_targets() — None return drops signal cleanly
-     13. arm_ticker() — all 13 required args supplied
+    Gate order (BUG-SP-1 fix: TIME gate runs before any data fetch):
+      1. TIME gate (< 11:00 AM ET)          ← runs first, no data fetch wasted
+      2. RVOL fetch
+      3. RVOL floor gate
+      4. RVOL ceiling gate
+      5. VWAP gate
+      6. Dead zone gate
+      7. GEX pin gate
+      8. Cooldown gate
+      9. CFW6 confirmation (skipped for INTRADAY / VWAP-reclaim paths)
+     10. MTF trend bias (counter-trend rejected if RVOL < 1.8x)
+     11. SMC delta / Sweep / OB enrichment
+     12. SignalScorecard (gate: 60 pts) — now includes CFW6 confidence_base (BUG-SP-2)
+     13. compute_stop_and_targets() — None return drops signal cleanly
+     14. arm_ticker() — all required args supplied
     """
-    # ── 1. RVOL fetch ──────────────────────────────────────────────────────────
-    try:
-        rvol = data_manager.get_rvol(ticker) or 1.0
-    except Exception:
-        rvol = 1.0
-
-    # ── 2. TIME gate ───────────────────────────────────────────────────────────
+    # ── 1. TIME gate (BUG-SP-1: moved above RVOL fetch) ──────────────────────
     now_et = _now_et()
     if now_et.time() > time(11, 0):
         logger.info(
             f"[{ticker}] ⛔ TIME GATE: {now_et.strftime('%H:%M')} > 11:00 AM — signal dropped"
         )
         return False
+
+    # ── 2. RVOL fetch ──────────────────────────────────────────────────────────
+    try:
+        rvol = data_manager.get_rvol(ticker) or 1.0
+    except Exception:
+        rvol = 1.0
 
     # ── 3. RVOL floor ──────────────────────────────────────────────────────────
     if rvol < RVOL_SIGNAL_GATE:
@@ -220,6 +238,7 @@ def _run_signal_pipeline(
         ob_detected = False
 
     # ── 12. SignalScorecard ────────────────────────────────────────────────────
+    # BUG-SP-2: confidence_base from CFW6 now passed in — no longer discarded
     _sc = build_scorecard(
         ticker=ticker,
         direction=direction,
@@ -232,6 +251,7 @@ def _run_signal_pipeline(
         ob_detected=ob_detected,
         spy_regime=spy_regime,
         rvol=rvol,
+        cfw6_confidence_base=confidence_base,  # BUG-SP-2: was silently discarded
     )
 
     if _sc.score < SCORECARD_GATE_MIN:
@@ -245,7 +265,7 @@ def _run_signal_pipeline(
     _confidence = min(0.85, max(0.60, _sc.score / 100.0))
     logger.info(
         f"[{ticker}] ✅ SCORECARD PASS: {_sc.score:.1f}pts "
-        f"confidence={_confidence:.2f} grade={grade}"
+        f"confidence={_confidence:.2f} grade={grade} cfw6_base={confidence_base:.2f}"
     )
 
     # ── 13. Stop / Targets ────────────────────────────────────────────────────
