@@ -1,7 +1,7 @@
 # War Machine — Full Repo Audit Registry
 
 > **Purpose:** Master reference for the file-by-file audit of all tracked files.  
-> **Last updated:** 2026-03-30 Session 14 pre-audit — root cleanup complete, items #13/#14 closed, 3 staging txt files deleted  
+> **Last updated:** 2026-03-30 Session 14 — risk_manager.py audit complete, BUG-RISK-1 fixed  
 > **Auditor:** Perplexity AI (interactive audit with Michael)  
 > **Status legend:** ✅ KEEP | ⚠️ REVIEW | 🔀 MERGE → target | 🗃️ QUARANTINE | ❌ DELETE | 🔧 FIXED | 📦 MOVED  
 > **Prohibited (runtime-critical) directories:** `app/core`, `app/data`, `app/risk`, `app/signals`, `app/validation`, `app/filters`, `app/mtf`, `app/notifications`, `utils/`, `migrations/`  
@@ -28,7 +28,7 @@
 | **Session 11** | **app/ml line-by-line deep audit — BUG-ML-1/2/6 fixed** | **3 fixes + 1 new file** | **✅ Complete 2026-03-27** |
 | **Session 12** | **app/mtf line-by-line deep audit — BUG-MTF-1/2/3 fixed** | **3 fixes across 2 files** | **✅ Complete 2026-03-27** |
 | **Session 13** | **app/core/sniper.py + scanner.py deep audit — 2 confirmed fixes, 3 already-clean** | **2 new items confirmed** | **✅ Complete 2026-03-29** |
-| **Session 14** | **app/risk deep audit — risk_manager.py, position_manager.py, sniper_pipeline.py** | **pending** | **⏳ In progress 2026-03-30** |
+| **Session 14** | **app/risk deep audit — risk_manager.py ✅, position_manager.py ⏳, sniper_pipeline.py ⏳** | **1 fix so far** | **⏳ In progress 2026-03-30** |
 
 ---
 
@@ -59,7 +59,7 @@
 | 21 | 2026-03-25 | S9 | `app/options/options_intelligence.py` | 🔧 FIXED: `get_chain()` dead-code in cache branch removed. | `edb6ba9` | Runtime bug fix |
 | 22 | 2026-03-25 | S9 | `app/validation/greeks_precheck.py` | 🔧 FIXED: Missing `ZoneInfo` import added. | `08648df` | Runtime bug fix |
 | 23 | 2026-03-25 | S9 | `app/signals/breakout_detector.py` | 🔧 FIXED: `resistance_source` NameError + duplicate PDH/PDL resolved. | `df2e625` | Runtime bug fix |
-| 24 | 2026-03-25 | S9 | `docs/AUDIT_REGISTRY.md` | Full live-repo reconciliation. | this commit | Registry 100% current |
+| 24 | 2026-03-25 | S9 | `docs/AUDIT_REGISTRY.md` | Full live-repo reconciliation. | this commit | Registry current |
 | 25 | 2026-03-25 | S10 | `app/screening/watchlist_funnel.py` | 🔧 FIXED: spurious `()` on `datetime.now(tz=ET)` — crashing every pre-market cycle. | manual patch | Critical runtime crash fix |
 | 26 | 2026-03-25 | S10 | `app/core/scanner.py` | 🔧 FIXED: `_run_analytics()` missing `conn=None` parameter. | manual patch | Critical runtime crash fix |
 | 27 | 2026-03-25 | S10 | `app/ml/metrics_cache.py` | 🔧 FIXED: Raw SQLAlchemy pool replaced with `get_conn()`/`return_conn()`. | manual patch | Connection leak eliminated |
@@ -72,10 +72,11 @@
 | 34 | 2026-03-27 | S12 | `app/mtf/mtf_fvg_priority.py` | 🔧 FIXED BUG-MTF-3: `get_full_mtf_analysis()` now builds `15m`+`30m` bars. | `137f36f` | Higher-TF FVG detection now active |
 | 35 | 2026-03-29 | S13 | `app/core/sniper.py` | ✅ CONFIRMED: `clear_bos_alerts()` public API present. `_orb_classifications` dead block already absent — repo was clean. | live | EOD dedup reset works |
 | 36 | 2026-03-29 | S13 | `app/core/scanner.py` | ✅ CONFIRMED: `clear_bos_alerts()` imported + called at EOD. Dead functions (`_extract_premarket_metrics`, `should_scan_now`) already absent. Full line-by-line audit complete — no bugs found. | live | Scanner EOD reset complete |
-| 37 | 2026-03-30 | S14-pre | `models/signal_predictor.pkl` + `models/training_dataset.csv` | ✅ CONFIRMED never tracked — `models/` directory does not exist in repo. `.gitignore` rule from S2 (`5828488`) was effective from the start. `git rm --cached` returned fatal — files were never committed. | n/a | Items #13 + #14 closed |
+| 37 | 2026-03-30 | S14-pre | `models/signal_predictor.pkl` + `models/training_dataset.csv` | ✅ CONFIRMED never tracked — `models/` directory does not exist in repo. `.gitignore` rule from S2 (`5828488`) was effective from the start. | n/a | Items #13 + #14 closed |
 | 38 | 2026-03-30 | S14-pre | `s16_helpers.txt` | ❌ DELETED root staging file — confirmed duplicate of live `app/risk/position_helpers.py`. | `2cb2020` | Root cleaned |
 | 39 | 2026-03-30 | S14-pre | `s16_trade.txt` | ❌ DELETED root staging file — confirmed duplicate of live `app/risk/trade_calculator.py`. | `09f25f8` | Root cleaned |
 | 40 | 2026-03-30 | S14-pre | `s16_vix.txt` | ❌ DELETED root staging file — confirmed duplicate of live `app/risk/vix_sizing.py`. | `72abc33` | Root cleaned |
+| 41 | 2026-03-30 | S14 | `app/risk/risk_manager.py` | 🔧 FIXED BUG-RISK-1: `_reject()` refactored — removed redundant `compute_stop_and_targets()` call on every early-gate rejection. Now accepts optional pre-computed `stop/t1/t2` kwargs (default 0.0). Gates 1–8 short-circuit with zeros; Gate 10 (R:R) passes in already-computed values. Eliminated wasted ATR math on kill switch / circuit breaker / position count rejections. | `5f651ff` | Perf + correctness |
 
 ---
 
@@ -98,7 +99,7 @@
 | 24–26 | ✅ DONE | BUG-MTF-1/2/3 | S12 | ✅ |
 | 27 | ✅ DONE | `app/core/sniper.py` | S13 full audit complete | ✅ |
 | 28 | ✅ DONE | `app/core/scanner.py` | S13 full audit complete | ✅ |
-| 29 | 🔴 HIGH | `app/risk/risk_manager.py` | Full line-by-line deep audit | ⏳ Open — Session 14 |
+| 29 | ✅ DONE | `app/risk/risk_manager.py` | S14 full audit complete — BUG-RISK-1 fixed (`5f651ff`) | ✅ Closed 2026-03-30 |
 | 30 | 🔴 HIGH | `app/risk/position_manager.py` | Full line-by-line deep audit | ⏳ Open — Session 14 |
 | 31 | 🟡 MEDIUM | `app/core/sniper_pipeline.py` | Full line-by-line deep audit (extracted pipeline) | ⏳ Open — Session 14 |
 | 38–40 | ✅ DONE | `s16_helpers.txt`, `s16_trade.txt`, `s16_vix.txt` | Deleted — staging duplicates of live `app/risk/` files. | ✅ Closed 2026-03-30 |
@@ -139,9 +140,17 @@
 ## BATCH A2 — Supporting Runtime Modules
 
 ### `app/notifications/` — 2/2 KEEP
-### `app/risk/` — 7/7 KEEP (deep audit pending S14)
+### `app/risk/` — 7/7 KEEP
 
-> **S14-pre note (2026-03-30):** Live directory confirmed to contain: `__init__.py`, `dynamic_thresholds.py`, `position_helpers.py`, `position_manager.py`, `risk_manager.py`, `trade_calculator.py`, `vix_sizing.py`. Count updated from 6→7 (position_helpers.py + vix_sizing.py + trade_calculator.py were added as part of Session 16 refactor and are now confirmed deployed).
+| File | Size | Role | Verdict | Notes |
+|------|------|------|---------|-------|
+| `__init__.py` | — | Package marker | ✅ KEEP | |
+| `dynamic_thresholds.py` | — | Adaptive confidence floor per signal type + grade | ✅ KEEP | **PROHIBITED** |
+| `position_helpers.py` | — | Shared sizing helpers | ✅ KEEP | **PROHIBITED** |
+| `position_manager.py` | — | Sizing, circuit breaker, P&L tracking, DB writes | ✅ KEEP | **PROHIBITED** — Deep audit pending S14 |
+| `risk_manager.py` | ~14 KB | Unified risk orchestration — single entry point | ✅ KEEP | **PROHIBITED** — ✅ S14 AUDIT COMPLETE. 🔧 FIXED BUG-RISK-1 (`5f651ff`). Gate chain clean. Kill switch live-read correct. DB stats fetched once. |
+| `trade_calculator.py` | — | ATR-based stops, targets, confidence decay | ✅ KEEP | **PROHIBITED** |
+| `vix_sizing.py` | — | VIX regime multiplier | ✅ KEEP | **PROHIBITED** |
 
 ### `app/data/` — 9/9 KEEP
 ### `app/signals/` — 5 KEEP, 1 FIXED (breakout_detector)
