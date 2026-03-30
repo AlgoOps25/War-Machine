@@ -92,7 +92,7 @@ def calculate_atr(bars: List[Dict], period: int = 14) -> float:
 # ADAPTIVE FVG THRESHOLDS
 # ============================================================================
 
-def get_adaptive_fvg_threshold(bars: List[Dict], ticker: str) -> Tuple[float, float]:
+def get_adaptive_fvg_threshold(bars: List[Dict], ticker: str, rvol: float = None) -> Tuple[float, float]:
     """
     CFW6 OPTIMIZATION: Adaptive FVG size based on ticker volatility.
 
@@ -125,15 +125,18 @@ def get_adaptive_fvg_threshold(bars: List[Dict], ticker: str) -> Tuple[float, fl
     atr_pct       = (atr_val / current_price) * 100 if current_price > 0 else 0
 
     # RVOL-based threshold reduction for high momentum tickers
-    try:
-        from app.screening.watchlist_funnel import get_watchlist_with_metadata
-        _wl = get_watchlist_with_metadata(force_refresh=False)
-        _rvol = next(
-            (t.get('rvol', 1.0) for t in _wl.get('all_tickers_with_scores', [])
-             if t.get('ticker') == ticker), 1.0
-        )
-    except Exception:
-        _rvol = 1.0
+    if rvol is not None:
+        _rvol = rvol
+    else:
+        try:
+            from app.screening.watchlist_funnel import get_watchlist_with_metadata
+            _wl = get_watchlist_with_metadata(force_refresh=False)
+            _rvol = next(
+                (t.get('rvol', 1.0) for t in _wl.get('all_tickers_with_scores', [])
+                if t.get('ticker') == ticker), 1.0
+            )
+        except Exception:
+            _rvol = 1.0
 
     if atr_pct > 2.0:
         fvg_threshold         = 0.003
@@ -242,7 +245,7 @@ def calculate_stop_loss_by_grade(
     boundary comparison is skipped entirely so a zero stop is never
     produced. Callers do not need to change — passing 0.0 is safe.
     """
-    atr_multipliers = {"A+": 2.0, "A": 2.5, "A-": 3.0}
+    atr_multipliers = {"A+": 2.0, "A": 2.5, "A-": 3.0, "B+": 3.5, "B": 4.0}
     atr_mult        = atr_multipliers.get(grade, 2.5)
     stop_distance   = atr * atr_mult
 
@@ -343,22 +346,3 @@ def compute_stop_and_targets(
         return None, None, None
     t1, t2 = calculate_targets_by_grade(entry_price, stop_price, grade, direction)
     return stop_price, t1, t2
-
-
-def get_next_1hour_target(bars: List[Dict], direction: str) -> float:
-    """
-    ADVANCED: Get next 1-hour high/low for dynamic T2 target.
-    Optional alternative to fixed 3.5R.
-    """
-    hour_bars = []
-    for i in range(0, len(bars), 60):
-        chunk = bars[i:i+60]
-        if len(chunk) < 60:
-            break
-        hour_bars.append({
-            "high": max(b["high"] for b in chunk),
-            "low":  min(b["low"]  for b in chunk),
-        })
-    if not hour_bars:
-        return 0
-    return hour_bars[-1]["high"] if direction == "bull" else hour_bars[-1]["low"]
