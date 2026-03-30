@@ -264,7 +264,12 @@ class BreakoutDetector:
     # =================================================================
 
     def analyze_candle_strength(self, bar: Dict) -> Dict:
-        """Analyze price action quality of a candle."""
+        """
+        Assess candle strength using 3 entry patterns (BOS+FVG strategy):
+          Type 1 — Marubozu: body ≥80% of range, wicks ≤10% both sides
+          Type 2 — Hammer/Shooting Star: rejection wick ≥2x body, tiny opposing wick
+          Type 3 — Engulfing/Strong Body: body ≥ min_candle_body_pct, close in directional third
+        """
         open_price  = bar['open']
         close_price = bar['close']
         high        = bar['high']
@@ -272,26 +277,59 @@ class BreakoutDetector:
         total_range = high - low
 
         if total_range == 0:
-            return {'body_pct': 0.0, 'is_strong': False,
-                    'has_rejection': False, 'direction': 'neutral'}
+            return {
+                'body_pct': 0.0, 'is_strong': False,
+                'has_rejection': False, 'candle_type': 'DOJI',
+                'direction': 'neutral', 'upper_wick_pct': 0.0, 'lower_wick_pct': 0.0
+            }
 
-        body_size  = abs(close_price - open_price)
-        body_pct   = body_size / total_range
-        direction  = 'bull' if close_price > open_price else 'bear'
+        body_size      = abs(close_price - open_price)
+        body_pct       = body_size / total_range
+        direction      = 'bull' if close_price >= open_price else 'bear'
+        body_top       = max(open_price, close_price)
+        body_bottom    = min(open_price, close_price)
+        upper_wick     = high - body_top
+        lower_wick     = body_bottom - low
+        upper_wick_pct = upper_wick / total_range
+        lower_wick_pct = lower_wick / total_range
 
+        # Type 1: Marubozu
+        is_marubozu = (body_pct >= 0.80 and upper_wick_pct <= 0.10 and lower_wick_pct <= 0.10)
+
+        # Type 2: Hammer (bull) / Shooting Star (bear)
         if direction == 'bull':
-            lower_wick    = open_price - low
-            has_rejection = (lower_wick / total_range) > 0.4
+            has_rejection  = body_size > 0 and lower_wick >= 2.0 * body_size and upper_wick_pct <= 0.10
+            candle_type_t2 = 'HAMMER'
         else:
-            # Bear candle: upper wick = rejection of upward move (high - open)
-            upper_wick    = high - open_price
-            has_rejection = (upper_wick / total_range) > 0.4
+            has_rejection  = body_size > 0 and upper_wick >= 2.0 * body_size and lower_wick_pct <= 0.10
+            candle_type_t2 = 'SHOOTING_STAR'
+
+        # Type 3: Engulfing / Strong Body
+        close_position = (close_price - low) / total_range
+        if direction == 'bull':
+            is_engulfing = body_pct >= self.min_candle_body_pct and close_position >= 0.70
+        else:
+            is_engulfing = body_pct >= self.min_candle_body_pct and close_position <= 0.30
+
+        if is_marubozu:
+            candle_type = 'MARUBOZU'
+        elif has_rejection:
+            candle_type = candle_type_t2
+        elif is_engulfing:
+            candle_type = 'ENGULFING'
+        else:
+            candle_type = 'WEAK'
 
         return {
-            'body_pct':      round(body_pct, 2),
-            'is_strong':     body_pct >= self.min_candle_body_pct,
-            'has_rejection': has_rejection,
-            'direction':     direction
+            'body_pct':       round(body_pct, 2),
+            'is_strong':      is_marubozu or has_rejection or is_engulfing,
+            'has_rejection':  has_rejection,
+            'is_marubozu':    is_marubozu,
+            'is_engulfing':   is_engulfing,
+            'candle_type':    candle_type,
+            'direction':      direction,
+            'upper_wick_pct': round(upper_wick_pct, 2),
+            'lower_wick_pct': round(lower_wick_pct, 2),
         }
 
     # =================================================================
