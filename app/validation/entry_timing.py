@@ -182,7 +182,7 @@ class EntryTimingValidator:
             classification = "🟢 GOLDEN" if win_rate >= self.GOLDEN_HOUR_THRESHOLD else \
                              "🔴 WEAK"   if win_rate <  self.WEAK_HOUR_THRESHOLD   else \
                              "🟡 DECENT"
-            print(
+            logger.info(
                 f"  {hour:02d}:00 - {hour+1:02d}:00 | "
                 f"{win_rate:.1%} WR | "
                 f"{sample_size} trades | "
