@@ -41,16 +41,7 @@ SECTOR_GROUPS = {
 }
 
 
-# ── Cache TTL constants ────────────────────────────────────────────────────────────────────────
-SECTOR_GROUPS = {
-    "TECH":       ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "TSLA", "AMD", "INTC", "CRM"],
-    "FINANCE":    ["JPM", "BAC", "WFC", "GS", "MS", "C"],
-    "ENERGY":     ["XOM", "CVX", "COP", "SLB", "EOG"],
-    "HEALTHCARE": ["JNJ", "UNH", "PFE", "ABBV", "MRK", "TMO"],
-    "INDICES":    ["SPY", "QQQ", "IWM", "DIA"],
-    "VOLATILITY": ["VIX", "UVXY", "SVXY", "VXX"],
-}
-
+# ── Cache TTL constants ─────────────────────────────────────────────────────────────────────────
 _STATS_CACHE_TTL     = 10  # get_daily_stats()     — re-query at most every 10s
 _POSITIONS_CACHE_TTL =  5  # get_open_positions()  — re-query at most every 5s
 
