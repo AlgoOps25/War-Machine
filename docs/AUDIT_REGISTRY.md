@@ -1,7 +1,7 @@
 # War Machine — Full Repo Audit Registry
 
 > **Purpose:** Master reference for the file-by-file audit of all tracked files.  
-> **Last updated:** 2026-03-30 Session 14 — position_manager.py ✅ CLEAN, sniper_pipeline.py pulled  
+> **Last updated:** 2026-03-30 Session 14 — sniper_pipeline.py ✅ AUDIT COMPLETE (BUG-SP-1/SP-2 fixed)  
 > **Auditor:** Perplexity AI (interactive audit with Michael)  
 > **Status legend:** ✅ KEEP | ⚠️ REVIEW | 🔀 MERGE → target | 🗃️ QUARANTINE | ❌ DELETE | 🔧 FIXED | 📦 MOVED  
 > **Prohibited (runtime-critical) directories:** `app/core`, `app/data`, `app/risk`, `app/signals`, `app/validation`, `app/filters`, `app/mtf`, `app/notifications`, `utils/`, `migrations/`  
@@ -28,7 +28,7 @@
 | **Session 11** | **app/ml line-by-line deep audit — BUG-ML-1/2/6 fixed** | **3 fixes + 1 new file** | **✅ Complete 2026-03-27** |
 | **Session 12** | **app/mtf line-by-line deep audit — BUG-MTF-1/2/3 fixed** | **3 fixes across 2 files** | **✅ Complete 2026-03-27** |
 | **Session 13** | **app/core/sniper.py + scanner.py deep audit — 2 confirmed fixes, 3 already-clean** | **2 new items confirmed** | **✅ Complete 2026-03-29** |
-| **Session 14** | **app/risk deep audit — risk_manager.py ✅, position_manager.py ✅ CLEAN, sniper_pipeline.py 🔍 IN AUDIT** | **1 fix (BUG-RISK-1)** | **⏳ In progress 2026-03-30** |
+| **Session 14** | **app/risk + app/core/sniper_pipeline.py deep audit — BUG-RISK-1, BUG-SP-1/SP-2 fixed** | **3 fixes across 3 files** | **✅ Complete 2026-03-30** |
 
 ---
 
@@ -78,6 +78,8 @@
 | 40 | 2026-03-30 | S14-pre | `s16_vix.txt` | ❌ DELETED root staging file — confirmed duplicate of live `app/risk/vix_sizing.py`. | `72abc33` | Root cleaned |
 | 41 | 2026-03-30 | S14 | `app/risk/risk_manager.py` | 🔧 FIXED BUG-RISK-1: `_reject()` refactored — removed redundant `compute_stop_and_targets()` call on every early-gate rejection. Now accepts optional pre-computed `stop/t1/t2` kwargs (default 0.0). Gates 1–8 short-circuit with zeros; Gate 10 (R:R) passes in already-computed values. Eliminated wasted ATR math on kill switch / circuit breaker / position count rejections. | `5f651ff` | Perf + correctness |
 | 42 | 2026-03-30 | S14 | `app/risk/position_manager.py` | ✅ AUDIT COMPLETE — no new bugs found. BUG-PM-1/2/3 confirmed fixed in file. Post-close circuit breaker block confirmed informational-only by design (live check fires on next `can_open_position()` call). All DB calls use `get_conn()`/`return_conn()`, caches busted on every write, FIX #4/7/8/9/12/13 all confirmed present and correct. | live | No changes needed |
+| 43 | 2026-03-30 | S14 | `app/core/sniper_pipeline.py` | 🔧 FIXED BUG-SP-1: TIME gate moved above RVOL fetch — eliminates wasted `data_manager.get_rvol()` call on every post-11am signal. Gate order comment updated to match. | `7f5b377` | Perf fix |
+| 44 | 2026-03-30 | S14 | `app/core/sniper_pipeline.py` + `app/core/signal_scorecard.py` | 🔧 FIXED BUG-SP-2: `confidence_base` from `grade_signal_with_confirmations()` was computed and silently discarded. Now passed into `build_scorecard()` as `cfw6_confidence_base`. `signal_scorecard.py` updated: new `_score_cfw6_confidence()` function (+0–10pts, linear scale: ≥0.80=10, ≥0.70=7, ≥0.60=5, ≥0.50=3, else 0). `SignalScorecard` dataclass updated with `cfw6_score` field. Breakdown string updated. Max scorecard total raised from 85 → 95. | `7f5b377` / `032ffcc` | Signal quality: CFW6 confirmation strength now influences arming |
 
 ---
 
@@ -102,8 +104,29 @@
 | 28 | ✅ DONE | `app/core/scanner.py` | S13 full audit complete | ✅ |
 | 29 | ✅ DONE | `app/risk/risk_manager.py` | S14 full audit complete — BUG-RISK-1 fixed (`5f651ff`) | ✅ Closed 2026-03-30 |
 | 30 | ✅ DONE | `app/risk/position_manager.py` | S14 full audit complete — no new bugs. BUG-PM-1/2/3 confirmed fixed. | ✅ Closed 2026-03-30 |
-| 31 | 🔴 HIGH | `app/core/sniper_pipeline.py` | Full line-by-line deep audit — **FILE PULLED, AUDIT IN PROGRESS** | 🔍 Active — Session 14 |
+| 31 | ✅ DONE | `app/core/sniper_pipeline.py` | S14 full audit complete — BUG-SP-1/SP-2 fixed (`7f5b377` / `032ffcc`) | ✅ Closed 2026-03-30 |
+| 32 | 🔴 HIGH | `app/core/arm_signal.py` | Full line-by-line deep audit — next file | ⏳ Open |
 | 38–40 | ✅ DONE | `s16_helpers.txt`, `s16_trade.txt`, `s16_vix.txt` | Deleted — staging duplicates of live `app/risk/` files. | ✅ Closed 2026-03-30 |
+
+---
+
+## sniper_pipeline.py — Audit Results (S14, 2026-03-30)
+
+> Full line-by-line audit complete. 2 bugs found and fixed.
+
+| Check | Result |
+|-------|--------|
+| FIX A `**_unused_kwargs` | ✅ Confirmed |
+| FIX B `options_rec=None` default | ✅ Confirmed |
+| FIX C duplicate `set_cooldown()` removed | ✅ Confirmed |
+| FIX D `return True` after `arm_ticker()` | ✅ Confirmed |
+| FIX #53 `_resample_bars` from `utils.bar_utils` | ✅ Confirmed |
+| BUG-SP-1: TIME gate before RVOL fetch | ✅ FIXED `7f5b377` — eliminates wasted get_rvol() on post-11am rejections |
+| BUG-SP-2: `confidence_base` wired into scorecard | ✅ FIXED `7f5b377` / `032ffcc` — CFW6 quality now +0-10pts in scorecard |
+| All gates try/except guarded (non-fatal enrichment) | ✅ Confirmed |
+| `compute_stop_and_targets()` None-guard | ✅ Confirmed |
+| `arm_ticker()` all 16 args supplied | ✅ Confirmed |
+| Gate chain order correct post-reorder | ✅ Confirmed |
 
 ---
 
@@ -144,8 +167,9 @@
 | `__main__.py` | 177 B | Railway entrypoint shim | Railway start | ✅ KEEP | |
 | `scanner.py` | 42 KB | Main scan loop | Entrypoint | ✅ KEEP | **PROHIBITED** — 🔧 FIXED S10. ✅ S13 AUDIT COMPLETE — no bugs. `clear_bos_alerts()` wired at EOD. All dead functions absent. |
 | `sniper.py` | 72 KB | Signal detection engine | `scanner.py` | ✅ KEEP | **PROHIBITED** — ✅ S13 AUDIT COMPLETE — `clear_bos_alerts()` API confirmed. `_orb_classifications` dead block absent. All 3 scan paths clean. |
-| `sniper_pipeline.py` | ~TBD | Signal pipeline (extracted) | `sniper.py` | ✅ KEEP | **PROHIBITED** — 🔍 S14 AUDIT IN PROGRESS |
-| `arm_signal.py` | 7 KB | Signal arming | `sniper.py` | ✅ KEEP | `record_trade_executed()` wired S4 |
+| `sniper_pipeline.py` | 14.9 KB | Signal pipeline (extracted) | `sniper.py` | ✅ KEEP | **PROHIBITED** — ✅ S14 AUDIT COMPLETE. 🔧 BUG-SP-1 fixed (`7f5b377`): TIME gate before RVOL fetch. 🔧 BUG-SP-2 fixed (`7f5b377`/`032ffcc`): confidence_base wired into scorecard. All prior fixes (A/B/C/D/#53) confirmed. |
+| `signal_scorecard.py` | 12 KB | 0–100 signal scoring gate | `sniper.py`, `sniper_pipeline.py` | ✅ KEEP | **PROHIBITED** — ✅ Updated S14: `cfw6_score` field added, `_score_cfw6_confidence()` wired, max score 85→95, breakdown string updated. |
+| `arm_signal.py` | 7 KB | Signal arming | `sniper.py` | ✅ KEEP | `record_trade_executed()` wired S4. 🔴 **NEXT AUDIT TARGET** |
 | `armed_signal_store.py` | 8 KB | Armed signal store | `sniper.py`, `scanner.py` | ✅ KEEP | |
 | `watch_signal_store.py` | 7.6 KB | Pre-armed signal store | `sniper.py`, `scanner.py` | ✅ KEEP | |
 | `confidence_model.py` | — | ❌ DELETED S5 | — | Dead stub. `b99a63a` |
@@ -153,7 +177,6 @@
 | `sniper_log.py` | — | ❌ DELETED S9 | — | Superseded by `logging_config.py` |
 | `error_recovery.py` | — | ❌ DELETED S9 | — | Zero live imports |
 | `logging_config.py` | 3.6 KB | Centralized logging setup | `__main__.py` | ✅ KEEP | NEW — Sprint 1 |
-| `signal_scorecard.py` | 10.1 KB | 0–100 signal scoring gate | `sniper.py` | ✅ KEEP | NEW — Sprint 1 |
 | `analytics_integration.py` | 9.2 KB | Core↔analytics bridge | `scanner.py` | ✅ KEEP | |
 | `eod_reporter.py` | 3.8 KB | EOD cleanup + stats | `scanner.py` | ✅ KEEP | ✅ CONFIRMED S10 |
 | `health_server.py` | 4.5 KB | `/health` endpoint | Railway healthcheck | ✅ KEEP | **PROHIBITED** |
