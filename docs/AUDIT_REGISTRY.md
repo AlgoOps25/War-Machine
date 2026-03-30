@@ -1,12 +1,13 @@
 # War Machine — Full Repo Audit Registry
 
 > **Purpose:** Master reference for the file-by-file audit of all tracked files.  
-> **Last updated:** 2026-03-29 Session 13 — sniper.py + scanner.py deep audit complete  
+> **Last updated:** 2026-03-30 Session 14 pre-audit — root cleanup complete, items #13/#14 closed, 3 staging txt files deleted  
 > **Auditor:** Perplexity AI (interactive audit with Michael)  
 > **Status legend:** ✅ KEEP | ⚠️ REVIEW | 🔀 MERGE → target | 🗃️ QUARANTINE | ❌ DELETE | 🔧 FIXED | 📦 MOVED  
 > **Prohibited (runtime-critical) directories:** `app/core`, `app/data`, `app/risk`, `app/signals`, `app/validation`, `app/filters`, `app/mtf`, `app/notifications`, `utils/`, `migrations/`  
 > **Deployment entrypoint:** `PYTHONPATH=/app python -m app.core.scanner`  
 > **Healthcheck:** `/health` on port 8080  
+> **Standing rule:** AUDIT_REGISTRY.md is updated after every change and every important finding — no exceptions.
 
 ---
 
@@ -27,6 +28,7 @@
 | **Session 11** | **app/ml line-by-line deep audit — BUG-ML-1/2/6 fixed** | **3 fixes + 1 new file** | **✅ Complete 2026-03-27** |
 | **Session 12** | **app/mtf line-by-line deep audit — BUG-MTF-1/2/3 fixed** | **3 fixes across 2 files** | **✅ Complete 2026-03-27** |
 | **Session 13** | **app/core/sniper.py + scanner.py deep audit — 2 confirmed fixes, 3 already-clean** | **2 new items confirmed** | **✅ Complete 2026-03-29** |
+| **Session 14** | **app/risk deep audit — risk_manager.py, position_manager.py, sniper_pipeline.py** | **pending** | **⏳ In progress 2026-03-30** |
 
 ---
 
@@ -70,6 +72,10 @@
 | 34 | 2026-03-27 | S12 | `app/mtf/mtf_fvg_priority.py` | 🔧 FIXED BUG-MTF-3: `get_full_mtf_analysis()` now builds `15m`+`30m` bars. | `137f36f` | Higher-TF FVG detection now active |
 | 35 | 2026-03-29 | S13 | `app/core/sniper.py` | ✅ CONFIRMED: `clear_bos_alerts()` public API present. `_orb_classifications` dead block already absent — repo was clean. | live | EOD dedup reset works |
 | 36 | 2026-03-29 | S13 | `app/core/scanner.py` | ✅ CONFIRMED: `clear_bos_alerts()` imported + called at EOD. Dead functions (`_extract_premarket_metrics`, `should_scan_now`) already absent. Full line-by-line audit complete — no bugs found. | live | Scanner EOD reset complete |
+| 37 | 2026-03-30 | S14-pre | `models/signal_predictor.pkl` + `models/training_dataset.csv` | ✅ CONFIRMED never tracked — `models/` directory does not exist in repo. `.gitignore` rule from S2 (`5828488`) was effective from the start. `git rm --cached` returned fatal — files were never committed. | n/a | Items #13 + #14 closed |
+| 38 | 2026-03-30 | S14-pre | `s16_helpers.txt` | ❌ DELETED root staging file — confirmed duplicate of live `app/risk/position_helpers.py`. | `2cb2020` | Root cleaned |
+| 39 | 2026-03-30 | S14-pre | `s16_trade.txt` | ❌ DELETED root staging file — confirmed duplicate of live `app/risk/trade_calculator.py`. | `09f25f8` | Root cleaned |
+| 40 | 2026-03-30 | S14-pre | `s16_vix.txt` | ❌ DELETED root staging file — confirmed duplicate of live `app/risk/vix_sizing.py`. | `72abc33` | Root cleaned |
 
 ---
 
@@ -80,8 +86,8 @@
 | 1–10 | ✅ DONE | Various | See log above | ✅ |
 | 11 | 🟡 MEDIUM | `scripts/backtesting/backtest_v2_detector.py` | Verify vs `backtest_realistic_detector.py` — possibly superseded | ⏳ Open |
 | 12 | 🟢 LOW | `scripts/audit_repo.py` | QUARANTINE — one-time audit script, superseded by this registry | ⏳ Open |
-| 13 | 🟢 LOW | `models/signal_predictor.pkl` | `git rm --cached` (LOCAL ACTION) | ⏳ Pending |
-| 14 | 🟢 LOW | `models/training_dataset.csv` | `git rm --cached` (LOCAL ACTION) | ⏳ Pending |
+| 13 | ✅ DONE | `models/signal_predictor.pkl` | Never tracked — `.gitignore` effective since S2. No action needed. | ✅ Closed 2026-03-30 |
+| 14 | ✅ DONE | `models/training_dataset.csv` | Never tracked — `.gitignore` effective since S2. No action needed. | ✅ Closed 2026-03-30 |
 | 15 | 🟢 LOW | `market_memory.db` | Verify if replaced by PostgreSQL on Railway or still active | ⏳ Open |
 | 16 | 🟢 LOW | `scripts/war_machine.db` | Verify if stale vs root `war_machine.db` | ⏳ Open |
 | 17 | 🟢 LOW | `audit_reports/venv/` | Venv accidentally committed — should be gitignored/removed | ⏳ Open |
@@ -95,17 +101,13 @@
 | 29 | 🔴 HIGH | `app/risk/risk_manager.py` | Full line-by-line deep audit | ⏳ Open — Session 14 |
 | 30 | 🔴 HIGH | `app/risk/position_manager.py` | Full line-by-line deep audit | ⏳ Open — Session 14 |
 | 31 | 🟡 MEDIUM | `app/core/sniper_pipeline.py` | Full line-by-line deep audit (extracted pipeline) | ⏳ Open — Session 14 |
+| 38–40 | ✅ DONE | `s16_helpers.txt`, `s16_trade.txt`, `s16_vix.txt` | Deleted — staging duplicates of live `app/risk/` files. | ✅ Closed 2026-03-30 |
 
 ---
 
 ## LOCAL ACTIONS REQUIRED (Cannot Be Done via GitHub)
 
-```powershell
-git rm --cached models/signal_predictor.pkl
-git rm --cached models/training_dataset.csv
-git commit -m "chore: untrack binary model files (already in .gitignore)"
-git push
-```
+> ✅ All previously listed local actions are resolved — `models/` was never tracked. No local git commands needed.
 
 ---
 
@@ -137,7 +139,10 @@ git push
 ## BATCH A2 — Supporting Runtime Modules
 
 ### `app/notifications/` — 2/2 KEEP
-### `app/risk/` — 6/6 KEEP (deep audit pending S14)
+### `app/risk/` — 7/7 KEEP (deep audit pending S14)
+
+> **S14-pre note (2026-03-30):** Live directory confirmed to contain: `__init__.py`, `dynamic_thresholds.py`, `position_helpers.py`, `position_manager.py`, `risk_manager.py`, `trade_calculator.py`, `vix_sizing.py`. Count updated from 6→7 (position_helpers.py + vix_sizing.py + trade_calculator.py were added as part of Session 16 refactor and are now confirmed deployed).
+
 ### `app/data/` — 9/9 KEEP
 ### `app/signals/` — 5 KEEP, 1 FIXED (breakout_detector)
 ### `app/filters/` — 12 KEEP, 2 DELETED, 3 NEW
