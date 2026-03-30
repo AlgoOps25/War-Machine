@@ -192,12 +192,14 @@ except ImportError:
 from app.core.thread_safe_state import get_state
 _state = get_state()
 
-# BOS watch alert dedup — cleared EOD alongside watching_signals
+# BOS watch alert dedup — cleared EOD via clear_bos_alerts()
 _bos_watch_alerted: set = set()
+
 
 def clear_bos_alerts():
     """EOD reset — called by scanner.py to clear BOS watch alert dedup set."""
     _bos_watch_alerted.clear()
+
 
 def _log_bos_event(ticker: str, direction: str, bos_price: float, signal_type: str):
     if not FUNNEL_ANALYTICS_ENABLED or _funnel_tracker is None:
@@ -573,7 +575,7 @@ def process_ticker(ticker: str):
             skip_cfw6_confirmation=(scan_mode == "INTRADAY_BOS")
         )
 
-        # ── VWAP reclaim (fallback when no OR/BOS path fired) ────────────────
+        # ── VWAP reclaim — only fires when neither OR nor BOS path produced a signal ──
         if scan_mode is None and VWAP_RECLAIM_ENABLED:
             _vwap_val = compute_vwap(bars_session)
             vr = None
