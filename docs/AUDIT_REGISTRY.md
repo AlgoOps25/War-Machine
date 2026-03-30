@@ -1,7 +1,7 @@
 # War Machine — Full Repo Audit Registry
 
 > **Purpose:** Master reference for the file-by-file audit of all tracked files.  
-> **Last updated:** 2026-03-30 Session 14 — risk_manager.py audit complete, BUG-RISK-1 fixed  
+> **Last updated:** 2026-03-30 Session 14 — position_manager.py pulled, BUG-PM-1/2/3 pre-logged  
 > **Auditor:** Perplexity AI (interactive audit with Michael)  
 > **Status legend:** ✅ KEEP | ⚠️ REVIEW | 🔀 MERGE → target | 🗃️ QUARANTINE | ❌ DELETE | 🔧 FIXED | 📦 MOVED  
 > **Prohibited (runtime-critical) directories:** `app/core`, `app/data`, `app/risk`, `app/signals`, `app/validation`, `app/filters`, `app/mtf`, `app/notifications`, `utils/`, `migrations/`  
@@ -28,7 +28,7 @@
 | **Session 11** | **app/ml line-by-line deep audit — BUG-ML-1/2/6 fixed** | **3 fixes + 1 new file** | **✅ Complete 2026-03-27** |
 | **Session 12** | **app/mtf line-by-line deep audit — BUG-MTF-1/2/3 fixed** | **3 fixes across 2 files** | **✅ Complete 2026-03-27** |
 | **Session 13** | **app/core/sniper.py + scanner.py deep audit — 2 confirmed fixes, 3 already-clean** | **2 new items confirmed** | **✅ Complete 2026-03-29** |
-| **Session 14** | **app/risk deep audit — risk_manager.py ✅, position_manager.py ⏳, sniper_pipeline.py ⏳** | **1 fix so far** | **⏳ In progress 2026-03-30** |
+| **Session 14** | **app/risk deep audit — risk_manager.py ✅, position_manager.py 🔍 IN AUDIT, sniper_pipeline.py ⏳** | **1 fix so far** | **⏳ In progress 2026-03-30** |
 
 ---
 
@@ -100,9 +100,21 @@
 | 27 | ✅ DONE | `app/core/sniper.py` | S13 full audit complete | ✅ |
 | 28 | ✅ DONE | `app/core/scanner.py` | S13 full audit complete | ✅ |
 | 29 | ✅ DONE | `app/risk/risk_manager.py` | S14 full audit complete — BUG-RISK-1 fixed (`5f651ff`) | ✅ Closed 2026-03-30 |
-| 30 | 🔴 HIGH | `app/risk/position_manager.py` | Full line-by-line deep audit | ⏳ Open — Session 14 |
+| 30 | 🔴 HIGH | `app/risk/position_manager.py` | Full line-by-line deep audit — **FILE PULLED, AUDIT IN PROGRESS** | 🔍 Active — Session 14 |
 | 31 | 🟡 MEDIUM | `app/core/sniper_pipeline.py` | Full line-by-line deep audit (extracted pipeline) | ⏳ Open — Session 14 |
 | 38–40 | ✅ DONE | `s16_helpers.txt`, `s16_trade.txt`, `s16_vix.txt` | Deleted — staging duplicates of live `app/risk/` files. | ✅ Closed 2026-03-30 |
+
+---
+
+## position_manager.py — Pre-Audit Findings (S14, 2026-03-30)
+
+> File pulled. The module docstring already documents 3 fixes applied earlier today (BUG-PM-1/2/3). Logging these here before the full line-by-line audit begins.
+
+| Bug ID | Location | Finding | Status |
+|--------|----------|---------|--------|
+| BUG-PM-1 | `generate_report()` | Used stale `self.account_size` (startup only) for max drawdown % — always showed 0.00% after any trade. Fixed: now uses `current_balance = session_starting_balance + total_pnl` (mirrors `get_risk_summary()`). | 🔧 Already fixed in file |
+| BUG-PM-2 | `position_helpers.py` | `_date_col()` and `_date_eq_today()` produce identical SQL at runtime. Docstring clarification added to prevent future confusion. | 🔧 Already fixed in file |
+| BUG-PM-3 | `calculate_position_size()` | Odd contract count silently bumped to next even number with no log output. Added `logger.info()` when bump fires. | 🔧 Already fixed in file |
 
 ---
 
@@ -146,8 +158,8 @@
 |------|------|------|---------|-------|
 | `__init__.py` | — | Package marker | ✅ KEEP | |
 | `dynamic_thresholds.py` | — | Adaptive confidence floor per signal type + grade | ✅ KEEP | **PROHIBITED** |
-| `position_helpers.py` | — | Shared sizing helpers | ✅ KEEP | **PROHIBITED** |
-| `position_manager.py` | — | Sizing, circuit breaker, P&L tracking, DB writes | ✅ KEEP | **PROHIBITED** — Deep audit pending S14 |
+| `position_helpers.py` | — | Shared sizing helpers | ✅ KEEP | **PROHIBITED** — BUG-PM-2 docstring clarification applied |
+| `position_manager.py` | ~24 KB | Sizing, circuit breaker, P&L tracking, DB writes | ✅ KEEP | **PROHIBITED** — 🔍 S14 AUDIT IN PROGRESS. BUG-PM-1/2/3 already fixed in file. |
 | `risk_manager.py` | ~14 KB | Unified risk orchestration — single entry point | ✅ KEEP | **PROHIBITED** — ✅ S14 AUDIT COMPLETE. 🔧 FIXED BUG-RISK-1 (`5f651ff`). Gate chain clean. Kill switch live-read correct. DB stats fetched once. |
 | `trade_calculator.py` | — | ATR-based stops, targets, confidence decay | ✅ KEEP | **PROHIBITED** |
 | `vix_sizing.py` | — | VIX regime multiplier | ✅ KEEP | **PROHIBITED** |
