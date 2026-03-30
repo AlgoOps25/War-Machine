@@ -313,7 +313,7 @@ def process_ticker(ticker: str):
                     logger.info(f"[{ticker}] No session bars")
                     return
             except Exception as e:
-                logger.info(f"[{ticker}] ❌ Data fetch failed: {e}")
+                logger.warning(f"[{ticker}] ❌ Data fetch failed: {e}")
                 return
 
         logger.info(
