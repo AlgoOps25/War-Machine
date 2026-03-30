@@ -158,7 +158,7 @@ def _run_signal_pipeline(
             ticker, bars_session, breakout_idx, direction, zone_low, zone_high
         )
         if not confirmed:
-            logger.info(f"[{ticker}] ⛔ CFW6 confirmation failed")
+            logger.warning(f"[{ticker}] ⛔ CFW6 confirmation failed")
             return False
         grade, confidence_base = grade_signal_with_confirmations(confirmation_meta)
     else:
