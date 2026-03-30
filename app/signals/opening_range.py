@@ -767,9 +767,12 @@ class OpeningRangeDetector:
 
         true_ranges = []
         for i in range(1, min(len(bars), period + 1)):
-            high       = bars[i]['high']
-            low        = bars[i]['low']
-            prev_close = bars[i - 1]['close']
+            try:
+                high       = bars[i]['high']
+                low        = bars[i]['low']
+                prev_close = bars[i - 1]['close']
+            except (KeyError, TypeError):
+                continue
             tr = max(
                 high - low,
                 abs(high - prev_close),
@@ -836,7 +839,11 @@ def compute_opening_range_from_bars(bars, or_end_time: Optional[time] = None):
     """Compute OR high/low from 9:30 to or_end_time (default 9:40)."""
     from utils.time_helpers import _bar_time
     _end = or_end_time if or_end_time is not None else time(9, 40)
-    or_bars = [b for b in bars if _bar_time(b) and time(9, 30) <= _bar_time(b) < _end]
+    or_bars = []
+    for b in bars:
+        bt = _bar_time(b)
+        if bt and time(9, 30) <= bt < _end:
+            or_bars.append(b)
     if len(or_bars) < 3:
         return None, None
     return max(b["high"] for b in or_bars), min(b["low"] for b in or_bars)
@@ -844,7 +851,11 @@ def compute_opening_range_from_bars(bars, or_end_time: Optional[time] = None):
 def compute_premarket_range(bars):
     """Compute premarket high/low from 4:00-9:30 bars."""
     from utils.time_helpers import _bar_time
-    pm_bars = [b for b in bars if _bar_time(b) and time(4, 0) <= _bar_time(b) < time(9, 30)]
+    pm_bars = []
+    for b in bars:
+        bt = _bar_time(b)
+        if bt and time(4, 0) <= bt < time(9, 30):
+            pm_bars.append(b)
     if len(pm_bars) < 10:
         return None, None
     return max(b["high"] for b in pm_bars), min(b["low"] for b in pm_bars)
@@ -858,7 +869,9 @@ def detect_breakout_after_or(bars, or_high, or_low):
         bt = _bar_time(bar)
         if bt is None or bt < time(9, 45):
             continue
-        if bt >= time(11, 0):
+        from utils import config
+        cutoff = getattr(config, 'ORB_SCAN_CUTOFF', time(11, 0))
+        if bt >= cutoff:
             break
         if bar["close"] > or_high * (1 + config.ORB_BREAK_THRESHOLD):
             logger.info(f"[BREAKOUT] BULL idx {i} ${bar['close']:.2f}")
@@ -902,6 +915,9 @@ def detect_fvg_after_break(bars, breakout_idx, direction, soft_fvg_pct=None):
             if gap < 0 and abs(gap) / c0["high"] <= soft_fvg_pct:
                 if c1_body > 0 and abs(gap) > c1_body * 0.4:
                     continue
+                # doji c1 (c1_body == 0): skip — no impulse body to validate against
+                if c1_body == 0:
+                    continue
                 logger.debug(f"[FVG] BULL soft ${c2['low']:.2f}—${c0['high']:.2f} (gap={gap:.4f})")
                 return c2["low"], c0["high"]
 
@@ -916,6 +932,9 @@ def detect_fvg_after_break(bars, breakout_idx, direction, soft_fvg_pct=None):
             if gap < 0 and abs(gap) / c0["low"] <= soft_fvg_pct:
                 if c1_body > 0 and abs(gap) > c1_body * 0.4:
                     continue
+                # doji c1 (c1_body == 0): skip — no impulse body to validate against
+                if c1_body == 0:
+                    continue
                 logger.debug(f"[FVG] BEAR soft ${c0['low']:.2f}—${c2['high']:.2f} (gap={gap:.4f})")
                 return c0["low"], c2["high"]
 
@@ -925,6 +944,8 @@ def detect_fvg_after_break(bars, breakout_idx, direction, soft_fvg_pct=None):
 # USAGE EXAMPLE
 # ========================================
 if __name__ == "__main__":
+    import logging as _logging
+    _logging.basicConfig(level=_logging.INFO, format="%(levelname)s %(message)s")
     test_ticker = "SPY"
     logger.info(f"Testing OR detection for {test_ticker}...\n")
     or_data = classify_or(test_ticker)
