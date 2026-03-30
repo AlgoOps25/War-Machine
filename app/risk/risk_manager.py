@@ -40,7 +40,6 @@ from app.risk.trade_calculator import (
 from app.risk.vix_sizing import get_vix_regime, get_vix_multiplier
 from app.risk.dynamic_thresholds import get_dynamic_threshold, get_threshold_stats
 from utils import config as _cfg
-from utils import config as _cfg
 
 # ── Kill switch ───────────────────────────────────────────────────────────────
 # Live-read on every evaluate_signal() call — toggleable via Railway env var
