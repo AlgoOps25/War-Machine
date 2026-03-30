@@ -80,7 +80,7 @@ class BreakoutDetector:
         self.volume_multiplier       = volume_multiplier
         self.atr_period              = atr_period
         self.atr_stop_multiplier     = atr_stop_multiplier
-        self.risk_reward_ratio       = risk_reward_ratio
+        risk_reward_ratio: float     = 2.0,   # kept for backwards compat, unused internally
         self.t1_reward_ratio         = t1_reward_ratio
         self.t2_reward_ratio         = t2_reward_ratio
         self.min_candle_body_pct     = min_candle_body_pct
@@ -155,12 +155,16 @@ class BreakoutDetector:
                 self._pdh_pdl_cache[cache_key] = (pdh, pdl)
                 return pdh, pdl
         except Exception as e:
-            logger.info(f"[BREAKOUT] PDH/PDL fetch error for {ticker}: {e}")
+            logger.warning(f"[BREAKOUT] PDH/PDL fetch error for {ticker}: {e}")
         return None, None
 
     def clear_pdh_pdl_cache(self) -> None:
         """Clear PDH/PDL cache (called at end of day)."""
         self._pdh_pdl_cache.clear()
+    
+    def clear_atr_cache(self) -> None:
+        """Clear ATR cache (call at session start alongside clear_pdh_pdl_cache)."""
+        self._atr_cache.clear()
 
     # =================================================================
     # SUPPORT / RESISTANCE  (Phase 1.17: session-anchored)
@@ -213,12 +217,12 @@ class BreakoutDetector:
                 current_price = bars[-1]['close']
 
                 near_session_high = (abs(current_price - session_high) / session_high) < 0.005
-                if session_high >= resistance or near_session_high:
+                if session_high >= resistance or (near_session_high and session_high > resistance * 0.995):
                     resistance        = session_high
                     resistance_source = 'session'
 
                 near_session_low = (abs(current_price - session_low) / session_low) < 0.005
-                if session_low <= support or near_session_low:
+                if session_low <= support or (near_session_low and session_low < support * 1.005):
                     support        = session_low
                     support_source = 'session'
         except Exception:
@@ -227,11 +231,11 @@ class BreakoutDetector:
         # Step 3: PDH/PDL confluence (single fetch — removed duplicate)
         pdh, pdl = self.get_pdh_pdl(ticker, as_of_date=as_of_date)
         if pdh is not None:
-            if abs(pdh - resistance) / resistance < 0.02:
+            if abs(pdh - resistance) / resistance < 0.01:
                 resistance        = pdh
                 resistance_source = 'pdh'
         if pdl is not None:
-            if abs(pdl - support) / support < 0.02:
+            if abs(pdl - support) / support < 0.01:
                 support        = pdl
                 support_source = 'pdl'
 
@@ -724,6 +728,8 @@ def format_signal_message(ticker: str, signal: Dict) -> str:
 # USAGE EXAMPLE
 # =============================================================
 if __name__ == "__main__":
+    import logging as _logging
+    _logging.basicConfig(level=_logging.INFO, format="%(levelname)s %(message)s")
     detector = BreakoutDetector(
         lookback_bars=20,
         volume_multiplier=2.0,
