@@ -128,7 +128,7 @@ def _fetch_vix_from_eodhd() -> Optional[float]:
                 data_dt  = datetime.fromtimestamp(int(raw_ts), tz=ET)
                 age_secs = (datetime.now(tz=ET) - data_dt).total_seconds()
                 if age_secs > VIX_STALE_WARN_SECS:
-                    print(
+                    logger.warning(
                         f"[VIX] ⚠️  Stale data during RTH: EODHD VIX timestamp is "
                         f"{age_secs/60:.0f} min old (field='{source_field}', "
                         f"value={vix_level:.2f}). Sizing may lag real volatility."
@@ -140,8 +140,7 @@ def _fetch_vix_from_eodhd() -> Optional[float]:
         if _is_market_hours_now():
             logger.info(f"[VIX] Fetched VIX={vix_level:.2f} (field='{source_field}')")
         else:
-            import logging as _log
-            _log.getLogger(__name__).debug(
+            logger.debug.getLogger(__name__).debug(
                 f"[VIX] After-hours fetch: VIX={vix_level:.2f} (field='{source_field}')"
             )
 
