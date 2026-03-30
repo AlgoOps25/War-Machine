@@ -160,35 +160,6 @@ def _get_stale_tickers(tickers: list) -> list:
 
 
 
-# NOTE #33: _extract_premarket_metrics() is defined but never called.
-# Retained for potential future Discord pre-market summary use.
-def _extract_premarket_metrics(watchlist_data: dict) -> dict:
-    try:
-        all_tickers = watchlist_data.get('all_tickers_with_scores', [])
-        if not all_tickers:
-            return None
-        explosive_count = sum(
-            1 for t in all_tickers if t.get('score', 0) >= 80 and t.get('rvol', 0) >= 4.0
-        )
-        avg_rvol  = sum(t.get('rvol', 0)  for t in all_tickers) / len(all_tickers)
-        avg_score = sum(t.get('score', 0) for t in all_tickers) / len(all_tickers)
-        top_3_summary = ', '.join([
-            f"{t['ticker']} ({t['rvol']:.1f}x)"
-            for t in all_tickers[:3] if 'ticker' in t and 'rvol' in t
-        ]) if all_tickers else 'N/A'
-        return {
-            'explosive_count':          explosive_count,
-            'explosive_rvol_threshold': 4.0,
-            'avg_rvol':                 avg_rvol,
-            'avg_score':                avg_score,
-            'top_3_summary':            top_3_summary,
-        }
-    except Exception as e:
-        logger.error(f"[METRICS] Pre-market extraction error: {e}")
-        return None
-
-
-
 data_update_counter    = 0
 data_update_symbols    = set()
 last_data_summary_time = time.time()
@@ -224,14 +195,6 @@ def get_adaptive_scan_interval() -> int:
         logger.info(f"[SCANNER] {label} -> Scanning every {interval}s")
         _last_logged_interval = interval
     return interval
-
-
-def should_scan_now() -> bool:
-    now = datetime.now(ZoneInfo("America/New_York"))
-    if now.weekday() >= 5:
-        return False
-    t = now.time()
-    return dtime(9, 30) <= t <= dtime(16, 0)
 
 
 def calculate_optimal_watchlist_size() -> int:
@@ -313,7 +276,7 @@ def subscribe_and_prefetch_tickers(new_tickers: list):
 def start_scanner_loop():
     validate_required_env_vars()
 
-    from app.core.sniper import process_ticker, clear_armed_signals, clear_watching_signals, _orb_classifications
+    from app.core.sniper import process_ticker, clear_armed_signals, clear_watching_signals, clear_bos_alerts
     logger.info("[SCANNER] ✅ process_ticker loaded from sniper.py (CFW6 engine active)")
 
     from app.notifications.discord_helpers import send_simple_message
@@ -345,8 +308,6 @@ def start_scanner_loop():
     opts_msg = "Greeks analysis active" if OPTIONS_AVAILABLE else "NOT INTEGRATED"
     val_msg  = "CFW6 confirmation active" if VALIDATION_AVAILABLE else "NOT INTEGRATED"
 
-    # FIX: Pre-compute ternary labels — backslashes inside f-string expressions
-    # are a SyntaxError on Python 3.10 (Railway runtime). Same fix as position_manager FIX #7.
     db_tick   = "\u2713" if ANALYTICS_AVAILABLE else "\u2717"
     disc_tick = "\u2713" if os.getenv('DISCORD_WEBHOOK_URL') else "\u2717"
     scrn_tick = "\u2713" if API_KEY else "\u2717"
@@ -386,11 +347,6 @@ def start_scanner_loop():
     _or_window_logged         = False
     _watchlist_lock_logged    = False
 
-    # ── WS + backfill init (always runs first) ────────────────────────────────
-    # FIX v1.38d: join(timeout=20) was blocking 20s PER thread even though both
-    # are daemon threads that never exit. Reduced to timeout=5 with a 2s head-start
-    # sleep so WS has a moment to connect before we move on. Total WS init cost
-    # is now ~7s instead of ~40s. Backfill always runs via _fire_and_forget.
     startup_watchlist = list(dict.fromkeys(
         list(EMERGENCY_FALLBACK) + REGIME_TICKERS
     ))
@@ -398,7 +354,7 @@ def start_scanner_loop():
     logger.info("[WS-INIT] Starting WebSocket feed thread...")
     ws_thread = threading.Thread(target=lambda: start_ws_feed(startup_watchlist), daemon=True, name="start_ws_feed")
     ws_thread.start()
-    time.sleep(2)  # brief head-start so WS can connect before join races out
+    time.sleep(2)
     ws_thread.join(timeout=5)
     logger.info("[WS] WebSocket feed started (or timed out gracefully)")
 
@@ -419,15 +375,10 @@ def start_scanner_loop():
     last_subscribed_watchlist = set(startup_watchlist)
     logger.info("[STARTUP] ✅ WS feeds up | backfill running in background | entering main loop")
 
-    # ── Mid-session redeploy: load locked watchlist AFTER WS is up ───────────
-    # FIX v1.38c: previously this block ran BEFORE WS init.
-    # FIX v1.38d: reduced retry wait 10s->3s and retries 3->2 (saves up to 26s
-    #             on the empty-watchlist path; if it's genuinely missing we fall
-    #             back to EMERGENCY_FALLBACK immediately instead of waiting 30s).
     if _booting_into_market_hours:
         logger.info("[SCANNER] ⚡ Redeploy detected during market hours — loading locked watchlist")
         _REDEPLOY_RETRIES    = 2
-        _REDEPLOY_RETRY_WAIT = 3  # seconds between attempts
+        _REDEPLOY_RETRY_WAIT = 3
         for attempt in range(1, _REDEPLOY_RETRIES + 1):
             try:
                 watchlist_data      = get_watchlist_with_metadata(force_refresh=False)
@@ -456,7 +407,6 @@ def start_scanner_loop():
             premarket_watchlist = list(EMERGENCY_FALLBACK)
             logger.warning("[SCANNER] ⚠️ No locked watchlist found after retries — using emergency fallback")
 
-        # Subscribe the real watchlist now that we have it
         combined = list(dict.fromkeys(premarket_watchlist + REGIME_TICKERS))
         subscribe_tickers(combined)
         subscribe_quote_tickers(combined)
@@ -501,7 +451,7 @@ def start_scanner_loop():
                         logger.info(f"[WS] Subscribed premarket watchlist ({len(premarket_watchlist)} tickers)")
                     except Exception as e:
                         logger.error(f"[PRE-MARKET] Funnel error: {e}")
-                        logger.exception(e)  # FIX #31: was traceback.print_exc()
+                        logger.exception(e)
                         premarket_watchlist = list(EMERGENCY_FALLBACK)
                         premarket_built     = True
                 else:
@@ -619,7 +569,7 @@ def start_scanner_loop():
                         _run_ticker_with_timeout(process_ticker, ticker)
                     except Exception as e:
                         logger.error(f"[SCANNER] Error on {ticker}: {e}")
-                        logger.exception(e)  # FIX #31: was traceback.print_exc()
+                        logger.exception(e)
                         continue
 
                 scan_interval = get_adaptive_scan_interval()
@@ -628,12 +578,6 @@ def start_scanner_loop():
 
             else:
                 if last_report_day != current_day:
-                    # FIX #50 (Mar 27 2026): Set last_report_day BEFORE any code that can
-                    # throw. Previously this was set at the END of the EOD block — if
-                    # run_eod_report() or any cleanup step raised an exception the top-level
-                    # except caught it, slept 30s, and looped back. Because last_report_day
-                    # was never updated the EOD block fired again immediately on the next
-                    # iteration, causing the runaway Discord report spam seen Mar 27 2026.
                     last_report_day = current_day
 
                     logger.info(f"[EOD] Market Closed — Generating Reports for {current_day}")
@@ -648,7 +592,7 @@ def start_scanner_loop():
                         run_eod_report(current_day)
                     except Exception as e:
                         logger.error(f"[EOD] eod_reporter failed: {e}")
-                        logger.exception(e)  # FIX #31: was traceback.print_exc()
+                        logger.exception(e)
 
                     if HAS_AI_LEARNING:
                         try:
@@ -688,9 +632,7 @@ def start_scanner_loop():
                     reset_funnel()
                     clear_armed_signals()
                     clear_watching_signals()
-                    # NOTE #32: _bos_watch_alerted is a private module-level set in sniper.py.
-                    # Cleared here directly — low risk but should be wrapped in clear_bos_alerts() long-term.
-                    from app.core.sniper import clear_bos_alerts; clear_bos_alerts()
+                    clear_bos_alerts()  # OBS-SC-2: public API from sniper.clear_bos_alerts()
                     try:
                         data_manager.clear_prev_day_cache()
                     except Exception as e:
@@ -708,7 +650,7 @@ def start_scanner_loop():
 
         except Exception as e:
             logger.error(f"[SCANNER] Critical error: {e}")
-            logger.exception(e)  # FIX #31: was traceback.print_exc()
+            logger.exception(e)
             try:
                 send_simple_message(f"⚠️ Scanner Error: {str(e)}")
             except Exception:
