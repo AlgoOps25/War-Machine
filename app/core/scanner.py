@@ -690,7 +690,7 @@ def start_scanner_loop():
                     clear_watching_signals()
                     # NOTE #32: _bos_watch_alerted is a private module-level set in sniper.py.
                     # Cleared here directly — low risk but should be wrapped in clear_bos_alerts() long-term.
-                    from app.core.sniper import _bos_watch_alerted; _bos_watch_alerted.clear()
+                    from app.core.sniper import clear_bos_alerts; clear_bos_alerts()
                     try:
                         data_manager.clear_prev_day_cache()
                     except Exception as e:

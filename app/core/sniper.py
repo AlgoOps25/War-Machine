@@ -195,9 +195,9 @@ _state = get_state()
 # BOS watch alert dedup — cleared EOD alongside watching_signals
 _bos_watch_alerted: set = set()
 
-# OR classification cache — populated at 9:40
-_orb_classifications = {}
-
+def clear_bos_alerts():
+    """EOD reset — called by scanner.py to clear BOS watch alert dedup set."""
+    _bos_watch_alerted.clear()
 
 def _log_bos_event(ticker: str, direction: str, bos_price: float, signal_type: str):
     if not FUNNEL_ANALYTICS_ENABLED or _funnel_tracker is None:
@@ -572,19 +572,6 @@ def process_ticker(ticker: str):
             spy_regime=spy_regime,
             skip_cfw6_confirmation=(scan_mode == "INTRADAY_BOS")
         )
-
-        if ORB_TRACKER_ENABLED and or_detector and scan_mode is not None:
-            try:
-                or_data = or_detector.classify_or(ticker)
-                if or_data:
-                    _orb_classifications[ticker] = or_data
-                    logger.info(
-                        f"[{ticker}] 📊 OR: {or_data['classification']} | "
-                        f"${or_data['or_low']:.2f}—${or_data['or_high']:.2f} | "
-                        f"ATR Ratio: {or_data['or_range_atr']:.2f}x"
-                    )
-            except Exception as orb_err:
-                logger.info(f"[{ticker}] ORB classify error (non-fatal): {orb_err}")
 
         # ── VWAP reclaim (fallback when no OR/BOS path fired) ────────────────
         if scan_mode is None and VWAP_RECLAIM_ENABLED:
