@@ -1,7 +1,7 @@
 # War Machine — Full Repo Audit Registry
 
 > **Purpose:** Master reference for the file-by-file audit of all tracked files.  
-> **Last updated:** 2026-03-30 Session 14 — sniper_pipeline.py ✅ AUDIT COMPLETE (BUG-SP-1/SP-2 fixed)  
+> **Last updated:** 2026-03-30 Session 14 — arm_signal.py ✅ AUDIT COMPLETE (BUG-ARM-1 fixed)  
 > **Auditor:** Perplexity AI (interactive audit with Michael)  
 > **Status legend:** ✅ KEEP | ⚠️ REVIEW | 🔀 MERGE → target | 🗃️ QUARANTINE | ❌ DELETE | 🔧 FIXED | 📦 MOVED  
 > **Prohibited (runtime-critical) directories:** `app/core`, `app/data`, `app/risk`, `app/signals`, `app/validation`, `app/filters`, `app/mtf`, `app/notifications`, `utils/`, `migrations/`  
@@ -28,7 +28,7 @@
 | **Session 11** | **app/ml line-by-line deep audit — BUG-ML-1/2/6 fixed** | **3 fixes + 1 new file** | **✅ Complete 2026-03-27** |
 | **Session 12** | **app/mtf line-by-line deep audit — BUG-MTF-1/2/3 fixed** | **3 fixes across 2 files** | **✅ Complete 2026-03-27** |
 | **Session 13** | **app/core/sniper.py + scanner.py deep audit — 2 confirmed fixes, 3 already-clean** | **2 new items confirmed** | **✅ Complete 2026-03-29** |
-| **Session 14** | **app/risk + app/core/sniper_pipeline.py deep audit — BUG-RISK-1, BUG-SP-1/SP-2 fixed** | **3 fixes across 3 files** | **✅ Complete 2026-03-30** |
+| **Session 14** | **app/risk + app/core/sniper_pipeline.py + arm_signal.py deep audit — BUG-RISK-1, BUG-SP-1/SP-2, BUG-ARM-1 fixed** | **4 fixes across 4 files** | **✅ Complete 2026-03-30** |
 
 ---
 
@@ -80,6 +80,8 @@
 | 42 | 2026-03-30 | S14 | `app/risk/position_manager.py` | ✅ AUDIT COMPLETE — no new bugs found. BUG-PM-1/2/3 confirmed fixed in file. Post-close circuit breaker block confirmed informational-only by design (live check fires on next `can_open_position()` call). All DB calls use `get_conn()`/`return_conn()`, caches busted on every write, FIX #4/7/8/9/12/13 all confirmed present and correct. | live | No changes needed |
 | 43 | 2026-03-30 | S14 | `app/core/sniper_pipeline.py` | 🔧 FIXED BUG-SP-1: TIME gate moved above RVOL fetch — eliminates wasted `data_manager.get_rvol()` call on every post-11am signal. Gate order comment updated to match. | `7f5b377` | Perf fix |
 | 44 | 2026-03-30 | S14 | `app/core/sniper_pipeline.py` + `app/core/signal_scorecard.py` | 🔧 FIXED BUG-SP-2: `confidence_base` from `grade_signal_with_confirmations()` was computed and silently discarded. Now passed into `build_scorecard()` as `cfw6_confidence_base`. `signal_scorecard.py` updated: new `_score_cfw6_confidence()` function (+0–10pts, linear scale: ≥0.80=10, ≥0.70=7, ≥0.60=5, ≥0.50=3, else 0). `SignalScorecard` dataclass updated with `cfw6_score` field. Breakdown string updated. Max scorecard total raised from 85 → 95. | `7f5b377` / `032ffcc` | Signal quality: CFW6 confirmation strength now influences arming |
+| 45 | 2026-03-30 | S14 | `app/core/arm_signal.py` | 🔧 FIXED BUG-ARM-1: Moved module docstring above `import logging` / `logger` assignment so `arm_signal.__doc__` is correctly populated. Previously the string literal appeared after the logger assignment and was treated as a dead expression by Python. Zero runtime impact but corrects introspection. | `0165db5` | Cosmetic / introspection fix |
+| 46 | 2026-03-30 | S14 | `app/core/arm_signal.py` | ✅ BUG-ARM-2 RETRACTED — `sniper_log.py` confirmed still present in repo (not deleted in S9 as registry previously noted). `log_proposed_trade` import is safe. Registry note on S9 deletion was incorrect. | live | No action needed |
 
 ---
 
@@ -105,8 +107,30 @@
 | 29 | ✅ DONE | `app/risk/risk_manager.py` | S14 full audit complete — BUG-RISK-1 fixed (`5f651ff`) | ✅ Closed 2026-03-30 |
 | 30 | ✅ DONE | `app/risk/position_manager.py` | S14 full audit complete — no new bugs. BUG-PM-1/2/3 confirmed fixed. | ✅ Closed 2026-03-30 |
 | 31 | ✅ DONE | `app/core/sniper_pipeline.py` | S14 full audit complete — BUG-SP-1/SP-2 fixed (`7f5b377` / `032ffcc`) | ✅ Closed 2026-03-30 |
-| 32 | 🔴 HIGH | `app/core/arm_signal.py` | Full line-by-line deep audit — next file | ⏳ Open |
+| 32 | ✅ DONE | `app/core/arm_signal.py` | S14 full audit complete — BUG-ARM-1 fixed (`0165db5`). BUG-ARM-2 retracted (sniper_log.py confirmed live). | ✅ Closed 2026-03-30 |
+| 33 | 🔴 HIGH | `app/core/armed_signal_store.py` | Full line-by-line deep audit — next file | ⏳ Open |
 | 38–40 | ✅ DONE | `s16_helpers.txt`, `s16_trade.txt`, `s16_vix.txt` | Deleted — staging duplicates of live `app/risk/` files. | ✅ Closed 2026-03-30 |
+
+---
+
+## arm_signal.py — Audit Results (S14, 2026-03-30)
+
+> Full line-by-line audit complete. 1 bug fixed, 1 false positive retracted.
+
+| Check | Result |
+|-------|--------|
+| Stop-too-tight guard | ✅ Confirmed |
+| All heavy imports deferred inside function | ✅ Confirmed |
+| `open_position()` before Discord alert | ✅ Confirmed |
+| `position_id == -1` guard suppresses alert | ✅ Confirmed |
+| `record_trade_executed()` try/except non-fatal | ✅ Confirmed |
+| FIX H — both try: blocks correctly indented | ✅ Confirmed |
+| FIX G — `return True` at end of success path | ✅ Confirmed |
+| FIX P3 — `vp_bias` in fallback Discord path | ✅ Confirmed |
+| Greeks extraction wrapped in try/except | ✅ Confirmed |
+| Cooldown wrapped in try/except non-fatal | ✅ Confirmed |
+| BUG-ARM-1: docstring before logger assignment | ✅ FIXED `0165db5` — `__doc__` now populated correctly |
+| BUG-ARM-2: `sniper_log` import dead? | ⚠️ RETRACTED — `sniper_log.py` confirmed live in repo; import safe |
 
 ---
 
@@ -169,12 +193,12 @@
 | `sniper.py` | 72 KB | Signal detection engine | `scanner.py` | ✅ KEEP | **PROHIBITED** — ✅ S13 AUDIT COMPLETE — `clear_bos_alerts()` API confirmed. `_orb_classifications` dead block absent. All 3 scan paths clean. |
 | `sniper_pipeline.py` | 14.9 KB | Signal pipeline (extracted) | `sniper.py` | ✅ KEEP | **PROHIBITED** — ✅ S14 AUDIT COMPLETE. 🔧 BUG-SP-1 fixed (`7f5b377`): TIME gate before RVOL fetch. 🔧 BUG-SP-2 fixed (`7f5b377`/`032ffcc`): confidence_base wired into scorecard. All prior fixes (A/B/C/D/#53) confirmed. |
 | `signal_scorecard.py` | 12 KB | 0–100 signal scoring gate | `sniper.py`, `sniper_pipeline.py` | ✅ KEEP | **PROHIBITED** — ✅ Updated S14: `cfw6_score` field added, `_score_cfw6_confidence()` wired, max score 85→95, breakdown string updated. |
-| `arm_signal.py` | 7 KB | Signal arming | `sniper.py` | ✅ KEEP | `record_trade_executed()` wired S4. 🔴 **NEXT AUDIT TARGET** |
-| `armed_signal_store.py` | 8 KB | Armed signal store | `sniper.py`, `scanner.py` | ✅ KEEP | |
+| `arm_signal.py` | 7 KB | Signal arming | `sniper.py` | ✅ KEEP | **PROHIBITED** — ✅ S14 AUDIT COMPLETE. 🔧 BUG-ARM-1 fixed (`0165db5`): docstring moved above logger. BUG-ARM-2 retracted: `sniper_log.py` confirmed live. `record_trade_executed()` wired S4. |
+| `armed_signal_store.py` | 8 KB | Armed signal store | `sniper.py`, `scanner.py` | ✅ KEEP | 🔴 **NEXT AUDIT TARGET** |
 | `watch_signal_store.py` | 7.6 KB | Pre-armed signal store | `sniper.py`, `scanner.py` | ✅ KEEP | |
 | `confidence_model.py` | — | ❌ DELETED S5 | — | Dead stub. `b99a63a` |
 | `gate_stats.py` | — | ❌ DELETED S9 | — | Absorbed into `signal_scorecard.py` |
-| `sniper_log.py` | — | ❌ DELETED S9 | — | Superseded by `logging_config.py` |
+| `sniper_log.py` | — | ✅ CONFIRMED LIVE S14 | — | Previously noted as deleted — retracted. Still present in repo. |
 | `error_recovery.py` | — | ❌ DELETED S9 | — | Zero live imports |
 | `logging_config.py` | 3.6 KB | Centralized logging setup | `__main__.py` | ✅ KEEP | NEW — Sprint 1 |
 | `analytics_integration.py` | 9.2 KB | Core↔analytics bridge | `scanner.py` | ✅ KEEP | |
