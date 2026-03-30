@@ -91,7 +91,7 @@ def _get_vix_adjustment():
         else:
             return +0.05
     except Exception as e:
-        logger.info(f"[DYNAMIC-THRESH] VIX lookup error: {e}")
+        logger.warning(f"[DYNAMIC-THRESH] VIX lookup error: {e}")
         return 0.00
 
 
@@ -129,7 +129,7 @@ def _get_atr_volatility_adjustment(bars_session: list, ticker: str = "") -> tupl
             return -0.01, f"ATR-LOW({atr_pct:.1f}%/{atr_source})"
 
     except Exception as e:
-        logger.info(f"[DYNAMIC-THRESH] ATR adjustment error (non-fatal): {e}")
+        logger.warning(f"[DYNAMIC-THRESH] ATR adjustment error (non-fatal): {e}")
         return 0.00, "ATR-ERROR"
 
 
@@ -181,7 +181,7 @@ def _get_winrate_adjustment(signal_type, grade):
             return +0.07
 
     except Exception as e:
-        logger.info(f"[DYNAMIC-THRESH] Win rate lookup error: {e}")
+        logger.warning(f"[DYNAMIC-THRESH] Win rate lookup error: {e}")
         return 0.00
 
 def get_dynamic_threshold(signal_type: str, grade: str,
