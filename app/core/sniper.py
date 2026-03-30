@@ -57,7 +57,7 @@ except ImportError:
                         'score': score, 'rvol': rvol, 'tier': tier,
                     }
         except Exception as _e:
-            logger.info(f"[SNIPER] screener_metadata fallback error ({ticker}): {_e}")
+            logger.warning(f"[SNIPER] screener_metadata fallback error ({ticker}): {_e}")
         return {'qualified': False, 'score': 0, 'rvol': 0.0, 'tier': None}
 
 # ── Watch / armed signal stores ───────────────────────────────────────────
@@ -210,7 +210,7 @@ def _log_bos_event(ticker: str, direction: str, bos_price: float, signal_type: s
             reason=f"{direction.upper()} {signal_type} @ ${bos_price:.2f}"
         )
     except Exception as _e:
-        logger.info(f"[FUNNEL] _log_bos_event error (non-fatal): {_e}")
+        logger.warning(f"[FUNNEL] _log_bos_event error (non-fatal): {_e}")
 
 
 def _log_fvg_event(ticker: str, direction: str, fvg_low: float, fvg_high: float, signal_type: str):
@@ -222,7 +222,7 @@ def _log_fvg_event(ticker: str, direction: str, fvg_low: float, fvg_high: float,
             reason=f"{direction.upper()} {signal_type} zone=${fvg_low:.2f}-{fvg_high:.2f}"
         )
     except Exception as _e:
-        logger.info(f"[FUNNEL] _log_fvg_event error (non-fatal): {_e}")
+        logger.warning(f"[FUNNEL] _log_fvg_event error (non-fatal): {_e}")
 
 
 def _get_or_threshold(spy_regime) -> float:
@@ -332,7 +332,7 @@ def process_ticker(ticker: str):
                 if regime_age < 2:
                     print_market_regime(spy_regime)
             except Exception as e:
-                logger.info(f"[{ticker}] SPY EMA context error: {e}")
+                logger.warning(f"[{ticker}] SPY EMA context error: {e}")
 
         # FIX v1.38d: run_eod_report() only accepts session_date (str|None).
         if is_force_close_time(bars_session[-1]):
@@ -547,7 +547,7 @@ def process_ticker(ticker: str):
                             f"Zone: ${zone_low:.2f}-${zone_high:.2f}"
                         )
                 except Exception as priority_err:
-                    logger.info(f"[{ticker}] MTF priority error (falling back to 5m): {priority_err}")
+                    logger.warning(f"[{ticker}] MTF priority error (falling back to 5m): {priority_err}")
                     zone_low  = bos_signal["fvg_low"]
                     zone_high = bos_signal["fvg_high"]
             else:
