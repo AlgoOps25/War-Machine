@@ -828,7 +828,7 @@ class PositionManager:
             conn.commit()
             self._invalidate_caches()
 
-            self.positions = [p for p in self.positions if p["id"] != position_id]
+            self.positions = [pos for pos in self.positions if pos["id"] != position_id]
 
             # FIX #4: write completed_at back to ml_signals
             if exit_reason != "STALE_EOD":
@@ -1107,3 +1107,4 @@ class PositionManager:
 
 # ── Global singleton ───────────────────────────────────────────────────────────────────────────────────────────────────────
 position_manager = PositionManager()
+
