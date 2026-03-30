@@ -1,5 +1,3 @@
-import logging
-logger = logging.getLogger(__name__)
 """
 arm_signal.py — Signal Arming & Discord Alert
 Extracted from sniper.py
@@ -28,7 +26,13 @@ FIX H (2026-03-26): Corrected indentation SyntaxError — two try: blocks were
 
 AUDIT 2026-03-27: Promoted logger.info → logger.warning on all error/rejection
   paths so they stand out in Railway logs.
+
+FIX BUG-ARM-1 (2026-03-30): Moved import logging / logger above docstring so
+  module __doc__ is correctly populated. Previously the string literal appeared
+  after the logger assignment and was treated as a dead expression by Python.
 """
+import logging
+logger = logging.getLogger(__name__)
 
 
 def arm_ticker(
