@@ -3,6 +3,14 @@ scanner.py — Intelligent Watchlist Builder & Scanner Loop v1.38d
 Adaptive Watchlist Funnel, Pre-Market Scanner, Position Monitoring, DB Cleanup.
 WebSocket bar + quote feeds with candle cache (95%+ API reduction on redeploy).
 See CHANGELOG.md for full phase history.
+
+AUDIT S17 (2026-03-31): BUG-SC-1/2/3/4/5/6 addressed.
+  SC-1: Standardized blank lines between all top-level definitions (PEP 8).
+  SC-2: Documented future.cancel() limitation in _run_ticker_with_timeout.
+  SC-3: Documented lambda tuple order / exception behavior in subscribe_and_prefetch_tickers.
+  SC-4: Noted API_KEY[:8] slice is safe (Python slicing never raises IndexError).
+  SC-5: Fixed startup Discord message — now correctly says 'Pre-market' vs 'OR window active'.
+  SC-6: Added comment to _run_analytics explaining conn=None is required by _db_operation_safe.
 """
 from app.core.health_server import start_health_server, health_heartbeat
 
@@ -19,6 +27,7 @@ from datetime import datetime, time as dtime
 from zoneinfo import ZoneInfo
 from utils import config
 from utils.config import validate_required_env_vars
+
 try:
     from utils.production_helpers import _db_operation_safe
     PRODUCTION_HELPERS_ENABLED = True
@@ -49,10 +58,9 @@ except Exception:
 
 logger = logging.getLogger(__name__)
 
-REGIME_TICKERS          = ["SPY", "QQQ"]
-TICKER_TIMEOUT_SECONDS  = 45
-_ticker_executor        = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ticker_watchdog")
-
+REGIME_TICKERS         = ["SPY", "QQQ"]
+TICKER_TIMEOUT_SECONDS = 45
+_ticker_executor       = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ticker_watchdog")
 
 
 def _run_ticker_with_timeout(process_ticker_fn, ticker: str) -> bool:
@@ -62,6 +70,12 @@ def _run_ticker_with_timeout(process_ticker_fn, ticker: str) -> bool:
         return True
     except FuturesTimeoutError:
         logger.error(f"[WATCHDOG] ⏰ {ticker} timed out after {TICKER_TIMEOUT_SECONDS}s — skipping")
+        # BUG-SC-2 (documented): future.cancel() has NO effect on an already-running
+        # ThreadPoolExecutor thread — Python threads cannot be forcibly interrupted.
+        # cancel() always returns False here. The thread continues running in the
+        # background until it completes naturally. This is a known Python limitation.
+        # The scanner correctly moves on; resource impact is bounded by the executor's
+        # max_workers=1 — the next ticker won't start until the timed-out thread finishes.
         future.cancel()
         return False
     except Exception as exc:
@@ -126,7 +140,6 @@ API_KEY            = os.getenv("EODHD_API_KEY", "")
 EMERGENCY_FALLBACK = ["SPY", "QQQ", "AAPL", "MSFT", "NVDA", "TSLA", "META", "AMD"]
 
 
-
 def _fire_and_forget(fn, label: str):
     def _wrapper():
         try:
@@ -137,7 +150,6 @@ def _fire_and_forget(fn, label: str):
     t = threading.Thread(target=_wrapper, daemon=True, name=label)
     t.start()
     return t
-
 
 
 def _get_stale_tickers(tickers: list) -> list:
@@ -159,11 +171,9 @@ def _get_stale_tickers(tickers: list) -> list:
     return stale
 
 
-
 data_update_counter    = 0
 data_update_symbols    = set()
 last_data_summary_time = time.time()
-
 
 
 def _now_et():
@@ -260,6 +270,12 @@ def subscribe_and_prefetch_tickers(new_tickers: list):
         subscribe_tickers(combined)
         subscribe_quote_tickers(combined)
         logger.info(f"[WS-SUBSCRIBE] ✅ Subscribed {len(new_tickers)} tickers + regime: {', '.join(new_tickers)}")
+        # BUG-SC-3 (documented): Lambda calls two backfill functions as a tuple expression.
+        # Both are executed left-to-right: startup_backfill_with_cache first (30d history),
+        # then startup_intraday_backfill_today (today's bars). Order is intentional —
+        # historical context must be loaded before intraday bars are appended.
+        # If startup_intraday_backfill_today raises, _fire_and_forget catches it as a
+        # warning — historical backfill will have already completed successfully.
         _fire_and_forget(
             lambda: (
                 data_manager.startup_backfill_with_cache(combined, days=30),
@@ -270,7 +286,6 @@ def subscribe_and_prefetch_tickers(new_tickers: list):
     except Exception as e:
         logger.error(f"[WS-SUBSCRIBE] ⚠ Error subscribing tickers: {e}")
         logger.exception(e)
-
 
 
 def start_scanner_loop():
@@ -303,6 +318,9 @@ def start_scanner_loop():
 
     db_msg   = "Connected — Analytics tracking enabled" if ANALYTICS_AVAILABLE else "OFFLINE — no tracking"
     disc_msg = "Alert notifications ready" if os.getenv('DISCORD_WEBHOOK_URL') else "NOT CONFIGURED"
+    # BUG-SC-4 (documented): API_KEY[:8] is safe — Python slice never raises IndexError.
+    # If API_KEY is shorter than 8 chars (e.g. a stub), the full string is shown.
+    # The ✗ branch is taken when API_KEY == "" so [:8] is only reached when a key exists.
     scrn_msg = ("EODHD API configured (" + API_KEY[:8] + "...)") if API_KEY else "EODHD_API_KEY not set"
     reg_msg  = "Regime channel active" if os.getenv('REGIME_WEBHOOK_URL') else "Set REGIME_WEBHOOK_URL"
     opts_msg = "Greeks analysis active" if OPTIONS_AVAILABLE else "NOT INTEGRATED"
@@ -332,10 +350,19 @@ def start_scanner_loop():
     premarket_watchlist = []
     premarket_built     = False
 
+    # BUG-SC-5 FIX (2026-03-31): Previous message showed "OR window active" for any
+    # non-market-hours startup (including pre-market at 8:45 AM before the OR opens).
+    # Now correctly distinguishes: live market hours vs pre-market vs after-hours.
+    if _booting_into_market_hours:
+        _startup_mode = "Resuming intraday"
+    elif is_premarket():
+        _startup_mode = "Pre-market build active"
+    else:
+        _startup_mode = "After-hours — awaiting market open"
+
     try:
         send_simple_message(
-            f"⚔️ WAR MACHINE ONLINE — CFW6 v1.38d | "
-            f"{'Resuming intraday' if _booting_into_market_hours else 'OR window active'}"
+            f"⚔️ WAR MACHINE ONLINE — CFW6 v1.38d | {_startup_mode}"
         )
     except Exception as e:
         logger.warning(f"[SCANNER] Discord unavailable: {e}")
@@ -539,6 +566,11 @@ def start_scanner_loop():
                     logger.debug(f"[SCANNER] Cycle #{cycle_count} | {len(watchlist)} tickers | {current_time_str}")
 
                 if ANALYTICS_AVAILABLE and analytics:
+                    # BUG-SC-6 (documented): conn=None is REQUIRED here — _db_operation_safe
+                    # calls _run_analytics(conn=<pooled_conn>) injecting a connection as a
+                    # keyword argument. The function does not use it directly (SignalTracker
+                    # manages its own pooled connections internally) but the parameter must
+                    # exist to avoid a TypeError from the wrapper. See FIX #30 / FIX #26.
                     def _run_analytics(conn=None):
                         if analytics:
                             def get_price(t):
@@ -656,7 +688,6 @@ def start_scanner_loop():
             except Exception:
                 pass
             time.sleep(30)
-
 
 
 if __name__ == "__main__":
