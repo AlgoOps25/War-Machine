@@ -17,25 +17,38 @@ Design:
 FIX (Mar 26 2026) — issues #41 / #42:
   #41: train() print() → logger.info() for training metrics output.
   #42: save_model() trained_at timestamp naive/UTC → datetime.now(ET).
+
+AUDIT 2026-03-31 (Session ML-1):
+  BUG-MCB-1: Moved `import logging` / `logger =` to top of import block so
+             standard-library imports appear before third-party imports per
+             codebase convention. Non-crashing cosmetic fix.
+  BUG-MCB-2: Changed 3 error-path `logger.info` → `logger.warning` so model
+             load failures and prediction errors surface visibly in Railway logs.
+             Consistent with metrics_cache.py, armed_signal_store.py, and all
+             other modules in the codebase.
 """
 
+import logging
 import os
 import pickle
+from datetime import datetime
+from typing import Dict, Optional
+from zoneinfo import ZoneInfo
+
 import numpy as np
 import pandas as pd
-from typing import Dict, Optional, Tuple
-from datetime import datetime
-from zoneinfo import ZoneInfo
-from xgboost import XGBClassifier
-from sklearn.model_selection import train_test_split
+from sklearn.calibration import CalibratedClassifierCV
 from sklearn.metrics import classification_report, roc_auc_score
-import logging
+from sklearn.model_selection import train_test_split
+from xgboost import XGBClassifier
+
 logger = logging.getLogger(__name__)
 
 ET = ZoneInfo("America/New_York")
 
 MODEL_PATH = "/app/models/confidence_booster.pkl"
 IMPORTANCE_PATH = "/app/models/feature_importance.csv"
+
 
 class MLConfidenceBooster:
     def __init__(self):
@@ -55,7 +68,9 @@ class MLConfidenceBooster:
                     self.is_trained = True
                 logger.info(f"[ML] Loaded model from {MODEL_PATH}")
             except Exception as e:
-                logger.info(f"[ML] Model load error: {e}")
+                # BUG-MCB-2: was logger.info — model load failure is operationally
+                # significant and must surface as WARNING in Railway logs.
+                logger.warning(f"[ML] Model load error: {e}")
         else:
             logger.info("[ML] No pre-trained model found - will use default confidence")
 
@@ -79,7 +94,8 @@ class MLConfidenceBooster:
             adjustment = (prob - 0.5) * 0.30
             return np.clip(adjustment, -0.15, 0.15)
         except Exception as e:
-            logger.info(f"[ML] Prediction error: {e}")
+            # BUG-MCB-2: was logger.info
+            logger.warning(f"[ML] Prediction error: {e}")
             return 0.0
 
     def train(self, X: pd.DataFrame, y: pd.Series, test_size: float = 0.25) -> Dict:
@@ -129,11 +145,11 @@ class MLConfidenceBooster:
         auc = roc_auc_score(y_val, y_prob)
 
         metrics = {
-            'accuracy':  report['accuracy'],
-            'precision': report['1']['precision'],
-            'recall':    report['1']['recall'],
-            'f1':        report['1']['f1-score'],
-            'auc':       auc,
+            'accuracy':      report['accuracy'],
+            'precision':     report['1']['precision'],
+            'recall':        report['1']['recall'],
+            'f1':            report['1']['f1-score'],
+            'auc':           auc,
             'train_samples': len(X_train),
             'val_samples':   len(X_val)
         }
@@ -151,16 +167,18 @@ class MLConfidenceBooster:
     def save_model(self):
         """Save trained model to disk."""
         if not self.is_trained:
-            logger.info("[ML] No trained model to save")
+            # BUG-MCB-2: was logger.info — no trained model to save is a notable
+            # operational state and should surface as WARNING.
+            logger.warning("[ML] No trained model to save")
             return
 
         os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
 
         # FIX #42: datetime.now() naive/UTC → datetime.now(ET)
         data = {
-            'model':        self.model,
+            'model':         self.model,
             'feature_names': self.feature_names,
-            'trained_at':   datetime.now(ET).isoformat()
+            'trained_at':    datetime.now(ET).isoformat()
         }
 
         with open(MODEL_PATH, 'wb') as f:

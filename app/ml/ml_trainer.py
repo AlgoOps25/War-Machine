@@ -40,6 +40,11 @@ Key improvements (Mar 2026)
     model age calculation is correct on Railway (UTC host).
   - #40: trained_at timestamps in both train_model() and train_from_dataframe()
     now use datetime.now(ET).isoformat() for consistency across the codebase.
+* AUDIT 2026-03-31 (Session ML-1):
+  - BUG-MLT-1: Added df = df.copy() at the top of _prepare_features() to guard
+    against pandas Copy-on-Write (CoW, default pandas 2.0+) mutation warnings.
+    Without the copy, df[col] = ... on a slice raises SettingWithCopyWarning and
+    may silently not persist the fillna() changes, corrupting the feature matrix.
 """
 import logging
 import os
@@ -403,14 +408,14 @@ def train_from_dataframe(
         import pickle
         os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
         bundle = {
-            'model':          model,
-            'feature_names':  available_feats,
-            'metrics':        metrics,
-            'trained_at':     metrics['trained_at'],
-            'threshold':      opt_threshold,
-            'model_version':  MODEL_VERSION,
-            'model_type':     'HistGradientBoostingClassifier+PlattScaling',
-            'calibrated':     True,
+            'model':         model,
+            'feature_names': available_feats,
+            'metrics':       metrics,
+            'trained_at':    metrics['trained_at'],
+            'threshold':     opt_threshold,
+            'model_version': MODEL_VERSION,
+            'model_type':    'HistGradientBoostingClassifier+PlattScaling',
+            'calibrated':    True,
         }
         with open(save_path, 'wb') as f:
             pickle.dump(bundle, f)
@@ -588,8 +593,15 @@ def _fetch_training_data() -> Optional[pd.DataFrame]:
 
 
 def _prepare_features(df: pd.DataFrame) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], list]:
-    """Prepare feature matrix X and labels y from live DB DataFrame."""
+    """Prepare feature matrix X and labels y from live DB DataFrame.
+
+    BUG-MLT-1 (2026-03-31): Added df = df.copy() at top to guard against
+    pandas Copy-on-Write (CoW, default from pandas 2.0+). Without the copy,
+    df[col] = ... on a DataFrame slice raises SettingWithCopyWarning and may
+    silently not persist the fillna() changes, corrupting the feature matrix.
+    """
     try:
+        df = df.copy()  # BUG-MLT-1: CoW-safe — ensures mutations are on our own copy
         features = list(LIVE_FEATURE_COLS)
         if 'pattern_type' in df.columns:
             dummies = pd.get_dummies(df['pattern_type'], prefix='pattern')
