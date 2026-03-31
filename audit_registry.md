@@ -50,16 +50,17 @@
 ---
 
 ## Session ML-1 — `app/ml/` Full Audit
-**Date:** 2026-03-31  
-**Auditor:** Perplexity AI  
-**Files audited:** 5 Python files (`__init__.py`, `metrics_cache.py`, `ml_confidence_boost.py`, `ml_signal_scorer_v2.py`, `ml_trainer.py`)  
+**Date:** 2026-03-31
+**Auditor:** Perplexity AI
+**Files audited:** 5 Python files (`__init__.py`, `metrics_cache.py`, `ml_confidence_boost.py`, `ml_signal_scorer_v2.py`, `ml_trainer.py`)
 **Docs skipped (read-only):** `INTEGRATION.md`, `README.md`
+**Fixes applied commit:** `5255863a1844eb34ca76ef9bbb1b9a2241173432`
 
 ---
 
 ### `app/ml/__init__.py`
-**SHA:** `7cc0e794a5949749e57a5c2867493af623e92ac2`  
-**Size:** 27 B  
+**SHA:** `7cc0e794a5949749e57a5c2867493af623e92ac2`
+**Size:** 27 B
 **Status:** ✅ Clean
 
 - Single comment line: `# ML module initialization`
@@ -69,8 +70,8 @@
 ---
 
 ### `app/ml/metrics_cache.py`
-**SHA:** `f2dbbf05b0c60321520095d2b2531477359b790d`  
-**Size:** 2,628 B  
+**SHA:** `f2dbbf05b0c60321520095d2b2531477359b790d`
+**Size:** 2,628 B
 **Status:** ✅ Clean
 
 **Purpose:** Provides `get_ticker_win_rates(days=30) → dict[ticker, float]` used by
@@ -93,61 +94,35 @@ inference time.
 ---
 
 ### `app/ml/ml_confidence_boost.py`
-**SHA:** `0acd64b0d38af5307a3e83ffe628b526dddc5b9a`  
-**Size:** 6,522 B  
-**Status:** ⚠️ 3 findings — non-crashing
+**SHA at audit:** `0acd64b0d38af5307a3e83ffe628b526dddc5b9a`
+**SHA post-fix:** updated in commit `5255863`
+**Size:** ~6,522 B
+**Status:** ✅ All findings fixed in Session ML-1
 
 **Purpose:** `MLConfidenceBooster` — XGBoost binary classifier. Outputs confidence
 adjustment in `[-15%, +15%]`. Saved to `/app/models/confidence_booster.pkl`.
 Separate from `ml_trainer.py` (HistGBM). Weekly retrain via Railway cron.
 
-#### Finding BUG-MCB-1 ⚠️ — `logger` import style inconsistency
-**Line:** ~32  
-```python
-import logging
-logger = logging.getLogger(__name__)
-```
-`import logging` is placed **after** all other imports (numpy, pandas, typing, datetime,
-zoneinfo, xgboost, sklearn) and `logger =` is assigned on the very next line inline
-with imports — same pattern as BUG-ASS-1 in `armed_signal_store.py`. Syntactically
-valid but inconsistent with the rest of the codebase where `import logging` appears
-first or second in the import block. Non-crashing. Cosmetic.
+#### 🔧 BUG-MCB-1 — `import logging` import order (FIXED)
+**Severity:** ⚠️ Non-crashing cosmetic
+`import logging` was placed after all other imports. Moved to the top of the import
+block so standard-library imports precede third-party imports — consistent with the
+rest of the codebase.
 
-**Fix:** Move `import logging` to the top of the import block (before numpy/pandas).
+#### 🔧 BUG-MCB-2 — Error paths used `logger.info` instead of `logger.warning` (FIXED)
+**Severity:** ⚠️ Non-crashing, log-visibility issue
+Three locations changed:
+- `_load_model()` error path: `logger.info` → `logger.warning`
+- `predict_confidence_adjustment()` error path: `logger.info` → `logger.warning`
+- `save_model()` no-model path: `logger.info` → `logger.warning`
 
-#### Finding BUG-MCB-2 ⚠️ — Error paths use `logger.info` instead of `logger.warning`
-**Lines:** `_load_model()` error path (~line 50), `predict_confidence_adjustment()` error path (~line 73), `save_model()` no-model path (~line 100)
-
-```python
-# Current (all 3 locations):
-logger.info(f"[ML] Model load error: {e}")
-logger.info(f"[ML] Prediction error: {e}")
-logger.info("[ML] No trained model to save")
-```
-
-`metrics_cache.py` (same module) uses `logger.warning` on all error paths. The
-`armed_signal_store.py` was explicitly upgraded to `logger.warning` on errors in a
-prior session. These three `logger.info` on error/exception paths are inconsistent
-with the codebase standard. A model load failure is operationally significant and
-should surface as WARNING, not INFO.
-
-**Fix:** Change all 3 to `logger.warning(...)`.
-
-#### Finding BUG-MCB-3 ⚠️ — `_save_feature_importance()` uses `logger.info` for loop body
-**Lines:** ~155-158  
-```python
-logger.info("top 10 features:")
-for idx, row in df.head(10).iterrows():
-    logger.info(f"  {row['feature']}: {row['importance']:.4f}")
-```
-This is operational output (not an error). `logger.info` is correct here — no change
-needed. Noted for completeness, not a finding.
+Now consistent with `metrics_cache.py` and `ml_signal_scorer_v2.py`.
 
 ---
 
 ### `app/ml/ml_signal_scorer_v2.py`
-**SHA:** `42392e748e9bf5c7e397666deed162f62a099103`  
-**Size:** 7,599 B  
+**SHA:** `42392e748e9bf5c7e397666deed162f62a099103`
+**Size:** 7,599 B
 **Status:** ✅ Clean
 
 **Purpose:** Gate 5 adapter — bridges trained models into the interface expected by
@@ -176,52 +151,33 @@ BUG-ML-1 fix (Session 11, Mar 27 2026).
 ---
 
 ### `app/ml/ml_trainer.py`
-**SHA:** `5f63c55aed39472c137095bf4987098b4a8ede66`  
-**Size:** 28,379 B  
-**Status:** ⚠️ 2 findings — non-crashing
+**SHA at audit:** `5f63c55aed39472c137095bf4987098b4a8ede66`
+**SHA post-fix:** updated in commit `5255863`
+**Size:** ~28,379 B
+**Status:** ✅ All findings fixed in Session ML-1
 
 **Purpose:** Trains `HistGradientBoostingClassifier` + Platt scaling. Two entry points:
 `train_from_dataframe()` (historical pre-training) and `train_model()` (live EOD retrain).
 Saves to `ml_model.joblib`. Separate from `ml_confidence_boost.py` (XGBoost).
 
-#### Finding BUG-MLT-1 ⚠️ — `_prepare_features()` mutates input DataFrame in-place
-**Lines:** `_prepare_features()` function body (~lines 370-390)
+#### 🔧 BUG-MLT-1 — `_prepare_features()` mutated caller's DataFrame (CoW-unsafe) (FIXED)
+**Severity:** ⚠️ Non-crashing in pandas < 2.0; silent data corruption risk in pandas 2.0+
 
-```python
-# Current:
-df = pd.concat([df, dummies], axis=1)   # rebinds local var — OK
-...
-df[col] = df[col].fillna(df[col].median())  # mutates local — OK but CoW-unsafe
-```
+With pandas Copy-on-Write (default from 2.0+), writing `df[col] = df[col].fillna(...)`
+on a DataFrame slice raises `SettingWithCopyWarning` and may silently not persist.
+Added `df = df.copy()` at the top of `_prepare_features()` so all mutations target
+a local copy. The one-line fix is standard pandas CoW hygiene for any function
+receiving an externally-owned DataFrame.
 
-The `df` passed in is a slice of the caller's DataFrame. With pandas Copy-on-Write
-(CoW, default from pandas 2.0+), `df[col] = ...` on a slice raises a
-`SettingWithCopyWarning` and may silently not persist. The prior fix in the docstring
-mentions CoW was addressed in `train_from_dataframe()` (fillna replaced with
-non-inplace) but `_prepare_features()` still uses direct column assignment.
-
-**Fix:** Add `.copy()` at the top of `_prepare_features()`:
-```python
-df = df.copy()
-```
-
-#### Finding BUG-MLT-2 ⚠️ — `should_retrain()` loads model twice
-**Lines:** `should_retrain()` function (~lines 415-450)
-
-```python
-model_data = joblib.load(MODEL_PATH)   # load 1 — for trained_at
-...
-df = _fetch_training_data()
-...
-n_at_train = model_data['metrics']['n_train'] + ...  # uses load 1 result — OK
-```
-
-Single load, reused — actually fine on second read. No issue. Noted for completeness.
+#### BUG-MLT-2 — `should_retrain()` model load count (NOTED, no fix needed)
+On second review: `should_retrain()` calls `joblib.load(MODEL_PATH)` once and reuses
+the result throughout the function. No double-load. Noted for completeness — confirmed
+not an issue.
 
 ---
 
-## Session ASS-1 — `app/core/armed_signal_store.py` (prior sessions)
-**Status:** ⚠️ 2 findings documented, fixes pending
+## Session ASS-1 — `app/core/armed_signal_store.py`
+**Status:** ⚠️ 2 findings documented — fixes queued for next `core/` session
 
 | ID | Severity | Description | Status |
 |----|----------|-------------|--------|
@@ -230,8 +186,8 @@ Single load, reused — actually fine on second read. No issue. Noted for comple
 
 ---
 
-## Session WSS-1 — `app/core/watch_signal_store.py` (prior sessions)
-**Status:** ⚠️ 3 findings documented, fixes pending
+## Session WSS-1 — `app/core/watch_signal_store.py`
+**Status:** ⚠️ 3 findings documented — fixes queued for next `core/` session
 
 | ID | Severity | Description | Status |
 |----|----------|-------------|--------|
@@ -253,9 +209,6 @@ Priority: fix during the session that next touches the owning file.
 | BUG-WSS-1 | `app/core/watch_signal_store.py` | ⚠️ | Change 7 error-path `logger.info` → `logger.warning` | Next `core/` session |
 | BUG-WSS-2 | `app/core/watch_signal_store.py` | ⚠️ | Replace `print()` with `logger.info()` in `_load_watches_from_db()` | Next `core/` session |
 | BUG-WSS-3 | `app/core/watch_signal_store.py` | ⚠️ | Remove empty tuple `()` from `safe_execute` DELETE call in `clear_watching_signals()` | Next `core/` session |
-| BUG-MCB-1 | `app/ml/ml_confidence_boost.py` | ⚠️ | Move `import logging` to top of import block | Next `ml/` touch |
-| BUG-MCB-2 | `app/ml/ml_confidence_boost.py` | ⚠️ | Change 3 error-path `logger.info` → `logger.warning` | Next `ml/` touch |
-| BUG-MLT-1 | `app/ml/ml_trainer.py` | ⚠️ | Add `df = df.copy()` at top of `_prepare_features()` to avoid CoW mutation | Next `ml/` touch |
 
 ---
 
@@ -263,6 +216,9 @@ Priority: fix during the session that next touches the owning file.
 
 | Fix ID | File | Commit | Description |
 |--------|------|--------|-------------|
+| BUG-MCB-1 | `app/ml/ml_confidence_boost.py` | `5255863` | Moved `import logging` to top of import block — consistent import ordering |
+| BUG-MCB-2 | `app/ml/ml_confidence_boost.py` | `5255863` | Changed 3 error-path `logger.info` → `logger.warning` (model load, prediction, save) |
+| BUG-MLT-1 | `app/ml/ml_trainer.py` | `5255863` | Added `df = df.copy()` at top of `_prepare_features()` — CoW-safe, prevents silent corruption in pandas 2.0+ |
 | BUG-ML-2 | `app/ml/metrics_cache.py` | Session 11 | `pd.read_sql_query` placeholder → `ph()` abstraction, positional tuple params |
 | BUG-ML-1 | `app/ml/ml_signal_scorer_v2.py` | Session 11 | File created — Gate 5 was silently catching ImportError every run |
 | BUG-#41 | `app/ml/ml_confidence_boost.py` | Session prior | `train()` `print()` → `logger.info()` for training metrics |
@@ -280,13 +236,12 @@ Priority: fix during the session that next touches the owning file.
 | Priority | Folder | Files | Notes |
 |----------|--------|-------|-------|
 | 1 | `app/core/` | `armed_signal_store.py`, `watch_signal_store.py` | Apply open fixes BUG-ASS-1/2, BUG-WSS-1/2/3 |
-| 2 | `app/ml/` | `ml_confidence_boost.py`, `ml_trainer.py` | Apply open fixes BUG-MCB-1/2, BUG-MLT-1 |
-| 3 | `app/core/` | Remaining 13 files | `scanner.py`, `sniper.py`, `signal_scorecard.py`, etc. |
-| 4 | `app/data/` | All files | DB connection pool, sql_safe, schema files |
-| 5 | `app/signals/` | All files | Gate validators, signal store, BOS/FVG detectors |
-| 6 | `app/options/` | All files | Options chain, Greeks, pre-validation |
-| 7 | `app/notifications/` | All files | Discord alert system |
-| 8 | `app/backtesting/` | All files | Backtest engine, walk-forward, historical trainer |
-| 9 | `app/ai/` | `ai_learning.py` | 18.6 KB — single file |
-| 10 | `scripts/`, `tests/`, `utils/` | All files | Support infrastructure |
-| 11 | Root config | `requirements.txt`, `railway.toml`, `nixpacks.toml`, etc. | Deployment config audit |
+| 2 | `app/core/` | Remaining 13 files | `scanner.py`, `sniper.py`, `signal_scorecard.py`, `cfw6_gate_validator.py`, etc. |
+| 3 | `app/data/` | All files | DB connection pool, sql_safe, schema files |
+| 4 | `app/signals/` | All files | Gate validators, signal store, BOS/FVG detectors |
+| 5 | `app/options/` | All files | Options chain, Greeks, pre-validation |
+| 6 | `app/notifications/` | All files | Discord alert system |
+| 7 | `app/backtesting/` | All files | Backtest engine, walk-forward, historical trainer |
+| 8 | `app/ai/` | `ai_learning.py` | 18.6 KB — single file |
+| 9 | `scripts/`, `tests/`, `utils/` | All files | Support infrastructure |
+| 10 | Root config | `requirements.txt`, `railway.toml`, `nixpacks.toml`, etc. | Deployment config audit |
