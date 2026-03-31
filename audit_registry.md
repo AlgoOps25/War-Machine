@@ -32,11 +32,11 @@
 | `app/ai/` | 2 | 0 | ⬜ Pending |
 | `app/analytics/` | 9 | 9 | ✅ Complete (prior sessions) |
 | `app/backtesting/` | 7 | 0 | ⬜ Pending |
-| `app/core/` | 15 | 13 | 🔄 In Progress — CORE-1 (6) + CORE-2 (3) + CORE-3 (2) + ASS-1 + WSS-1 |
+| `app/core/` | 15 | 14 | 🔄 In Progress — CORE-1 (6) + CORE-2 (3) + CORE-3 (2) + CORE-4 (1) + ASS-1 + WSS-1 |
 | `app/data/` | — | — | ⬜ Pending |
 | `app/filters/` | — | — | ⬜ Pending |
 | `app/indicators/` | — | — | ⬜ Pending |
-| `app/ml/` | 7 | 5 | ✅ Complete — Session ML-1 (2026-03-31) |
+| `app/ml/` | 7 | 5 | ✅ Complete — Session ML-1 |
 | `app/mtf/` | — | — | ⬜ Pending |
 | `app/notifications/` | — | — | ⬜ Pending |
 | `app/options/` | — | — | ⬜ Pending |
@@ -55,6 +55,101 @@
 
 ---
 
+## Session CORE-4 — `app/core/sniper.py`
+**Date:** 2026-03-31
+**Auditor:** Perplexity AI
+**Commit:** `e25f3200`
+**Files audited:** 1 file
+- `app/core/sniper.py`
+
+**Fixes applied:** BUG-SN-4, BUG-SN-5, BUG-SN-6 — all fixed in this session.
+
+---
+
+### `app/core/sniper.py`
+**SHA pre-fix:** `670de1a7` | **SHA post-fix:** `76d733d5`
+**Size:** ~28 KB (pre-fix) → ~31 KB (post-fix, version bumped to v1.38e)
+**Status:** ✅ Fixed — 3 findings resolved
+
+**Purpose:** `process_ticker()` — the CFW6 strategy engine. Two-path scanner:
+OR-Anchored (opening range breakout + FVG) and Intraday BOS+FVG fallback.
+Delegates signal pipeline execution to `sniper_pipeline._run_signal_pipeline`
+via a thin local dispatcher wrapper. Called once per ticker per scanner cycle.
+
+**Architecture:**
+- Single public function: `process_ticker(ticker)`
+- Thin dispatcher: `_run_signal_pipeline()` — local wrapper over `_pipeline` (imported alias)
+- Two helper logging functions: `_log_bos_event()`, `_log_fvg_event()`
+- One utility: `_get_or_threshold()` — VIX-adjusted OR threshold
+- EOD reset: `clear_bos_alerts()` — clears `_bos_watch_alerted` dedup set
+- 13 optional try/except import blocks with correct stubs — all gated on boolean flags
+- Module-level `_state = get_state()` — singleton thread-safe state
+
+**Prior audit notes (Session 18 / v1.38d) — pre-CORE-4:**
+- BUG-SN-1: `logger` moved before optional try/except blocks — confirmed fixed ✅
+- BUG-SN-2: VWAP reclaim block documented as structurally unreachable (intentional, architectural) ✅
+- BUG-SN-3: Resolved by BUG-SN-1 fix ✅
+
+**CORE-4 Findings and Fixes:**
+
+**BUG-SN-4** ⚠️ (clarity) — **FIXED**
+- *Location:* `_run_signal_pipeline()` dispatcher function definition
+- *Issue:* The local wrapper function `_run_signal_pipeline` has the same name as
+  the symbol imported from `sniper_pipeline` (imported as `_pipeline` to avoid
+  collision). The aliasing was intentional but undocumented, creating confusion
+  risk for future developers about whether the wrapper was recursive or shadowed.
+- *Fix:* Added explicit docstring note clarifying: `_pipeline` = implementation
+  (sniper_pipeline), `_run_signal_pipeline` = public surface used by scanner.py.
+  Not a logic change — clarity only.
+
+**BUG-SN-5** ⚠️ (consistency) — **FIXED**
+- *Location:* Secondary range fallback block inside `process_ticker`, ~line 290
+- *Issue:* `get_secondary_range_levels` was imported via a deferred inline
+  `from app.signals.opening_range import get_secondary_range_levels` inside
+  the `if scan_mode is None and _now_et().time() >= time(10, 30):` block.
+  All other `opening_range` symbols are imported at module top in the
+  `ORB_TRACKER_ENABLED` try/except block. The deferred import was structurally
+  safe (only reachable when OR data exists, which requires ORB detector to work)
+  but inconsistent with every other `opening_range` import in the file.
+- *Fix:* Moved `get_secondary_range_levels` into the top-level ORB_TRACKER_ENABLED
+  try/except block. Added `get_secondary_range_levels = None` to the except stub.
+  Secondary range fallback now guards with `if get_secondary_range_levels is not None:`
+  before calling, matching the null-safe pattern used by all other optional symbols.
+
+**BUG-SN-6** ⚠️ (defensive) — **FIXED**
+- *Location:* Intraday BOS+FVG path inside `process_ticker`, ~line 340
+- *Issue:* `bos_signal["fvg_low"]`, `bos_signal["fvg_high"]`, and
+  `bos_signal["bos_price"]` were direct `[]` key access. `scan_bos_fvg()`
+  contract guarantees these keys, but a malformed return dict would raise a
+  `KeyError` inside the outer `try/except Exception` — swallowed silently with
+  only `logger.error("process_ticker error ...")`, losing the specific key context.
+- *Fix:* All three replaced with `.get()` and safe `0.0` defaults. Extracted into
+  `_fvg_low`, `_fvg_high`, `_bos_price` locals. Added explicit guard:
+  `if not direction or breakout_idx is None or _fvg_low == 0.0 or _fvg_high == 0.0:`
+  → `logger.warning("BUG-SN-6: bos_signal missing required keys") + return`.
+  MTF fallback paths and `or_high_ref`/`or_low_ref` assignments updated to use
+  the extracted locals instead of re-accessing the dict.
+
+**Checks confirmed clean (no action required):**
+- All 13 optional try/except import blocks have correct stubs and bool flag gates ✅
+- `import logging` + `logger =` correctly placed before all optional blocks (BUG-SN-1) ✅
+- `_ET` assigned immediately after logger — no NameError risk ✅
+- `clear_bos_alerts()` is a clean one-liner — `_bos_watch_alerted.clear()` ✅
+- `_log_bos_event()` / `_log_fvg_event()` both wrapped in try/except — non-fatal ✅
+- `_get_or_threshold()` falls back to VIX=20.0 on exception — safe ✅
+- `run_eod_report()` called with no args (v1.38d fix confirmed) ✅
+- `breakout_bar_dt` DB restore logic for `breakout_idx` is correct — explicit bar scan + discard on miss ✅
+- `MAX_WATCH_BARS` expiry logic correct: `bars_since = len(bars_session) - w["breakout_idx"]` ✅
+- `_bos_watch_alerted` dedup set — key format `ticker:direction:datetime` consistent across both watch paths ✅
+- `send_bos_watch_alert()` called with correct 6 args on both primary and secondary range paths ✅
+- `_run_signal_pipeline` dispatcher receives all 9 positional + 4 keyword args correctly ✅
+- `skip_cfw6_confirmation=(scan_mode == "INTRADAY_BOS")` — correct boolean expression ✅
+- VWAP reclaim block: BUG-SN-2 comment preserved and accurate ✅
+- No stray `print()` calls ✅
+- No dead imports ✅
+
+---
+
 ## Session CORE-3 — `app/core/` Pre-Big-Two Files
 **Date:** 2026-03-31
 **Auditor:** Perplexity AI
@@ -67,95 +162,34 @@
 ---
 
 ### `app/core/arm_signal.py`
-**SHA:** `d30cd3f500032a6c31493a2a7be646c23710fb54`
-**Size:** ~9 KB
-**Status:** ✅ Clean
+**SHA:** `d30cd3f5` | **Size:** ~9 KB | **Status:** ✅ Clean
 
-**Purpose:** `arm_ticker()` — the final arming step after all pipeline gates pass.
-Opens the position via `position_manager`, fires Discord alert **only** on confirmed
-position open (position_id > 0), persists armed signal state to DB and in-memory
-state, records TRADED stage in signal analytics, then sets cooldown.
+**Purpose:** `arm_ticker()` — final arming step after all pipeline gates pass.
+Opens position via `position_manager`, fires Discord alert only on confirmed
+position open, persists armed signal state to DB and in-memory state, records
+TRADED stage in signal analytics, then sets cooldown.
 
-**Architecture:**
-- Single top-level function — no class, no module-level state
-- ALL heavy imports deferred inside function body (avoids circular import at load time)
-- 6 logical stages: stop check → log → open position → analytics → Discord → persist + cooldown
-- Dual Discord path: `production_helpers._send_alert_safe()` if available, direct `send_options_signal_alert()` otherwise
+**Architecture:** Single function, all heavy imports deferred (avoids circular import).
+6 logical stages: stop check → log → open position → analytics → Discord → persist + cooldown.
+Dual Discord path: production_helpers if available, direct send_options_signal_alert otherwise.
 
-**Import strategy confirmed:**
-- `import logging` + `logger = logging.getLogger(__name__)` are the ONLY module-level lines (besides the docstring)
-- All 6 functional imports (`position_manager`, `get_state`, `_persist_armed_signal`, `get_ticker_screener_metadata`, `send_options_signal_alert`, `log_proposed_trade`) deferred inside function body ✅
-- `production_helpers` import wrapped in `try/except ImportError` with `PRODUCTION_HELPERS_ENABLED` bool flag — clean optional dependency ✅
-- `signal_tracker.record_trade_executed()` import deferred in its own `try/except Exception` — non-fatal analytics step ✅
-- `get_cached_greeks()` import inside inner `try/except` inside the fallback Discord block — non-fatal enrichment ✅
-- `set_cooldown()` import deferred in its own `try/except Exception` — non-fatal tail step ✅
-
-**Checks passed:**
-- `import logging` + `logger =` at module scope above docstring (BUG-ARM-1 fix confirmed — docstring is correctly assigned to `__doc__`) ✅
-- Stop tightness guard: `abs(entry - stop) < entry * 0.001` → `logger.warning` + `return` (falsy) ✅
-- `mode_label` ARM log uses `logger.info` — correct (this is success-path, not error-path) ✅
-- `log_proposed_trade()` called before position open — audit trail recorded even if open fails ✅
-- `metadata = metadata or get_ticker_screener_metadata(ticker)` — caller metadata honoured, fetched only when missing ✅
-- `mtf_convergence_count` safely extracted: guards `mtf_result` for `None` then `.get('convergence')` then `len(get('timeframes', []))` — no KeyError ✅
-- `position_manager.open_position()` receives all 12 required keyword args — no TypeError ✅
-- `position_id == -1` check → `logger.warning` + `return` — risk manager rejection path clean ✅
-- Discord production path: all 14 keyword args present including `vp_bias` (FIX P3 confirmed) ✅
-- Discord fallback path: `greeks_data` enrichment wrapped in inner `try/except` — non-fatal ✅
-- Discord fallback path: all 15 keyword args including `greeks_data` and `vp_bias` (FIX P3 confirmed) ✅
-- `armed_signal_data` dict uses key `"validation_data"` (BUG-S16-1 fix confirmed) — DB persistence now correct ✅
-- `armed_signal_data` contains all 10 required keys: `position_id`, `direction`, `entry_price`, `stop_price`, `t1`, `t2`, `confidence`, `grade`, `signal_type`, `validation_data` ✅
-- `_state.set_armed_signal(ticker, armed_signal_data)` + `_persist_armed_signal()` called in correct order (memory first, then DB) ✅
-- `return True` at end of successful path (FIX G confirmed) — callers checking `if armed:` work correctly ✅
-- All error paths `return` (None/falsy) implicitly — no accidental `True` on failure paths ✅
-- All `logger.warning` on rejection/error paths — correct log level hierarchy ✅
-- No stray `print()` calls
-- No dead imports
+**Checks passed:** All 6 deferred imports correct. FIX G `return True` confirmed.
+BUG-S16-1 `validation_data` key confirmed. FIX P3 `vp_bias` both Discord paths confirmed.
+All 10 armed_signal_data keys present. No stray prints. No dead imports.
 
 **No findings.**
 
 ---
 
 ### `app/core/analytics_integration.py`
-**SHA:** `3ebfcf2e92dcd16d1466c244c45902e5d66a5e98`
-**Size:** ~9.5 KB
-**Status:** ✅ Clean
+**SHA:** `3ebfcf2e` | **Size:** ~9.5 KB | **Status:** ✅ Clean
 
-**Purpose:** `AnalyticsIntegration` — thin delegation wrapper over `SignalTracker`
-(`app/signals/signal_analytics.py`). The ONLY entry-point used by `scanner.py`.
-Proxies all lifecycle calls (generate → validate → arm → trade) through to
-`signal_tracker` so there is exactly one source of truth in the `signal_events` table.
+**Purpose:** `AnalyticsIntegration` — thin delegation wrapper over `SignalTracker`.
+Single entry-point used by `scanner.py`. `_TRACKER_AVAILABLE` gate on every method.
+`check_scheduled_tasks()` handles open/EOD/midnight timing internally.
 
-**Architecture:**
-- Module-level `try/except` import of `signal_tracker` — class degrades to no-op mode if tracker unavailable
-- `_TRACKER_AVAILABLE` bool gate on every public method — no crash in no-op mode
-- `check_scheduled_tasks()` called once per minute by scanner — handles open/EOD/midnight timing internally
-- All methods return `-1` in no-op mode (not `None`) — callers can distinguish unavailable from zero
-
-**Checks passed:**
-- `from __future__ import annotations` NOT present — no union types requiring it; `Optional[int]` etc. use `from typing import ...` ✅
-- Import order: stdlib (`logging`, `datetime`, `zoneinfo`, `typing`) → no third-party → conditional local (`signal_tracker`) ✅
-- `logger = logging.getLogger(__name__)` placed after all imports, before class definition ✅
-- BUG-AI-1 fix confirmed: `logger = logging.getLogger(__name__)` used — no bare `logging.warning()` / `logging.info()` module-level calls ✅
-- Module-level `_tracker` import wrapped in `try/except Exception` (not just `ImportError`) — catches DB errors on first import, not just missing module ✅
-- `__init__` keeps `db_connection` parameter for API compatibility — SignalTracker manages its own pool, not passed in ✅
-- `__init__` initialises all three EOD flags: `daily_reset_done`, `eod_ml_done`, `eod_report_done` ✅
-- `process_signal()`: returns `1` (truthy) in no-op mode — scanner correctly proceeds on no-op ✅
-- `process_signal()`: all 9 signal fields extracted with safe `.get()` defaults — no KeyError on partial dicts ✅
-- `process_signal()`: `event_id < 0` check with `logger.warning` — tracker failure surfaced in Railway logs ✅
-- `validate_signal()`: all 12 parameters forwarded verbatim — no silent drop ✅
-- `arm_signal()`: `confirmation_type="retest"` default preserved — matches `SignalTracker.record_signal_armed()` signature ✅
-- `record_trade()`: simplest delegation — 2 args, both forwarded ✅
-- `monitor_active_signals()`: documented `pass` placeholder — intentional no-op (position_manager handles this) ✅
-- `check_scheduled_tasks()`: `datetime.now(ZoneInfo("America/New_York"))` — ET-aware ✅
-- `check_scheduled_tasks()`: market open block at 9:30 resets `daily_reset_done=True` and also resets `eod_ml_done=False` and `eod_report_done=False` ✅
-- `check_scheduled_tasks()`: EOD block at 16:05 sets `eod_report_done=True` ✅
-- BUG-AI-3 fix confirmed: midnight reset block resets both `daily_reset_done=False` AND `eod_report_done=False` — EOD report fires correctly on every trading day ✅
-- `get_today_stats()`: BUG-AI-2 fix confirmed — uses `_tracker.get_funnel_stats()` public method, not `_tracker.session_signals` attribute directly ✅
-- `get_today_stats()` no-op fallback returns all 4 expected keys with zero values — callers don't need to guard for missing keys ✅
-- `get_today_stats()` live path returns 7 keys (superset of no-op 4) — backward compatible ✅
-- No stray `print()` calls
-- No dead imports
-- `eod_ml_done` initialised in `__init__` but never written in `check_scheduled_tasks()` — this is **intentional**: ML retrain is triggered elsewhere (Railway cron / `ml_trainer.py`), not from this wrapper. Not a bug. ✅
+**Checks passed:** BUG-AI-1/2/3 all confirmed fixed. `midnight reset` correctly resets
+`eod_report_done`. No bare `logging.warning()` calls. All 4 no-op fallback keys present.
 
 **No findings.**
 
@@ -196,7 +230,7 @@ Proxies all lifecycle calls (generate → validate → arm → trade) through to
 
 ### `app/core/logging_config.py`
 **SHA:** `d22f6ca1` | **Size:** 3,495 B | **Status:** ✅ Clean
-- `_CONFIGURED` guard idempotent. `root.handlers.clear()` prevents duplicates. `_QUIET_LOGGERS` correct. BUG-LC-1 confirmed.
+- `_CONFIGURED` guard idempotent. `root.handlers.clear()` prevents duplicates. `_QUIET_LOGGERS` correct.
 
 ### `app/core/sniper_log.py`
 **SHA:** `bdcb22e0` | **Size:** 2,855 B | **Status:** ✅ Clean
@@ -236,7 +270,7 @@ Proxies all lifecycle calls (generate → validate → arm → trade) through to
 
 ## Session ASS-1 — `app/core/armed_signal_store.py`
 **Date:** 2026-03-31 | **SHA:** `6263afa7` | **Status:** ✅ Fixed in-file
-- BUG-ASS-1: `import logging` moved to top. BUG-ASS-2: Removed redundant inner `import safe_execute`.
+- BUG-ASS-1: `import logging` moved to top. BUG-ASS-2: Redundant inner `import safe_execute` removed.
 
 ---
 
@@ -268,6 +302,9 @@ Proxies all lifecycle calls (generate → validate → arm → trade) through to
 
 | Fix ID | File | Commit | Description |
 |--------|------|--------|-------------|
+| BUG-SN-4 | `sniper.py` | `e25f3200` | Dispatcher alias documented — `_pipeline` vs `_run_signal_pipeline` clarity |
+| BUG-SN-5 | `sniper.py` | `e25f3200` | `get_secondary_range_levels` moved to module-top ORB block; null stub added |
+| BUG-SN-6 | `sniper.py` | `e25f3200` | `bos_signal` key access → `.get()` + guard + `logger.warning` on malformed dict |
 | BUG-WSS-1 | `watch_signal_store.py` | in-file | 7× `logger.info` → `logger.warning` |
 | BUG-WSS-2 | `watch_signal_store.py` | in-file | Stray `print()` → `logger.info()` |
 | BUG-WSS-3 | `watch_signal_store.py` | in-file | Empty `()` removed from `safe_execute` DELETE |
@@ -289,13 +326,12 @@ Proxies all lifecycle calls (generate → validate → arm → trade) through to
 
 | Priority | Target | Files | Notes |
 |----------|--------|-------|-------|
-| 1 🔥 | `app/core/sniper.py` | 1 file (~28 KB) | Strategy engine — all supporting files now confirmed clean |
-| 2 🔥 | `app/core/scanner.py` | 1 file (~31 KB) | Main loop — audit after sniper.py |
-| 3 | `app/data/` | All files | DB pool, `sql_safe`, schema — foundational |
-| 4 | `app/signals/` | Remaining files | Fix BUG-OR-1/2. `breakout_detector.py`, `bos_fvg_engine.py`, etc. |
-| 5 | `app/options/` | All files | Options chain, Greeks, pre-validation |
-| 6 | `app/notifications/` | All files | Discord alert system |
-| 7 | `app/backtesting/` | All files | Backtest engine, walk-forward |
-| 8 | `app/filters/`, `app/indicators/`, `app/mtf/`, `app/screening/`, `app/validation/`, `app/risk/`, `app/ai/` | All | Secondary modules |
-| 9 | `scripts/`, `tests/`, `utils/` | All | Support infrastructure |
-| 10 | Root config | `requirements.txt`, `railway.toml`, etc. | Deployment config |
+| 1 🔥 | `app/core/scanner.py` | 1 file (~31 KB) | Main loop — last `app/core/` file, then folder complete |
+| 2 | `app/data/` | All files | DB pool, `sql_safe`, schema — foundational |
+| 3 | `app/signals/` | Remaining files | Fix BUG-OR-1/2. `breakout_detector.py`, `bos_fvg_engine.py`, etc. |
+| 4 | `app/options/` | All files | Options chain, Greeks, pre-validation |
+| 5 | `app/notifications/` | All files | Discord alert system |
+| 6 | `app/backtesting/` | All files | Backtest engine, walk-forward |
+| 7 | `app/filters/`, `app/indicators/`, `app/mtf/`, `app/screening/`, `app/validation/`, `app/risk/`, `app/ai/` | All | Secondary modules |
+| 8 | `scripts/`, `tests/`, `utils/` | All | Support infrastructure |
+| 9 | Root config | `requirements.txt`, `railway.toml`, etc. | Deployment config |
