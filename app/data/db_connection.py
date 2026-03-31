@@ -111,11 +111,12 @@ FIX (MAR 26, 2026): ROLLBACK BEFORE PUTCONN IN return_conn()
   clean idle state for the next borrower. rollback() on a clean (non-aborted)
   connection is a no-op, so there is zero cost when no error occurred.
 
-DATA-2 AUDIT (MAR 31, 2026): print() → logger
-- 4 residual print() calls replaced with logger.warning() / logger.info().
-  Locations: get_conn() reconnect loop, get_conn() pool-busy path,
-  return_conn() timeout warning. All Railway-visible logging now routes
-  through the configured logger — no silent stdout leakage.
+DATA-2 AUDIT (MAR 31, 2026):
+- BUG-DBC-1: check_pool_health() "last_check" timestamp now uses datetime.now(ET)
+  for timezone-aware output, consistent with the rest of the codebase.
+- BUG-DBC-2: force_close_stale_connections() log calls upgraded from
+  logger.info → logger.warning — stale connection clearing is an emergency
+  event (leaked connections) and must be visible at WARNING log level.
 
 NOTE: Railway provides DATABASE_URL as postgres:// — psycopg2 requires
 postgresql:// — we normalize it automatically here.
@@ -127,10 +128,12 @@ import time
 from contextlib import contextmanager
 from typing import Optional
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 import logging
 
 logger = logging.getLogger(__name__)
 
+_ET = ZoneInfo("America/New_York")
 
 # Strip whitespace/newlines, then normalize postgres:// → postgresql://
 _raw_url = os.getenv("DATABASE_URL", "").strip()
@@ -539,7 +542,8 @@ def check_pool_health() -> dict:
         "stale_reconnects": stats_copy["stale_reconnects"],
         "db_reconnect_failures": stats_copy["db_reconnect_failures"],
         "stale_connections": len(stale_connections),
-        "last_check": datetime.now().isoformat()
+        # BUG-DBC-1 FIX: ET-aware timestamp, consistent with codebase standard
+        "last_check": datetime.now(_ET).isoformat()
     }
 
     with _stats_lock:
@@ -601,7 +605,9 @@ def force_close_stale_connections():
     if not stale:
         return 0
 
-    logger.info(f"[DB] Force-clearing {len(stale)} stale tracking entries...")
+    # BUG-DBC-2 FIX: logger.warning — stale connection clearing is an emergency
+    # event (leaked connections) and must surface at WARNING log level.
+    logger.warning(f"[DB] Force-clearing {len(stale)} stale tracking entries...")
     for conn_id in stale:
         with _stats_lock:
             _checked_out_connections.pop(conn_id, None)
@@ -610,7 +616,7 @@ def force_close_stale_connections():
         except Exception:
             pass
 
-    logger.info(f"[DB] Cleared {len(stale)} stale entries")
+    logger.warning(f"[DB] Cleared {len(stale)} stale entries")
     return len(stale)
 
 
