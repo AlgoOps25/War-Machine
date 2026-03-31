@@ -73,6 +73,14 @@ DATA-2 AUDIT (MAR 31, 2026):
   - Fixed ws_feed import path in _get_ws_bar() / _is_ws_connected():
     `from ws_feed import ...` → `from app.data.ws_feed import ...` to match
     the package structure; ImportError fallback still returns None/False safely.
+
+DATA-3 AUDIT (MAR 31, 2026):
+  - BUG-DM-1: cleanup_old_bars() cutoff now uses ET-naive now
+    (`datetime.now(ET).replace(tzinfo=None)`) so retention is aligned with the
+    ET-naive bar timestamps stored throughout the DB. Prevents Railway UTC from
+    deleting 4-5 extra hours of valid bars.
+  - BUG-DM-2: bulk_fetch_live_snapshots() WS/API counts now tracked explicitly
+    instead of deriving WS count from the final mixed result dict.
 """
 import time
 import os
@@ -928,12 +936,15 @@ class DataManager:
 
         result = {}
         tickers_needing_api = []
+        ws_count = 0
+        api_count = 0
 
         if self._is_ws_connected():
             for ticker in tickers:
                 ws_bar = self._get_ws_bar(ticker)
                 if ws_bar:
                     result[ticker] = ws_bar
+                    ws_count += 1
                 else:
                     tickers_needing_api.append(ticker)
         else:
@@ -969,9 +980,8 @@ class DataManager:
                         "close":    float(close),
                         "volume":   int(d.get("volume", 0))
                     }
+                    api_count += 1
 
-            ws_count = len(result) - len([t for t in tickers_needing_api if t in result])
-            api_count = len([t for t in tickers_needing_api if t in result])
             logger.info(f"[LIVE] Bulk snapshot: {len(result)}/{len(tickers)} tickers "
                         f"(WS: {ws_count}, API: {api_count})")
             return result
@@ -1000,7 +1010,7 @@ class DataManager:
         Remove bars older than days_to_keep from 1m and 5m tables.
         FIX #4: Ensures connection is returned.
         """
-        cutoff = datetime.now() - timedelta(days=days_to_keep)
+        cutoff = datetime.now(ET).replace(tzinfo=None) - timedelta(days=days_to_keep)
         p = ph()
         conn = None
         try:

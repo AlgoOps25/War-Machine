@@ -33,7 +33,7 @@
 | `app/analytics/` | 9 | 9 | ✅ Complete (prior sessions) |
 | `app/backtesting/` | 7 | 0 | ⬜ Pending |
 | `app/core/` | 15 | 15 | ✅ **COMPLETE** — CORE-1 through CORE-6 |
-| `app/data/` | 10 | 7 | 🔄 In Progress — DATA-2 (7/10 audited) |
+| `app/data/` | 10 | 8 | 🔄 In Progress — DATA-3 (8/10 audited) |
 | `app/filters/` | — | — | ⬜ Pending |
 | `app/indicators/` | — | — | ⬜ Pending |
 | `app/ml/` | 7 | 5 | ✅ Complete — Session ML-1 |
@@ -55,10 +55,67 @@
 
 ---
 
-## Session DATA-2 — `app/data/db_connection.py`
+## Session DATA-3 — `app/data/data_manager.py`
 **Date:** 2026-03-31
 **Auditor:** Perplexity AI
 **Commit:** this commit
+**Files audited:** 1 file — `app/data/data_manager.py`
+**Fixes applied:** BUG-DM-1, BUG-DM-2
+
+---
+
+### `app/data/data_manager.py`
+**SHA pre-fix:** `d7fe6931` | **Size:** ~44 KB | **Status:** ✅ Fixed — 2 findings resolved
+
+**Purpose:** Consolidated data-fetching/storage/database manager. Handles EODHD REST,
+WebSocket-first reads, startup backfill, candle-cache sync, 1m storage,
+materialized 5m bars, session queries, live snapshots, DB stats, VIX fetch,
+and singleton bootstrap via `data_manager = DataManager()`.
+
+**BUG-DM-1** ⚠️ → 🔧 **FIXED**
+- *Location:* `cleanup_old_bars()`
+- *Issue:* `cutoff = datetime.now() - timedelta(days=days_to_keep)` used a naive
+  local timestamp. On Railway this resolves in UTC, while all stored bars are
+  ET-naive (`datetime.fromtimestamp(..., tz=ET).replace(tzinfo=None)`). Result:
+  cleanup could delete 4-5 extra hours of valid bars depending on environment.
+- *Fix:* `datetime.now(ET).replace(tzinfo=None) - timedelta(days=days_to_keep)`.
+  Retention now uses ET-naive cutoff aligned with stored bar timestamps.
+
+**BUG-DM-2** ⚠️ → 🔧 **FIXED**
+- *Location:* `bulk_fetch_live_snapshots()`
+- *Issue:* WS/API counts in the final log line were derived indirectly from the
+  mixed `result` dict and `tickers_needing_api`, which was brittle and could
+  misreport counts during mixed WS + REST fulfillment.
+- *Fix:* Added explicit counters: `ws_count` increments when a WS bar is used,
+  `api_count` increments when a REST snapshot is added. Final log now reports
+  exact source counts directly.
+
+**Checks confirmed clean (no action required):**
+- Logger declaration before module docstring — DATA-2 fix confirmed ✅
+- `_to_aware_et()` helper — FIX 15.C-2 correctly implemented ✅
+- `_get_ws_bar()` / `_is_ws_connected()` import path fix confirmed ✅
+- `initialize_database()` destructive migration guard (FIX 15.C-1) correct ✅
+- `_fetch_range()` ET-naive storage normalization correct ✅
+- `startup_backfill_today()` / `startup_intraday_backfill_today()` ET math correct ✅
+- `startup_backfill_with_cache()` ZeroDivisionError guard confirmed ✅
+- `startup_backfill_with_cache()` / `background_cache_sync()` use `_to_aware_et()` correctly ✅
+- `store_bars()` retry / rollback / finally-return pattern correct ✅
+- `materialize_5m_bars()` bucket math and connection handling correct ✅
+- `get_today_session_bars()` / `get_today_5m_bars()` strict same-day bounds correct ✅
+- `get_latest_bar()` WS-first, DB fallback correct ✅
+- `get_bars_from_memory()` WS shortcut for `limit=1` correct ✅
+- `get_database_stats()` Postgres vs SQLite size logic correct ✅
+- `get_previous_day_ohlc()` backtest-safe `as_of_date` handling correct ✅
+- `get_vix_level()` 3-tier fallback correct ✅
+- `clear_prev_day_cache()` correctly deprecated no-op ✅
+- Module-level singleton `data_manager = DataManager()` appropriate for current app bootstrap ✅
+
+---
+
+## Session DATA-2 — `app/data/db_connection.py`
+**Date:** 2026-03-31
+**Auditor:** Perplexity AI
+**Commit:** `b0524d51`
 **Files audited:** 1 file — `app/data/db_connection.py`
 **Fixes applied:** BUG-DBC-1, BUG-DBC-2
 
@@ -177,7 +234,7 @@ Wilder smoothing formula, high-low fallback, `getattr` safe fallback — all cle
 **SHA post-fix:** `a982d079` | **Size:** ~15.6 KB | **Status:** ✅ Fixed
 
 **BUG-SS-1** 🐛 → 🔧 `build_insert/update/delete()` now call `sanitize_table_name()`.
-**BUG-SS-2** 🐛 → 🔧 `safe_insert_dict/update_dict()` now call `sanitize_table_name()`.
+**BUG-SS-2** 🐛 → 🔧 `safe_insert/update_dict()` now call `sanitize_table_name()`.
 Whitelist validator, `SafeQueryBuilder` limit/offset int cast — all clean.
 
 ---
@@ -269,8 +326,10 @@ SC-E (silent except), SC-F (module-level constants), SC-G (`.get()` metadata).
 
 | Fix ID | File | Commit | Description |
 |--------|------|--------|-------------|
-| BUG-DBC-1 | `db_connection.py` | this commit | `datetime.now()` → `datetime.now(_ET)` in `check_pool_health()` |
-| BUG-DBC-2 | `db_connection.py` | this commit | `force_close_stale_connections()` both logs `logger.info` → `logger.warning` |
+| BUG-DM-1 | `data_manager.py` | this commit | `cleanup_old_bars()` cutoff now uses ET-naive now instead of local naive now |
+| BUG-DM-2 | `data_manager.py` | this commit | `bulk_fetch_live_snapshots()` now tracks WS/API counts explicitly |
+| BUG-DBC-1 | `db_connection.py` | `b0524d51` | `datetime.now()` → `datetime.now(_ET)` in `check_pool_health()` |
+| BUG-DBC-2 | `db_connection.py` | `b0524d51` | `force_close_stale_connections()` both logs `logger.info` → `logger.warning` |
 | BUG-SC-1 | `signal_scorecard.py` | `0c2290af` | Blank line between `import logging` and `logger =`; removed unused `field` import |
 | BUG-SP-3 | `sniper_pipeline.py` | `0c2290af` | `BEAR_SIGNALS_ENABLED` dead import removed |
 | BUG-ASS-3 | `armed_signal_store.py` | `7ea03339` | `_persist_armed_signal()` reads `'validation_data'` |
@@ -294,12 +353,11 @@ SC-E (silent except), SC-F (module-level constants), SC-G (`.get()` metadata).
 
 | Priority | Target | Files | Notes |
 |----------|--------|-------|-------|
-| 1 🔥 | `app/data/` DATA-3 | `data_manager.py` (44 KB) | Largest file in repo — own session |
-| 2 | `app/data/` DATA-4 | `ws_feed.py` (23 KB), `ws_quote_feed.py` (21 KB) | WebSocket feeds |
-| 3 | `app/signals/` | Remaining files | Fix BUG-OR-1/2 first |
-| 4 | `app/options/` | All files | Options chain, Greeks, pre-validation |
-| 5 | `app/notifications/` | All files | Discord alert system |
-| 6 | `app/backtesting/` | All files | Backtest engine, walk-forward |
-| 7 | `app/filters/`, `app/indicators/`, `app/mtf/`, `app/screening/`, `app/validation/`, `app/risk/`, `app/ai/` | All | Secondary modules |
-| 8 | `scripts/`, `tests/`, `utils/` | All | Support infrastructure |
-| 9 | Root config | `requirements.txt`, `railway.toml`, etc. | Deployment config |
+| 1 🔥 | `app/data/` DATA-4 | `ws_feed.py` (23 KB), `ws_quote_feed.py` (21 KB) | WebSocket feeds |
+| 2 | `app/signals/` | Remaining files | Fix BUG-OR-1/2 first |
+| 3 | `app/options/` | All files | Options chain, Greeks, pre-validation |
+| 4 | `app/notifications/` | All files | Discord alert system |
+| 5 | `app/backtesting/` | All files | Backtest engine, walk-forward |
+| 6 | `app/filters/`, `app/indicators/`, `app/mtf/`, `app/screening/`, `app/validation/`, `app/risk/`, `app/ai/` | All | Secondary modules |
+| 7 | `scripts/`, `tests/`, `utils/` | All | Support infrastructure |
+| 8 | Root config | `requirements.txt`, `railway.toml`, etc. | Deployment config |
