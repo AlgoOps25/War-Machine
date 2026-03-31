@@ -1,5 +1,7 @@
 import logging
+
 logger = logging.getLogger(__name__)
+
 """
 Data Manager - Consolidated Data Fetching, Storage, and Database Management
 
@@ -61,6 +63,16 @@ AUDIT 2026-03-27:
   - Promoted logger.info → logger.warning on all error/exception paths.
   - NOTE: _UPDATE_TTL / _last_update are declared at module level but never
     read or written in update_ticker(). Dead code — flagged for future cleanup.
+
+DATA-2 AUDIT (MAR 31, 2026):
+  - Removed dead module-level constants _last_update / UPDATE_TTL (never used).
+  - Moved module docstring after logger declaration so logger is defined before
+    any module-level code that could reference it.
+  - Fixed ZeroDivisionError in startup_backfill_with_cache() stats block:
+    cache_hits/len(tickers) now guards len(tickers) > 0 before dividing.
+  - Fixed ws_feed import path in _get_ws_bar() / _is_ws_connected():
+    `from ws_feed import ...` → `from app.data.ws_feed import ...` to match
+    the package structure; ImportError fallback still returns None/False safely.
 """
 import time
 import os
@@ -79,11 +91,6 @@ from app.data.db_connection import (
 ET = ZoneInfo("America/New_York")
 
 _logged_skip = set()  # Track tickers we've logged skip messages for
-
-# Per-ticker update TTL — declared but not yet wired into update_ticker().
-# TODO: connect _last_update reads/writes in update_ticker() or remove.
-_last_update: Dict[str, datetime] = {}
-UPDATE_TTL = timedelta(minutes=2)
 
 
 def _to_aware_et(dt: datetime) -> datetime:
@@ -113,12 +120,13 @@ class DataManager:
         """
         Get current bar from WebSocket feed if connected and available.
         Returns None if WS not connected or no data for ticker.
+        Import path: app.data.ws_feed (DATA-2 fix — was bare `ws_feed`).
         """
         if not config.ENABLE_WEBSOCKET_FEED:
             return None
 
         try:
-            from ws_feed import is_connected, get_current_bar
+            from app.data.ws_feed import is_connected, get_current_bar
             if is_connected():
                 return get_current_bar(ticker)
         except ImportError:
@@ -129,12 +137,15 @@ class DataManager:
         return None
 
     def _is_ws_connected(self) -> bool:
-        """Check if WebSocket feed is active."""
+        """
+        Check if WebSocket feed is active.
+        Import path: app.data.ws_feed (DATA-2 fix — was bare `ws_feed`).
+        """
         if not config.ENABLE_WEBSOCKET_FEED:
             return False
 
         try:
-            from ws_feed import is_connected
+            from app.data.ws_feed import is_connected
             return is_connected()
         except (ImportError, Exception):
             return False
@@ -453,16 +464,18 @@ class DataManager:
             except Exception as e:
                 logger.warning(f"[CACHE] [{idx}/{len(tickers)}] {ticker} error: {e}")
 
+        n = len(tickers)
         logger.info(f"[CACHE] Startup complete!")
         logger.info(f"[CACHE] Stats:")
-        logger.info(f"[CACHE]   - Cache hits: {cache_hits}/{len(tickers)} ({cache_hits/len(tickers)*100:.1f}%)")
+        logger.info(f"[CACHE]   - Cache hits: {cache_hits}/{n} ({cache_hits / n * 100:.1f}%)" if n > 0 else "[CACHE]   - Cache hits: 0/0")
         logger.info(f"[CACHE]   - Cache misses: {cache_misses}")
         logger.info(f"[CACHE]   - Gap fills: {gap_fills}")
         logger.info(f"[CACHE]   - Bars from cache: {total_cached_bars:,}")
         logger.info(f"[CACHE]   - Bars from API: {total_api_bars:,}")
 
-        if cache_hits > 0:
-            api_reduction = (1 - total_api_bars / (total_cached_bars + total_api_bars)) * 100 if (total_cached_bars + total_api_bars) > 0 else 0
+        total_bars = total_cached_bars + total_api_bars
+        if cache_hits > 0 and total_bars > 0:
+            api_reduction = (1 - total_api_bars / total_bars) * 100
             logger.info(f"[CACHE]   - API reduction: {api_reduction:.1f}%")
         logger.info("")
 

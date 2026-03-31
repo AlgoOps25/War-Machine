@@ -111,6 +111,12 @@ FIX (MAR 26, 2026): ROLLBACK BEFORE PUTCONN IN return_conn()
   clean idle state for the next borrower. rollback() on a clean (non-aborted)
   connection is a no-op, so there is zero cost when no error occurred.
 
+DATA-2 AUDIT (MAR 31, 2026): print() → logger
+- 4 residual print() calls replaced with logger.warning() / logger.info().
+  Locations: get_conn() reconnect loop, get_conn() pool-busy path,
+  return_conn() timeout warning. All Railway-visible logging now routes
+  through the configured logger — no silent stdout leakage.
+
 NOTE: Railway provides DATABASE_URL as postgres:// — psycopg2 requires
 postgresql:// — we normalize it automatically here.
 """
@@ -122,6 +128,7 @@ from contextlib import contextmanager
 from typing import Optional
 from datetime import datetime, timedelta
 import logging
+
 logger = logging.getLogger(__name__)
 
 
@@ -294,6 +301,7 @@ def get_conn(sqlite_path: str = "war_machine.db"):
     FIX 14.C-2: _validate_conn() detects stale SSL sockets.
     FIX 14.C-3: Retry loop on double-validation failure (transient blip).
     FIX 14.C-4: _init_pool() no longer flips USE_POSTGRES=False on race.
+    DATA-2: All print() calls replaced with logger.*.
     """
     _init_pool()
 
@@ -325,7 +333,7 @@ def get_conn(sqlite_path: str = "war_machine.db"):
 
                     # FIX 14.C-2: validate socket before handing to caller
                     if not _validate_conn(conn):
-                        logger.info("[DB] ⚠️  Stale connection detected (SSL EOF) — discarding and reconnecting")
+                        logger.warning("[DB] Stale connection detected (SSL EOF) — discarding and reconnecting")
                         _discard_conn(conn)
                         with _stats_lock:
                             _pool_stats["stale_reconnects"] += 1
@@ -335,14 +343,14 @@ def get_conn(sqlite_path: str = "war_machine.db"):
                         for r_attempt, r_delay in enumerate(DB_RECONNECT_DELAYS, start=1):
                             conn = _connection_pool.getconn()
                             if conn is None:
-                                logger.info(f"[DB] ⚠️  Reconnect attempt {r_attempt}/{DB_RECONNECT_RETRIES}: pool returned None")
+                                logger.warning(f"[DB] Reconnect attempt {r_attempt}/{DB_RECONNECT_RETRIES}: pool returned None")
                                 time.sleep(r_delay)
                                 continue
                             if _validate_conn(conn):
                                 reconnected = True
                                 break
-                            print(
-                                f"[DB] ⚠️  Reconnect attempt {r_attempt}/{DB_RECONNECT_RETRIES} "
+                            logger.warning(
+                                f"[DB] Reconnect attempt {r_attempt}/{DB_RECONNECT_RETRIES} "
                                 f"failed validation — waiting {r_delay}s before retry"
                             )
                             _discard_conn(conn)
@@ -375,7 +383,7 @@ def get_conn(sqlite_path: str = "war_machine.db"):
                             with _stats_lock:
                                 _pool_stats["errors"] += 1
                             if attempt == 0:
-                                print(
+                                logger.warning(
                                     f"[DB] Pool busy, retrying... "
                                     f"(attempt {attempt + 1}/{POOL_RETRY_ATTEMPTS})"
                                 )
@@ -384,7 +392,7 @@ def get_conn(sqlite_path: str = "war_machine.db"):
 
                     with _stats_lock:
                         _pool_stats["errors"] += 1
-                    logger.info(f"[DB] Connection checkout failed after {attempt + 1} attempts: {e}")
+                    logger.warning(f"[DB] Connection checkout failed after {attempt + 1} attempts: {e}")
                     if semaphore_acquired:
                         _db_semaphore.release()
                         semaphore_acquired = False
@@ -445,7 +453,7 @@ def return_conn(conn):
                     _pool_stats["returns"] += 1
 
                 if checkout_duration and checkout_duration > CONNECTION_TIMEOUT_SECONDS:
-                    print(
+                    logger.warning(
                         f"[DB] Connection held for {checkout_duration:.1f}s "
                         f"(>{CONNECTION_TIMEOUT_SECONDS}s timeout) — possible leak!"
                     )
@@ -462,7 +470,7 @@ def return_conn(conn):
                 _connection_pool.putconn(conn)
 
             except Exception as e:
-                logger.info(f"[DB] Error returning connection to pool: {e}")
+                logger.warning(f"[DB] Error returning connection to pool: {e}")
                 try:
                     conn.close()
                 except Exception:
@@ -538,12 +546,12 @@ def check_pool_health() -> dict:
         _pool_stats["last_health_check"] = time.time()
 
     if leaked > 5:
-        logger.info(f"[DB] Pool health warning: {leaked} connections not returned (possible leak)")
+        logger.warning(f"[DB] Pool health warning: {leaked} connections not returned (possible leak)")
 
     if stale_connections:
-        logger.info(f"[DB] {len(stale_connections)} stale connection(s) detected:")
+        logger.warning(f"[DB] {len(stale_connections)} stale connection(s) detected:")
         for conn_id, duration in stale_connections[:3]:
-            logger.info(f"[DB]   • Connection {conn_id}: held for {duration:.1f}s")
+            logger.warning(f"[DB]   • Connection {conn_id}: held for {duration:.1f}s")
 
     return health
 
