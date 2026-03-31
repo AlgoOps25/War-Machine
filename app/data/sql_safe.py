@@ -15,6 +15,13 @@ FIX (MAR 26, 2026): SafeQueryBuilder.order_by() raw-string injection
   Raises ValueError on any invalid token so callers fail loudly rather
   than silently passing attacker-controlled SQL into the query.
 
+FIX (MAR 31, 2026) BUG-SS-1/2:
+- build_insert / build_update / build_delete and their dict-based
+  wrappers (safe_insert_dict / safe_update_dict) did not call
+  sanitize_table_name(table) before embedding table in the SQL string.
+  SafeQueryBuilder.__init__ already did this — the standalone functions
+  were inconsistent. All five functions now sanitize the table name first.
+
 Usage:
     from app.data.sql_safe import safe_execute, safe_query, build_insert, build_update
     
@@ -105,6 +112,10 @@ def safe_query(cursor, query: str, params: Optional[Tuple] = None) -> List[Any]:
 def build_insert(table: str, columns: List[str], placeholder: str = "?") -> str:
     """
     Build a safe parameterized INSERT statement.
+
+    BUG-SS-1 FIX: table name is now validated via sanitize_table_name()
+    before being embedded in the SQL string, consistent with
+    SafeQueryBuilder.__init__ which already enforced this.
     
     Args:
         table: Table name
@@ -119,6 +130,7 @@ def build_insert(table: str, columns: List[str], placeholder: str = "?") -> str:
         # Returns: "INSERT INTO trades (ticker, price, timestamp) VALUES (?, ?, ?)"
         safe_execute(cursor, query, ("AAPL", 150.25, datetime.now()))
     """
+    table = sanitize_table_name(table)  # BUG-SS-1 FIX
     cols = ", ".join(columns)
     placeholders = ", ".join([placeholder] * len(columns))
     return f"INSERT INTO {table} ({cols}) VALUES ({placeholders})"
@@ -128,6 +140,9 @@ def build_update(table: str, columns: List[str], where_clause: str,
                 placeholder: str = "?") -> str:
     """
     Build a safe parameterized UPDATE statement.
+
+    BUG-SS-1 FIX: table name is now validated via sanitize_table_name()
+    before being embedded in the SQL string.
     
     Args:
         table: Table name
@@ -143,6 +158,7 @@ def build_update(table: str, columns: List[str], where_clause: str,
         # Returns: "UPDATE trades SET price = ?, status = ? WHERE ticker = ?"
         safe_execute(cursor, query, (151.00, "closed", "AAPL"))
     """
+    table = sanitize_table_name(table)  # BUG-SS-1 FIX
     set_clause = ", ".join([f"{col} = {placeholder}" for col in columns])
     return f"UPDATE {table} SET {set_clause} WHERE {where_clause}"
 
@@ -150,6 +166,9 @@ def build_update(table: str, columns: List[str], where_clause: str,
 def build_delete(table: str, where_clause: str) -> str:
     """
     Build a safe parameterized DELETE statement.
+
+    BUG-SS-1 FIX: table name is now validated via sanitize_table_name()
+    before being embedded in the SQL string.
     
     Args:
         table: Table name
@@ -163,6 +182,7 @@ def build_delete(table: str, where_clause: str) -> str:
         # Returns: "DELETE FROM trades WHERE ticker = ? AND status = ?"
         safe_execute(cursor, query, ("AAPL", "closed"))
     """
+    table = sanitize_table_name(table)  # BUG-SS-1 FIX
     return f"DELETE FROM {table} WHERE {where_clause}"
 
 
@@ -170,6 +190,10 @@ def safe_insert_dict(cursor, table: str, data: Dict[str, Any],
                      placeholder: str = "?") -> None:
     """
     Insert a dictionary of data safely with automatic parameterization.
+
+    BUG-SS-2 FIX: sanitize_table_name(table) called before delegating to
+    build_insert so this public convenience function enforces the same
+    validation as SafeQueryBuilder.__init__.
     
     Args:
         cursor: Database cursor
@@ -184,6 +208,7 @@ def safe_insert_dict(cursor, table: str, data: Dict[str, Any],
             "timestamp": datetime.now()
         })
     """
+    sanitize_table_name(table)  # BUG-SS-2 FIX — validate before delegating
     columns = list(data.keys())
     values = tuple(data.values())
     query = build_insert(table, columns, placeholder)
@@ -195,6 +220,10 @@ def safe_update_dict(cursor, table: str, data: Dict[str, Any],
                      placeholder: str = "?") -> None:
     """
     Update using a dictionary of data safely with automatic parameterization.
+
+    BUG-SS-2 FIX: sanitize_table_name(table) called before delegating to
+    build_update so this public convenience function enforces the same
+    validation as SafeQueryBuilder.__init__.
     
     Args:
         cursor: Database cursor
@@ -209,6 +238,7 @@ def safe_update_dict(cursor, table: str, data: Dict[str, Any],
                         {"price": 151.00, "status": "closed"},
                         "ticker", "AAPL")
     """
+    sanitize_table_name(table)  # BUG-SS-2 FIX — validate before delegating
     columns = list(data.keys())
     values = list(data.values())
     values.append(where_value)  # Add WHERE value at the end

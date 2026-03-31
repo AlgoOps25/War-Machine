@@ -14,6 +14,17 @@ Data Sources:
   - Dark Pool data feeds (if available)
 
 Impact: Front-run institutional money, higher win rate on whale-confirmed signals
+
+FIX (MAR 31, 2026) BUG-UOA-1:
+  _cache_result() stored datetime.now(ET) as a raw datetime object under
+  the 'timestamp' key. _is_cached() then called datetime.fromisoformat()
+  on that value — fromisoformat() raises TypeError on a datetime object
+  (it expects a str). This caused every cache lookup after the first store
+  to raise, making the 5-minute cache permanently non-functional and
+  triggering a live API call (or stub call) on every check_whale_activity
+  invocation. Fix: _cache_result() now stores .isoformat() string,
+  consistent with check_whale_activity() which already stored
+  result['timestamp'] as an ISO string.
 """
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime, timedelta
@@ -304,17 +315,27 @@ class UnusualOptionsDetector:
         if cache_key not in self.cache:
             return False
         
+        # BUG-UOA-1 FIX: _cache_result() now stores .isoformat() string so
+        # fromisoformat() receives a str, not a raw datetime object.
         cached_time = datetime.fromisoformat(self.cache[cache_key]['data']['timestamp'])
         age_seconds = (datetime.now(ET) - cached_time).total_seconds()
         
         return age_seconds < self.cache_ttl
     
     def _cache_result(self, ticker: str, direction: str, result: Dict) -> None:
-        """Cache whale detection result keyed by (ticker, direction)."""
+        """
+        Cache whale detection result keyed by (ticker, direction).
+
+        BUG-UOA-1 FIX: Previously stored datetime.now(ET) as a raw datetime
+        object. _is_cached() called datetime.fromisoformat() on that value —
+        fromisoformat() raises TypeError on a datetime object (expects str),
+        making the cache permanently non-functional. Now stores
+        datetime.now(ET).isoformat() so _is_cached() can parse it correctly.
+        """
         cache_key = (ticker, direction)
         self.cache[cache_key] = {
             'data': result,
-            'timestamp': datetime.now(ET)
+            'timestamp': datetime.now(ET).isoformat()  # BUG-UOA-1 FIX: .isoformat() not raw datetime
         }
     
     def clear_cache(self) -> None:

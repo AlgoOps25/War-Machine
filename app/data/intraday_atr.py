@@ -100,7 +100,9 @@ def get_atr_for_breakout(bars: list, ticker: str = "") -> tuple:
                 logger.info(f"[ATR] {ticker} DAILY_PROXY ATR={atr:.4f} ({len(bars)} bars)")
                 return atr, "DAILY_PROXY"
     except Exception as e:
-        logger.info(f"[ATR] compute error for {ticker} (non-fatal): {e}")
+        # BUG-IAT-1 FIX: warning level — compute errors are non-fatal but abnormal;
+        # info level was silently burying genuine exceptions in Railway logs.
+        logger.warning(f"[ATR] compute error for {ticker} (non-fatal): {e}")
 
     # Static fallback
     try:
