@@ -15,6 +15,14 @@
 #   is_watching()          -> _state.ticker_is_watching()    (correct ThreadSafeState API)
 #   get_watching_signals() -> _state.get_all_watching_signals() (correct ThreadSafeState API)
 #   The old names did not exist on ThreadSafeState — every call was a latent AttributeError.
+#
+# AUDIT 2026-03-31 (Session 15):
+#   BUG-WSS-1: Promoted all error-path logger.info → logger.warning to match
+#              armed_signal_store.py convention (errors must surface in Railway logs).
+#   BUG-WSS-2: Replaced stray print() in _load_watches_from_db() with logger.info()
+#              (same fix that was applied to armed_signal_store.py in a prior session).
+#   BUG-WSS-3: Removed empty () params tuple from clear_watching_signals() safe_execute
+#              DELETE call — matches armed_signal_store.py style (no params on full-table delete).
 
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -61,7 +69,7 @@ def _ensure_watch_db():
         """)
         conn.commit()
     except Exception as e:
-        logger.info(f"[WATCH-DB] Init error: {e}")
+        logger.warning(f"[WATCH-DB] Init error: {e}")
     finally:
         if conn:
             return_conn(conn)
@@ -96,7 +104,7 @@ def _persist_watch(ticker: str, data: dict):
         ))
         conn.commit()
     except Exception as e:
-        logger.info(f"[WATCH-DB] Persist error for {ticker}: {e}")
+        logger.warning(f"[WATCH-DB] Persist error for {ticker}: {e}")
     finally:
         if conn:
             return_conn(conn)
@@ -112,7 +120,7 @@ def _remove_watch_from_db(ticker: str):
         safe_execute(cursor, f"DELETE FROM watching_signals_persist WHERE ticker = {p}", (ticker,))
         conn.commit()
     except Exception as e:
-        logger.info(f"[WATCH-DB] Remove error for {ticker}: {e}")
+        logger.warning(f"[WATCH-DB] Remove error for {ticker}: {e}")
     finally:
         if conn:
             return_conn(conn)
@@ -135,7 +143,7 @@ def _cleanup_stale_watches():
         if deleted_count > 0:
             logger.info(f"[WATCH-DB] \U0001f9f9 Auto-cleaned {deleted_count} stale watch(es) (older than {watch_window_minutes}min)")
     except Exception as e:
-        logger.info(f"[WATCH-DB] Cleanup error: {e}")
+        logger.warning(f"[WATCH-DB] Cleanup error: {e}")
     finally:
         if conn:
             return_conn(conn)
@@ -174,13 +182,13 @@ def _load_watches_from_db() -> dict:
                 "signal_type":     row["signal_type"],
             }
         if loaded:
-            print(
+            logger.info(
                 f"[WATCH-DB] \U0001f4c4 Reloaded {len(loaded)} watch state(s) from DB after restart: "
                 f"{', '.join(loaded.keys())}"
             )
         return loaded
     except Exception as e:
-        logger.info(f"[WATCH-DB] Load error: {e}")
+        logger.warning(f"[WATCH-DB] Load error: {e}")
         return {}
     finally:
         if conn:
@@ -217,23 +225,22 @@ def send_bos_watch_alert(ticker, direction, bos_price, struct_high, struct_low,
         send_simple_message(msg)
         logger.info(f"[WATCH] \U0001f4e1 {ticker} {direction.upper()} BOS @ ${bos_price:.2f}")
     except Exception as e:
-        logger.info(f"[WATCH] Alert error: {e}")
+        logger.warning(f"[WATCH] Alert error: {e}")
 
 
 def clear_watching_signals():
     """Clear all watching signals from memory and DB."""
     from app.data.db_connection import get_conn, return_conn
-    from app.data.sql_safe import safe_execute
     _state.clear_watching_signals()
     conn = None
     try:
         conn = get_conn()
         cursor = conn.cursor()
-        safe_execute(cursor, "DELETE FROM watching_signals_persist", ())
+        safe_execute(cursor, "DELETE FROM watching_signals_persist")
         conn.commit()
         logger.info("[WATCH-DB] \U0001f9f9 All watching signals cleared from DB")
     except Exception as e:
-        logger.info(f"[WATCH-DB] Clear error: {e}")
+        logger.warning(f"[WATCH-DB] Clear error: {e}")
     finally:
         if conn:
             return_conn(conn)
