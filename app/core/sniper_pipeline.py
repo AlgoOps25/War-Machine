@@ -2,6 +2,14 @@
 """
 app/core/sniper_pipeline.py — CFW6 Signal Pipeline
 
+FIX HISTORY (2026-03-31):
+
+  BUG-SP-3: Removed unused `BEAR_SIGNALS_ENABLED` import.
+    Was imported at module scope but never referenced anywhere in the file.
+    Dead import removed — keeps the import block clean and avoids confusion
+    about whether bear-signal gating is active here (it is not; it lives in
+    sniper.py at the process_ticker() call site).
+
 FIX HISTORY (2026-03-30):
 
   BUG-SP-1: TIME gate moved above RVOL fetch.
@@ -64,7 +72,7 @@ import logging
 from datetime import time
 from zoneinfo import ZoneInfo
 from utils import config
-from utils.config import RVOL_SIGNAL_GATE, RVOL_CEILING, BEAR_SIGNALS_ENABLED
+from utils.config import RVOL_SIGNAL_GATE, RVOL_CEILING
 from utils.time_helpers import _now_et
 from utils.bar_utils import resample_bars as _resample_bars  # FIX #53: was a local duplicate
 from app.data.data_manager import data_manager
@@ -101,7 +109,7 @@ def _run_signal_pipeline(
         False — signal was dropped by any upstream gate
 
     Gate order (BUG-SP-1 fix: TIME gate runs before any data fetch):
-      1. TIME gate (< 11:00 AM ET)          ← runs first, no data fetch wasted
+      1. TIME gate (< 11:00 AM ET)          <- runs first, no data fetch wasted
       2. RVOL fetch
       3. RVOL floor gate
       4. RVOL ceiling gate
@@ -116,75 +124,75 @@ def _run_signal_pipeline(
      13. compute_stop_and_targets() — None return drops signal cleanly
      14. arm_ticker() — all required args supplied
     """
-    # ── 1. TIME gate (BUG-SP-1: moved above RVOL fetch) ──────────────────────
+    # -- 1. TIME gate (BUG-SP-1: moved above RVOL fetch) ----------------------
     now_et = _now_et()
     if now_et.time() > time(11, 0):
         logger.info(
-            f"[{ticker}] ⛔ TIME GATE: {now_et.strftime('%H:%M')} > 11:00 AM — signal dropped"
+            f"[{ticker}] TIME GATE: {now_et.strftime('%H:%M')} > 11:00 AM — signal dropped"
         )
         return False
 
-    # ── 2. RVOL fetch ──────────────────────────────────────────────────────────
+    # -- 2. RVOL fetch --------------------------------------------------------
     try:
         rvol = data_manager.get_rvol(ticker) or 1.0
     except Exception:
         rvol = 1.0
 
-    # ── 3. RVOL floor ──────────────────────────────────────────────────────────
+    # -- 3. RVOL floor --------------------------------------------------------
     if rvol < RVOL_SIGNAL_GATE:
         logger.info(
-            f"[{ticker}] ⛔ RVOL GATE: {rvol:.2f}x < {RVOL_SIGNAL_GATE}x floor — signal dropped"
+            f"[{ticker}] RVOL GATE: {rvol:.2f}x < {RVOL_SIGNAL_GATE}x floor — signal dropped"
         )
         return False
 
-    # ── 4. RVOL ceiling ────────────────────────────────────────────────────────
+    # -- 4. RVOL ceiling ------------------------------------------------------
     if rvol >= RVOL_CEILING:
         logger.info(
-            f"[{ticker}] ⛔ RVOL CEILING: {rvol:.2f}x >= {RVOL_CEILING}x — signal dropped"
+            f"[{ticker}] RVOL CEILING: {rvol:.2f}x >= {RVOL_CEILING}x — signal dropped"
         )
         return False
 
-    # ── 5. VWAP gate ───────────────────────────────────────────────────────────
+    # -- 5. VWAP gate ---------------------------------------------------------
     vwap_val    = compute_vwap(bars_session)
     entry_price = bars_session[-1]["close"]
     vwap_passed = passes_vwap_gate(entry_price, vwap_val, direction)
     if not vwap_passed:
         logger.info(
-            f"[{ticker}] ⛔ VWAP GATE: price ${entry_price:.2f} failed vwap=${vwap_val:.2f}"
+            f"[{ticker}] VWAP GATE: price ${entry_price:.2f} failed vwap=${vwap_val:.2f}"
         )
         return False
 
-    # ── 6. Dead zone ───────────────────────────────────────────────────────────
+    # -- 6. Dead zone ---------------------------------------------------------
     if is_dead_zone(now_et):
-        logger.info(f"[{ticker}] ⛔ DEAD ZONE: {now_et.strftime('%H:%M')} — signal dropped")
+        logger.info(f"[{ticker}] DEAD ZONE: {now_et.strftime('%H:%M')} — signal dropped")
         return False
 
-    # ── 7. GEX pin zone ────────────────────────────────────────────────────────
+    # -- 7. GEX pin zone ------------------------------------------------------
     if is_in_gex_pin_zone(ticker):
-        logger.info(f"[{ticker}] ⛔ GEX PIN ZONE — signal dropped")
+        logger.info(f"[{ticker}] GEX PIN ZONE — signal dropped")
         return False
 
-    # ── 8. Cooldown ────────────────────────────────────────────────────────────
+    # -- 8. Cooldown ----------------------------------------------------------
     _cd_blocked, _cd_reason = is_on_cooldown(ticker, direction)
     if _cd_blocked:
-        logger.info(f"[{ticker}] ⛔ COOLDOWN: {_cd_reason} — signal dropped")
+        logger.info(f"[{ticker}] COOLDOWN: {_cd_reason} — signal dropped")
         return False
 
-    # ── 9. CFW6 confirmation ───────────────────────────────────────────────────
+    # -- 9. CFW6 confirmation -------------------------------------------------
     if not skip_cfw6_confirmation:
         confirmed, confirmation_meta = wait_for_confirmation(
             ticker, bars_session, breakout_idx, direction, zone_low, zone_high
         )
         if not confirmed:
-            logger.warning(f"[{ticker}] ⛔ CFW6 confirmation failed")
+            logger.warning(f"[{ticker}] CFW6 confirmation failed")
             return False
         grade, confidence_base = grade_signal_with_confirmations(confirmation_meta)
     else:
-        grade            = "A"
-        confidence_base  = 0.65
+        grade             = "A"
+        confidence_base   = 0.65
         confirmation_meta = {}
 
-    # ── 10. MTF trend bias ────────────────────────────────────────────────────
+    # -- 10. MTF trend bias ---------------------------------------------------
     _mtf_bias_adj = 0.0
     if getattr(config, "MTF_TREND_ENABLED", True):
         try:
@@ -201,43 +209,43 @@ def _run_signal_pipeline(
                     )
                     if _is_aligned:
                         _mtf_bias_adj = 0.05
-                        logger.info(f"[{ticker}] ✅ MTF-TREND: Aligned — +5% bias")
+                        logger.info(f"[{ticker}] MTF-TREND: Aligned — +5% bias")
                     else:
                         if rvol < 1.8:
                             logger.info(
-                                f"[{ticker}] ⛔ MTF-RVOL GATE: Counter-trend "
+                                f"[{ticker}] MTF-RVOL GATE: Counter-trend "
                                 f"rvol {rvol:.2f}x < 1.8x required — signal dropped"
                             )
                             return False
                         logger.info(
-                            f"[{ticker}] ⚠️ MTF-TREND: Counter-trend — "
+                            f"[{ticker}] MTF-TREND: Counter-trend — "
                             f"High RVOL {rvol:.2f}x overrides"
                         )
         except Exception as _mtf_err:
             logger.warning(f"[{ticker}] MTF bias check skipped (non-fatal): {_mtf_err}")
 
-    # ── 11a. SMC enrichment ────────────────────────────────────────────────────
+    # -- 11a. SMC enrichment --------------------------------------------------
     try:
         from app.filters.sd_zone_confluence import get_smc_delta
         smc_delta = get_smc_delta(ticker, direction)
     except Exception:
         smc_delta = None
 
-    # ── 11b. Liquidity sweep ───────────────────────────────────────────────────
+    # -- 11b. Liquidity sweep -------------------------------------------------
     try:
         from app.filters.liquidity_sweep import has_sweep
         sweep_detected = has_sweep(ticker, bars_session, direction)
     except Exception:
         sweep_detected = False
 
-    # ── 11c. Order block retest ────────────────────────────────────────────────
+    # -- 11c. Order block retest ----------------------------------------------
     try:
         from app.filters.order_block_cache import has_ob_retest
         ob_detected = has_ob_retest(ticker, bars_session, direction)
     except Exception:
         ob_detected = False
 
-    # ── 12. SignalScorecard ────────────────────────────────────────────────────
+    # -- 12. SignalScorecard --------------------------------------------------
     # BUG-SP-2: confidence_base from CFW6 now passed in — no longer discarded
     _sc = build_scorecard(
         ticker=ticker,
@@ -256,19 +264,19 @@ def _run_signal_pipeline(
 
     if _sc.score < SCORECARD_GATE_MIN:
         logger.info(
-            f"[{ticker}] ⛔ SCORECARD-GATE: {_sc.score:.1f} "
+            f"[{ticker}] SCORECARD-GATE: {_sc.score:.1f} "
             f"< {SCORECARD_GATE_MIN} — signal dropped"
         )
         return False
 
-    # Confidence mapped linearly from scorecard score (60–85+ → 0.60–0.85)
+    # Confidence mapped linearly from scorecard score (60-85+ -> 0.60-0.85)
     _confidence = min(0.85, max(0.60, _sc.score / 100.0))
     logger.info(
-        f"[{ticker}] ✅ SCORECARD PASS: {_sc.score:.1f}pts "
+        f"[{ticker}] SCORECARD PASS: {_sc.score:.1f}pts "
         f"confidence={_confidence:.2f} grade={grade} cfw6_base={confidence_base:.2f}"
     )
 
-    # ── 13. Stop / Targets ────────────────────────────────────────────────────
+    # -- 13. Stop / Targets ---------------------------------------------------
     stop_price, t1, t2 = compute_stop_and_targets(
         bars=bars_session,
         direction=direction,
@@ -280,12 +288,12 @@ def _run_signal_pipeline(
 
     if stop_price is None:
         logger.info(
-            f"[{ticker}] ⛔ STOP-INVALID: compute_stop_and_targets returned None "
+            f"[{ticker}] STOP-INVALID: compute_stop_and_targets returned None "
             f"(entry=${entry_price:.2f} grade={grade} direction={direction}) — signal dropped"
         )
         return False
 
-    # ── 14. Arm ───────────────────────────────────────────────────────────────
+    # -- 14. Arm --------------------------------------------------------------
     arm_ticker(
         ticker=ticker,
         direction=direction,

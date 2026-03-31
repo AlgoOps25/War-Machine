@@ -32,7 +32,7 @@
 | `app/ai/` | 2 | 0 | ⬜ Pending |
 | `app/analytics/` | 9 | 9 | ✅ Complete (prior sessions) |
 | `app/backtesting/` | 7 | 0 | ⬜ Pending |
-| `app/core/` | 15 | 15 | ✅ **COMPLETE** — CORE-1 through CORE-5 |
+| `app/core/` | 15 | 15 | ✅ **COMPLETE** — CORE-1 through CORE-6 |
 | `app/data/` | 10 | 6 | 🔄 In Progress — DATA-1 (6/10 audited) |
 | `app/filters/` | — | — | ⬜ Pending |
 | `app/indicators/` | — | — | ⬜ Pending |
@@ -52,6 +52,50 @@
 | `tests/` | — | — | ⬜ Pending |
 | `utils/` | — | — | ⬜ Pending |
 | Root config files | 8 | 0 | ⬜ Pending |
+
+---
+
+## Session CORE-6 — Pending Fix Clearance
+**Date:** 2026-03-31
+**Auditor:** Perplexity AI
+**Commit:** TBD (this commit)
+**Files fixed:** `signal_scorecard.py`, `sniper_pipeline.py`
+**Purpose:** Cleared the two open style/dead-import findings from Session CORE-2.
+
+**Note — Unusual Whales:** `app/data/unusual_options.py` (audited DATA-1) is confirmed
+a placeholder stub. All 4 scorer methods (`_detect_large_orders`, `_analyze_options_flow`,
+`_detect_sweeps`, `_check_dark_pool_activity`) intentionally return `0.0`. No subscription
+or API wiring exists yet. BUG-UOA-1 (cache TTL TypeError) was fixed so the module is
+production-safe when real integration eventually lands. No action required until
+Unusual Whales subscription is active.
+
+---
+
+### `app/core/signal_scorecard.py`
+**SHA pre-fix:** `5734267e` | **Status:** ✅ Fixed — BUG-SC-1
+
+**BUG-SC-1** ⚠️ → 🔧 **FIXED**
+- *Location:* Import block, lines immediately after stdlib imports
+- *Issue:* `import logging` and `logger = logging.getLogger(__name__)` were on
+  consecutive lines with no blank line separator — inconsistent with PEP 8 and
+  the rest of the codebase (every other module separates the two).
+- *Fix:* Blank line added between `import logging` and `logger = ...`.
+- *Also:* Removed unused `from dataclasses import field` (was imported alongside
+  `dataclass` but `field` is never used in the file).
+
+---
+
+### `app/core/sniper_pipeline.py`
+**SHA pre-fix:** `cb87b539` | **Status:** ✅ Fixed — BUG-SP-3
+
+**BUG-SP-3** ⚠️ → 🔧 **FIXED**
+- *Location:* Module-level import block, `from utils.config import ...` line
+- *Issue:* `BEAR_SIGNALS_ENABLED` was imported at module scope but never referenced
+  anywhere in the file. Bear-signal gating lives in `sniper.py` at the
+  `process_ticker()` call site — not in the pipeline. The dead import created
+  the false impression that bear-signal logic was active inside the pipeline.
+- *Fix:* `BEAR_SIGNALS_ENABLED` removed from the import line.
+  Remaining imports from `utils.config`: `RVOL_SIGNAL_GATE`, `RVOL_CEILING`.
 
 ---
 
@@ -97,9 +141,9 @@ legacy aliases.
 - Docstring explicitly states: "Do NOT add new business logic here."
 
 **Checks confirmed clean:**
-- `close_db_connection(conn=None)` no-op guard (`if conn is not None`) is correct — legacy usage where old module held a singleton ✅
+- `close_db_connection(conn=None)` no-op guard (`if conn is not None`) is correct ✅
 - `__all__` lists all 10 exported symbols — complete and accurate ✅
-- No circular import risk — `database.py` imports from `db_connection.py`, not vice versa ✅
+- No circular import risk ✅
 - No logic duplication — pure delegation ✅
 - No stray prints, no dead imports ✅
 
@@ -112,34 +156,15 @@ legacy aliases.
 **Status:** ✅ Fixed — 1 finding resolved
 
 **Purpose:** Provides `compute_intraday_atr()` and `get_atr_for_breakout()`.
-Replaces the stale static `config.ATR_VALUE` constant with a true Wilder ATR
-computed on the current session's 1-minute bars. Used by
-`app/risk/dynamic_thresholds.py` for adaptive OR breakout thresholds.
-
-**Architecture:**
-- `DEFAULT_ATR_PERIOD = 14` — module-level constant
-- `compute_intraday_atr(bars, period)` — pure math, no IO, no exception handling
-- `get_atr_for_breakout(bars, ticker)` — wrapper with 3-tier fallback chain:
-  1. Wilder ATR (≥15 session bars) → label `"INTRADAY"`
-  2. Mean(high-low) proxy (<15 bars) → label `"DAILY_PROXY"`
-  3. `config.ATR_VALUE` static constant → label `"FALLBACK"`
+Replaces stale `config.ATR_VALUE` constant with a true Wilder ATR on session 1m bars.
 
 **BUG-IAT-1** ⚠️ → 🔧 **FIXED**
-- *Location:* `get_atr_for_breakout()`, `except Exception as e:` clause
-- *Issue:* `logger.info(f"[ATR] compute error for {ticker} (non-fatal): {e}")` —
-  compute errors are abnormal conditions (e.g. malformed bar dict, missing key).
-  Using `info` level buried these in Railway logs behind hundreds of normal ATR
-  log lines, making it impossible to notice genuine data quality issues.
-- *Fix:* Changed to `logger.warning(...)`. Fallback to `DAILY_PROXY` or `FALLBACK`
-  still proceeds normally — non-fatal behavior unchanged.
+- `logger.info` → `logger.warning` on compute exception in `get_atr_for_breakout()`.
 
 **Checks confirmed clean:**
-- `compute_intraday_atr()` Wilder smoothing formula correct: seed = `mean(TR[0:period])`, then `(atr*(p-1) + tr)/p` ✅
-- First TR correctly uses `highs[0] - lows[0]` (no prev close) ✅
-- High-low fallback: `if h > 0 and l > 0` guard prevents zero-bar pollution ✅
-- `get_atr_for_breakout()` dual-branch correctly avoids double-computing: branch 1 (≥15 bars) → `compute_intraday_atr()` → Wilder path; branch 2 (<15 bars) → `compute_intraday_atr()` → triggers `hl_range fallback` internally ✅
-- `from utils import config` deferred inside `except Exception` fallback — avoids import-time dependency ✅
-- `getattr(config, "ATR_VALUE", 0.5)` safe fallback if config missing the attribute ✅
+- Wilder smoothing formula correct ✅
+- High-low fallback guard correct ✅
+- `getattr(config, "ATR_VALUE", 0.5)` safe fallback ✅
 - No stray prints ✅
 
 ---
@@ -148,93 +173,33 @@ computed on the current session's 1-minute bars. Used by
 **SHA pre-fix:** `909fdd49` | **SHA post-fix:** `a982d079` | **Size:** ~15.6 KB
 **Status:** ✅ Fixed — 2 findings resolved
 
-**Purpose:** SQL injection prevention module. Provides parameterized query helpers,
-a fluent `SafeQueryBuilder`, and `sanitize_table_name()` / `sanitize_order_by()`
-for cases where table/column names must be embedded in SQL strings (cannot be
-parameterized). All callers in the codebase should use these instead of raw
-f-string SQL.
-
-**Architecture:**
-- `ph()` — returns `"%s"` (Postgres) or `"?"` (SQLite) — reads `USE_POSTGRES` once at import
-- `safe_execute()` / `safe_query()` — parameterized execute wrappers with error logging
-- `build_insert()` / `build_update()` / `build_delete()` — SQL string builders
-- `safe_insert_dict()` / `safe_update_dict()` — dict-based convenience wrappers
-- `sanitize_table_name()` — whitelist validator (alphanum + `_` only, rejects SQL keywords)
-- `sanitize_order_by()` — tokenized ORDER BY validator (Mar 26 fix)
-- `safe_in_clause()` — builds `IN (?, ?, ?)` with params list
-- `SafeQueryBuilder` — fluent builder; `__init__` calls `sanitize_table_name(table)`
+**Purpose:** SQL injection prevention module. Parameterized query helpers,
+fluent `SafeQueryBuilder`, `sanitize_table_name()` / `sanitize_order_by()`.
 
 **BUG-SS-1** 🐛 → 🔧 **FIXED**
-- *Location:* `build_insert()`, `build_update()`, `build_delete()` — all three standalone builder functions
-- *Issue:* All three embedded the `table` argument directly in an f-string SQL string
-  without calling `sanitize_table_name(table)` first. `SafeQueryBuilder.__init__`
-  already called `sanitize_table_name(self.table)` — the standalone functions were
-  an inconsistency in the module's own security model and created a direct SQL
-  injection path for any caller passing an unsanitized table name to these functions.
-- *Fix:* Added `table = sanitize_table_name(table)` as the first line of each of the
-  three functions. Raises `ValueError` on invalid input — callers fail loudly.
+- `build_insert()` / `build_update()` / `build_delete()` now call `sanitize_table_name(table)` — closes injection path.
 
 **BUG-SS-2** 🐛 → 🔧 **FIXED**
-- *Location:* `safe_insert_dict()`, `safe_update_dict()` — dict-based convenience wrappers
-- *Issue:* Both delegated to `build_insert()` / `build_update()` without pre-validating
-  the `table` argument themselves. After BUG-SS-1 fix, `build_insert/update` now
-  sanitize internally — but the validation now also needs to happen in these public
-  wrappers for defense-in-depth and API clarity.
-- *Fix:* Added `sanitize_table_name(table)` call (result discarded — validation only)
-  at the start of each wrapper before delegating. `build_insert/update` still
-  sanitize too — double validation is intentional and cheap.
+- `safe_insert_dict()` / `safe_update_dict()` now call `sanitize_table_name(table)` for defense-in-depth.
 
 **Checks confirmed clean:**
-- `ph()` reads `_USE_POSTGRES` at module import — safe for pooled connections ✅
-- `sanitize_table_name()` whitelist correct: `isalnum() or c == '_'` — no dots, dashes, spaces ✅
-- SQL keyword blacklist covers 12 most dangerous keywords ✅
-- `sanitize_order_by()` Mar 26 fix: tokenizes on comma, validates each part via `sanitize_table_name()` + direction whitelist `{"ASC", "DESC"}` ✅
-- `SafeQueryBuilder.limit()` / `.offset()` cast via `int()` — no string injection ✅
-- `SafeQueryBuilder.where_in()` calls `sanitize_table_name(column)` ✅
-- `get_placeholder(conn)` delegates to `ph()` — backward compat shim ✅
-- `__main__` block uses `logger.info` not `print()` ✅
-- No dead imports ✅
+- `sanitize_table_name()` whitelist correct ✅
+- `sanitize_order_by()` tokenized validator correct ✅
+- `SafeQueryBuilder.limit()` / `.offset()` cast via `int()` ✅
+- No stray prints, no dead imports ✅
 
 ---
 
 ### `app/data/candle_cache.py`
 **SHA:** `004bb4f3` | **Size:** ~16.6 KB | **Status:** ✅ Clean
 
-**Purpose:** `CandleCache` — PostgreSQL-backed historical candle cache. Wraps
-`candle_cache` and `cache_metadata` tables with upsert, gap detection, freshness
-checks, multi-timeframe aggregation, and pruning. Global singleton `candle_cache`
-at module bottom.
-
-**Architecture:**
-- `_init_cache_tables()` — CREATE TABLE IF NOT EXISTS + indexes
-- `load_cached_candles()` — parameterized SELECT → `_parse_cache_rows()`
-- `cache_candles()` — atomic upsert: `executemany` on bars + `INSERT ... SELECT COUNT(*)` metadata update in one transaction; `rollback()` on error
-- `get_cache_metadata()` — single row fetch, returns `None` if missing
-- `detect_cache_gaps()` — compares `last_bar_time` against `now_et` minus 5 min
-- `is_cache_fresh()` — FIX 14.H-6: treats naive datetime as UTC before comparing against `now(ET)`
-- `aggregate_to_timeframe()` — bucket aggregation for 1m→5m→15m→1h→1d
-- `cleanup_old_cache()` — prunes candles + orphaned metadata in one transaction (Phase 1.22)
-- `get_cache_stats()` — total bars, unique tickers, date range, Postgres table size
-- `_parse_cache_rows()` — FIX 14.H-7: converts naive UTC → ET-aware via `.astimezone(ET)`
+**Purpose:** `CandleCache` — PostgreSQL-backed historical candle cache.
 
 **Prior fixes confirmed correctly implemented:**
-- **C4:** `cache_candles()` upsert + metadata update is a single `conn.commit()` — atomic ✅
-- **C4:** `bar_count` computed via `COUNT(*)` subquery, not additive ✅
-- **1.22:** `cleanup_old_cache()` deletes orphaned `cache_metadata` rows in same transaction ✅
-- **14.H-6:** `is_cache_fresh()` naive datetime → `replace(tzinfo=timezone.utc)` → `datetime.now(ET)` comparison correct ✅
-- **14.H-7:** `_parse_cache_rows()` uses `.astimezone(ET)` not `.replace(tzinfo=None)` ✅
-
-**Checks confirmed clean:**
-- All DB calls use `get_conn()` / `return_conn()` in `try/finally` — no leaked connections ✅
-- `cache_candles()` `rollback()` in `except` wrapped in nested try — safe against closed connection ✅
-- `ph()` used throughout for dual-dialect compatibility ✅
-- `dict_cursor()` used on all SELECT paths that read by column name ✅
-- `aggregate_to_timeframe()` bucket keys use `replace()` — no mutation of source bars ✅
-- `aggregate_to_timeframe()` correctly validates `target_mins % source_mins != 0` ✅
-- `ET = ZoneInfo("America/New_York")` at module level — correct ✅
-- Global singleton `candle_cache = CandleCache()` — single instance, no double init risk ✅
-- No stray prints ✅
-- No dead imports ✅
+- C4: atomic upsert + metadata update ✅
+- 1.22: `cleanup_old_cache()` orphan cleanup ✅
+- 14.H-6: naive datetime → UTC → ET comparison correct ✅
+- 14.H-7: `_parse_cache_rows()` `.astimezone(ET)` correct ✅
 
 **No new findings.**
 
@@ -245,51 +210,18 @@ at module bottom.
 **Status:** ✅ Fixed — 1 finding resolved
 
 **Purpose:** `UnusualOptionsDetector` — whale/institutional options flow detection.
-Scores tickers 0-10 across 4 dimensions (whale orders, flow, sweeps, dark pool)
-and returns a `confidence_boost` for the signal pipeline. All 4 scoring sub-methods
-are currently stubs (returning `0.0`) pending Unusual Whales / EODHD API integration.
-Global singleton `uoa_detector` + 3 module-level convenience functions.
-
-**Architecture:**
-- `check_whale_activity(ticker, direction)` — cache → score → result dict → cache store
-- `_detect_large_orders()` / `_analyze_options_flow()` / `_detect_sweeps()` / `_check_dark_pool_activity()` — stub scorers, all return `0.0`, all wrapped in try/except
-- `_generate_summary(overall, whale, flow, sweep)` — 5-tier string selector
-- `_is_cached(ticker, direction)` — checks `(ticker, direction)` tuple key + TTL
-- `_cache_result(ticker, direction, result)` — stores result in `self.cache`
-- `clear_cache()` — EOD reset, logs count removed
-- `get_whale_alerts(tickers, min_score)` — batch scan, returns sorted alert list
-- `format_whale_alert(alert)` — Discord message formatter
+All 4 scoring sub-methods are **stubs** (returning `0.0`) — Unusual Whales
+subscription not yet active. Module is production-safe as a no-op placeholder.
 
 **BUG-UOA-1** 🔴 → 🔧 **FIXED**
-- *Location:* `_cache_result()` stores `'timestamp'`; `_is_cached()` reads and parses it
-- *Issue:* `_cache_result()` stored `datetime.now(ET)` — a raw `datetime` object — under
-  the `'timestamp'` key of the inner cache dict. `_is_cached()` then called
-  `datetime.fromisoformat(self.cache[cache_key]['data']['timestamp'])` on that value.
-  `datetime.fromisoformat()` accepts only `str`, not `datetime` — it raises `TypeError`
-  on a datetime object. This caused every cache lookup after the very first store to
-  raise, making the 5-minute TTL cache permanently non-functional. Every call to
-  `check_whale_activity()` after the first would hit the TypeError, fall through
-  (uncaught — `_is_cached` has no try/except), and re-execute all 4 stub scorers.
-  In production with live API calls, this would cause unbounded API spam.
-- *Fix:* `_cache_result()` now stores `datetime.now(ET).isoformat()` (a string), consistent
-  with `check_whale_activity()` which already stored `result['timestamp']` as an ISO
-  string. Cache TTL now works correctly.
-- *Severity upgraded to 🔴:* Although all 4 scorers currently return `0.0` (stubs), the
-  cache is the entire throttle mechanism for future live API calls. A broken cache
-  would cause immediate rate-limit issues the moment real API integration lands.
+- `_cache_result()` stored raw `datetime` object; `_is_cached()` called
+  `datetime.fromisoformat()` on it → `TypeError`. Cache TTL was permanently
+  non-functional. Fixed: store `.isoformat()` string.
 
-**Checks confirmed clean:**
-- `cache_ttl = 300` (5 min) — appropriate for intraday data ✅
-- `_is_cached()` key format `(ticker, direction)` tuple — consistent with `_cache_result()` ✅
-- `confidence_boost` tiers (0.10 / 0.05 / 0.02 / 0.0) — correctly computed ✅
-- Weighted score: `whale×0.35 + flow×0.25 + sweep×0.25 + dark_pool×0.15` = 1.0 total ✅
-- `get_whale_alerts()` iterates both CALL and PUT per ticker — correct dual-direction scan ✅
-- All 4 stub scorers wrapped in `try/except` returning `0.0` — safe for production ✅
-- `format_whale_alert()` uses only keys guaranteed present in result dict ✅
-- `clear_cache()` logs count before clearing — useful for EOD diagnostics ✅
-- Global singleton `uoa_detector` — single instance ✅
-- No stray prints ✅
-- No dead imports ✅
+**Unusual Whales status:** Placeholder only — no subscription, no API wiring.
+BUG-UOA-1 ensures the cache works correctly when integration eventually lands.
+
+**No other findings.**
 
 ---
 
@@ -300,113 +232,32 @@ Global singleton `uoa_detector` + 3 module-level convenience functions.
 **Files audited:** 1 file
 - `app/core/scanner.py`
 
-**Fixes applied:** SC-A, SC-B, SC-C, SC-E, SC-F, SC-G — all fixed in this session.
-**`app/core/` is now 100% complete (15/15 files audited).**
+**Fixes applied:** SC-A, SC-B, SC-C, SC-E, SC-F, SC-G
+**`app/core/` is 100% complete (15/15 files audited).**
 
 ---
 
 ### `app/core/scanner.py`
 **SHA pre-fix:** `2ad421df` | **SHA post-fix:** `8b5a55e0`
-**Size:** ~31 KB → ~33 KB (post-fix, version bumped to v1.38e)
+**Size:** ~31 KB → ~33 KB (post-fix, version v1.38e)
 **Status:** ✅ Fixed — 6 findings resolved
 
-**Purpose:** `start_scanner_loop()` — main scanner orchestrator. Manages the
-full trading day lifecycle: WebSocket startup → pre-market watchlist build →
-OR window detection → intraday ticker scan loop → position monitoring → EOD
-reports and daily reset. Delegates per-ticker analysis to `sniper.process_ticker()`
-via `_run_ticker_with_timeout()` watchdog wrapper.
+**Purpose:** `start_scanner_loop()` — main scanner orchestrator. Full trading day
+lifecycle: WebSocket startup → pre-market watchlist → OR window → intraday scan
+loop → position monitoring → EOD reports and daily reset.
 
-**Architecture:**
-- Module-level health server start (Railway /health probe, must be first)
-- 6 module-level optional try/except import blocks (analytics, validation, options, etc.)
-- 5 pure utility functions: `_run_ticker_with_timeout`, `_get_stale_tickers`,
-  `_fire_and_forget`, `build_watchlist`, `subscribe_and_prefetch_tickers`
-- 3 time helpers: `_now_et()`, `is_premarket()`, `is_market_hours()`, `_is_or_window()`
-- 2 adaptive tuning functions: `get_adaptive_scan_interval()`, `calculate_optimal_watchlist_size()`
-- 1 main loop: `start_scanner_loop()` — 3-branch state machine (premarket / market / after-hours)
-- EOD reset block clears all in-memory state, resets funnel, clears sniper signals
-
-**Prior audit notes (AUDIT S17 / v1.38d) — pre-CORE-5:**
-- SC-1: PEP 8 blank lines standardized ✔
-- SC-2: `future.cancel()` limitation documented ✔
-- SC-3: Lambda tuple order documented ✔
-- SC-4: `API_KEY[:8]` safety documented ✔
-- SC-5: Startup Discord message fixed (Pre-market vs OR window) ✔
-- SC-6: `_run_analytics(conn=None)` parameter documented ✔
-
-**CORE-5 Findings and Fixes:**
-
-**BUG-SC-A** ⚠️ (clarity) — **FIXED**
-- *Location:* Docstring + `logger.info("WAR MACHINE CFW6 SCANNER v1.38d")` + Discord message
-- *Issue:* `scanner.py` still reported version `v1.38d` in its banner and Discord startup
-  message. `sniper.py` was bumped to `v1.38e` in CORE-4. Version mismatch creates confusion
-  in Railway logs when both files log on startup.
-- *Fix:* Docstring, `logger.info` banner, and Discord `send_simple_message` all updated
-  to `v1.38e`.
-
-**BUG-SC-B** ⚠️ (dead code) — **FIXED**
-- *Location:* Premarket first-build block, after `watchlist_data = get_watchlist_with_metadata(...)`
-- *Issue:* `metadata = watchlist_data['metadata']` was assigned immediately after the
-  `watchlist_data` call in the first-build block but never read anywhere within that block.
-  The only use of `metadata` in the entire function is in the refresh block's `logger.info`.
-  Dead assignment also used direct `[]` access (see SC-C).
-- *Fix:* Line removed entirely.
-
-**BUG-SC-C** 🐛 (defensive) — **FIXED**
-- *Location:* Two premarket path blocks — first-build (~line 320) and refresh (~line 360)
-- *Issue:* `watchlist_data['watchlist']` used direct `[]` key access in both premarket blocks.
-  If `get_watchlist_with_metadata()` returned a partial dict (e.g., missing `'watchlist'`
-  key due to an early-exit funnel error), a `KeyError` would be raised and caught by the
-  outer `except Exception as e:` as `"Funnel error: 'watchlist'"` — misleading. The
-  redeploy path already used `.get('watchlist', [])` correctly.
-- *Fix:* Both instances changed to `.get('watchlist', [])`. Consistent with the redeploy
-  block. Also changed `watchlist_data['metadata']` in the refresh block to
-  `watchlist_data.get('metadata', {})` (see SC-G fix).
-
-**BUG-SC-E** ⚠️ (silent failure) — **FIXED**
-- *Location:* `_get_stale_tickers()`, `except Exception:` clause
-- *Issue:* On any exception inside the stale-check loop (import error, missing attribute,
-  etc.), all tickers were returned as stale, triggering a full EODHD backfill for every
-  startup ticker. The conservative behavior is correct, but the exception was swallowed
-  silently — no log entry. A developer seeing a full backfill on Railway startup had no
-  way to know if it was intentional (cache miss) or caused by a code error.
-- *Fix:* Added `logger.warning(f"[CACHE] Stale-check failed ({e}) — treating all
-  {len(tickers)} tickers as stale")` before `return list(tickers)`.
-
-**BUG-SC-F** ⚠️ (style) — **FIXED**
-- *Location:* `start_scanner_loop()`, ~line 398
-- *Issue:* `_REDEPLOY_RETRIES = 2` and `_REDEPLOY_RETRY_WAIT = 3` were defined as local
-  variables inside `start_scanner_loop()`. By convention, module-level constants (like
-  `TICKER_TIMEOUT_SECONDS`) belong at module scope where they are visible, reusable, and
-  consistent with the rest of the file.
-- *Fix:* Moved both constants to module scope, adjacent to `TICKER_TIMEOUT_SECONDS`.
-  References in the loop body unchanged.
-
-**BUG-SC-G** 🐛 (defensive minor) — **FIXED**
-- *Location:* Premarket refresh block, `logger.info(f"[FUNNEL] Stage: {metadata['stage']}...")`
-- *Issue:* Direct `metadata['stage']` and `metadata['stage_description']` subscript access.
-  If `get_watchlist_with_metadata()` returned a `metadata` dict missing either key, a
-  `KeyError` would be raised and caught as `"Refresh error: 'stage'"` — misleading.
-- *Fix:* Changed to `metadata.get('stage', '?').upper()` and
-  `metadata.get('stage_description', '?')`. Fallback `'?'` clearly signals missing data
-  in the log line without crashing.
+**BUG-SC-A** ⚠️ → 🔧 Version mismatch v1.38d → v1.38e (sync with sniper.py)
+**BUG-SC-B** ⚠️ → 🔧 Dead `metadata = watchlist_data['metadata']` assignment removed
+**BUG-SC-C** 🐛 → 🔧 `watchlist_data['watchlist']` → `.get('watchlist', [])` in both premarket blocks
+**BUG-SC-E** ⚠️ → 🔧 Silent `except Exception` in `_get_stale_tickers` → `logger.warning`
+**BUG-SC-F** ⚠️ → 🔧 `_REDEPLOY_RETRIES` / `_REDEPLOY_RETRY_WAIT` moved to module-level
+**BUG-SC-G** 🐛 → 🔧 `metadata['stage']` → `.get('stage', '?')` defensive access
 
 **Checks confirmed clean (no action required):**
-- `start_health_server()` at true module level (before all imports) — Railway 30s probe safe ✅
-- `_fire_and_forget()` daemon thread + try/except wrapper — non-fatal, correct ✅
-- `subscribe_and_prefetch_tickers()` lambda tuple both functions execute left-to-right ✅
-- `_run_ticker_with_timeout()` watchdog with `FuturesTimeoutError` — SC-2 documented ✅
-- `get_adaptive_scan_interval()` 5-tier time table — correct intervals, logged once per change ✅
-- `calculate_optimal_watchlist_size()` 4-tier time table — logged once per change ✅
-- Redeploy path uses `.get('watchlist', [])` — already correct pre-CORE-5 ✅
-- Circuit breaker: 3 losses + 0 wins OR `_pm.has_loss_streak(3)` — dual-check correct ✅
-- `monitor_open_positions()` WS → REST → DB fallback chain — correct ✅
-- `_run_analytics(conn=None)` — SC-6 documented, `_db_operation_safe` compatible ✅
-- EOD reset block: all 8 state variables reset + funnel + sniper signals cleared ✅
-- `KeyboardInterrupt` re-raised after EOD report log — clean Railway shutdown ✅
-- `time.sleep(30)` on critical error before retry — prevents CPU spin ✅
+- `start_health_server()` at true module level — Railway 30s probe safe ✅
+- Circuit breaker dual-check correct ✅
+- EOD reset block: all 8 state variables reset ✅
 - No stray `print()` calls ✅
-- No dead imports ✅
 
 ---
 
@@ -415,75 +266,41 @@ via `_run_ticker_with_timeout()` watchdog wrapper.
 **Auditor:** Perplexity AI
 **Commit:** `e25f3200`
 **Files audited:** 1 file
-- `app/core/sniper.py`
-
-**Fixes applied:** BUG-SN-4, BUG-SN-5, BUG-SN-6 — all fixed in this session.
-
----
 
 ### `app/core/sniper.py`
 **SHA pre-fix:** `670de1a7` | **SHA post-fix:** `76d733d5`
-**Size:** ~28 KB (pre-fix) → ~31 KB (post-fix, version bumped to v1.38e)
+**Size:** ~28 KB → ~31 KB (v1.38e)
 **Status:** ✅ Fixed — 3 findings resolved
 
-**Purpose:** `process_ticker()` — the CFW6 strategy engine. Two-path scanner:
-OR-Anchored (opening range breakout + FVG) and Intraday BOS+FVG fallback.
-Delegates signal pipeline execution to `sniper_pipeline._run_signal_pipeline`
-via a thin local dispatcher wrapper. Called once per ticker per scanner cycle.
+**Purpose:** `process_ticker()` — CFW6 strategy engine. OR-Anchored and
+Intraday BOS+FVG paths. Delegates to `sniper_pipeline._run_signal_pipeline`.
 
-**Architecture:**
-- Single public function: `process_ticker(ticker)`
-- Thin dispatcher: `_run_signal_pipeline()` — local wrapper over `_pipeline` (imported alias)
-- Two helper logging functions: `_log_bos_event()`, `_log_fvg_event()`
-- One utility: `_get_or_threshold()` — VIX-adjusted OR threshold
-- EOD reset: `clear_bos_alerts()` — clears `_bos_watch_alerted` dedup set
-- 13 optional try/except import blocks with correct stubs — all gated on boolean flags
-- Module-level `_state = get_state()` — singleton thread-safe state
-
-**Prior audit notes (Session 18 / v1.38d) — pre-CORE-4:**
-- BUG-SN-1: `logger` moved before optional try/except blocks — confirmed fixed ✅
-- BUG-SN-2: VWAP reclaim block documented as structurally unreachable (intentional, architectural) ✅
-- BUG-SN-3: Resolved by BUG-SN-1 fix ✅
-
-**CORE-4 Findings and Fixes:**
-
-**BUG-SN-4** ⚠️ (clarity) — **FIXED**
-- *Location:* `_run_signal_pipeline()` dispatcher function definition
-- *Issue:* The local wrapper function `_run_signal_pipeline` has the same name as
-  the symbol imported from `sniper_pipeline` (imported as `_pipeline` to avoid
-  collision). The aliasing was intentional but undocumented.
-- *Fix:* Added explicit docstring note clarifying: `_pipeline` = implementation
-  (sniper_pipeline), `_run_signal_pipeline` = public surface used by scanner.py.
-
-**BUG-SN-5** ⚠️ (consistency) — **FIXED**
-- *Location:* Secondary range fallback block inside `process_ticker`, ~line 290
-- *Issue:* `get_secondary_range_levels` was imported via a deferred inline import
-  inside a conditional block. All other `opening_range` symbols are at module top.
-- *Fix:* Moved to top-level ORB_TRACKER_ENABLED try/except block with null stub.
-  Secondary range fallback now guards with `if get_secondary_range_levels is not None:`.
-
-**BUG-SN-6** ⚠️ (defensive) — **FIXED**
-- *Location:* Intraday BOS+FVG path inside `process_ticker`, ~line 340
-- *Issue:* `bos_signal["fvg_low"]`, `bos_signal["fvg_high"]`, `bos_signal["bos_price"]`
-  used direct `[]` key access — silently swallowed on malformed return dict.
-- *Fix:* All three replaced with `.get()` + `0.0` defaults. Added explicit guard
-  with `logger.warning` on malformed dict.
-
-**Checks confirmed clean:** (see CORE-5 section above for full list)
+**BUG-SN-4** ⚠️ → 🔧 Dispatcher alias documented
+**BUG-SN-5** ⚠️ → 🔧 `get_secondary_range_levels` moved to module-top ORB block
+**BUG-SN-6** ⚠️ → 🔧 `bos_signal` key access → `.get()` + guard
 
 ---
 
 ## Session CORE-3 — `app/core/` Pre-Big-Two Files
-**Date:** 2026-03-31 | **Files:** `arm_signal.py`, `analytics_integration.py`
-**Fixes applied:** None — both files are clean. 0 findings.
+**Date:** 2026-03-31
+**Files:** `arm_signal.py`, `analytics_integration.py`
 
 ### `app/core/arm_signal.py`
 **SHA:** `d30cd3f5` | **Size:** ~9 KB | **Status:** ✅ Clean
 
 **Purpose:** `arm_ticker()` — final arming step after all pipeline gates pass.
-All heavy imports deferred. 6 logical stages: stop check → log → open position → analytics → Discord → persist + cooldown.
+All heavy imports deferred. 6 logical stages: stop check → log → open position
+→ analytics → Discord → persist + cooldown.
 
-**No findings.**
+**Prior fixes confirmed in place:**
+- BUG-ARM-1: `import logging` / `logger` moved above docstring ✅
+- BUG-S16-1: `'validation'` key → `'validation_data'` in `armed_signal_data` dict
+  so `armed_signal_store._persist_armed_signal()` receives the correct key ✅
+- FIX G: explicit `return True` at end of successful path ✅
+- FIX H: indentation SyntaxError fixed (two `try:` blocks were at col 0) ✅
+- FIX P3: `vp_bias` added to fallback Discord alert path ✅
+
+**No new findings.**
 
 ---
 
@@ -491,27 +308,40 @@ All heavy imports deferred. 6 logical stages: stop check → log → open positi
 **SHA:** `3ebfcf2e` | **Size:** ~9.5 KB | **Status:** ✅ Clean
 
 **Purpose:** `AnalyticsIntegration` — thin delegation wrapper over `SignalTracker`.
-`_TRACKER_AVAILABLE` gate on every method. BUG-AI-1/2/3 all confirmed fixed.
+`_TRACKER_AVAILABLE` gate on every method.
 
-**No findings.**
+**Prior fixes confirmed in place:**
+- BUG-AI-1: `logger = logging.getLogger(__name__)` (was bare `logging.*`) ✅
+- BUG-AI-2: `get_today_stats()` uses `get_funnel_stats()` not `_tracker.session_signals` ✅
+- BUG-AI-3: midnight reset now resets both `daily_reset_done` and `eod_report_done` ✅
+
+**No new findings.**
 
 ---
 
 ## Session CORE-2 — `app/core/` Pipeline Files
-**Date:** 2026-03-31 | **Files:** `thread_safe_state.py`, `signal_scorecard.py`, `sniper_pipeline.py`
-**Fixes applied:** None — 2 minor findings logged for fix-on-next-touch.
+**Date:** 2026-03-31
+**Files:** `thread_safe_state.py`, `signal_scorecard.py`, `sniper_pipeline.py`
 
 ### `app/core/thread_safe_state.py`
 **SHA:** `34ae63dc` | **Size:** ~12 KB | **Status:** ✅ Clean
-- Double-checked locking singleton. 5 separate domain locks. BUG-TSS-1/2/3/4 all confirmed fixed.
+
+**Purpose:** Thread-safe singleton for global trading state.
+Double-checked locking singleton. 5 separate domain locks.
+BUG-TSS-1/2/3/4 all confirmed fixed (ET-aware datetimes, unknown stat warning,
+logger placement, missing module-level wrappers).
+
+**No new findings.**
+
+---
 
 ### `app/core/signal_scorecard.py`
-**SHA:** `57342678` | **Size:** ~12 KB | **Status:** ⚠️ BUG-SC-1 (style, non-crashing)
-- **BUG-SC-1:** `import logging` and `logger =` consecutive with no blank line separator. Fix on next touch.
+*(See CORE-6 above for BUG-SC-1 fix.)*
+
+---
 
 ### `app/core/sniper_pipeline.py`
-**SHA:** `cb87b539` | **Size:** ~14 KB | **Status:** ⚠️ BUG-SP-3 (dead import, non-crashing)
-- **BUG-SP-3:** `BEAR_SIGNALS_ENABLED` imported at module scope but never used. Remove on next touch.
+*(See CORE-6 above for BUG-SP-3 fix.)*
 
 ---
 
@@ -553,14 +383,42 @@ All heavy imports deferred. 6 logical stages: stop check → log → open positi
 ---
 
 ## Session ASS-1 — `app/core/armed_signal_store.py`
-**Date:** 2026-03-31 | **SHA:** `6263afa7` | **Status:** ✅ Fixed in-file
-- BUG-ASS-1: `import logging` moved to top. BUG-ASS-2: Redundant inner import removed.
+**Date:** 2026-03-31
+
+### `app/core/armed_signal_store.py`
+**SHA post-fix:** `7ea03339` | **Size:** ~9.5 KB | **Status:** ✅ Fixed
+
+**Purpose:** DB persistence for armed signals. Owns `_ensure_armed_db`,
+`_persist_armed_signal`, `_remove_armed_from_db`, `_cleanup_stale_armed_signals`,
+`_load_armed_signals_from_db`, `_maybe_load_armed_signals`, `clear_armed_signals`.
+
+**BUG-ASS-1** ⚠️ → 🔧 `import logging` / `logger` moved to top of import block
+**BUG-ASS-2** ⚠️ → 🔧 Redundant inner `from app.data.sql_safe import safe_execute` removed from `clear_armed_signals()`
+**BUG-ASS-3** 🐛 → 🔧 `_persist_armed_signal()` read `data.get('validation')` but
+  `arm_signal.py` sends `'validation_data'` (renamed by BUG-S16-1). Validation
+  payload was always `None` in DB on every arm. Fixed to read `'validation_data'`.
+
+**Checks confirmed clean:**
+- `_ensure_armed_db()` uses `get_conn()` / `return_conn()` in `try/finally` ✅
+- `ON CONFLICT (ticker) DO UPDATE` upsert correct ✅
+- `_cleanup_stale_armed_signals()` cross-references live `position_manager` positions ✅
+- `_load_armed_signals_from_db()` Postgres vs SQLite date filter branching correct ✅
+- `_armed_load_lock` prevents double-load race on startup ✅
+- No stray prints ✅
 
 ---
 
 ## Session WSS-1 — `app/core/watch_signal_store.py`
-**Date:** 2026-03-31 | **SHA:** `061e6481` | **Status:** ✅ Fixed in-file
-- BUG-WSS-1: 7× `logger.info` → `logger.warning`. BUG-WSS-2: stray `print()` → `logger.info()`. BUG-WSS-3: empty `()` removed from `safe_execute` DELETE.
+**Date:** 2026-03-31
+
+### `app/core/watch_signal_store.py`
+**SHA:** `061e6481` | **Size:** ~10.4 KB | **Status:** ✅ Fixed
+
+**Purpose:** DB persistence for watching signals (tickers pending FVG formation).
+
+**BUG-WSS-1** ⚠️ → 🔧 7× `logger.info` → `logger.warning` on all error paths
+**BUG-WSS-2** ⚠️ → 🔧 Stray `print()` → `logger.info()`
+**BUG-WSS-3** ⚠️ → 🔧 Empty `()` removed from `safe_execute` DELETE call
 
 ---
 
@@ -574,8 +432,6 @@ All heavy imports deferred. 6 logical stages: stop check → log → open positi
 
 | Fix ID | File | Severity | Description | Session Target |
 |--------|------|----------|-------------|----------------|
-| BUG-SC-1 | `app/core/signal_scorecard.py` | ⚠️ | `import logging` + `logger =` no blank separator (style) | Next `signal_scorecard.py` touch |
-| BUG-SP-3 | `app/core/sniper_pipeline.py` | ⚠️ | `BEAR_SIGNALS_ENABLED` imported but never used — dead import | Next `sniper_pipeline.py` touch |
 | BUG-OR-1 | `app/signals/opening_range.py` | ⚠️ | `should_scan_now()` dead `or_data` code | Next `signals/` session |
 | BUG-OR-2 | `app/signals/opening_range.py` | ⚠️ | `from utils import config` imported twice in `detect_breakout_after_or()` | Next `signals/` session |
 
@@ -585,16 +441,20 @@ All heavy imports deferred. 6 logical stages: stop check → log → open positi
 
 | Fix ID | File | Commit | Description |
 |--------|------|--------|-------------|
-| BUG-UOA-1 | `unusual_options.py` | `a982d079` | `_cache_result()` stores `.isoformat()` string — fixes TypeError in `_is_cached()` which called `fromisoformat()` on a raw datetime object; cache TTL now functional |
-| BUG-SS-2 | `sql_safe.py` | `a982d079` | `safe_insert_dict` / `safe_update_dict` now call `sanitize_table_name(table)` before delegating — defense-in-depth |
-| BUG-SS-1 | `sql_safe.py` | `a982d079` | `build_insert` / `build_update` / `build_delete` now call `sanitize_table_name(table)` — closes injection path in standalone builder functions |
-| BUG-IAT-1 | `intraday_atr.py` | `a982d079` | `logger.info` → `logger.warning` on compute exception — abnormal condition now surfaces in Railway logs |
-| BUG-SC-A | `scanner.py` | `7ece10fd` | Version bump v1.38d → v1.38e (sync with sniper.py) |
-| BUG-SC-B | `scanner.py` | `7ece10fd` | Removed dead `metadata = watchlist_data['metadata']` in first-build block |
-| BUG-SC-C | `scanner.py` | `7ece10fd` | `watchlist_data['watchlist']` → `.get('watchlist', [])` in both premarket blocks |
-| BUG-SC-E | `scanner.py` | `7ece10fd` | Silent `except Exception` in `_get_stale_tickers` → `logger.warning` before return |
-| BUG-SC-F | `scanner.py` | `7ece10fd` | `_REDEPLOY_RETRIES` / `_REDEPLOY_RETRY_WAIT` moved to module-level constants |
-| BUG-SC-G | `scanner.py` | `7ece10fd` | `metadata['stage']`/`['stage_description']` → `.get()` with `'?'` fallbacks |
+| BUG-SC-1 | `signal_scorecard.py` | this commit | Blank line between `import logging` and `logger =`; removed unused `field` import |
+| BUG-SP-3 | `sniper_pipeline.py` | this commit | `BEAR_SIGNALS_ENABLED` dead import removed |
+| BUG-ASS-3 | `armed_signal_store.py` | `7ea03339` | `_persist_armed_signal()` reads `'validation_data'` — matches key sent by `arm_signal.py` after BUG-S16-1 |
+| BUG-S16-1 | `arm_signal.py` | `d30cd3f5` | `armed_signal_data` key `'validation'` → `'validation_data'` |
+| BUG-UOA-1 | `unusual_options.py` | `a982d079` | `_cache_result()` stores `.isoformat()` string — fixes TypeError in `_is_cached()`; cache TTL now functional |
+| BUG-SS-2 | `sql_safe.py` | `a982d079` | `safe_insert_dict` / `safe_update_dict` now call `sanitize_table_name(table)` — defense-in-depth |
+| BUG-SS-1 | `sql_safe.py` | `a982d079` | `build_insert` / `build_update` / `build_delete` now call `sanitize_table_name(table)` — closes injection path |
+| BUG-IAT-1 | `intraday_atr.py` | `a982d079` | `logger.info` → `logger.warning` on compute exception |
+| BUG-SC-A | `scanner.py` | `7ece10fd` | Version bump v1.38d → v1.38e |
+| BUG-SC-B | `scanner.py` | `7ece10fd` | Dead `metadata` assignment removed |
+| BUG-SC-C | `scanner.py` | `7ece10fd` | `watchlist_data['watchlist']` → `.get('watchlist', [])` |
+| BUG-SC-E | `scanner.py` | `7ece10fd` | Silent except in `_get_stale_tickers` → `logger.warning` |
+| BUG-SC-F | `scanner.py` | `7ece10fd` | `_REDEPLOY_RETRIES` / `_REDEPLOY_RETRY_WAIT` moved to module-level |
+| BUG-SC-G | `scanner.py` | `7ece10fd` | `metadata['stage']` → `.get()` with fallbacks |
 | BUG-SN-4 | `sniper.py` | `e25f3200` | Dispatcher alias documented |
 | BUG-SN-5 | `sniper.py` | `e25f3200` | `get_secondary_range_levels` moved to module-top ORB block |
 | BUG-SN-6 | `sniper.py` | `e25f3200` | `bos_signal` key access → `.get()` + guard |
