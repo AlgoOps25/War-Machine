@@ -7,15 +7,23 @@
 #   - Promoted logger.info → logger.warning on all error paths so they surface
 #     visibly in Railway logs.
 #   - Replaced stray print() in _load_armed_signals_from_db() with logger.info().
+#
+# AUDIT 2026-03-31 (Session 15):
+#   BUG-ASS-1: Moved `import logging` / `logger =` to top of import block (before app imports)
+#              so standard-library imports appear before third-party/app imports per convention.
+#              Non-crashing but inconsistent with all other modules.
+#   BUG-ASS-2: Removed redundant `from app.data.sql_safe import safe_execute` inside
+#              clear_armed_signals() — safe_execute is already imported at module scope.
 
 import json
+import logging
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from app.core.thread_safe_state import get_state
 from app.data.sql_safe import safe_execute, safe_query, safe_in_clause, get_placeholder
 from app.risk.position_manager import position_manager
-import logging
+
 logger = logging.getLogger(__name__)
 
 _state = get_state()
@@ -226,7 +234,6 @@ def _maybe_load_armed_signals():
 def clear_armed_signals():
     """Clear all armed signals from memory and DB."""
     from app.data.db_connection import get_conn, return_conn
-    from app.data.sql_safe import safe_execute
     _state.clear_armed_signals()
     conn = None
     try:
