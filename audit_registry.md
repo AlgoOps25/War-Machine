@@ -32,7 +32,7 @@
 | `app/ai/` | 2 | 0 | ⬜ Pending |
 | `app/analytics/` | 9 | 9 | ✅ Complete (prior sessions) |
 | `app/backtesting/` | 7 | 0 | ⬜ Pending |
-| `app/core/` | 15 | 14 | 🔄 In Progress — CORE-1 (6) + CORE-2 (3) + CORE-3 (2) + CORE-4 (1) + ASS-1 + WSS-1 |
+| `app/core/` | 15 | 15 | ✅ **COMPLETE** — CORE-1 through CORE-5 |
 | `app/data/` | — | — | ⬜ Pending |
 | `app/filters/` | — | — | ⬜ Pending |
 | `app/indicators/` | — | — | ⬜ Pending |
@@ -52,6 +52,123 @@
 | `tests/` | — | — | ⬜ Pending |
 | `utils/` | — | — | ⬜ Pending |
 | Root config files | 8 | 0 | ⬜ Pending |
+
+---
+
+## Session CORE-5 — `app/core/scanner.py`
+**Date:** 2026-03-31
+**Auditor:** Perplexity AI
+**Commit:** `7ece10fd`
+**Files audited:** 1 file
+- `app/core/scanner.py`
+
+**Fixes applied:** SC-A, SC-B, SC-C, SC-E, SC-F, SC-G — all fixed in this session.
+**`app/core/` is now 100% complete (15/15 files audited).**
+
+---
+
+### `app/core/scanner.py`
+**SHA pre-fix:** `2ad421df` | **SHA post-fix:** `8b5a55e0`
+**Size:** ~31 KB → ~33 KB (post-fix, version bumped to v1.38e)
+**Status:** ✅ Fixed — 6 findings resolved
+
+**Purpose:** `start_scanner_loop()` — main scanner orchestrator. Manages the
+full trading day lifecycle: WebSocket startup → pre-market watchlist build →
+OR window detection → intraday ticker scan loop → position monitoring → EOD
+reports and daily reset. Delegates per-ticker analysis to `sniper.process_ticker()`
+via `_run_ticker_with_timeout()` watchdog wrapper.
+
+**Architecture:**
+- Module-level health server start (Railway /health probe, must be first)
+- 6 module-level optional try/except import blocks (analytics, validation, options, etc.)
+- 5 pure utility functions: `_run_ticker_with_timeout`, `_get_stale_tickers`,
+  `_fire_and_forget`, `build_watchlist`, `subscribe_and_prefetch_tickers`
+- 3 time helpers: `_now_et()`, `is_premarket()`, `is_market_hours()`, `_is_or_window()`
+- 2 adaptive tuning functions: `get_adaptive_scan_interval()`, `calculate_optimal_watchlist_size()`
+- 1 main loop: `start_scanner_loop()` — 3-branch state machine (premarket / market / after-hours)
+- EOD reset block clears all in-memory state, resets funnel, clears sniper signals
+
+**Prior audit notes (AUDIT S17 / v1.38d) — pre-CORE-5:**
+- SC-1: PEP 8 blank lines standardized ✔
+- SC-2: `future.cancel()` limitation documented ✔
+- SC-3: Lambda tuple order documented ✔
+- SC-4: `API_KEY[:8]` safety documented ✔
+- SC-5: Startup Discord message fixed (Pre-market vs OR window) ✔
+- SC-6: `_run_analytics(conn=None)` parameter documented ✔
+
+**CORE-5 Findings and Fixes:**
+
+**BUG-SC-A** ⚠️ (clarity) — **FIXED**
+- *Location:* Docstring + `logger.info("WAR MACHINE CFW6 SCANNER v1.38d")` + Discord message
+- *Issue:* `scanner.py` still reported version `v1.38d` in its banner and Discord startup
+  message. `sniper.py` was bumped to `v1.38e` in CORE-4. Version mismatch creates confusion
+  in Railway logs when both files log on startup.
+- *Fix:* Docstring, `logger.info` banner, and Discord `send_simple_message` all updated
+  to `v1.38e`.
+
+**BUG-SC-B** ⚠️ (dead code) — **FIXED**
+- *Location:* Premarket first-build block, after `watchlist_data = get_watchlist_with_metadata(...)`
+- *Issue:* `metadata = watchlist_data['metadata']` was assigned immediately after the
+  `watchlist_data` call in the first-build block but never read anywhere within that block.
+  The only use of `metadata` in the entire function is in the refresh block's `logger.info`.
+  Dead assignment also used direct `[]` access (see SC-C).
+- *Fix:* Line removed entirely.
+
+**BUG-SC-C** 🐛 (defensive) — **FIXED**
+- *Location:* Two premarket path blocks — first-build (~line 320) and refresh (~line 360)
+- *Issue:* `watchlist_data['watchlist']` used direct `[]` key access in both premarket blocks.
+  If `get_watchlist_with_metadata()` returned a partial dict (e.g., missing `'watchlist'`
+  key due to an early-exit funnel error), a `KeyError` would be raised and caught by the
+  outer `except Exception as e:` as `"Funnel error: 'watchlist'"` — misleading. The
+  redeploy path already used `.get('watchlist', [])` correctly.
+- *Fix:* Both instances changed to `.get('watchlist', [])`. Consistent with the redeploy
+  block. Also changed `watchlist_data['metadata']` in the refresh block to
+  `watchlist_data.get('metadata', {})` (see SC-G fix).
+
+**BUG-SC-E** ⚠️ (silent failure) — **FIXED**
+- *Location:* `_get_stale_tickers()`, `except Exception:` clause
+- *Issue:* On any exception inside the stale-check loop (import error, missing attribute,
+  etc.), all tickers were returned as stale, triggering a full EODHD backfill for every
+  startup ticker. The conservative behavior is correct, but the exception was swallowed
+  silently — no log entry. A developer seeing a full backfill on Railway startup had no
+  way to know if it was intentional (cache miss) or caused by a code error.
+- *Fix:* Added `logger.warning(f"[CACHE] Stale-check failed ({e}) — treating all
+  {len(tickers)} tickers as stale")` before `return list(tickers)`.
+
+**BUG-SC-F** ⚠️ (style) — **FIXED**
+- *Location:* `start_scanner_loop()`, ~line 398
+- *Issue:* `_REDEPLOY_RETRIES = 2` and `_REDEPLOY_RETRY_WAIT = 3` were defined as local
+  variables inside `start_scanner_loop()`. By convention, module-level constants (like
+  `TICKER_TIMEOUT_SECONDS`) belong at module scope where they are visible, reusable, and
+  consistent with the rest of the file.
+- *Fix:* Moved both constants to module scope, adjacent to `TICKER_TIMEOUT_SECONDS`.
+  References in the loop body unchanged.
+
+**BUG-SC-G** 🐛 (defensive minor) — **FIXED**
+- *Location:* Premarket refresh block, `logger.info(f"[FUNNEL] Stage: {metadata['stage']}...")`
+- *Issue:* Direct `metadata['stage']` and `metadata['stage_description']` subscript access.
+  If `get_watchlist_with_metadata()` returned a `metadata` dict missing either key, a
+  `KeyError` would be raised and caught as `"Refresh error: 'stage'"` — misleading.
+- *Fix:* Changed to `metadata.get('stage', '?').upper()` and
+  `metadata.get('stage_description', '?')`. Fallback `'?'` clearly signals missing data
+  in the log line without crashing.
+
+**Checks confirmed clean (no action required):**
+- `start_health_server()` at true module level (before all imports) — Railway 30s probe safe ✅
+- `_fire_and_forget()` daemon thread + try/except wrapper — non-fatal, correct ✅
+- `subscribe_and_prefetch_tickers()` lambda tuple both functions execute left-to-right ✅
+- `_run_ticker_with_timeout()` watchdog with `FuturesTimeoutError` — SC-2 documented ✅
+- `get_adaptive_scan_interval()` 5-tier time table — correct intervals, logged once per change ✅
+- `calculate_optimal_watchlist_size()` 4-tier time table — logged once per change ✅
+- Redeploy path uses `.get('watchlist', [])` — already correct pre-CORE-5 ✅
+- Circuit breaker: 3 losses + 0 wins OR `_pm.has_loss_streak(3)` — dual-check correct ✅
+- `monitor_open_positions()` WS → REST → DB fallback chain — correct ✅
+- `_run_analytics(conn=None)` — SC-6 documented, `_db_operation_safe` compatible ✅
+- EOD reset block: all 8 state variables reset + funnel + sniper signals cleared ✅
+- `KeyboardInterrupt` re-raised after EOD report log — clean Railway shutdown ✅
+- `time.sleep(30)` on critical error before retry — prevents CPU spin ✅
+- No stray `print()` calls ✅
+- No dead imports ✅
 
 ---
 
@@ -151,15 +268,8 @@ via a thin local dispatcher wrapper. Called once per ticker per scanner cycle.
 ---
 
 ## Session CORE-3 — `app/core/` Pre-Big-Two Files
-**Date:** 2026-03-31
-**Auditor:** Perplexity AI
-**Files audited:** 2 files
-- `app/core/arm_signal.py`
-- `app/core/analytics_integration.py`
-
+**Date:** 2026-03-31 | **Files:** `arm_signal.py`, `analytics_integration.py`
 **Fixes applied:** None — both files are clean. 0 findings.
-
----
 
 ### `app/core/arm_signal.py`
 **SHA:** `d30cd3f5` | **Size:** ~9 KB | **Status:** ✅ Clean
@@ -302,6 +412,12 @@ Single entry-point used by `scanner.py`. `_TRACKER_AVAILABLE` gate on every meth
 
 | Fix ID | File | Commit | Description |
 |--------|------|--------|-------------|
+| BUG-SC-A | `scanner.py` | `7ece10fd` | Version bump v1.38d → v1.38e (sync with sniper.py) |
+| BUG-SC-B | `scanner.py` | `7ece10fd` | Removed dead `metadata = watchlist_data['metadata']` in first-build block |
+| BUG-SC-C | `scanner.py` | `7ece10fd` | `watchlist_data['watchlist']` → `.get('watchlist', [])` in both premarket blocks |
+| BUG-SC-E | `scanner.py` | `7ece10fd` | Silent `except Exception` in `_get_stale_tickers` → `logger.warning` before return |
+| BUG-SC-F | `scanner.py` | `7ece10fd` | `_REDEPLOY_RETRIES` / `_REDEPLOY_RETRY_WAIT` moved to module-level constants |
+| BUG-SC-G | `scanner.py` | `7ece10fd` | `metadata['stage']`/`['stage_description']` → `.get()` with `'?'` fallbacks |
 | BUG-SN-4 | `sniper.py` | `e25f3200` | Dispatcher alias documented — `_pipeline` vs `_run_signal_pipeline` clarity |
 | BUG-SN-5 | `sniper.py` | `e25f3200` | `get_secondary_range_levels` moved to module-top ORB block; null stub added |
 | BUG-SN-6 | `sniper.py` | `e25f3200` | `bos_signal` key access → `.get()` + guard + `logger.warning` on malformed dict |
@@ -326,12 +442,11 @@ Single entry-point used by `scanner.py`. `_TRACKER_AVAILABLE` gate on every meth
 
 | Priority | Target | Files | Notes |
 |----------|--------|-------|-------|
-| 1 🔥 | `app/core/scanner.py` | 1 file (~31 KB) | Main loop — last `app/core/` file, then folder complete |
-| 2 | `app/data/` | All files | DB pool, `sql_safe`, schema — foundational |
-| 3 | `app/signals/` | Remaining files | Fix BUG-OR-1/2. `breakout_detector.py`, `bos_fvg_engine.py`, etc. |
-| 4 | `app/options/` | All files | Options chain, Greeks, pre-validation |
-| 5 | `app/notifications/` | All files | Discord alert system |
-| 6 | `app/backtesting/` | All files | Backtest engine, walk-forward |
-| 7 | `app/filters/`, `app/indicators/`, `app/mtf/`, `app/screening/`, `app/validation/`, `app/risk/`, `app/ai/` | All | Secondary modules |
-| 8 | `scripts/`, `tests/`, `utils/` | All | Support infrastructure |
-| 9 | Root config | `requirements.txt`, `railway.toml`, etc. | Deployment config |
+| 1 🔥 | `app/data/` | All files | DB pool, `sql_safe`, schema — foundational |
+| 2 | `app/signals/` | Remaining files | Fix BUG-OR-1/2. `breakout_detector.py`, `bos_fvg_engine.py`, etc. |
+| 3 | `app/options/` | All files | Options chain, Greeks, pre-validation |
+| 4 | `app/notifications/` | All files | Discord alert system |
+| 5 | `app/backtesting/` | All files | Backtest engine, walk-forward |
+| 6 | `app/filters/`, `app/indicators/`, `app/mtf/`, `app/screening/`, `app/validation/`, `app/risk/`, `app/ai/` | All | Secondary modules |
+| 7 | `scripts/`, `tests/`, `utils/` | All | Support infrastructure |
+| 8 | Root config | `requirements.txt`, `railway.toml`, etc. | Deployment config |
