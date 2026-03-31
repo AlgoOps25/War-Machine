@@ -1,5 +1,5 @@
 """
-scanner.py — Intelligent Watchlist Builder & Scanner Loop v1.38d
+scanner.py — Intelligent Watchlist Builder & Scanner Loop v1.38e
 Adaptive Watchlist Funnel, Pre-Market Scanner, Position Monitoring, DB Cleanup.
 WebSocket bar + quote feeds with candle cache (95%+ API reduction on redeploy).
 See CHANGELOG.md for full phase history.
@@ -11,6 +11,14 @@ AUDIT S17 (2026-03-31): BUG-SC-1/2/3/4/5/6 addressed.
   SC-4: Noted API_KEY[:8] slice is safe (Python slicing never raises IndexError).
   SC-5: Fixed startup Discord message — now correctly says 'Pre-market' vs 'OR window active'.
   SC-6: Added comment to _run_analytics explaining conn=None is required by _db_operation_safe.
+
+AUDIT CORE-5 (2026-03-31): SC-A/B/C/E/F/G addressed.
+  SC-A: Version bump docstring + banner + Discord message → v1.38e (sync with sniper.py).
+  SC-B: Removed dead `metadata = watchlist_data['metadata']` in premarket first-build block.
+  SC-C: watchlist_data['watchlist'] → .get('watchlist', []) in both premarket path blocks.
+  SC-E: _get_stale_tickers silent except now logs warning before returning full list.
+  SC-F: _REDEPLOY_RETRIES / _REDEPLOY_RETRY_WAIT moved to module-level constants.
+  SC-G: metadata['stage'] / metadata['stage_description'] → .get() with '?' fallbacks.
 """
 from app.core.health_server import start_health_server, health_heartbeat
 
@@ -60,6 +68,10 @@ logger = logging.getLogger(__name__)
 
 REGIME_TICKERS         = ["SPY", "QQQ"]
 TICKER_TIMEOUT_SECONDS = 45
+# SC-F FIX (CORE-5): Moved from inside start_scanner_loop() to module-level.
+# Constants belong at module scope — consistent with TICKER_TIMEOUT_SECONDS above.
+_REDEPLOY_RETRIES      = 2
+_REDEPLOY_RETRY_WAIT   = 3
 _ticker_executor       = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ticker_watchdog")
 
 
@@ -166,7 +178,10 @@ def _get_stale_tickers(tickers: list) -> list:
                 last_bar_time = bars[-1].get("datetime")
                 if last_bar_time is None or last_bar_time < cutoff:
                     stale.append(ticker)
-    except Exception:
+    except Exception as e:
+        # SC-E FIX (CORE-5): Log warning before returning full list so the cause of
+        # a full backfill on startup is visible in Railway logs instead of silent.
+        logger.warning(f"[CACHE] Stale-check failed ({e}) — treating all {len(tickers)} tickers as stale")
         return list(tickers)
     return stale
 
@@ -305,7 +320,8 @@ def start_scanner_loop():
 
     # ── Startup banner (status only — see CHANGELOG.md for phase history) ─────
     logger.info("=" * 60)
-    logger.info("WAR MACHINE CFW6 SCANNER v1.38d - STARTUP")
+    # SC-A FIX (CORE-5): Version bumped to v1.38e — synced with sniper.py post CORE-4.
+    logger.info("WAR MACHINE CFW6 SCANNER v1.38e - STARTUP")
     logger.info("=" * 60)
 
     try:
@@ -361,8 +377,9 @@ def start_scanner_loop():
         _startup_mode = "After-hours — awaiting market open"
 
     try:
+        # SC-A FIX (CORE-5): Discord message version synced to v1.38e.
         send_simple_message(
-            f"⚔️ WAR MACHINE ONLINE — CFW6 v1.38d | {_startup_mode}"
+            f"⚔️ WAR MACHINE ONLINE — CFW6 v1.38e | {_startup_mode}"
         )
     except Exception as e:
         logger.warning(f"[SCANNER] Discord unavailable: {e}")
@@ -404,8 +421,6 @@ def start_scanner_loop():
 
     if _booting_into_market_hours:
         logger.info("[SCANNER] ⚡ Redeploy detected during market hours — loading locked watchlist")
-        _REDEPLOY_RETRIES    = 2
-        _REDEPLOY_RETRY_WAIT = 3
         for attempt in range(1, _REDEPLOY_RETRIES + 1):
             try:
                 watchlist_data      = get_watchlist_with_metadata(force_refresh=False)
@@ -455,8 +470,14 @@ def start_scanner_loop():
                     logger.info(f"[PRE-MARKET] {current_time_str} - Building Watchlist")
                     try:
                         watchlist_data      = get_watchlist_with_metadata(force_refresh=True)
-                        premarket_watchlist = watchlist_data['watchlist']
-                        metadata            = watchlist_data['metadata']
+                        # SC-C FIX (CORE-5): Direct [] access → .get() with empty-list fallback.
+                        # If get_watchlist_with_metadata() returns a partial dict, the old code
+                        # raised a KeyError that was caught as "Funnel error: 'watchlist'" —
+                        # misleading. .get() now falls through to the empty-watchlist warning below.
+                        premarket_watchlist = watchlist_data.get('watchlist', [])
+                        # SC-B FIX (CORE-5): Removed dead `metadata = watchlist_data['metadata']`
+                        # that was assigned here but never read in this block. The only use of
+                        # metadata in this function is in the refresh block below (logger.info).
 
                         if not premarket_watchlist and now_et.time() > dtime(8, 0):
                             logger.warning("⚠️  WATCHLIST EMPTY after 8:00 AM - possible config issue")
@@ -487,7 +508,8 @@ def start_scanner_loop():
                         logger.info(f"[PRE-MARKET] {current_time_str} - Refreshing Watchlist")
                         try:
                             watchlist_data      = get_watchlist_with_metadata(force_refresh=True)
-                            premarket_watchlist = watchlist_data['watchlist']
+                            # SC-C FIX (CORE-5): .get() fallback on watchlist key.
+                            premarket_watchlist = watchlist_data.get('watchlist', [])
                             current_set = set(premarket_watchlist)
                             new_tickers = list(current_set - last_subscribed_watchlist)
                             if new_tickers:
@@ -497,8 +519,14 @@ def start_scanner_loop():
                                 subscribe_tickers(combined)
                                 subscribe_quote_tickers(combined)
                             last_subscribed_watchlist = current_set
-                            metadata = watchlist_data['metadata']
-                            logger.info(f"[FUNNEL] Stage: {metadata['stage'].upper()} — {metadata['stage_description']}")
+                            metadata = watchlist_data.get('metadata', {})
+                            # SC-G FIX (CORE-5): metadata['stage'] / metadata['stage_description']
+                            # → .get() with '?' fallbacks. If metadata is partial or missing keys,
+                            # the old code raised a KeyError caught as "Refresh error: 'stage'".
+                            logger.info(
+                                f"[FUNNEL] Stage: {metadata.get('stage', '?').upper()} "
+                                f"— {metadata.get('stage_description', '?')}"
+                            )
                         except Exception as e:
                             logger.error(f"[PRE-MARKET] Refresh error: {e}")
                     else:
