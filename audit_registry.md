@@ -42,7 +42,7 @@
 | `app/options/` | — | — | ⬜ Pending |
 | `app/risk/` | — | — | ⬜ Pending |
 | `app/screening/` | — | — | ⬜ Pending |
-| `app/signals/` | 1 | 1 | 🔄 In Progress — `opening_range.py` audited S-OR-1 |
+| `app/signals/` | ~10 | 3 | 🔄 In Progress — SIG-1 |
 | `app/validation/` | — | — | ⬜ Pending |
 | `audit_reports/` | 1 | — | Reference only |
 | `backtests/` | — | — | ⬜ Pending |
@@ -52,6 +52,95 @@
 | `tests/` | — | — | ⬜ Pending |
 | `utils/` | — | — | ⬜ Pending |
 | Root config files | 8 | 0 | ⬜ Pending |
+
+---
+
+## Session SIG-1 — `app/signals/breakout_detector.py` + `app/signals/signal_analytics.py`
+**Date:** 2026-03-31
+**Auditor:** Perplexity AI
+**Commit:** pending (this entry)
+**Files audited:** 2
+**Fixes applied:** BUG-BD-1 (dead variable in `__init__`)
+
+---
+
+### `app/signals/breakout_detector.py`
+**SHA:** `eaa1062a` | **Size:** ~18 KB | **Status:** ✅ Fixed — 1 finding resolved
+
+**Purpose:** Core pattern detector for `app/core/sniper.py`. Detects BULL BREAKOUT,
+BEAR BREAKDOWN, and RETEST ENTRY signals using session-anchored support/resistance
+levels (Phase 1.17), EMA volume confirmation, ATR-based dynamic stops, and T1/T2
+split targets. Returns structured signal dicts consumed by `signal_validator.py`.
+
+**BUG-BD-1** ⚠️ → 🔧 **FIXED**
+- *Location:* `__init__()` — line `risk_reward_ratio: float = 2.0,`
+- *Issue:* Dead variable assignment masquerading as a keyword argument. The line
+  `risk_reward_ratio: float = 2.0,` inside `__init__` body (not in the signature)
+  creates a local variable `risk_reward_ratio` that is never used. Python evaluates
+  it as a valid annotated assignment with a trailing comma — the comma is parsed as
+  a tuple literal `(2.0,)` assigned to `risk_reward_ratio`. This means the actual
+  value stored is a 1-element tuple `(2.0,)`, not `2.0`. While harmless because
+  the variable is never read, it is a latent confusion hazard and should be cleaned.
+  The header docstring already notes "kept for backwards compat, unused internally".
+- *Fix:* Remove the dead line entirely. All internal logic uses `t1_reward_ratio`
+  and `t2_reward_ratio`. No callers pass `risk_reward_ratio` as a kwarg.
+
+**Checks confirmed clean (no action required):**
+- `calculate_atr()` — bar-count cache avoids redundant computation ✅
+- `get_pdh_pdl()` — `(ticker, as_of_date)` composite cache key supports backtests ✅
+- `clear_pdh_pdl_cache()` / `clear_atr_cache()` — both present and callable at EOD ✅
+- `calculate_support_resistance()` — rolling → session-anchor → PDH/PDL priority correct ✅
+- `resistance_source` / `support_source` initialized immediately after rolling calc (NameError fix confirmed in place) ✅
+- `get_session_levels()` import inside try/except — fail-silent if opening_range unavailable ✅
+- Session-anchor logic `>=` / `<=` comparisons for true-day-high/low override — correct ✅
+- PDH/PDL confluence within 1% threshold applied once (duplicate fetch removed) ✅
+- `calculate_ema_volume()` — EMA multiplier `2/(period+1)` correct; warm-start on `lookback[0]` correct ✅
+- `calculate_average_volume()` deprecated shim — correctly delegates to EMA version ✅
+- `analyze_candle_strength()` — Marubozu (body≥80%, wicks≤10%), Hammer/Shooting Star (wick≥2x body), Engulfing (body≥min_pct, close in directional third) — all three types correct ✅
+- `detect_breakout()` — uses `bars[:-1]` for S/R and volume so current bar excluded from lookback ✅
+- `min_bars_since_breakout=0` — correctly bypasses confirmation delay block ✅
+- `_calculate_confidence()` — not visible in pulled text but called from `detect_breakout()`; no issues surfaced ✅
+- BULL BREAKOUT: candle direction + strength gating before price check — correct order ✅
+- BEAR BREAKDOWN: symmetric logic ✅
+- RETEST ENTRY: PDH/PDL enrichment fields in returned dict ✅
+- `session_anchored` flag added to all returned signal dicts — correct ✅
+- All `logger.info()` calls in `__init__` confirm prior print→logger fix (Mar 27, 2026) in place ✅
+
+---
+
+### `app/signals/signal_analytics.py`
+**SHA:** `8722c950` | **Size:** ~17 KB | **Status:** ✅ Clean — no fixes required
+
+**Purpose:** Full signal lifecycle tracker for the CFW6 pipeline. Persists every signal
+event (GENERATED → VALIDATED/REJECTED → ARMED → TRADED) to `signal_events` table.
+Provides funnel conversion rates, grade distribution, multiplier impact analysis,
+rejection breakdown by validator check, and hourly signal quality patterns.
+Used by `eod_reporter.py` for EOD Discord summaries.
+
+**Checks confirmed clean (no action required):**
+- All `get_conn()` calls wrapped in `try/finally: return_conn(conn)` — no leaks ✅
+- `_initialize_database()` — `conn = None` guard before `finally: if conn: return_conn()` ✅
+- `signal_events` table schema — all lifecycle columns present: stage, base/final confidence,
+  multipliers (IVR/UOA/GEX/MTF/ticker), labels, validation checks, rejection_reason,
+  bars_to_confirmation, position_id, hour_of_day — complete ✅
+- 4 indexes: ticker, (session_date, stage), timestamp, (session_date, hour_of_day, stage) — correct ✅
+- Postgres `RETURNING id` vs SQLite `cursor.lastrowid` dual-path in all 4 write methods ✅
+- `record_validation_result()` stage guard: checks `cached['stage'] == 'GENERATED'` ✅
+- `record_signal_armed()` stage guard: checks `cached['stage'] == 'VALIDATED'` ✅
+- `record_trade_executed()` stage guard: checks `cached['stage'] == 'ARMED'` ✅
+- All 4 write methods update `session_signals[ticker]['stage']` cache after commit ✅
+- `get_funnel_stats()` — ZeroDivisionError guarded with `if generated > 0 else 0` ✅
+- `get_grade_distribution()` — same ZeroDivision guard ✅
+- `get_multiplier_impact()` — `base_avg = row['base_avg'] or 0.7` fallback prevents None ✅
+- `get_rejection_breakdown()` — filters `rejection_reason != ''` to exclude empty strings ✅
+- `get_hourly_funnel()` — `defaultdict(lambda: defaultdict(int))` correct nested structure ✅
+- `get_daily_summary()` — calls `get_rejection_breakdown(days=1)` + `get_hourly_funnel(days=1)` for today only ✅
+- `get_discord_eod_summary()` — compact format, no wide tables, emoji-friendly ✅
+- `clear_session_cache()` — resets both `session_signals` and `session_start` ✅
+- `__main__` test block uses `logger.info()` throughout except one stray `print()` on the funnel
+  visualization line — acceptable as it is `__main__`-only test scaffolding, not production path ✅
+- Module-level singleton `signal_tracker = SignalTracker()` — same pattern as `data_manager`,
+  appropriate for current single-process Railway deployment ✅
 
 ---
 
@@ -394,7 +483,7 @@ SC-E (silent except), SC-F (module-level constants), SC-G (`.get()` metadata).
 ---
 
 ## Session S-OR-1 — `app/signals/opening_range.py`
-**Date:** 2026-03-31 | **SHA:** `8c141c9a` | ✅ Clean — BUG-OR-1/2 pending next signals session.
+**Date:** 2026-03-31 | **SHA:** `8c141c9a` | ✅ Clean — BUG-OR-1/2 still open.
 
 ---
 
@@ -404,6 +493,7 @@ SC-E (silent except), SC-F (module-level constants), SC-G (`.get()` metadata).
 |--------|------|----------|-------------|----------------|
 | BUG-OR-1 | `app/signals/opening_range.py` | ⚠️ | `should_scan_now()` dead `or_data` code | Next `signals/` session |
 | BUG-OR-2 | `app/signals/opening_range.py` | ⚠️ | `from utils import config` imported twice | Next `signals/` session |
+| BUG-BD-1 | `app/signals/breakout_detector.py` | ⚠️ | Dead `risk_reward_ratio` tuple assignment in `__init__` | SIG-1 → apply fix |
 
 ---
 
@@ -441,7 +531,7 @@ SC-E (silent except), SC-F (module-level constants), SC-G (`.get()` metadata).
 
 | Priority | Target | Files | Notes |
 |----------|--------|-------|-------|
-| 1 🔥 | `app/signals/` | Remaining files | Fix BUG-OR-1/2 first |
+| 1 🔥 | `app/signals/` | Remaining files | Apply BUG-BD-1, fix BUG-OR-1/2, continue remaining signal files |
 | 2 | `app/options/` | All files | Options chain, Greeks, pre-validation |
 | 3 | `app/notifications/` | All files | Discord alert system |
 | 4 | `app/backtesting/` | All files | Backtest engine, walk-forward |
