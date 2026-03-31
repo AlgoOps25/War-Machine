@@ -39,6 +39,14 @@ Design:
     the feed logs a permanent entitlement warning and stops retrying — no
     point hammering an auth-rejected endpoint.
 
+BUG-WQF-1/2 fix (DATA-4 audit):
+  - bid/ask field parsing changed from `msg.get("b") or msg.get("bb")` to
+    an explicit `is not None` check. The `or` form treats 0.0 as falsy and
+    would silently fall through to the alternate field name on a valid zero
+    price, returning a wrong value. The corrected form uses the primary field
+    when it is explicitly present (even if 0.0), and falls back to the
+    alternate only when the primary key is absent from the message.
+
 Primary consumers:
   - sniper.py: is_spread_acceptable(ticker) before arming/entering signals
   - analytics: get_spread_summary() for logging during market hours
@@ -100,7 +108,7 @@ SERVER_500_HARD_BACKOFF      = 300   # 5 minutes
 # Fail-open: if no quote data, returns 0.0 (entry allowed).
 MAX_SPREAD_PCT = getattr(config, "MAX_SPREAD_PCT", 0.15)
 
-# ── Shared state ─────────────────────────────────────────────────────────────
+# ── Shared state ───────────────────────────────────────────────────────────────────────────
 _lock              = threading.Lock()
 _quotes            = {}          # ticker → {bid, ask, spread, spread_pct, mid, ...}
 _spread_history    = defaultdict(lambda: deque(maxlen=SPREAD_HISTORY_LEN))
@@ -114,7 +122,7 @@ _ws_connection     = None
 _started           = False
 
 
-# ── Public read API ───────────────────────────────────────────────────────────
+# ── Public read API ─────────────────────────────────────────────────────────────────────────────
 
 def is_quote_connected() -> bool:
     """Return True if the quote WebSocket is currently connected."""
@@ -185,7 +193,7 @@ def get_spread_summary() -> dict:
         }
 
 
-# ── Quote update handler ──────────────────────────────────────────────────────
+# ── Quote update handler ──────────────────────────────────────────────────────────────────
 
 def _on_quote(ticker: str, bid: float, ask: float,
              bid_size: int, ask_size: int, epoch_ms: int):
@@ -217,7 +225,7 @@ def _on_quote(ticker: str, bid: float, ask: float,
         _spread_history[ticker].append(spread_pct)
 
 
-# ── Dynamic subscription ──────────────────────────────────────────────────────
+# ── Dynamic subscription ───────────────────────────────────────────────────────────────
 
 async def _do_subscribe(ws, tickers: list):
     """Send subscribe messages for new tickers. Must be called from WS event loop."""
@@ -264,7 +272,7 @@ def subscribe_quote_tickers(tickers: list):
         logger.info(f"[QUOTE] subscribe_quote_tickers error: {e}")
 
 
-# ── Server message handler ────────────────────────────────────────────────────
+# ── Server message handler ──────────────────────────────────────────────────────────────
 
 def _handle_server_msg(msg: dict, consecutive_500s: list) -> str:
     """
@@ -304,7 +312,7 @@ def _handle_server_msg(msg: dict, consecutive_500s: list) -> str:
     return "fatal"
 
 
-# ── WebSocket coroutine ───────────────────────────────────────────────────────
+# ── WebSocket coroutine ────────────────────────────────────────────────────────────────────────────
 
 async def _ws_run():
     """
@@ -325,6 +333,10 @@ async def _ws_run():
         than looping forever against an auth-rejected endpoint.
       - attempt counter is now also incremented on 500-triggered hard backoff so
         normal backoff math stays coherent.
+
+    BUG-WQF-1/2 fix (DATA-4 audit):
+      - bid/ask parsed with explicit `is not None` checks so a 0.0 price from
+        the primary field name is not silently discarded.
     """
     global _connected, _ws_connection, _subscribed
 
@@ -400,9 +412,15 @@ async def _ws_run():
 
                         # Quote tick — handle both known EODHD field name variants:
                         #   ask: "a" or "ab"   |   bid: "b" or "bb"
+                        #
+                        # BUG-WQF-1/2: use explicit `is not None` checks so that a
+                        # legitimate 0.0 price from the primary field is never
+                        # discarded by Python's falsy `or` short-circuit evaluation.
                         ticker   = msg.get("s", "")
-                        ask      = msg.get("a") or msg.get("ab")
-                        bid      = msg.get("b") or msg.get("bb")
+                        _ask_a   = msg.get("a")
+                        ask      = _ask_a if _ask_a is not None else msg.get("ab")
+                        _bid_b   = msg.get("b")
+                        bid      = _bid_b if _bid_b is not None else msg.get("bb")
                         ask_size = int(msg.get("av", 0))
                         bid_size = int(msg.get("bv", 0))
                         ts_ms    = msg.get("t")
@@ -439,7 +457,7 @@ async def _ws_run():
             await asyncio.sleep(delay)
 
 
-# ── Public API ────────────────────────────────────────────────────────────────
+# ── Public API ─────────────────────────────────────────────────────────────────────────────
 
 def start_quote_feed(tickers: list):
     """
@@ -488,7 +506,7 @@ def start_quote_feed(tickers: list):
     )
 
 
-# ── Module self-test ──────────────────────────────────────────────────────────
+# ── Module self-test ──────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     logger.info("=" * 60)
