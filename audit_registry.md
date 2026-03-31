@@ -33,7 +33,7 @@
 | `app/analytics/` | 9 | 9 | ✅ Complete (prior sessions) |
 | `app/backtesting/` | 7 | 0 | ⬜ Pending |
 | `app/core/` | 15 | 15 | ✅ **COMPLETE** — CORE-1 through CORE-6 |
-| `app/data/` | 10 | 8 | 🔄 In Progress — DATA-3 (8/10 audited) |
+| `app/data/` | 10 | 10 | ✅ **COMPLETE** — DATA-1 through DATA-4 |
 | `app/filters/` | — | — | ⬜ Pending |
 | `app/indicators/` | — | — | ⬜ Pending |
 | `app/ml/` | 7 | 5 | ✅ Complete — Session ML-1 |
@@ -52,6 +52,91 @@
 | `tests/` | — | — | ⬜ Pending |
 | `utils/` | — | — | ⬜ Pending |
 | Root config files | 8 | 0 | ⬜ Pending |
+
+---
+
+## Session DATA-4 — `app/data/ws_feed.py` + `app/data/ws_quote_feed.py`
+**Date:** 2026-03-31
+**Auditor:** Perplexity AI
+**Commits:** `e77b5ba2` (ws_feed.py), `9ab785f6` (ws_quote_feed.py)
+**Files audited:** 2 — `ws_feed.py` (~23 KB), `ws_quote_feed.py` (~21 KB)
+**Fixes applied:** BUG-WF-1, BUG-WQF-1, BUG-WQF-2
+**`app/data/` now 100% complete (10/10 files).**
+
+---
+
+### `app/data/ws_feed.py`
+**SHA pre-fix:** `e52ea76a` | **SHA post-fix:** `73b7eab6` | **Size:** ~23 KB | **Status:** ✅ Fixed — 1 finding resolved
+
+**Purpose:** EODHD WebSocket trade-tick feed. Aggregates live ticks into 1m OHLCV bars,
+flushes closed bars to DB via `data_manager.store_bars()`, upserts open bars every
+`FLUSH_INTERVAL` seconds for live-price reads, auto-reconnects, thread-safe dynamic
+subscription, REST failover when WS is disconnected.
+
+**BUG-WF-1** ⚠️ → 🔧 **FIXED**
+- *Location:* `_flush_pending()` — `materialize_5m_bars()` call
+- *Issue:* `data_manager.materialize_5m_bars(ticker)` was called unconditionally
+  inside the ticker loop regardless of whether `store_bars()` returned a non-zero
+  count. With 20 tickers at `FLUSH_INTERVAL=10s`, this issued up to 120 wasted DB
+  round-trips per minute during quiet periods when no bars were actually written.
+- *Fix:* Moved `materialize_5m_bars(ticker)` inside the `if count:` block so it only
+  runs when `store_bars()` confirms bars were actually persisted.
+
+**Checks confirmed clean (no action required):**
+- `_started` guard — prevents double thread creation ✅
+- `_HAS_WEBSOCKETS` graceful skip — correct ✅
+- `subscribe_tickers()` thread-safe merge + `run_coroutine_threadsafe` — correct ✅
+- `_on_tick()` 5-gate filter (bounds → dark pool → condition codes → RTH → spike) — correct ✅
+- `_flush_open()` — always quiet, heartbeat with `time.monotonic()` — correct ✅
+- `_flush_loop()` — exception caught per cycle, never crashes daemon thread — correct ✅
+- `_do_subscribe()` — chunked to `SUBSCRIBE_CHUNK=50`, deduped via `_subscribed` set — correct ✅
+- `_ws_run()` — `_subscribed.clear()` on each reconnect before re-subscribing — correct ✅
+- REST failover 3-tier chain (WS → REST → None) — correct ✅
+- `get_current_bar_with_fallback()` — REST cache uses `time.monotonic()` — correct ✅
+- `_fetch_bar_rest()` — uses `data[-1]` (most recent bar), 5s timeout — correct ✅
+- `get_failover_stats()` — cache count logic correct — correct ✅
+- EODHD `?api_token=` URL auth (not JSON body) — matches documented protocol ✅
+
+---
+
+### `app/data/ws_quote_feed.py`
+**SHA pre-fix:** `a6357929` | **SHA post-fix:** `affb8882` | **Size:** ~21 KB | **Status:** ✅ Fixed — 2 findings resolved
+
+**Purpose:** EODHD WebSocket bid/ask quote feed. Maintains per-ticker spread state
+for entry quality filtering (`is_spread_acceptable()`). Mirrors `ws_feed.py`
+architecture: daemon thread, own asyncio loop, exponential backoff reconnect,
+chunked subscriptions, rolling spread history deque.
+
+**BUG-WQF-1** ⚠️ → 🔧 **FIXED**
+- *Location:* `_ws_run()` — ask field parsing
+- *Issue:* `ask = msg.get("a") or msg.get("ab")` — Python's `or` treats `0.0` as
+  falsy. If EODHD sends `"a": 0.0` (valid edge case), the expression silently
+  falls through to `msg.get("ab")`, returning a wrong value or `None`.
+- *Fix:* `_ask_a = msg.get("a"); ask = _ask_a if _ask_a is not None else msg.get("ab")`.
+  Primary field used when explicitly present (even as `0.0`); alternate field
+  used only when primary key is absent from the message.
+
+**BUG-WQF-2** ⚠️ → 🔧 **FIXED**
+- *Location:* `_ws_run()` — bid field parsing
+- *Issue:* `bid = msg.get("b") or msg.get("bb")` — same falsy `0.0` trap as BUG-WQF-1.
+- *Fix:* `_bid_b = msg.get("b"); bid = _bid_b if _bid_b is not None else msg.get("bb")`.
+
+**Checks confirmed clean (no action required):**
+- `_started` guard — prevents duplicate threads ✅
+- `_HAS_WEBSOCKETS` graceful skip — correct ✅
+- Exponential backoff `min(2^attempt, 60s)` — resets on clean TCP connect ✅
+- `_handle_server_msg()` — 500 dedup (1st + every 10th), hard backoff threshold,
+  fatal auth stop — all correct ✅
+- `await asyncio.sleep(0.5)` auth handshake delay before subscribe — correct ✅
+- `consecutive_500s = [0]` mutable list reference for inner scope — correct Python pattern ✅
+- `hard_backoff_triggered` break-then-sleep pattern — correct ✅
+- `_on_quote()` — crossed market (`bid > ask`) rejected, corrupt price gate — correct ✅
+- `is_spread_acceptable()` — fail-open on `0.0` — correct ✅
+- `get_avg_spread_pct()` — rolling `deque(maxlen=SPREAD_HISTORY_LEN)` — correct ✅
+- `subscribe_quote_tickers()` — thread-safe merge + `run_coroutine_threadsafe` — correct ✅
+- `_do_subscribe()` — chunked, deduped — correct ✅
+- `attempt` counter reset on clean connect, incremented on 500 hard backoff — correct ✅
+- `get_spread_summary()` — snapshot under lock — correct ✅
 
 ---
 
@@ -326,6 +411,9 @@ SC-E (silent except), SC-F (module-level constants), SC-G (`.get()` metadata).
 
 | Fix ID | File | Commit | Description |
 |--------|------|--------|-------------|
+| BUG-WF-1 | `ws_feed.py` | `e77b5ba2` | `materialize_5m_bars()` moved inside `if count:` — skip when no bars stored |
+| BUG-WQF-1 | `ws_quote_feed.py` | `9ab785f6` | ask parsing: `or` → `is not None` — prevents 0.0 falsy discard |
+| BUG-WQF-2 | `ws_quote_feed.py` | `9ab785f6` | bid parsing: `or` → `is not None` — prevents 0.0 falsy discard |
 | BUG-DM-1 | `data_manager.py` | this commit | `cleanup_old_bars()` cutoff now uses ET-naive now instead of local naive now |
 | BUG-DM-2 | `data_manager.py` | this commit | `bulk_fetch_live_snapshots()` now tracks WS/API counts explicitly |
 | BUG-DBC-1 | `db_connection.py` | `b0524d51` | `datetime.now()` → `datetime.now(_ET)` in `check_pool_health()` |
@@ -353,11 +441,10 @@ SC-E (silent except), SC-F (module-level constants), SC-G (`.get()` metadata).
 
 | Priority | Target | Files | Notes |
 |----------|--------|-------|-------|
-| 1 🔥 | `app/data/` DATA-4 | `ws_feed.py` (23 KB), `ws_quote_feed.py` (21 KB) | WebSocket feeds |
-| 2 | `app/signals/` | Remaining files | Fix BUG-OR-1/2 first |
-| 3 | `app/options/` | All files | Options chain, Greeks, pre-validation |
-| 4 | `app/notifications/` | All files | Discord alert system |
-| 5 | `app/backtesting/` | All files | Backtest engine, walk-forward |
-| 6 | `app/filters/`, `app/indicators/`, `app/mtf/`, `app/screening/`, `app/validation/`, `app/risk/`, `app/ai/` | All | Secondary modules |
-| 7 | `scripts/`, `tests/`, `utils/` | All | Support infrastructure |
-| 8 | Root config | `requirements.txt`, `railway.toml`, etc. | Deployment config |
+| 1 🔥 | `app/signals/` | Remaining files | Fix BUG-OR-1/2 first |
+| 2 | `app/options/` | All files | Options chain, Greeks, pre-validation |
+| 3 | `app/notifications/` | All files | Discord alert system |
+| 4 | `app/backtesting/` | All files | Backtest engine, walk-forward |
+| 5 | `app/filters/`, `app/indicators/`, `app/mtf/`, `app/screening/`, `app/validation/`, `app/risk/`, `app/ai/` | All | Secondary modules |
+| 6 | `scripts/`, `tests/`, `utils/` | All | Support infrastructure |
+| 7 | Root config | `requirements.txt`, `railway.toml`, etc. | Deployment config |
