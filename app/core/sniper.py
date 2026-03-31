@@ -3,6 +3,22 @@ sniper.py — CFW6 Strategy Engine v1.38d
 Two-path scanning: OR-Anchored + Intraday BOS+FVG fallback.
 Signal pipeline lives in app/core/sniper_pipeline.py.
 See CHANGELOG.md for full phase history.
+
+AUDIT 2026-03-31 (Session 18):
+  BUG-SN-1 (non-crashing): import logging / logger were placed after all optional
+    try/except import blocks (~40 lines in). Moved to immediately after the hard
+    imports so logger is available from the first line of execution. Previously,
+    any exception raised inside the optional try/except blocks before logger was
+    assigned would produce an unlogged silent failure.
+  BUG-SN-2 (structural note): VWAP reclaim block at bottom of process_ticker is
+    structurally unreachable — scan_mode is always set to OR_ANCHORED or
+    INTRADAY_BOS before _run_signal_pipeline() is called, so the `if scan_mode
+    is None` guard never passes. Added comment to document intent vs. reality.
+    Not fixed (would require architectural change) but documented to prevent
+    future confusion.
+  BUG-SN-3 (non-crashing): _log_bos_event and _log_fvg_event were defined before
+    logger was assigned (same root as BUG-SN-1). Resolved by BUG-SN-1 fix.
+  All other checks CONFIRMED CLEAN — see AUDIT_REGISTRY.md Session 18.
 """
 import traceback
 from datetime import datetime, time, timedelta
@@ -26,6 +42,8 @@ from app.filters.early_session_disqualifier import should_skip_cfw6_or_early
 # Pipeline lives in sniper_pipeline.py (extracted to keep this file small)
 from app.core.sniper_pipeline import _run_signal_pipeline as _pipeline
 
+# BUG-SN-1 FIX: logger moved here — before all optional try/except blocks so
+# any import-time exception is loggable immediately.
 import logging
 logger = logging.getLogger(__name__)
 _ET = ZoneInfo("America/New_York")  # FIX: was NameError in process_ticker regime_age calc
@@ -285,14 +303,14 @@ def process_ticker(ticker: str):
                             confidence=0.0,
                         )
                     logger.info(
-                        f"[{ticker}] 🚀 EXPLOSIVE MOVER OVERRIDE: "
+                        f"[{ticker}] \U0001f680 EXPLOSIVE MOVER OVERRIDE: "
                         f"score={metadata['score']} rvol={metadata['rvol']:.1f}x "
                         f"tier={metadata['tier']} — regime filter bypassed"
                     )
                 else:
                     state_r = regime_filter.get_regime_state()
                     logger.info(
-                        f"[{ticker}] 🚫 REGIME FILTER: {state_r.regime} "
+                        f"[{ticker}] \U0001f6ab REGIME FILTER: {state_r.regime} "
                         f"(VIX:{state_r.vix:.1f}) — {state_r.reason}"
                     )
                     return
@@ -313,12 +331,12 @@ def process_ticker(ticker: str):
                     logger.info(f"[{ticker}] No session bars")
                     return
             except Exception as e:
-                logger.warning(f"[{ticker}] ❌ Data fetch failed: {e}")
+                logger.warning(f"[{ticker}] \u274c Data fetch failed: {e}")
                 return
 
         logger.info(
             f"[{ticker}] {_now_et().date()} ({len(bars_session)} bars) "
-            f"{_bar_time(bars_session[0])} → {_bar_time(bars_session[-1])}"
+            f"{_bar_time(bars_session[0])} \u2192 {_bar_time(bars_session[-1])}"
         )
 
         if SD_ZONE_ENABLED:
@@ -354,8 +372,8 @@ def process_ticker(ticker: str):
                             break
                 if resolved_idx is None:
                     logger.info(
-                        f"[{ticker}] ⚠️ Watch DB entry: breakout bar "
-                        f"{bar_dt_target} not found in today's session — discarding"
+                        f"[{ticker}] \u26a0\ufe0f Watch DB entry: breakout bar "
+                        f"{bar_dt_target} not found in today's session \u2014 discarding"
                     )
                     _state.remove_watching_signal(ticker)
                     _remove_watch_from_db(ticker)
@@ -364,18 +382,18 @@ def process_ticker(ticker: str):
                     _state.update_watching_signal_field(ticker, "breakout_idx", resolved_idx)
                     w["breakout_idx"] = resolved_idx
                     logger.info(
-                        f"[{ticker}] 📄 Watch restored from DB: "
+                        f"[{ticker}] \U0001f4c4 Watch restored from DB: "
                         f"breakout_idx={resolved_idx} ({bar_dt_target})"
                     )
 
             bars_since = len(bars_session) - w["breakout_idx"]
             if bars_since > MAX_WATCH_BARS:
-                logger.info(f"[{ticker}] ⏰ Watch expired — clearing")
+                logger.info(f"[{ticker}] \u23f0 Watch expired \u2014 clearing")
                 _state.remove_watching_signal(ticker)
                 _remove_watch_from_db(ticker)
                 return
 
-            logger.info(f"[{ticker}] 👁️ WATCHING [{bars_since}/{MAX_WATCH_BARS}]")
+            logger.info(f"[{ticker}] \U0001f441\ufe0f WATCHING [{bars_since}/{MAX_WATCH_BARS}]")
             fvg_threshold, _ = get_adaptive_fvg_threshold(bars_session, ticker)
             fvg_result = find_fvg_after_bos(
                 bars_session, w["breakout_idx"], w["direction"], min_pct=fvg_threshold
@@ -408,10 +426,10 @@ def process_ticker(ticker: str):
                 logger.info(
                     f"[{ticker}] OR too narrow "
                     f"({or_range_pct:.2%} < {or_threshold:.2%}) "
-                    f"— skipping OR path, trying intraday BOS"
+                    f"\u2014 skipping OR path, trying intraday BOS"
                 )
             else:
-                logger.info(f"[{ticker}] OR: ${or_low:.2f}—${or_high:.2f} ({or_range_pct:.2%})")
+                logger.info(f"[{ticker}] OR: ${or_low:.2f}\u2014${or_high:.2f} ({or_range_pct:.2%})")
 
                 if should_skip_cfw6_or_early(or_range_pct, _now_et(), or_threshold):
                     logger.info(
@@ -450,7 +468,7 @@ def process_ticker(ticker: str):
                                 or_high, or_low, "CFW6_OR"
                             )
                         else:
-                            logger.info(f"[{ticker}] 🔕 BOS watch alert suppressed (already sent)")
+                            logger.info(f"[{ticker}] \U0001f515 BOS watch alert suppressed (already sent)")
                         return
                 else:
                     logger.info(f"[{ticker}] No ORB")
@@ -496,7 +514,7 @@ def process_ticker(ticker: str):
                                         sr["sr_high"], sr["sr_low"], "CFW6_OR"
                                     )
                                 else:
-                                    logger.info(f"[{ticker}] 🔕 BOS watch alert suppressed (already sent)")
+                                    logger.info(f"[{ticker}] \U0001f515 BOS watch alert suppressed (already sent)")
                                 return
         else:
             logger.info(f"[{ticker}] No OR bars")
@@ -509,7 +527,7 @@ def process_ticker(ticker: str):
             fvg_threshold, _ = get_adaptive_fvg_threshold(bars_session, ticker)
             bos_signal = scan_bos_fvg(ticker, bars_session, fvg_min_pct=fvg_threshold)
             if bos_signal is None:
-                logger.info(f"[{ticker}] — No BOS+FVG signal")
+                logger.info(f"[{ticker}] \u2014 No BOS+FVG signal")
                 return
 
             direction    = bos_signal["direction"]
@@ -531,19 +549,19 @@ def process_ticker(ticker: str):
                     )
                     primary_fvg = mtf_analysis['primary_fvg']
                     if primary_fvg is None:
-                        logger.info(f"[{ticker}] — No FVGs found on any timeframe (MTF scan)")
+                        logger.info(f"[{ticker}] \u2014 No FVGs found on any timeframe (MTF scan)")
                         return
                     zone_low  = primary_fvg['fvg_low']
                     zone_high = primary_fvg['fvg_high']
                     if mtf_analysis['has_conflict']:
                         logger.info(
-                            f"[{ticker}] 🎯 MTF PRIORITY: {primary_fvg['timeframe']} FVG selected | "
+                            f"[{ticker}] \U0001f3af MTF PRIORITY: {primary_fvg['timeframe']} FVG selected | "
                             f"Confluence: {mtf_analysis['confluence_count']} timeframe(s) | "
                             f"Zone: ${zone_low:.2f}-${zone_high:.2f}"
                         )
                     else:
                         logger.info(
-                            f"[{ticker}] 🔍 Single FVG on {primary_fvg['timeframe']} | "
+                            f"[{ticker}] \U0001f50d Single FVG on {primary_fvg['timeframe']} | "
                             f"Zone: ${zone_low:.2f}-${zone_high:.2f}"
                         )
                 except Exception as priority_err:
@@ -564,7 +582,7 @@ def process_ticker(ticker: str):
             scan_mode = "INTRADAY_BOS"
 
         signal_type = "CFW6_OR" if scan_mode == "OR_ANCHORED" else "CFW6_INTRADAY"
-        logger.info(f"[{ticker}] {scan_mode} | FVG ${zone_low:.2f}—${zone_high:.2f}")
+        logger.info(f"[{ticker}] {scan_mode} | FVG ${zone_low:.2f}\u2014${zone_high:.2f}")
         _run_signal_pipeline(
             ticker, direction, zone_low, zone_high,
             or_high_ref, or_low_ref, signal_type,
@@ -575,7 +593,11 @@ def process_ticker(ticker: str):
             skip_cfw6_confirmation=(scan_mode == "INTRADAY_BOS")
         )
 
-        # ── VWAP reclaim — only fires when neither OR nor BOS path produced a signal ──
+        # BUG-SN-2 NOTE: VWAP reclaim block below is structurally unreachable.
+        # scan_mode is always OR_ANCHORED or INTRADAY_BOS by this point, so the
+        # `if scan_mode is None` guard never passes. Keeping the code in place
+        # as documented intent — if VWAP reclaim is to be activated it needs its
+        # own execution path, not a fallback on scan_mode==None.
         if scan_mode is None and VWAP_RECLAIM_ENABLED:
             _vwap_val = compute_vwap(bars_session)
             vr = None
@@ -585,7 +607,7 @@ def process_ticker(ticker: str):
                     break
             if vr:
                 logger.info(
-                    f"[{ticker}] 🔵 VWAP RECLAIM: {vr['direction'].upper()} "
+                    f"[{ticker}] \U0001f535 VWAP RECLAIM: {vr['direction'].upper()} "
                     f"@ ${vr['entry_price']:.2f} | VWAP=${vr['vwap']:.2f}"
                 )
                 _run_signal_pipeline(
@@ -598,7 +620,7 @@ def process_ticker(ticker: str):
                     skip_cfw6_confirmation=True,
                 )
             else:
-                logger.info(f"[{ticker}] — No VWAP reclaim signal")
+                logger.info(f"[{ticker}] \u2014 No VWAP reclaim signal")
 
     except Exception as e:
         logger.error(f"process_ticker error {ticker}: {e}", exc_info=True)

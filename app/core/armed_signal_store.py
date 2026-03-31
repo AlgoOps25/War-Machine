@@ -11,9 +11,14 @@
 # AUDIT 2026-03-31 (Session 15):
 #   BUG-ASS-1: Moved `import logging` / `logger =` to top of import block (before app imports)
 #              so standard-library imports appear before third-party/app imports per convention.
-#              Non-crashing but inconsistent with all other modules.
 #   BUG-ASS-2: Removed redundant `from app.data.sql_safe import safe_execute` inside
 #              clear_armed_signals() — safe_execute is already imported at module scope.
+#
+# AUDIT 2026-03-31 (Session 18):
+#   BUG-ASS-3 (REAL BUG): _persist_armed_signal() read data.get('validation') but
+#              arm_signal.py sends 'validation_data' after BUG-S16-1 renamed the key.
+#              Validation payload was always None in DB on every arm. Fixed: read
+#              'validation_data' to match the key arm_signal.py actually sends.
 
 import json
 import logging
@@ -71,9 +76,11 @@ def _persist_armed_signal(ticker: str, data: dict):
         cursor = conn.cursor()
         p = get_placeholder(conn)
         validation_json = None
-        if data.get("validation"):
+        # BUG-ASS-3 FIX: was data.get('validation') but arm_signal.py sends 'validation_data'
+        # after BUG-S16-1. Both keys now consistent: arm_signal → store → DB.
+        if data.get("validation_data"):
             try:
-                validation_json = json.dumps(data["validation"])
+                validation_json = json.dumps(data["validation_data"])
             except Exception:
                 validation_json = None
         query = f"""
@@ -153,7 +160,7 @@ def _cleanup_stale_armed_signals():
                         f"DELETE FROM armed_signals_persist WHERE ticker IN ({placeholders})",
                         tuple(params))
             conn.commit()
-            logger.info(f"[ARMED-DB] 🧹 Auto-cleaned {len(stale_tickers)} closed position(s): {', '.join(stale_tickers)}")
+            logger.info(f"[ARMED-DB] \U0001f9f9 Auto-cleaned {len(stale_tickers)} closed position(s): {', '.join(stale_tickers)}")
     except Exception as e:
         logger.warning(f"[ARMED-DB] Cleanup error: {e}")
     finally:
@@ -203,11 +210,11 @@ def _load_armed_signals_from_db() -> dict:
                 "confidence":   row["confidence"],
                 "grade":        row["grade"],
                 "signal_type":  row["signal_type"],
-                "validation":   validation
+                "validation_data": validation
             }
         if loaded:
             logger.info(
-                f"[ARMED-DB] 📄 Reloaded {len(loaded)} armed signal(s) from DB after restart: "
+                f"[ARMED-DB] \U0001f4c4 Reloaded {len(loaded)} armed signal(s) from DB after restart: "
                 f"{', '.join(loaded.keys())}"
             )
         return loaded
@@ -221,6 +228,7 @@ def _load_armed_signals_from_db() -> dict:
 
 _armed_load_lock = __import__('threading').Lock()
 
+
 def _maybe_load_armed_signals():
     with _armed_load_lock:
         if _state.is_armed_loaded():
@@ -230,6 +238,7 @@ def _maybe_load_armed_signals():
     loaded = _load_armed_signals_from_db()
     if loaded:
         _state.update_armed_signals_bulk(loaded)
+
 
 def clear_armed_signals():
     """Clear all armed signals from memory and DB."""
