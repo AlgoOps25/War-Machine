@@ -4,7 +4,7 @@ app/core/sniper_log.py
 Structured pre-arm trade logger for War Machine.
 
 PURPOSE:
-    Provides log_proposed_trade() — a single structured INFO log line
+    Provides log_proposed_trade() -- a single structured INFO log line
     written immediately after the stop-tightness guard in arm_ticker(),
     before position_manager.open_position() is called.
 
@@ -18,13 +18,19 @@ PURPOSE:
     record of the proposed entry parameters.
 
 CALLED BY:
-    app/core/arm_signal.py  →  arm_ticker()
+    app/core/arm_signal.py  ->  arm_ticker()
 
 FIX (2026-03-26):
     Created this module. arm_signal.py imported it via:
         from app.core.sniper_log import log_proposed_trade
     but the file never existed, raising an ImportError on every arm
     attempt and silently blocking all trade execution.
+
+AUDIT 2026-03-31 (Session 16):
+    BUG-SL-1: Replaced bare `except Exception: pass` with a fallback
+              print() so any failure inside the logging function is at
+              least visible in Railway stdout. The arm path is never
+              blocked -- this is still a pure best-effort log.
 """
 
 import logging
@@ -43,7 +49,7 @@ def log_proposed_trade(
     """
     Write a single structured INFO log line for every proposed trade.
 
-    This is a pure logging function — it has no side effects, never
+    This is a pure logging function -- it has no side effects, never
     raises, and never blocks execution.
 
     Args:
@@ -51,7 +57,7 @@ def log_proposed_trade(
         signal_type:  "CFW6_OR" or "CFW6_INTRADAY"
         direction:    "bull" or "bear"
         entry_price:  Proposed entry price at signal time
-        confidence:   Scorecard-derived confidence (0.60–0.85)
+        confidence:   Scorecard-derived confidence (0.60-0.85)
         grade:        CFW6 confirmation grade ("A+", "A", "A-", "B+", "B")
 
     Log format (grep key: [PROPOSED-TRADE]):
@@ -65,6 +71,8 @@ def log_proposed_trade(
             f"Confidence:{confidence * 100:.1f}% | "
             f"Grade:{grade}"
         )
-    except Exception:
-        # Never let a logging call crash the arm path
-        pass
+    except Exception as e:
+        # BUG-SL-1: Never let a logging call crash the arm path.
+        # Fallback print ensures at least stdout visibility on Railway
+        # if the logger itself is unavailable.
+        print(f"[sniper_log] WARNING: log_proposed_trade failed for {ticker}: {e}")
