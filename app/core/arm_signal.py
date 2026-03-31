@@ -30,6 +30,11 @@ AUDIT 2026-03-27: Promoted logger.info → logger.warning on all error/rejection
 FIX BUG-ARM-1 (2026-03-30): Moved import logging / logger above docstring so
   module __doc__ is correctly populated. Previously the string literal appeared
   after the logger assignment and was treated as a dead expression by Python.
+
+FIX BUG-S16-1 (2026-03-31): Renamed 'validation' key → 'validation_data' in
+  armed_signal_data dict so it matches the key expected by
+  armed_signal_store._persist_armed_signal(). Previously the validation payload
+  was always None in the DB even when a validation_result was passed.
 """
 import logging
 logger = logging.getLogger(__name__)
@@ -169,17 +174,19 @@ def arm_ticker(
             logger.warning(f"[DISCORD] ❌ Alert failed: {e}")
 
     # Persist armed signal state
+    # BUG-S16-1 FIX (2026-03-31): key was 'validation' but armed_signal_store.py
+    # reads it as 'validation_data' — validation payload was always None in DB.
     armed_signal_data = {
-        "position_id":  position_id,
-        "direction":    direction,
-        "entry_price":  entry_price,
-        "stop_price":   stop_price,
-        "t1":           t1,
-        "t2":           t2,
-        "confidence":   confidence,
-        "grade":        grade,
-        "signal_type":  signal_type,
-        "validation":   validation_result,
+        "position_id":    position_id,
+        "direction":      direction,
+        "entry_price":    entry_price,
+        "stop_price":     stop_price,
+        "t1":             t1,
+        "t2":             t2,
+        "confidence":     confidence,
+        "grade":          grade,
+        "signal_type":    signal_type,
+        "validation_data": validation_result,
     }
     _state.set_armed_signal(ticker, armed_signal_data)
     _persist_armed_signal(ticker, armed_signal_data)
