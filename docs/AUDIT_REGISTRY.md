@@ -1,7 +1,7 @@
 # War Machine — Full Repo Audit Registry
 
 > **Purpose:** Master reference for the file-by-file audit of all tracked files.  
-> **Last updated:** 2026-03-30 Session 14 — arm_signal.py ✅ AUDIT COMPLETE (BUG-ARM-1 fixed)  
+> **Last updated:** 2026-03-31 Session 15 — armed_signal_store.py ✅ (BUG-ASS-1/2 noted, non-crashing) | watch_signal_store.py ✅ FIXED (BUG-WSS-1/2/3 fixed, commit `19fc732`)  
 > **Auditor:** Perplexity AI (interactive audit with Michael)  
 > **Status legend:** ✅ KEEP | ⚠️ REVIEW | 🔀 MERGE → target | 🗃️ QUARANTINE | ❌ DELETE | 🔧 FIXED | 📦 MOVED  
 > **Prohibited (runtime-critical) directories:** `app/core`, `app/data`, `app/risk`, `app/signals`, `app/validation`, `app/filters`, `app/mtf`, `app/notifications`, `utils/`, `migrations/`  
@@ -29,6 +29,7 @@
 | **Session 12** | **app/mtf line-by-line deep audit — BUG-MTF-1/2/3 fixed** | **3 fixes across 2 files** | **✅ Complete 2026-03-27** |
 | **Session 13** | **app/core/sniper.py + scanner.py deep audit — 2 confirmed fixes, 3 already-clean** | **2 new items confirmed** | **✅ Complete 2026-03-29** |
 | **Session 14** | **app/risk + app/core/sniper_pipeline.py + arm_signal.py deep audit — BUG-RISK-1, BUG-SP-1/SP-2, BUG-ARM-1 fixed** | **4 fixes across 4 files** | **✅ Complete 2026-03-30** |
+| **Session 15** | **app/core/armed_signal_store.py + watch_signal_store.py line-by-line audit — BUG-ASS-1/2 noted (non-crashing), BUG-WSS-1/2/3 fixed** | **3 fixes in 1 file** | **✅ Complete 2026-03-31** |
 
 ---
 
@@ -54,7 +55,7 @@
 | 16 | 2026-03-16 | S6 | `app/ml/analyze_signal_failures.py` | 📦 MOVED → `scripts/analysis/analyze_signal_failures.py`. | `42126d5` / `f6254b5` | Dev tool in correct location |
 | 17 | 2026-03-16 | S6 | `app/ml/train_from_analytics.py` | 📦 MOVED → `scripts/ml/train_from_analytics.py`. | `42126d5` / `2f586e6` | Dev tool in correct location |
 | 18 | 2026-03-16 | S6 | `app/ml/train_historical.py` | 📦 MOVED → `scripts/ml/train_historical.py`. | `42126d5` / `dc9a8db` | Dev tool in correct location |
-| 19 | 2026-03-16 | S7 | `docs/AUDIT_REGISTRY.md` | Batch C complete — all `app/backtesting/` and `scripts/` audited. | this commit | Registry current |
+| 19 | 2026-03-17 | S7 | `docs/AUDIT_REGISTRY.md` | Batch C complete — all `app/backtesting/` and `scripts/` audited. | this commit | Registry current |
 | 20 | 2026-03-17 | S8 | `docs/AUDIT_REGISTRY.md` | Batch D + E complete. | this commit | Registry current |
 | 21 | 2026-03-25 | S9 | `app/options/options_intelligence.py` | 🔧 FIXED: `get_chain()` dead-code in cache branch removed. | `edb6ba9` | Runtime bug fix |
 | 22 | 2026-03-25 | S9 | `app/validation/greeks_precheck.py` | 🔧 FIXED: Missing `ZoneInfo` import added. | `08648df` | Runtime bug fix |
@@ -82,6 +83,11 @@
 | 44 | 2026-03-30 | S14 | `app/core/sniper_pipeline.py` + `app/core/signal_scorecard.py` | 🔧 FIXED BUG-SP-2: `confidence_base` from `grade_signal_with_confirmations()` was computed and silently discarded. Now passed into `build_scorecard()` as `cfw6_confidence_base`. `signal_scorecard.py` updated: new `_score_cfw6_confidence()` function (+0–10pts, linear scale: ≥0.80=10, ≥0.70=7, ≥0.60=5, ≥0.50=3, else 0). `SignalScorecard` dataclass updated with `cfw6_score` field. Breakdown string updated. Max scorecard total raised from 85 → 95. | `7f5b377` / `032ffcc` | Signal quality: CFW6 confirmation strength now influences arming |
 | 45 | 2026-03-30 | S14 | `app/core/arm_signal.py` | 🔧 FIXED BUG-ARM-1: Moved module docstring above `import logging` / `logger` assignment so `arm_signal.__doc__` is correctly populated. Previously the string literal appeared after the logger assignment and was treated as a dead expression by Python. Zero runtime impact but corrects introspection. | `0165db5` | Cosmetic / introspection fix |
 | 46 | 2026-03-30 | S14 | `app/core/arm_signal.py` | ✅ BUG-ARM-2 RETRACTED — `sniper_log.py` confirmed still present in repo (not deleted in S9 as registry previously noted). `log_proposed_trade` import is safe. Registry note on S9 deletion was incorrect. | live | No action needed |
+| 47 | 2026-03-31 | S15 | `app/core/armed_signal_store.py` | ⚠️ BUG-ASS-1 NOTED (non-crashing): `logger` is assigned immediately after `import logging` which is the last import in the file — inconsistent with conventional top-of-import ordering. Non-crashing, cosmetic only. No fix applied — not worth a commit for style alone. | live | Non-crashing cosmetic |
+| 48 | 2026-03-31 | S15 | `app/core/armed_signal_store.py` | ⚠️ BUG-ASS-2 NOTED (non-crashing): `from app.data.sql_safe import safe_execute` is re-imported inside `clear_armed_signals()` even though `safe_execute` is already imported at module scope. Redundant but harmless. No fix applied. | live | Non-crashing cosmetic |
+| 49 | 2026-03-31 | S15 | `app/core/watch_signal_store.py` | 🔧 FIXED BUG-WSS-1: All error-path `logger.info(f"[WATCH-DB]... error: {e}")` calls promoted to `logger.warning` to match `armed_signal_store.py` convention — errors must surface in Railway logs. | `19fc732` | Log level consistency |
+| 50 | 2026-03-31 | S15 | `app/core/watch_signal_store.py` | 🔧 FIXED BUG-WSS-2: Stray `print(f"[WATCH-DB] 📄 Reloaded ...")` in `_load_watches_from_db()` replaced with `logger.info()`. Same fix previously applied to `armed_signal_store.py` in an earlier session — this one was missed. | `19fc732` | Logging hygiene |
+| 51 | 2026-03-31 | S15 | `app/core/watch_signal_store.py` | 🔧 FIXED BUG-WSS-3: Removed empty `()` params tuple from `clear_watching_signals()` `safe_execute` DELETE call. `armed_signal_store.py` equivalent passes no params at all on full-table deletes. Cosmetic consistency fix. | `19fc732` | Style consistency |
 
 ---
 
@@ -108,8 +114,55 @@
 | 30 | ✅ DONE | `app/risk/position_manager.py` | S14 full audit complete — no new bugs. BUG-PM-1/2/3 confirmed fixed. | ✅ Closed 2026-03-30 |
 | 31 | ✅ DONE | `app/core/sniper_pipeline.py` | S14 full audit complete — BUG-SP-1/SP-2 fixed (`7f5b377` / `032ffcc`) | ✅ Closed 2026-03-30 |
 | 32 | ✅ DONE | `app/core/arm_signal.py` | S14 full audit complete — BUG-ARM-1 fixed (`0165db5`). BUG-ARM-2 retracted (sniper_log.py confirmed live). | ✅ Closed 2026-03-30 |
-| 33 | 🔴 HIGH | `app/core/armed_signal_store.py` | Full line-by-line deep audit — next file | ⏳ Open |
+| 33 | ✅ DONE | `app/core/armed_signal_store.py` | S15 full audit complete — BUG-ASS-1/2 noted (non-crashing, no fix needed). All DB patterns, upsert fields, lock, and error handling confirmed correct. | ✅ Closed 2026-03-31 |
+| 34 | ✅ DONE | `app/core/watch_signal_store.py` | S15 full audit complete — BUG-WSS-1/2/3 fixed (`19fc732`). All DB patterns, lock (FIX I), state method names (FIX #55), cleanup logic confirmed correct. | ✅ Closed 2026-03-31 |
+| 35 | 🔴 HIGH | `app/core/thread_safe_state.py` | Full line-by-line deep audit — next file | ⏳ Open |
 | 38–40 | ✅ DONE | `s16_helpers.txt`, `s16_trade.txt`, `s16_vix.txt` | Deleted — staging duplicates of live `app/risk/` files. | ✅ Closed 2026-03-30 |
+
+---
+
+## armed_signal_store.py — Audit Results (S15, 2026-03-31)
+
+> Full line-by-line audit complete. 2 non-crashing cosmetic findings noted. No fix applied.
+
+| Check | Result |
+|-------|--------|
+| Module comment block above imports | ✅ Correct |
+| BUG-ASS-1: `import logging` is last import; `logger` assigned inline below it | ⚠️ NOTED — non-crashing, cosmetic. No fix. |
+| BUG-ASS-2: Redundant `safe_execute` re-import inside `clear_armed_signals()` | ⚠️ NOTED — non-crashing, cosmetic. No fix. |
+| `_ensure_armed_db()` error path uses `logger.warning` | ✅ Correct (previously upgraded) |
+| `_persist_armed_signal()` — all 11 fields inserted | ✅ Confirmed |
+| `ON CONFLICT` upsert — `saved_at` uses `CURRENT_TIMESTAMP` (not `EXCLUDED.saved_at`) | ✅ Correct |
+| `safe_execute` on all DML | ✅ Consistent |
+| `_remove_armed_from_db()` parametrized | ✅ Confirmed |
+| `_cleanup_stale_armed_signals()` — uses `position_manager.get_open_positions()` | ✅ Correct cross-module reference |
+| `safe_in_clause` on bulk delete | ✅ Confirmed |
+| `_load_armed_signals_from_db()` — `_dc()` / `USE_POSTGRES` branching | ✅ Correct dual-dialect date filter |
+| `row.get("validation_data")` dict-style access | ✅ Safe — `dict_cursor` confirmed |
+| `_armed_load_lock` using `__import__('threading').Lock()` | ✅ Valid — avoids top-level import |
+| `_maybe_load_armed_signals()` — lock wraps loaded check, no double-load possible | ✅ Correct |
+| `clear_armed_signals()` docstring present | ✅ Confirmed |
+
+---
+
+## watch_signal_store.py — Audit Results (S15, 2026-03-31)
+
+> Full line-by-line audit complete. 3 bugs fixed in commit `19fc732`.
+
+| Check | Result |
+|-------|--------|
+| FIX I `_watch_load_lock` present | ✅ Confirmed |
+| FIX #55 state method names all 3 corrected | ✅ `set_watching_signal`, `ticker_is_watching`, `get_all_watching_signals` all confirmed |
+| BUG-WSS-1: Error-path `logger.info` → `logger.warning` | ✅ FIXED `19fc732` — all 7 error paths promoted |
+| BUG-WSS-2: Stray `print()` in `_load_watches_from_db()` | ✅ FIXED `19fc732` — replaced with `logger.info()` |
+| BUG-WSS-3: Empty `()` tuple on full-table DELETE | ✅ FIXED `19fc732` — removed, matches `armed_signal_store.py` style |
+| `_strip_tz()` helper | ✅ Correct — SQLite timezone compat |
+| `MAX_WATCH_BARS = 12` | ✅ Mirrors `sniper.py` constant |
+| `_cleanup_stale_watches()` time-based cutoff | ✅ `breakout_bar_dt < cutoff_time` correct |
+| `cursor.rowcount` for deleted count | ✅ Works on both SQLite + PostgreSQL |
+| `send_bos_watch_alert()` defers `send_simple_message` import | ✅ Deferred inside function body |
+| `add_watching_signal()` calls `_maybe_load_watches()` first | ✅ Correct |
+| `remove_watching_signal()` does NOT call `_maybe_load_watches()` | ✅ Intentional — safe to call without pre-loading |
 
 ---
 
@@ -191,11 +244,12 @@
 | `__main__.py` | 177 B | Railway entrypoint shim | Railway start | ✅ KEEP | |
 | `scanner.py` | 42 KB | Main scan loop | Entrypoint | ✅ KEEP | **PROHIBITED** — 🔧 FIXED S10. ✅ S13 AUDIT COMPLETE — no bugs. `clear_bos_alerts()` wired at EOD. All dead functions absent. |
 | `sniper.py` | 72 KB | Signal detection engine | `scanner.py` | ✅ KEEP | **PROHIBITED** — ✅ S13 AUDIT COMPLETE — `clear_bos_alerts()` API confirmed. `_orb_classifications` dead block absent. All 3 scan paths clean. |
-| `sniper_pipeline.py` | 14.9 KB | Signal pipeline (extracted) | `sniper.py` | ✅ KEEP | **PROHIBITED** — ✅ S14 AUDIT COMPLETE. 🔧 BUG-SP-1 fixed (`7f5b377`): TIME gate before RVOL fetch. 🔧 BUG-SP-2 fixed (`7f5b377`/`032ffcc`): confidence_base wired into scorecard. All prior fixes (A/B/C/D/#53) confirmed. |
-| `signal_scorecard.py` | 12 KB | 0–100 signal scoring gate | `sniper.py`, `sniper_pipeline.py` | ✅ KEEP | **PROHIBITED** — ✅ Updated S14: `cfw6_score` field added, `_score_cfw6_confidence()` wired, max score 85→95, breakdown string updated. |
-| `arm_signal.py` | 7 KB | Signal arming | `sniper.py` | ✅ KEEP | **PROHIBITED** — ✅ S14 AUDIT COMPLETE. 🔧 BUG-ARM-1 fixed (`0165db5`): docstring moved above logger. BUG-ARM-2 retracted: `sniper_log.py` confirmed live. `record_trade_executed()` wired S4. |
-| `armed_signal_store.py` | 8 KB | Armed signal store | `sniper.py`, `scanner.py` | ✅ KEEP | 🔴 **NEXT AUDIT TARGET** |
-| `watch_signal_store.py` | 7.6 KB | Pre-armed signal store | `sniper.py`, `scanner.py` | ✅ KEEP | |
+| `sniper_pipeline.py` | 14.9 KB | Signal pipeline (extracted) | `sniper.py` | ✅ KEEP | **PROHIBITED** — ✅ S14 AUDIT COMPLETE. 🔧 BUG-SP-1 fixed (`7f5b377`). 🔧 BUG-SP-2 fixed (`7f5b377`/`032ffcc`). All prior fixes confirmed. |
+| `signal_scorecard.py` | 12 KB | 0–100 signal scoring gate | `sniper.py`, `sniper_pipeline.py` | ✅ KEEP | **PROHIBITED** — ✅ Updated S14: `cfw6_score` field added, max score 85→95. |
+| `arm_signal.py` | 7 KB | Signal arming | `sniper.py` | ✅ KEEP | **PROHIBITED** — ✅ S14 AUDIT COMPLETE. 🔧 BUG-ARM-1 fixed (`0165db5`). BUG-ARM-2 retracted. |
+| `armed_signal_store.py` | 8 KB | Armed signal store | `sniper.py`, `scanner.py` | ✅ KEEP | ✅ S15 AUDIT COMPLETE — BUG-ASS-1/2 noted (non-crashing cosmetic, no fix applied). All DB patterns, upsert fields, lock, and error handling confirmed correct. |
+| `watch_signal_store.py` | 7.6 KB | Pre-armed signal store | `sniper.py`, `scanner.py` | ✅ KEEP | ✅ S15 AUDIT COMPLETE. 🔧 BUG-WSS-1/2/3 fixed (`19fc732`). FIX I lock + FIX #55 state methods confirmed. |
+| `thread_safe_state.py` | 10.8 KB | Thread-safe shared state | `scanner.py`, `sniper.py` | ✅ KEEP | 🔴 **NEXT AUDIT TARGET (Session 16)** |
 | `confidence_model.py` | — | ❌ DELETED S5 | — | Dead stub. `b99a63a` |
 | `gate_stats.py` | — | ❌ DELETED S9 | — | Absorbed into `signal_scorecard.py` |
 | `sniper_log.py` | — | ✅ CONFIRMED LIVE S14 | — | Previously noted as deleted — retracted. Still present in repo. |
@@ -204,7 +258,7 @@
 | `analytics_integration.py` | 9.2 KB | Core↔analytics bridge | `scanner.py` | ✅ KEEP | |
 | `eod_reporter.py` | 3.8 KB | EOD cleanup + stats | `scanner.py` | ✅ KEEP | ✅ CONFIRMED S10 |
 | `health_server.py` | 4.5 KB | `/health` endpoint | Railway healthcheck | ✅ KEEP | **PROHIBITED** |
-| `thread_safe_state.py` | 10.8 KB | Thread-safe shared state | `scanner.py`, `sniper.py` | ✅ KEEP | |
+| `thread_safe_state.py` | 10.8 KB | Thread-safe shared state | `scanner.py`, `sniper.py` | ✅ KEEP | 🔴 NEXT AUDIT TARGET |
 
 ---
 
