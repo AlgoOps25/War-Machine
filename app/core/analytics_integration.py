@@ -10,13 +10,24 @@ Previous stub behaviour (in-memory signals_by_ticker dict + signal_count int)
 has been removed. All persistence now lives in signal_analytics.SignalTracker.
 
 Public API (unchanged signatures so scanner.py needs no edits):
-  process_signal(signal_data, ...)         → signal_id | None
-  validate_signal(ticker, passed, ...)     → event_id
-  arm_signal(ticker, confidence, bars)     → event_id
-  record_trade(ticker, position_id)        → event_id
-  monitor_active_signals(price_fetcher)    → no-op placeholder
-  check_scheduled_tasks()                  → delegates EOD tasks
-  get_today_stats()                        → from SignalTracker.get_funnel_stats()
+  process_signal(signal_data, ...)         -> signal_id | None
+  validate_signal(ticker, passed, ...)     -> event_id
+  arm_signal(ticker, confidence, bars)     -> event_id
+  record_trade(ticker, position_id)        -> event_id
+  monitor_active_signals(price_fetcher)    -> no-op placeholder
+  check_scheduled_tasks()                  -> delegates EOD tasks
+  get_today_stats()                        -> from SignalTracker.get_funnel_stats()
+
+AUDIT 2026-03-31 (Session 16):
+  BUG-AI-1: Replaced bare logging.warning/logging.info module-level calls
+            with a proper logger = logging.getLogger(__name__) so log lines
+            appear as 'app.core.analytics_integration' in Railway, not 'root'.
+  BUG-AI-2: get_today_stats() was accessing _tracker.session_signals directly
+            (tight coupling; breaks if SignalTracker renames the attribute).
+            Now uses _tracker.get_funnel_stats().get('unique_tickers', 0).
+  BUG-AI-3: check_scheduled_tasks() midnight reset block was resetting
+            daily_reset_done but NOT eod_report_done. On a multi-day run the
+            EOD report would fire once and then never again. Fixed.
 """
 
 import logging
@@ -24,13 +35,15 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 from typing import Dict, Optional, List
 
+logger = logging.getLogger(__name__)
+
 try:
     from app.signals.signal_analytics import signal_tracker as _tracker
     _TRACKER_AVAILABLE = True
 except Exception as e:
     _tracker = None
     _TRACKER_AVAILABLE = False
-    logging.warning("[ANALYTICS] SignalTracker unavailable: %s — running in no-op mode", e)
+    logger.warning("[ANALYTICS] SignalTracker unavailable: %s — running in no-op mode", e)
 
 
 class AnalyticsIntegration:
@@ -55,11 +68,11 @@ class AnalyticsIntegration:
         self.eod_report_done   = False
 
         if _TRACKER_AVAILABLE:
-            logging.info("[ANALYTICS] AnalyticsIntegration ready — delegating to SignalTracker")
+            logger.info("[ANALYTICS] AnalyticsIntegration ready — delegating to SignalTracker")
         else:
-            logging.warning("[ANALYTICS] Running in no-op mode (SignalTracker unavailable)")
+            logger.warning("[ANALYTICS] Running in no-op mode (SignalTracker unavailable)")
 
-    # ── Primary pipeline entry-point ────────────────────────────────────────
+    # -- Primary pipeline entry-point ----------------------------------------
 
     def process_signal(
         self,
@@ -98,13 +111,13 @@ class AnalyticsIntegration:
         )
 
         if event_id < 0:
-            logging.warning("[ANALYTICS] record_signal_generated failed for %s", ticker)
+            logger.warning("[ANALYTICS] record_signal_generated failed for %s", ticker)
             return None
 
-        logging.info("[ANALYTICS] Signal logged %s (ID: %d, Pattern: %s)", ticker, event_id, sig_type)
+        logger.info("[ANALYTICS] Signal logged %s (ID: %d, Pattern: %s)", ticker, event_id, sig_type)
         return event_id
 
-    # ── Validation result ───────────────────────────────────────────────────
+    # -- Validation result ---------------------------------------------------
 
     def validate_signal(
         self,
@@ -141,7 +154,7 @@ class AnalyticsIntegration:
             rejection_reason=rejection_reason,
         )
 
-    # ── Arming ──────────────────────────────────────────────────────────────
+    # -- Arming --------------------------------------------------------------
 
     def arm_signal(
         self,
@@ -160,7 +173,7 @@ class AnalyticsIntegration:
             confirmation_type=confirmation_type,
         )
 
-    # ── Trade execution ──────────────────────────────────────────────────────
+    # -- Trade execution -----------------------------------------------------
 
     def record_trade(self, ticker: str, position_id: int) -> int:
         """Delegate to SignalTracker.record_trade_executed()."""
@@ -168,7 +181,7 @@ class AnalyticsIntegration:
             return -1
         return _tracker.record_trade_executed(ticker=ticker, position_id=position_id)
 
-    # ── Monitoring / scheduled tasks ────────────────────────────────────────
+    # -- Monitoring / scheduled tasks ----------------------------------------
 
     def monitor_active_signals(self, price_fetcher):
         """Placeholder — active signal monitoring handled by position_manager."""
@@ -176,9 +189,6 @@ class AnalyticsIntegration:
 
     def check_scheduled_tasks(self):
         """Run time-based tasks (market open / EOD). Call once per minute."""
-        # FIX #35: datetime.now() is naive and reads UTC on Railway.
-        # 9:30 AM reset would fire at 2:30 PM ET; EOD tasks at noon.
-        # Use ZoneInfo("America/New_York") to match all other time checks.
         now = datetime.now(ZoneInfo("America/New_York"))
 
         # Market open reset
@@ -188,19 +198,20 @@ class AnalyticsIntegration:
             self.daily_reset_done = True
             self.eod_ml_done      = False
             self.eod_report_done  = False
-            logging.info("[ANALYTICS] Daily reset complete")
+            logger.info("[ANALYTICS] Daily reset complete")
 
         # EOD summary
         if now.hour == 16 and now.minute == 5 and not self.eod_report_done:
             if _TRACKER_AVAILABLE and _tracker:
-                logging.info(_tracker.get_daily_summary())
+                logger.info(_tracker.get_daily_summary())
             self.eod_report_done = True
 
-        # Midnight flag reset
+        # Midnight flag reset — BUG-AI-3: also reset eod_report_done
         if now.hour == 0 and now.minute == 0:
             self.daily_reset_done = False
+            self.eod_report_done  = False
 
-    # ── Stats ────────────────────────────────────────────────────────────────
+    # -- Stats ---------------------------------------------------------------
 
     def get_today_stats(self) -> Dict:
         """Return today's funnel stats from SignalTracker."""
@@ -208,8 +219,9 @@ class AnalyticsIntegration:
             return {"total_signals": 0, "unique_tickers": 0, "win_rate": 0.0, "total_profit": 0.0}
         funnel = _tracker.get_funnel_stats()
         return {
+            # BUG-AI-2: use public get_funnel_stats() instead of _tracker.session_signals directly
             "total_signals":   funnel.get("generated", 0),
-            "unique_tickers":  len(_tracker.session_signals),
+            "unique_tickers":  funnel.get("unique_tickers", 0),
             "validation_rate": funnel.get("validation_rate", 0.0),
             "arming_rate":     funnel.get("arming_rate", 0.0),
             "execution_rate":  funnel.get("execution_rate", 0.0),

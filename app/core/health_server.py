@@ -37,7 +37,16 @@ AUDIT 2026-03-27:
   _build_response() previously called _is_market_hours() twice per request
   (once for threshold, once for the response body field). Refactored to
   call once and reuse the result.
+
+AUDIT 2026-03-31 (Session 16):
+  BUG-HS-1: Added blank line between import logging and logger assignment
+            for visual consistency with rest of app/core files.
+  BUG-HS-2: Added 'from __future__ import annotations' so union type syntax
+            (int | None, threading.Thread | None) is safe on Python < 3.10.
+            Railway runs 3.11 so no runtime risk, but makes the file
+            forward/backward compatible and consistent with eod_reporter.py.
 """
+from __future__ import annotations
 
 import json
 import os
@@ -47,6 +56,7 @@ from datetime import datetime, time as dtime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from zoneinfo import ZoneInfo
 import logging
+
 logger = logging.getLogger(__name__)
 
 ET = ZoneInfo("America/New_York")
@@ -60,8 +70,8 @@ _started = False
 _started_lock = threading.Lock()
 
 # Staleness thresholds (seconds)
-_MARKET_HOURS_STALE   = 5  * 60   # 5 min during RTH
-_OFF_HOURS_STALE      = 10 * 60   # 10 min outside RTH
+_MARKET_HOURS_STALE = 5  * 60   # 5 min during RTH
+_OFF_HOURS_STALE    = 10 * 60   # 10 min outside RTH
 
 
 def health_heartbeat() -> None:
@@ -88,10 +98,10 @@ def _build_response() -> tuple[int, dict]:
     with _lock:
         last_hb = _last_heartbeat
 
-    age_s      = time.monotonic() - last_hb
-    uptime_s   = int(time.monotonic() - _start_time)
-    in_market  = _is_market_hours()   # call once, reuse below
-    threshold  = _MARKET_HOURS_STALE if in_market else _OFF_HOURS_STALE
+    age_s     = time.monotonic() - last_hb
+    uptime_s  = int(time.monotonic() - _start_time)
+    in_market = _is_market_hours()   # call once, reuse below
+    threshold = _MARKET_HOURS_STALE if in_market else _OFF_HOURS_STALE
 
     body = {
         "status":               "ok" if age_s <= threshold else "stalled",
@@ -125,7 +135,7 @@ class _HealthHandler(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
     def log_message(self, fmt, *args):  # noqa: N802
-        # Suppress per-request access logs — Railway already captures stdout
+        # Suppress per-request access logs — Railway captures stdout
         pass
 
 
@@ -152,7 +162,7 @@ def start_health_server(port: int | None = None) -> threading.Thread | None:
     server = HTTPServer(("0.0.0.0", port), _HealthHandler)
 
     def _serve():
-        logger.info(f"[HEALTH] ✅ Health server listening on :{port} (GET /health)")
+        logger.info(f"[HEALTH] Health server listening on :{port} (GET /health)")
         server.serve_forever()
 
     t = threading.Thread(target=_serve, daemon=True, name="health_server")

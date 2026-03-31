@@ -12,7 +12,7 @@ Design decisions:
   - LOG_LEVEL env var lets Railway/local override level without a code change.
     Default: INFO in production, DEBUG if LOG_LEVEL=DEBUG is set.
   - Structured format includes timestamp, level, and module name so Railway
-    logs are grep-friendly: grep '\[SCANNER\]' or filter by level instantly.
+    logs are grep-friendly: grep '[SCANNER]' or filter by level instantly.
   - Third-party noisy loggers (websocket, urllib3, httpx) are quieted to
     WARNING so they don't drown out trading signals.
   - Idempotent: safe to call multiple times (only configures once).
@@ -20,11 +20,18 @@ Design decisions:
 AUDIT 2026-03-27:
   - Removed 'asyncio' from _QUIET_LOGGERS — War Machine is fully synchronous
     (threads only, no async/await). The entry was dead and misleading.
+
+AUDIT 2026-03-31 (Session 16):
+  BUG-LC-1: Added module-level logger = logging.getLogger(__name__) for
+            consistency with every other file in app/core. Previously used
+            inline logging.getLogger(__name__).info(...) at end of function.
 """
 
 import logging
 import os
 import sys
+
+logger = logging.getLogger(__name__)
 
 _CONFIGURED = False
 
@@ -54,11 +61,11 @@ def setup_logging() -> None:
     if _CONFIGURED:
         return
 
-    # ── Level ────────────────────────────────────────────────────────────────────────────
+    # -- Level ---------------------------------------------------------------
     raw_level = os.getenv("LOG_LEVEL", "INFO").upper().strip()
     level     = getattr(logging, raw_level, logging.INFO)
 
-    # ── Format ───────────────────────────────────────────────────────────────────
+    # -- Format --------------------------------------------------------------
     # Default: 15:04:22 [INFO ] app.core.scanner: [SCANNER] Cycle #42 | ...
     fmt = os.getenv(
         "LOG_FORMAT",
@@ -66,13 +73,13 @@ def setup_logging() -> None:
     )
     datefmt = "%H:%M:%S"
 
-    # ── Handler ──────────────────────────────────────────────────────────────────
-    # Single StreamHandler → stdout (Railway captures stdout for log viewer)
+    # -- Handler -------------------------------------------------------------
+    # Single StreamHandler -> stdout (Railway captures stdout for log viewer)
     handler = logging.StreamHandler(sys.stdout)
     handler.setLevel(level)
     handler.setFormatter(logging.Formatter(fmt, datefmt=datefmt))
 
-    # ── Root logger ────────────────────────────────────────────────────────────────
+    # -- Root logger ---------------------------------------------------------
     root = logging.getLogger()
     root.setLevel(level)
 
@@ -80,14 +87,14 @@ def setup_logging() -> None:
     root.handlers.clear()
     root.addHandler(handler)
 
-    # ── Quiet noisy third-party loggers ───────────────────────────────────────────
+    # -- Quiet noisy third-party loggers -------------------------------------
     for name in _QUIET_LOGGERS:
         logging.getLogger(name).setLevel(logging.WARNING)
 
     _CONFIGURED = True
 
-    # Emit startup confirmation via the root logger itself
-    logging.getLogger(__name__).info(
+    # Emit startup confirmation — BUG-LC-1: use module-level logger, not inline
+    logger.info(
         f"[LOGGING] Configured — level={raw_level}  "
         f"format='{fmt}'  handler=stdout"
     )
