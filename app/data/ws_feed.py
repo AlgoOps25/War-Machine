@@ -243,6 +243,10 @@ def _flush_pending():
       Prints ONE summary line for the entire flush cycle:
         [WS] Closed: NVDA×2, AAPL×1, SPY×3  (6 bars, 14:05:01 ET)
       Nothing is printed if no bars closed this cycle.
+
+    BUG-WF-1 fix: materialize_5m_bars() is only called when store_bars()
+    returns a non-zero count, avoiding a wasted DB round-trip every
+    FLUSH_INTERVAL seconds per ticker when no new bars were written.
     """
     from app.data.data_manager import data_manager  # late import avoids circular dep
 
@@ -257,8 +261,8 @@ def _flush_pending():
     stored_counts = {}   # ticker -> bars actually stored
     for ticker, bars in snapshot.items():
         count = data_manager.store_bars(ticker, bars, quiet=True)  # suppress per-ticker line
-        data_manager.materialize_5m_bars(ticker)
         if count:
+            data_manager.materialize_5m_bars(ticker)  # BUG-WF-1: only when bars were stored
             stored_counts[ticker] = count
 
     if stored_counts:
