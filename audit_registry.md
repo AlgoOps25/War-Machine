@@ -28,16 +28,22 @@
 
 | Folder | Files | Audited | Status |
 |--------|-------|---------|--------|
-| `app/` (root) | 1 | 0 | ⬜ Pending |
+| `app/` (root) | 1 | 1 | ✅ Complete — Session CORE-1 |
 | `app/ai/` | 2 | 0 | ⬜ Pending |
 | `app/analytics/` | 9 | 9 | ✅ Complete (prior sessions) |
 | `app/backtesting/` | 7 | 0 | ⬜ Pending |
-| `app/core/` | 15 | 2 | 🔄 In Progress |
+| `app/core/` | 15 | 8 | 🔄 In Progress — Session CORE-1 (6 files) + ASS-1 + WSS-1 |
 | `app/data/` | — | — | ⬜ Pending |
+| `app/filters/` | — | — | ⬜ Pending |
+| `app/indicators/` | — | — | ⬜ Pending |
 | `app/ml/` | 7 | 5 | ✅ Complete — Session ML-1 (2026-03-31) |
+| `app/mtf/` | — | — | ⬜ Pending |
 | `app/notifications/` | — | — | ⬜ Pending |
 | `app/options/` | — | — | ⬜ Pending |
+| `app/risk/` | — | — | ⬜ Pending |
+| `app/screening/` | — | — | ⬜ Pending |
 | `app/signals/` | 1 | 1 | 🔄 In Progress — `opening_range.py` audited S-OR-1 |
+| `app/validation/` | — | — | ⬜ Pending |
 | `audit_reports/` | 1 | — | Reference only |
 | `backtests/` | — | — | ⬜ Pending |
 | `docs/` | — | — | ⬜ Pending |
@@ -46,6 +52,174 @@
 | `tests/` | — | — | ⬜ Pending |
 | `utils/` | — | — | ⬜ Pending |
 | Root config files | 8 | 0 | ⬜ Pending |
+
+---
+
+## Session CORE-1 — `app/core/` Bootstrap Files
+**Date:** 2026-03-31
+**Auditor:** Perplexity AI
+**Files audited:** 6 files
+- `app/__init__.py`
+- `app/core/__init__.py`
+- `app/core/__main__.py`
+- `app/core/logging_config.py`
+- `app/core/sniper_log.py`
+- `app/core/eod_reporter.py`
+- `app/core/health_server.py`
+
+**Fixes applied:** None — all 6 files are clean. No commits required.
+
+---
+
+### `app/__init__.py`
+**SHA:** `8f86f5e17250937b011f421c65f2b4355fc0337e`
+**Size:** 54 B
+**Status:** ✅ Clean
+
+- Single comment: `# War Machine trading system package`
+- Correct empty namespace init — no logic, no imports.
+- No issues.
+
+---
+
+### `app/core/__init__.py`
+**SHA:** `16b2448aa04e3212eb530588bf6b7e9b333a4b7f`
+**Size:** 22 B
+**Status:** ✅ Clean
+
+- Single comment: `# Core Scanner Engine`
+- Correct empty namespace init — no logic, no imports.
+- No issues.
+
+---
+
+### `app/core/__main__.py`
+**SHA:** `8cbad489dce74f37d1fe599654576bc8c299849b`
+**Size:** 1,352 B
+**Status:** ✅ Clean
+
+**Purpose:** Process entry point. `python -m app.core` lands here.
+Enforces the critical boot order documented in its module docstring:
+1. `setup_logging()` — configures logging before any other import
+2. `start_health_server()` — Railway probe gets 200 before DB pool init
+3. `import start_scanner_loop` — triggers module-level DB pool init
+4. `start_scanner_loop()` — enters the main loop
+
+**Checks passed:**
+- Boot order is correct and matches documented intent — logging first, health server second
+- Module docstring accurately explains WHY health server must precede scanner import
+- Only imports what it uses — no dead imports
+- `if __name__ == "__main__":` guard is present — correct for a `__main__.py` module
+- No stray `print()` calls
+- No redundant imports
+
+**No findings.**
+
+---
+
+### `app/core/logging_config.py`
+**SHA:** `d22f6ca12a8389edb4ad19a46904d6aacc85259f`
+**Size:** 3,495 B
+**Status:** ✅ Clean
+
+**Purpose:** Single call `setup_logging()` configures the root logger for the
+entire process. Called exclusively from `__main__.py`. All other modules inherit
+configuration via `logging.getLogger(__name__)`.
+
+**Checks passed:**
+- `_CONFIGURED` guard makes `setup_logging()` idempotent — safe to call multiple times
+- `LOG_LEVEL` and `LOG_FORMAT` env vars allow Railway override without code change
+- `root.handlers.clear()` before `root.addHandler()` — prevents duplicate handlers from repeated `basicConfig()` calls
+- `_QUIET_LOGGERS` list correctly suppresses noisy third-party libs (websocket, urllib3, httpx, httpcore, requests, charset_normalizer, psycopg2)
+- Prior audit (2026-03-27) removed 'asyncio' — war machine is synchronous; this was a correct cleanup
+- `logger = logging.getLogger(__name__)` assigned at module scope before `_CONFIGURED` flag — correct per BUG-LC-1 fix
+- Startup `logger.info()` fires after `_CONFIGURED = True` — will only emit once due to guard
+- Import order: stdlib (`logging`, `os`, `sys`) → module globals → functions. ✅
+- No stray `print()` calls
+- No redundant imports
+
+**No findings.**
+
+---
+
+### `app/core/sniper_log.py`
+**SHA:** `bdcb22e04ede41c75bee904d3ea8706ce98ad7a3`
+**Size:** 2,855 B
+**Status:** ✅ Clean
+
+**Purpose:** Pure logging helper. `log_proposed_trade()` writes one structured
+INFO line for every signal that reaches the arming stage — the only audit trail
+between scorecard pass and position_manager accept/reject.
+
+**Checks passed:**
+- `from __future__ import annotations` NOT present — file has no union types, so absence is correct (no issue)
+- `import logging` → `logger = logging.getLogger(__name__)` — correct module-level assignment
+- Function never raises — outer `try/except Exception` wraps all logging logic
+- BUG-SL-1 fallback `print()` is intentional: this is a last-resort Railway stdout trace when the logger itself is unavailable (acceptable by design — not a stray print)
+- `mode = "[OR]" if signal_type == "CFW6_OR" else "[INTRADAY]"` — binary branch, correct
+- Log format includes all 6 parameters: ticker, signal_type, direction, mode, entry_price, confidence, grade
+- `confidence * 100` for percentage display — correct (confidence is stored as `0.0–1.0`)
+- Docstring accurately describes caller (`arm_signal.py → arm_ticker()`), purpose, and log format example
+- No redundant imports
+
+**No findings.**
+
+---
+
+### `app/core/eod_reporter.py`
+**SHA:** `84d9fe798b6f073d4734cedac18fe72225a0ab38`
+**Size:** 4,267 B
+**Status:** ✅ Clean
+
+**Purpose:** EOD orchestrator. `run_eod_report()` pulls P&L from `risk_manager`,
+pulls signal funnel from `signal_analytics.signal_tracker`, sends Discord embeds,
+and clears the session cache. Called by `scanner.py` at market close.
+
+**Checks passed:**
+- `from __future__ import annotations` present — enables union type syntax (`str | None`) on Python < 3.10 ✅
+- `try/except ImportError` around `signal_analytics` import — correct deferred import that gracefully handles module-not-found
+- `session_date` defaults to `datetime.now(ET).strftime("%Y-%m-%d")` — ET-aware, not UTC ✅
+- Each logical block (trade stats, signal funnel) wrapped in independent `try/except` — one failure doesn't abort the other
+- `logger.error()` on block failures, `logger.warning()` on non-critical sub-failures — correct log-level hierarchy
+- `send_daily_summary()` receives a clean dict with all required keys — no key pollution
+- `get_eod_report()` wrapped in its own inner `try/except` — top-performers failure is non-fatal ✅
+- `signal_tracker.clear_session_cache()` called at end of analytics block — correct session hygiene
+- FIX #36 note in docstring accurately reflects removal of `print()` in favour of `logger.info()` ✅
+- `if __name__ == "__main__":` block allows standalone usage — correct, `sys.argv[1]` handled safely
+- No stray `print()` calls
+- No redundant imports
+
+**No findings.**
+
+---
+
+### `app/core/health_server.py`
+**SHA:** `bafbaa9fbd33b55617b33061b6240cebef36a464`
+**Size:** 6,087 B
+**Status:** ✅ Clean
+
+**Purpose:** Lightweight HTTP health endpoint on `:PORT`. Returns 200 when
+scanner heartbeat is fresh, 503 when stalled. Two staleness thresholds:
+5 min during RTH, 10 min outside RTH. Called by `__main__.py` before scanner import.
+
+**Checks passed:**
+- `from __future__ import annotations` present — `int | None` and `threading.Thread | None` type hints safe on all Python versions ✅
+- `_started` guard (FIX #54) prevents double-bind `OSError` when both `__main__.py` and any other caller invoke `start_health_server()` ✅
+- `_started_lock` is a separate `threading.Lock()` from `_lock` — avoids deadlock if heartbeat fires during server startup ✅
+- `_is_market_hours()` called exactly ONCE per request in `_build_response()` and result reused — refactored correctly per 2026-03-27 audit ✅
+- `health_heartbeat()` called inside `start_health_server()` after thread launch — seeds heartbeat so `/health` returns 200 immediately at startup ✅
+- `HTTPServer(("0.0.0.0", port), ...)` — binds all interfaces (correct for Railway/Docker) ✅
+- `daemon=True` on the thread — server shuts down with the main process, no orphan threads ✅
+- `log_message()` overridden to `pass` — suppresses per-request access logs (Railway captures stdout) ✅
+- `/health` and `/` both handled; all other paths return 404 JSON — clean routing ✅
+- `Content-Length` header set correctly — prevents chunked encoding issues with some HTTP clients ✅
+- Import order: `from __future__` → stdlib → third-party (none) → local (none). ✅
+- `logger = logging.getLogger(__name__)` at module scope ✅
+- BUG-HS-1 (blank line) and BUG-HS-2 (`from __future__`) already applied — confirmed in file ✅
+- No stray `print()` calls
+- No redundant imports
+
+**No findings.**
 
 ---
 
@@ -320,14 +494,14 @@ Priority: fix during the session that next touches the owning file.
 
 | Priority | Folder | Files | Notes |
 |----------|--------|-------|-------|
-| 1 | `app/core/` | `sniper.py` | Large strategy engine — line-by-line audit |
-| 2 | `app/core/` | `sniper_pipeline.py`, `signal_scorecard.py`, `cfw6_gate_validator.py` | Core pipeline files |
-| 3 | `app/core/` | Remaining 10 files | `scanner.py`, `thread_safe_state.py`, `position_manager.py`, etc. |
+| 1 | `app/core/` | `thread_safe_state.py` (12 KB), `signal_scorecard.py` (12 KB), `sniper_pipeline.py` (14 KB) | Medium-sized pipeline files — audit next |
+| 2 | `app/core/` | `arm_signal.py` (9 KB), `analytics_integration.py` (9.5 KB) | Supporting core files |
+| 3 | `app/core/` | `sniper.py` (28 KB), `scanner.py` (31 KB) | Large strategy engine files — after smaller files cleared |
 | 4 | `app/data/` | All files | DB connection pool, sql_safe, schema files |
-| 5 | `app/signals/` | Remaining files | After `opening_range.py` — `breakout_detector.py`, `bos_fvg_engine.py`, etc. |
+| 5 | `app/signals/` | Remaining files | `breakout_detector.py`, `bos_fvg_engine.py`, etc. (fix BUG-OR-1/2 here) |
 | 6 | `app/options/` | All files | Options chain, Greeks, pre-validation |
 | 7 | `app/notifications/` | All files | Discord alert system |
 | 8 | `app/backtesting/` | All files | Backtest engine, walk-forward, historical trainer |
-| 9 | `app/ai/` | `ai_learning.py` | 18.6 KB — single file |
+| 9 | `app/filters/`, `app/indicators/`, `app/mtf/`, `app/screening/`, `app/validation/`, `app/risk/`, `app/ai/` | All | Newly discovered folders added to scope |
 | 10 | `scripts/`, `tests/`, `utils/` | All files | Support infrastructure |
 | 11 | Root config | `requirements.txt`, `railway.toml`, `nixpacks.toml`, etc. | Deployment config audit |
