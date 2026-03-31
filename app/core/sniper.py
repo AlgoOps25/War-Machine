@@ -1,24 +1,34 @@
 """
-sniper.py — CFW6 Strategy Engine v1.38d
+sniper.py — CFW6 Strategy Engine v1.38e
 Two-path scanning: OR-Anchored + Intraday BOS+FVG fallback.
 Signal pipeline lives in app/core/sniper_pipeline.py.
 See CHANGELOG.md for full phase history.
 
-AUDIT 2026-03-31 (Session 18):
-  BUG-SN-1 (non-crashing): import logging / logger were placed after all optional
-    try/except import blocks (~40 lines in). Moved to immediately after the hard
-    imports so logger is available from the first line of execution. Previously,
-    any exception raised inside the optional try/except blocks before logger was
-    assigned would produce an unlogged silent failure.
-  BUG-SN-2 (structural note): VWAP reclaim block at bottom of process_ticker is
-    structurally unreachable — scan_mode is always set to OR_ANCHORED or
-    INTRADAY_BOS before _run_signal_pipeline() is called, so the `if scan_mode
-    is None` guard never passes. Added comment to document intent vs. reality.
-    Not fixed (would require architectural change) but documented to prevent
-    future confusion.
-  BUG-SN-3 (non-crashing): _log_bos_event and _log_fvg_event were defined before
-    logger was assigned (same root as BUG-SN-1). Resolved by BUG-SN-1 fix.
-  All other checks CONFIRMED CLEAN — see AUDIT_REGISTRY.md Session 18.
+AUDIT 2026-03-31 (Session CORE-4):
+  BUG-SN-4 (clarity): _run_signal_pipeline local wrapper shadowed the _pipeline
+    alias from the module-level import. Added explicit docstring note clarifying
+    the intentional aliasing pattern so future developers don't mistake it for
+    a naming collision or circular call.
+  BUG-SN-5 (consistency): get_secondary_range_levels was imported inline via a
+    deferred `from app.signals.opening_range import ...` inside the secondary
+    range fallback block. All other opening_range symbols are imported at module
+    top in the ORB_TRACKER_ENABLED try/except block. Moved get_secondary_range_levels
+    into that block so all opening_range imports are in one place. The inline
+    import is removed — it was structurally safe (only reachable when OR data
+    exists, which requires ORB_TRACKER_ENABLED=True) but inconsistent.
+  BUG-SN-6 (defensive): bos_signal["fvg_low"], bos_signal["fvg_high"], and
+    bos_signal["bos_price"] in the intraday path were direct key access with no
+    .get() fallback. scan_bos_fvg() contract guarantees these keys but a
+    malformed return would raise an unlogged KeyError inside process_ticker's
+    outer try/except. Replaced with .get() + safe defaults (0.0) so any
+    unexpected dict shape produces a logged warning and a graceful skip rather
+    than a silent error swallow.
+
+Prior audit notes (Session 18 / v1.38d):
+  BUG-SN-1: logger moved before optional try/except blocks.
+  BUG-SN-2: VWAP reclaim block documented as structurally unreachable.
+  BUG-SN-3: resolved by BUG-SN-1 fix.
+  All other checks CONFIRMED CLEAN — see AUDIT_REGISTRY.md.
 """
 import traceback
 from datetime import datetime, time, timedelta
@@ -39,7 +49,10 @@ from app.filters.dead_zone_suppressor import is_dead_zone
 from app.filters.gex_pin_gate import is_in_gex_pin_zone
 from app.filters.early_session_disqualifier import should_skip_cfw6_or_early
 
-# Pipeline lives in sniper_pipeline.py (extracted to keep this file small)
+# Pipeline lives in sniper_pipeline.py (extracted to keep this file small).
+# BUG-SN-4 NOTE: imported as _pipeline to avoid name collision with the local
+# _run_signal_pipeline dispatcher defined below. The dispatcher is the public
+# surface used by process_ticker and scanner.py; _pipeline is the implementation.
 from app.core.sniper_pipeline import _run_signal_pipeline as _pipeline
 
 # BUG-SN-1 FIX: logger moved here — before all optional try/except blocks so
@@ -107,16 +120,23 @@ except ImportError:
     MTF_BIAS_ENABLED = False
     mtf_bias_engine = None
 
+# BUG-SN-5 FIX: get_secondary_range_levels moved into this block so all
+# opening_range imports live in one place. Previously it was imported inline
+# via a deferred `from app.signals.opening_range import get_secondary_range_levels`
+# inside the secondary range fallback block — inconsistent with every other
+# opening_range symbol imported here at module top.
 try:
     from app.signals.opening_range import (
         or_detector, compute_opening_range_from_bars, compute_premarket_range,
         detect_breakout_after_or, detect_fvg_after_break,
+        get_secondary_range_levels,
     )
     ORB_TRACKER_ENABLED = True
     logger.info("[SNIPER] ✅ ORB Detector enabled")
 except ImportError:
     ORB_TRACKER_ENABLED = False
     or_detector = None
+    get_secondary_range_levels = None
     logger.info("[SNIPER] ⚠️  ORB Detector disabled")
 
 try:
@@ -259,6 +279,12 @@ def _run_signal_pipeline(ticker, direction, zone_low, zone_high,
     """
     Thin dispatcher — delegates to sniper_pipeline._run_signal_pipeline.
     Kept here so scanner.py import surface stays unchanged.
+
+    BUG-SN-4 NOTE: This function intentionally has the same name as the symbol
+      imported from sniper_pipeline (imported as _pipeline to avoid collision).
+      This is not a recursive call — _pipeline is the implementation, this
+      wrapper is the public surface. scanner.py imports _run_signal_pipeline
+      from this module, not from sniper_pipeline directly.
 
     FIX E (2026-03-26): Removed get_ticker_screener_metadata= and state= kwargs.
       Those were part of the old all-in-one sniper.py signature before the pipeline
@@ -473,49 +499,51 @@ def process_ticker(ticker: str):
                 else:
                     logger.info(f"[{ticker}] No ORB")
 
-                # Secondary range fallback (after 10:30)
+                # Secondary range fallback (after 10:30).
+                # BUG-SN-5 FIX: get_secondary_range_levels is now imported at module
+                # top in the ORB_TRACKER_ENABLED block — no longer deferred inline here.
                 if scan_mode is None and _now_et().time() >= time(10, 30):
-                    from app.signals.opening_range import get_secondary_range_levels
-                    sr = get_secondary_range_levels(ticker)
-                    if sr:
-                        sr_direction, sr_idx = detect_breakout_after_or(
-                            bars_session, sr["sr_high"], sr["sr_low"]
-                        )
-                        if sr_direction:
-                            _log_bos_event(ticker, sr_direction,
-                                           bars_session[sr_idx]["close"], "CFW6_OR")
-                            zone_low, zone_high = detect_fvg_after_break(
-                                bars_session, sr_idx, sr_direction
+                    if get_secondary_range_levels is not None:
+                        sr = get_secondary_range_levels(ticker)
+                        if sr:
+                            sr_direction, sr_idx = detect_breakout_after_or(
+                                bars_session, sr["sr_high"], sr["sr_low"]
                             )
-                            if zone_low is not None:
-                                _log_fvg_event(ticker, sr_direction, zone_low, zone_high, "CFW6_OR")
-                                scan_mode    = "OR_ANCHORED"
-                                or_high_ref  = sr["sr_high"]
-                                or_low_ref   = sr["sr_low"]
-                                direction    = sr_direction
-                                breakout_idx = sr_idx
-                            else:
-                                w_entry = {
-                                    "direction":       sr_direction,
-                                    "breakout_idx":    sr_idx,
-                                    "breakout_bar_dt": _strip_tz(bars_session[sr_idx]["datetime"]),
-                                    "or_high":         sr["sr_high"],
-                                    "or_low":          sr["sr_low"],
-                                    "signal_type":     "CFW6_OR",
-                                }
-                                _state.set_watching_signal(ticker, w_entry)
-                                _persist_watch(ticker, w_entry)
-                                _bos_key = f"{ticker}:{sr_direction}:{bars_session[sr_idx]['datetime']}"
-                                if _bos_key not in _bos_watch_alerted:
-                                    _bos_watch_alerted.add(_bos_key)
-                                    send_bos_watch_alert(
-                                        ticker, sr_direction,
-                                        bars_session[sr_idx]["close"],
-                                        sr["sr_high"], sr["sr_low"], "CFW6_OR"
-                                    )
+                            if sr_direction:
+                                _log_bos_event(ticker, sr_direction,
+                                               bars_session[sr_idx]["close"], "CFW6_OR")
+                                zone_low, zone_high = detect_fvg_after_break(
+                                    bars_session, sr_idx, sr_direction
+                                )
+                                if zone_low is not None:
+                                    _log_fvg_event(ticker, sr_direction, zone_low, zone_high, "CFW6_OR")
+                                    scan_mode    = "OR_ANCHORED"
+                                    or_high_ref  = sr["sr_high"]
+                                    or_low_ref   = sr["sr_low"]
+                                    direction    = sr_direction
+                                    breakout_idx = sr_idx
                                 else:
-                                    logger.info(f"[{ticker}] \U0001f515 BOS watch alert suppressed (already sent)")
-                                return
+                                    w_entry = {
+                                        "direction":       sr_direction,
+                                        "breakout_idx":    sr_idx,
+                                        "breakout_bar_dt": _strip_tz(bars_session[sr_idx]["datetime"]),
+                                        "or_high":         sr["sr_high"],
+                                        "or_low":          sr["sr_low"],
+                                        "signal_type":     "CFW6_OR",
+                                    }
+                                    _state.set_watching_signal(ticker, w_entry)
+                                    _persist_watch(ticker, w_entry)
+                                    _bos_key = f"{ticker}:{sr_direction}:{bars_session[sr_idx]['datetime']}"
+                                    if _bos_key not in _bos_watch_alerted:
+                                        _bos_watch_alerted.add(_bos_key)
+                                        send_bos_watch_alert(
+                                            ticker, sr_direction,
+                                            bars_session[sr_idx]["close"],
+                                            sr["sr_high"], sr["sr_low"], "CFW6_OR"
+                                        )
+                                    else:
+                                        logger.info(f"[{ticker}] \U0001f515 BOS watch alert suppressed (already sent)")
+                                    return
         else:
             logger.info(f"[{ticker}] No OR bars")
 
@@ -530,16 +558,25 @@ def process_ticker(ticker: str):
                 logger.info(f"[{ticker}] \u2014 No BOS+FVG signal")
                 return
 
-            direction    = bos_signal["direction"]
-            breakout_idx = bos_signal["bos_idx"]
+            direction    = bos_signal.get("direction")
+            breakout_idx = bos_signal.get("bos_idx")
             bos_confirmation = bos_signal.get("confirmation")
             bos_candle_type  = bos_signal.get("candle_type")
 
-            _log_bos_event(ticker, direction,
-                           bos_signal.get("bos_price", bars_session[breakout_idx]["close"]),
-                           "CFW6_INTRADAY")
-            _log_fvg_event(ticker, direction, bos_signal["fvg_low"], bos_signal["fvg_high"],
-                           "CFW6_INTRADAY")
+            # BUG-SN-6 FIX: fvg_low, fvg_high, and bos_price now use .get() with
+            # safe 0.0 defaults. scan_bos_fvg() contract guarantees these keys but
+            # a malformed return would previously raise an unlogged KeyError swallowed
+            # by the outer try/except. Guard + warn so any shape deviation is surfaced.
+            _fvg_low  = bos_signal.get("fvg_low",  0.0)
+            _fvg_high = bos_signal.get("fvg_high", 0.0)
+            _bos_price = bos_signal.get("bos_price", bars_session[breakout_idx]["close"] if breakout_idx is not None else 0.0)
+
+            if not direction or breakout_idx is None or _fvg_low == 0.0 or _fvg_high == 0.0:
+                logger.warning(f"[{ticker}] BUG-SN-6: bos_signal missing required keys — skipping: {bos_signal}")
+                return
+
+            _log_bos_event(ticker, direction, _bos_price, "CFW6_INTRADAY")
+            _log_fvg_event(ticker, direction, _fvg_low, _fvg_high, "CFW6_INTRADAY")
 
             if MTF_PRIORITY_ENABLED:
                 try:
@@ -566,18 +603,18 @@ def process_ticker(ticker: str):
                         )
                 except Exception as priority_err:
                     logger.warning(f"[{ticker}] MTF priority error (falling back to 5m): {priority_err}")
-                    zone_low  = bos_signal["fvg_low"]
-                    zone_high = bos_signal["fvg_high"]
+                    zone_low  = _fvg_low
+                    zone_high = _fvg_high
             else:
-                zone_low  = bos_signal["fvg_low"]
-                zone_high = bos_signal["fvg_high"]
+                zone_low  = _fvg_low
+                zone_high = _fvg_high
 
             if direction == "bull":
-                or_high_ref = bos_signal["bos_price"]
+                or_high_ref = _bos_price
                 or_low_ref  = zone_low
             else:
                 or_high_ref = zone_high
-                or_low_ref  = bos_signal["bos_price"]
+                or_low_ref  = _bos_price
 
             scan_mode = "INTRADAY_BOS"
 
