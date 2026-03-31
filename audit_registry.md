@@ -37,7 +37,7 @@
 | `app/ml/` | 7 | 5 | ✅ Complete — Session ML-1 (2026-03-31) |
 | `app/notifications/` | — | — | ⬜ Pending |
 | `app/options/` | — | — | ⬜ Pending |
-| `app/signals/` | — | — | ⬜ Pending |
+| `app/signals/` | 1 | 1 | 🔄 In Progress — `opening_range.py` audited S-OR-1 |
 | `audit_reports/` | 1 | — | Reference only |
 | `backtests/` | — | — | ⬜ Pending |
 | `docs/` | — | — | ⬜ Pending |
@@ -177,23 +177,106 @@ not an issue.
 ---
 
 ## Session ASS-1 — `app/core/armed_signal_store.py`
-**Status:** ⚠️ 2 findings documented — fixes queued for next `core/` session
+**Date:** 2026-03-31
+**SHA at audit:** `6263afa75a0249706aacf9f7c6bd4f14ba723442`
+**Status:** ✅ All findings fixed (applied in-file, documented in file header comment)
 
 | ID | Severity | Description | Status |
 |----|----------|-------------|--------|
-| BUG-ASS-1 | ⚠️ | `import logging` placed last in import block, `logger =` assigned inline | ⬜ Fix pending |
-| BUG-ASS-2 | ⚠️ | Redundant `from app.data.sql_safe import safe_execute` inside `clear_armed_signals()` — already imported at module scope | ⬜ Fix pending |
+| BUG-ASS-1 | ⚠️ | `import logging` placed last in import block, `logger =` assigned inline | ✅ Fixed |
+| BUG-ASS-2 | ⚠️ | Redundant `from app.data.sql_safe import safe_execute` inside `clear_armed_signals()` — already imported at module scope | ✅ Fixed |
+
+**Checks passed (clean):**
+- File-header comment block above imports — correct placement
+- `get_conn()`/`return_conn()` deferred inside every function body — correct pool pattern
+- `_ensure_armed_db()` uses `logger.warning` on error path — consistent
+- `_persist_armed_signal()` inserts all 11 schema fields — matches table definition
+- `ON CONFLICT` upsert uses `CURRENT_TIMESTAMP` for `saved_at` (not `EXCLUDED.saved_at`) — correct
+- `safe_execute` used for all DML — correct
+- `_remove_armed_from_db()` parametrized — no string interpolation
+- `_cleanup_stale_armed_signals()` uses `position_manager.get_open_positions()` — correct cross-module reference
+- `safe_in_clause` used for bulk delete — correct
+- `_load_armed_signals_from_db()` — `_dc()` / `USE_POSTGRES` branching for dual-dialect date filter — correct
+- `row.get("validation_data")` dict-style access — valid because `dict_cursor` is used
+- `_armed_load_lock = __import__('threading').Lock()` — valid pattern, avoids top-level import
+- `_maybe_load_armed_signals()` lock wraps `is_armed_loaded()` + `set_armed_loaded()` check — no double-load possible
+- `clear_armed_signals()` has docstring, uses `logger.warning` on error — consistent
+- No stray `print()` calls
 
 ---
 
 ## Session WSS-1 — `app/core/watch_signal_store.py`
-**Status:** ⚠️ 3 findings documented — fixes queued for next `core/` session
+**Date:** 2026-03-31
+**SHA at audit:** `061e64817f36a6c7c46c577d6dd9f14b8d0260f2`
+**Status:** ✅ All findings fixed (applied in-file, documented in file header comment)
 
 | ID | Severity | Description | Status |
 |----|----------|-------------|--------|
-| BUG-WSS-1 | ⚠️ | All error paths in 7 functions use `logger.info` instead of `logger.warning` — inconsistent with `armed_signal_store.py` | ⬜ Fix pending |
-| BUG-WSS-2 | ⚠️ | Stray `print()` in `_load_watches_from_db()` (~line 140) — should be `logger.info()` | ⬜ Fix pending |
-| BUG-WSS-3 | ⚠️ | `clear_watching_signals()` passes empty tuple `()` to `safe_execute` but `clear_armed_signals()` passes no params — minor inconsistency | ⬜ Fix pending |
+| BUG-WSS-1 | ⚠️ | All error paths in 7 functions used `logger.info` instead of `logger.warning` | ✅ Fixed |
+| BUG-WSS-2 | ⚠️ | Stray `print()` in `_load_watches_from_db()` — should be `logger.info()` | ✅ Fixed |
+| BUG-WSS-3 | ⚠️ | `clear_watching_signals()` passed empty tuple `()` to `safe_execute` — inconsistent with `armed_signal_store.py` | ✅ Fixed |
+
+**Checks passed (clean):**
+- `_watch_load_lock` present, wraps `is_watches_loaded()` + `set_watches_loaded()` — no double-load
+- All 3 FIX #55 state method names corrected: `set_watching_signal`, `ticker_is_watching`, `get_all_watching_signals`
+- `_strip_tz()` helper correctly handles tz-aware datetimes for SQLite compat
+- `MAX_WATCH_BARS = 12` mirrors `sniper.py` constant
+- `_cleanup_stale_watches()` uses `breakout_bar_dt < cutoff_time` time-based cutoff — correct
+- `cursor.rowcount` used for deleted count — works on both SQLite and PostgreSQL
+- `send_bos_watch_alert()` defers `send_simple_message` import — correct
+- `clear_watching_signals()` logs success at `logger.info` and error at `logger.warning` — correct
+- No stray `print()` calls
+- No redundant imports
+
+---
+
+## Session S-OR-1 — `app/signals/opening_range.py`
+**Date:** 2026-03-31
+**SHA:** `8c141c9a852c8cd1b11d80bdd6cf5f810615ee99`
+**Status:** ✅ Clean — no issues found
+
+**Purpose:** `OpeningRangeDetector` class + module-level convenience functions.
+Classifies 9:30–9:40 OR as TIGHT/NORMAL/WIDE/DYNAMIC. Phase B1 adds secondary
+range (10:00–10:30). Used by `sniper.py` for breakout anchor levels and scan
+frequency recommendations.
+
+**Architecture:**
+- `or_detector` singleton at module scope — correct for session-scoped state
+- Phase 1.17 fixes: `bar['datetime']` key (not `'timestamp'`), mid-session DYNAMIC fallback,
+  historical ATR via `get_bars_from_memory()`, OR cache TTL for DYNAMIC entries
+- Phase B1: `classify_secondary_range()` + `get_secondary_range_levels()`, `_extract_secondary_bars()`
+- Phase B1 Bug Fix #6: `_to_et_time()` helper forces ET conversion before window comparisons,
+  price sanity clamp (`SR_PRICE_SANITY_MULT = 5.0`) guards against tick/timestamp corruption
+
+**Checks passed:**
+- `_to_et_time()` handles tz-aware, tz-naive, string, and None datetimes — correct
+- `OR_CACHE_DYNAMIC_TTL = timedelta(minutes=30)` — DYNAMIC entries expire; TIGHT/NORMAL/WIDE never do
+- `or_cache` TTL comparison uses `.replace(tzinfo=None)` on both sides — avoids tz-aware vs tz-naive compare crash
+- `classify_or()` cache eviction on TTL expiry (`del self.or_cache[ticker]`) then re-evaluates — correct
+- `classify_secondary_range()` defers `from utils import config` inside function — avoids circular import at module load
+- `_extract_secondary_bars()` also defers `from utils import config` — consistent with above
+- Price sanity clamp uses `np.median(closes)` as reference price — robust to outliers
+- `classify_secondary_range()` checks `SECONDARY_RANGE_MIN_BARS` both before and after price clamp — double guard
+- `sr_cache` entries never expire (10:00–10:30 window is immutable) — correct
+- `clear_cache()` clears all three dicts: `or_cache`, `alerts_sent`, `sr_cache` — complete
+- `get_secondary_range_levels()` returns `{}` (not `None`) on missing data — safe for callers that unpack keys
+- `detect_breakout_after_or()` defers `from utils import config` twice (redundant but harmless) — minor
+- `detect_fvg_after_break()` doji-c1 guard (`if c1_body == 0: continue`) present on both bull and bear paths — correct
+- `compute_opening_range_from_bars()` returns `(None, None)` if fewer than 3 OR bars — correct sentinel
+- `compute_premarket_range()` requires `>= 10` premarket bars — correct minimum
+- `or_detector` global instance created at module import — `OpeningRangeDetector.__init__` logs 7 info lines at startup; acceptable
+- `should_scan_now()` always returns `True` — scan frequency handled by scanner loop. The `or_data` variable is computed but unused. Non-crashing dead code.
+- `ET = ZoneInfo("America/New_York")` defined at module scope and used consistently
+- `logger = logging.getLogger(__name__)` correct placement (after `import logging`)
+- No stray `print()` calls (all replaced Mar 27 2026 per file docstring)
+- No redundant imports
+
+**Findings:**
+
+| ID | Severity | Description | Status |
+|----|----------|-------------|--------|
+| BUG-OR-1 | ⚠️ | `should_scan_now()`: `or_data = self.classify_or(ticker, current_time)` result is computed but never used — dead code. Always returns `True` regardless. | ⬜ Low priority — document only, no logic impact |
+| BUG-OR-2 | ⚠️ | `detect_breakout_after_or()`: `from utils import config` imported twice inside the same function (lines ~615 and ~622) — redundant second import. | ⬜ Fix on next touch of `opening_range.py` |
 
 ---
 
@@ -204,11 +287,8 @@ Priority: fix during the session that next touches the owning file.
 
 | Fix ID | File | Severity | Description | Session Target |
 |--------|------|----------|-------------|----------------|
-| BUG-ASS-1 | `app/core/armed_signal_store.py` | ⚠️ | Move `import logging` to top of import block | Next `core/` session |
-| BUG-ASS-2 | `app/core/armed_signal_store.py` | ⚠️ | Remove redundant inner `import safe_execute` in `clear_armed_signals()` | Next `core/` session |
-| BUG-WSS-1 | `app/core/watch_signal_store.py` | ⚠️ | Change 7 error-path `logger.info` → `logger.warning` | Next `core/` session |
-| BUG-WSS-2 | `app/core/watch_signal_store.py` | ⚠️ | Replace `print()` with `logger.info()` in `_load_watches_from_db()` | Next `core/` session |
-| BUG-WSS-3 | `app/core/watch_signal_store.py` | ⚠️ | Remove empty tuple `()` from `safe_execute` DELETE call in `clear_watching_signals()` | Next `core/` session |
+| BUG-OR-1 | `app/signals/opening_range.py` | ⚠️ | `should_scan_now()` computes `or_data` but never uses it — dead code | Next `signals/` session |
+| BUG-OR-2 | `app/signals/opening_range.py` | ⚠️ | `detect_breakout_after_or()` imports `from utils import config` twice inside function | Next `signals/` session |
 
 ---
 
@@ -216,6 +296,11 @@ Priority: fix during the session that next touches the owning file.
 
 | Fix ID | File | Commit | Description |
 |--------|------|--------|-------------|
+| BUG-WSS-1 | `app/core/watch_signal_store.py` | in-file (header) | Changed 7 error-path `logger.info` → `logger.warning` across all DB functions |
+| BUG-WSS-2 | `app/core/watch_signal_store.py` | in-file (header) | Replaced stray `print()` in `_load_watches_from_db()` with `logger.info()` |
+| BUG-WSS-3 | `app/core/watch_signal_store.py` | in-file (header) | Removed empty `()` params tuple from `safe_execute` DELETE in `clear_watching_signals()` |
+| BUG-ASS-1 | `app/core/armed_signal_store.py` | in-file (header) | Moved `import logging` to top of import block — consistent import ordering |
+| BUG-ASS-2 | `app/core/armed_signal_store.py` | in-file (header) | Removed redundant inner `import safe_execute` in `clear_armed_signals()` |
 | BUG-MCB-1 | `app/ml/ml_confidence_boost.py` | `5255863` | Moved `import logging` to top of import block — consistent import ordering |
 | BUG-MCB-2 | `app/ml/ml_confidence_boost.py` | `5255863` | Changed 3 error-path `logger.info` → `logger.warning` (model load, prediction, save) |
 | BUG-MLT-1 | `app/ml/ml_trainer.py` | `5255863` | Added `df = df.copy()` at top of `_prepare_features()` — CoW-safe, prevents silent corruption in pandas 2.0+ |
@@ -235,13 +320,14 @@ Priority: fix during the session that next touches the owning file.
 
 | Priority | Folder | Files | Notes |
 |----------|--------|-------|-------|
-| 1 | `app/core/` | `armed_signal_store.py`, `watch_signal_store.py` | Apply open fixes BUG-ASS-1/2, BUG-WSS-1/2/3 |
-| 2 | `app/core/` | Remaining 13 files | `scanner.py`, `sniper.py`, `signal_scorecard.py`, `cfw6_gate_validator.py`, etc. |
-| 3 | `app/data/` | All files | DB connection pool, sql_safe, schema files |
-| 4 | `app/signals/` | All files | Gate validators, signal store, BOS/FVG detectors |
-| 5 | `app/options/` | All files | Options chain, Greeks, pre-validation |
-| 6 | `app/notifications/` | All files | Discord alert system |
-| 7 | `app/backtesting/` | All files | Backtest engine, walk-forward, historical trainer |
-| 8 | `app/ai/` | `ai_learning.py` | 18.6 KB — single file |
-| 9 | `scripts/`, `tests/`, `utils/` | All files | Support infrastructure |
-| 10 | Root config | `requirements.txt`, `railway.toml`, `nixpacks.toml`, etc. | Deployment config audit |
+| 1 | `app/core/` | `sniper.py` | Large strategy engine — line-by-line audit |
+| 2 | `app/core/` | `sniper_pipeline.py`, `signal_scorecard.py`, `cfw6_gate_validator.py` | Core pipeline files |
+| 3 | `app/core/` | Remaining 10 files | `scanner.py`, `thread_safe_state.py`, `position_manager.py`, etc. |
+| 4 | `app/data/` | All files | DB connection pool, sql_safe, schema files |
+| 5 | `app/signals/` | Remaining files | After `opening_range.py` — `breakout_detector.py`, `bos_fvg_engine.py`, etc. |
+| 6 | `app/options/` | All files | Options chain, Greeks, pre-validation |
+| 7 | `app/notifications/` | All files | Discord alert system |
+| 8 | `app/backtesting/` | All files | Backtest engine, walk-forward, historical trainer |
+| 9 | `app/ai/` | `ai_learning.py` | 18.6 KB — single file |
+| 10 | `scripts/`, `tests/`, `utils/` | All files | Support infrastructure |
+| 11 | Root config | `requirements.txt`, `railway.toml`, `nixpacks.toml`, etc. | Deployment config audit |
