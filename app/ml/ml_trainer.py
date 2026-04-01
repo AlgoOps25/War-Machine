@@ -6,7 +6,7 @@ from the 17-feature vector produced by HistoricalMLTrainer.
 
 Two entry points:
   train_from_dataframe() — called by train_historical.py (pre-training pipeline)
-  train_model()          — called by EOD auto-retrain hook (live DB outcomes)
+  train_model()          — called by EOD auto-retrain hook and Railway weekly cron
 
 Key improvements (Mar 2026)
 ---------------------------
@@ -45,6 +45,9 @@ Key improvements (Mar 2026)
     against pandas Copy-on-Write (CoW, default pandas 2.0+) mutation warnings.
     Without the copy, df[col] = ... on a slice raises SettingWithCopyWarning and
     may silently not persist the fillna() changes, corrupting the feature matrix.
+* FIX 2026-04-01 (BUG-RC-2):
+  - Added __main__ block so 'python -m app.ml.ml_trainer' (Railway cron)
+    actually calls train_model() instead of exiting silently on import.
 """
 import logging
 import os
@@ -435,7 +438,7 @@ def train_model(
 ) -> Tuple[Optional[object], dict]:
     """
     Train ML model on live signal_outcomes from the PostgreSQL DB.
-    Called by the EOD auto-retrain hook in scanner.py.
+    Called by the EOD auto-retrain hook in scanner.py and the Railway weekly cron.
     """
     logger.info("[ML-TRAIN] Starting live retrain from DB...")
     logger.warning(
@@ -681,3 +684,24 @@ def get_model_info() -> dict:
     except Exception as exc:
         logger.error(f"[ML-TRAIN] Failed to load model info: {exc}")
         return {'status': 'error', 'message': str(exc)}
+
+
+# ── Railway cron / CLI entry point ────────────────────────────────────
+
+if __name__ == '__main__':
+    import sys
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s [%(levelname)s] %(name)s — %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S',
+    )
+    logger.info("[ML-TRAIN] __main__ entry — starting weekly retrain (Railway cron)")
+    model, metrics = train_model()
+    if model is None:
+        logger.error(f"[ML-TRAIN] Retrain failed: {metrics.get('error', 'unknown')}")
+        sys.exit(1)
+    logger.info(
+        f"[ML-TRAIN] ✅ Retrain complete — "
+        f"Acc={metrics['accuracy']:.2%}  Prec={metrics['precision']:.2%}  "
+        f"Rec={metrics['recall']:.2%}  Thresh={metrics['threshold']:.3f}"
+    )
