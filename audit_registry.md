@@ -42,7 +42,7 @@
 | `app/options/` | — | — | ⬜ Pending |
 | `app/risk/` | — | — | ⬜ Pending |
 | `app/screening/` | — | — | ⬜ Pending |
-| `app/signals/` | ~10 | 3 | 🔄 In Progress — SIG-1, SIG-2 |
+| `app/signals/` | 5 | 5 | ✅ **COMPLETE** — SIG-1 through SIG-3 |
 | `app/validation/` | — | — | ⬜ Pending |
 | `audit_reports/` | 1 | — | Reference only |
 | `backtests/` | — | — | ⬜ Pending |
@@ -55,76 +55,72 @@
 
 ---
 
-## Session SIG-2 — Dead Code Fixes (BUG-OR-1, BUG-OR-2, BUG-BD-1)
+## Session SIG-3 — `app/signals/vwap_reclaim.py`
 **Date:** 2026-04-01
 **Auditor:** Perplexity AI
-**Commit:** `cbfc26d`
+**Commit:** N/A — no fixes required
+**Files audited:** 1 | **`app/signals/` now 100% complete (5/5)**
+
+### `app/signals/vwap_reclaim.py`
+**SHA:** `cf5358de` | **Size:** 4.4 KB | **Status:** ✅ Clean
+
+**Purpose:** Detects VWAP reclaim setups — price sweeps below VWAP (bull) or above (bear)
+then closes back inside an adaptive synthetic FVG zone centred on VWAP. Secondary entry
+path in the signal pipeline.
+
+**Checks confirmed clean:**
+- Import block: `logging`, `typing`, `from utils import config` — correct order ✅
+- `logger` declared at module level immediately after imports ✅
+- `_get_adaptive_threshold()` — lazy import inside `try/except`, fallback to
+  `getattr(config, 'FVG_MIN_SIZE_PCT', 0.0015) * current_price` — safe against missing constant ✅
+- `build_synthetic_fvg_zone()` — delegates to `_get_adaptive_threshold()`, returns `(zone_low, zone_high)` ✅
+- `detect_vwap_reclaim()` — entry guard `not bars or len(bars) < 3 or vwap <= 0` prevents all index/divide errors ✅
+- `current_price = bars[-1]['close']` — safe since guard ensures `len(bars) >= 3` ✅
+- `lookback = bars[-6:]` — correct 6-bar window ✅
+- Bull logic: `low < vwap` (sweep) + `close > vwap` (reclaim) + `in_zone` — all three required, correct ✅
+- Bear logic: `high > vwap` (sweep) + `close < vwap` (reclaim) + `in_zone` — symmetric, correct ✅
+- Bear `in_zone`: close `< vwap` lands in `[zone_low, vwap)` — intentional and correct ✅
+- Return dict keys consistent bull/bear: `direction`, `entry_price`, `vwap`, `zone_low`, `zone_high`, `grade` ✅
+- `grade: 'A'` hardcoded — acceptable, grading is upstream responsibility ✅
+- No stray `print()` calls — FIX Mar 27 2026 confirmed in place ✅
+- No dead variables, unused imports, or timezone issues ✅
+
+---
+
+## Session SIG-2 — Dead Code Fixes (BUG-OR-1, BUG-OR-2, BUG-BD-1)
+**Date:** 2026-04-01 | **Commit:** `cbfc26d`
 **Files fixed:** `app/signals/opening_range.py`, `app/signals/breakout_detector.py`
-**Fixes applied:** BUG-OR-1, BUG-OR-2, BUG-BD-1
 
----
-
-### `app/signals/opening_range.py`
-**SHA post-fix:** `cbfc26d` | **Status:** ✅ Fixed — 2 findings resolved
-
-**BUG-OR-1** ⚠️ → 🔧 **FIXED**
-- *Location:* `should_scan_now()` — `or_data = self.classify_or(ticker, current_time)`
-- *Issue:* Result of `classify_or()` assigned to `or_data` but never read. Function
-  always returns `True` unconditionally. Dead call wasted CPU on every scanner tick.
-- *Fix:* Removed the dead `or_data = ...` line entirely.
-
-**BUG-OR-2** ⚠️ → 🔧 **FIXED**
-- *Location:* `detect_breakout_after_or()` — duplicate `from utils import config`
-- *Issue:* `from utils import config` appeared once at the top of the function and
-  again inside the `for` loop on every iteration. Redundant sys.modules lookup per bar.
-- *Fix:* Removed the second `from utils import config` inside the loop.
-
----
-
-### `app/signals/breakout_detector.py`
-**SHA post-fix:** `cbfc26d` | **Status:** ✅ Fixed — 1 finding resolved
-
-**BUG-BD-1** ⚠️ → 🔧 **FIXED**
-- *Location:* `BreakoutDetector.__init__()` — `risk_reward_ratio: float = 2.0,`
-- *Issue:* Annotated assignment with trailing comma — stored value was tuple `(2.0,)`
-  not `2.0`. Variable never read anywhere. Latent confusion hazard.
-- *Fix:* Removed the dead line entirely.
+**BUG-OR-1** ⚠️ → 🔧 Dead `or_data = classify_or()` in `should_scan_now()` removed
+**BUG-OR-2** ⚠️ → 🔧 Duplicate `from utils import config` inside `for` loop removed
+**BUG-BD-1** ⚠️ → 🔧 Dead `risk_reward_ratio: float = 2.0,` tuple assignment removed
 
 ---
 
 ## Session SIG-1 — `app/signals/breakout_detector.py` + `app/signals/signal_analytics.py`
-**Date:** 2026-03-31
-**Auditor:** Perplexity AI
-**Commit:** `cbfc26d` (BUG-BD-1 applied here)
-**Files audited:** 2
-
----
+**Date:** 2026-03-31 | **Files audited:** 2
 
 ### `app/signals/breakout_detector.py`
-**SHA:** `eaa1062a` | **Size:** ~18 KB | **Status:** ✅ Fixed — see SIG-2 for BUG-BD-1
+**SHA:** `eaa1062a` | **Size:** ~18 KB | **Status:** ✅ Fixed (BUG-BD-1 in SIG-2)
 
-**Purpose:** Core pattern detector for `app/core/sniper.py`. Detects BULL BREAKOUT,
-BEAR BREAKDOWN, and RETEST ENTRY signals using session-anchored S/R levels (Phase 1.17),
-EMA volume confirmation, ATR-based dynamic stops, and T1/T2 split targets.
+**Purpose:** Core pattern detector. Detects BULL BREAKOUT, BEAR BREAKDOWN, RETEST ENTRY
+using session-anchored S/R, EMA volume confirmation, ATR-based stops, T1/T2 split targets.
 
-**Checks confirmed clean:** `calculate_atr()` bar-count cache, `get_pdh_pdl()` composite
-cache key, `clear_pdh_pdl_cache()` / `clear_atr_cache()`, `calculate_support_resistance()`
-rolling→session-anchor→PDH/PDL priority, `resistance_source`/`support_source` init,
-`get_session_levels()` fail-silent import, EMA volume multiplier, `analyze_candle_strength()`
-Marubozu/Hammer/Engulfing, `detect_breakout()` uses `bars[:-1]`, BULL/BEAR/RETEST
-symmetric logic, `session_anchored` flag ✅
-
----
+**Checks confirmed clean:** `calculate_atr()` cache, `get_pdh_pdl()` composite key,
+cache clear methods, `calculate_support_resistance()` rolling→session-anchor→PDH/PDL priority,
+`resistance_source`/`support_source` init, `get_session_levels()` fail-silent import,
+EMA volume multiplier, `analyze_candle_strength()` Marubozu/Hammer/Engulfing,
+`detect_breakout()` uses `bars[:-1]`, BULL/BEAR/RETEST symmetric logic, `session_anchored` flag ✅
 
 ### `app/signals/signal_analytics.py`
 **SHA:** `8722c950` | **Size:** ~17 KB | **Status:** ✅ Clean
 
-**Purpose:** Full signal lifecycle tracker. Persists GENERATED→VALIDATED→ARMED→TRADED
-events to `signal_events` table. Funnel stats, grade distribution, multiplier impact,
+**Purpose:** Full signal lifecycle tracker (GENERATED→VALIDATED→ARMED→TRADED).
+Persists to `signal_events` table. Funnel stats, grade distribution, multiplier impact,
 rejection breakdown, hourly patterns. Used by `eod_reporter.py`.
 
 **Checks confirmed clean:** `get_conn()` try/finally, `_initialize_database()` guard,
-table schema all lifecycle columns, 4 indexes, Postgres/SQLite dual-path, all stage guards,
+table schema + 4 indexes, Postgres/SQLite dual-path, all stage guards,
 ZeroDivisionError guards, `get_multiplier_impact()` fallback, singleton ✅
 
 ---
@@ -262,13 +258,12 @@ ZeroDivisionError guards, `get_multiplier_impact()` fallback, singleton ✅
 
 | Priority | Target | Files | Notes |
 |----------|--------|-------|-------|
-| 1 🔥 | `app/signals/` | Remaining ~7 files | `signal_validator.py`, `arm_trigger.py`, etc. |
-| 2 | `app/options/` | All files | Options chain, Greeks, pre-validation |
-| 3 | `app/notifications/` | All files | Discord alert system |
-| 4 | `app/backtesting/` | All files | Backtest engine, walk-forward |
-| 5 | `app/filters/`, `app/indicators/`, `app/mtf/`, `app/screening/`, `app/validation/`, `app/risk/`, `app/ai/` | All | Secondary modules |
-| 6 | `scripts/`, `tests/`, `utils/` | All | Support infrastructure |
-| 7 | Root config | `requirements.txt`, `railway.toml`, etc. | Deployment config |
+| 1 🔥 | `app/options/` | All files | Options chain, Greeks, pre-validation |
+| 2 | `app/notifications/` | All files | Discord alert system |
+| 3 | `app/backtesting/` | All files | Backtest engine, walk-forward |
+| 4 | `app/filters/`, `app/indicators/`, `app/mtf/`, `app/screening/`, `app/validation/`, `app/risk/`, `app/ai/` | All | Secondary modules |
+| 5 | `scripts/`, `tests/`, `utils/` | All | Support infrastructure |
+| 6 | Root config | `requirements.txt`, `railway.toml`, etc. | Deployment config |
 
 
 

@@ -70,7 +70,7 @@ def store_iv_observation(ticker: str, iv: float) -> None:
         )
         conn.commit()
     except Exception as e:
-        logger.info(f"[IVR] store error for {ticker}: {e}")
+        logger.warning(f"[IVR] store error for {ticker}: {e}")
     finally:
         return_conn(conn)
 
@@ -128,7 +128,7 @@ def compute_ivr(ticker: str, current_iv: float,
         return round(ivr, 1), count, True
 
     except Exception as e:
-        logger.info(f"[IVR] compute error for {ticker}: {e}")
+        logger.warning(f"[IVR] compute error for {ticker}: {e}")
         return None, 0, False
     finally:
         return_conn(conn)
