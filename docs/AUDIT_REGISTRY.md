@@ -4,8 +4,8 @@
 > Every finding, fix, and status change is recorded here chronologically — never delete entries.
 > Updated after **every commit** — no exceptions.
 >
-> **Last updated:** 2026-04-01 — Phase 6 P3-1 complete. Clean-data retrain gate: CLEAN_DATA_CUTOFF=2026-03-25, MIN_CLEAN_SAMPLES=50. `_fetch_training_data()` filters pre-fix records; `should_retrain()` checks floor first.
-> Next: 47.P3-2 (feature engineering: GEX_distance, IVR, time_to_close, SPY_5m_bias, RVOL_ratio).
+> **Last updated:** 2026-04-01 — S19-B complete. `app/options/dte_selector.py` deleted (Sprint 2 legacy, zero callers confirmed via repo-wide search).
+> Next: `app/backtesting/` audit.
 >
 > **Auditor:** Perplexity AI (interactive audit with Michael)
 > **Size rule:** Keep under **90 KB**. If approaching limit, archive completed
@@ -50,7 +50,7 @@
 | `app/ml/` | 7 | 7 | ✅ Complete — ML-1, S11 |
 | `app/mtf/` | 7 | 7 | ✅ Complete — S12 |
 | `app/notifications/` | 2 | 2 | ✅ **COMPLETE** — S20 |
-| `app/options/` | 9 | 9 | ✅ **COMPLETE** — S19-A + S19-B (1 deleted) |
+| `app/options/` | 9 | 9 | ✅ **COMPLETE** — S19-A + S19-B (2 deleted) |
 | `app/risk/` | 7 | 7 | ✅ Complete — S14 |
 | `app/screening/` | 8 | 8 | ✅ Complete (S9) |
 | `app/signals/` | 5 | 5 | ✅ **COMPLETE** — SIG-1 through SIG-3 |
@@ -243,3 +243,4 @@
 | 90 | 2026-04-01 | S21 | `app/backtesting/backtest_engine.py` | ✅ BUG-BE-1–5 confirmed present | pre-applied | Confirmed |
 | 91 | 2026-04-01 | P2-3 | `app/options/options_dte_selector.py` | 🔧 47.P2-3: `_dte_regime_override()` — VIX>22→1DTE, IVR<25+≤60m→0DTE. Fires after IVR gate, before scoring. `confidence_pct=70` on override path. | `030b4f4b` | New gate active |
 | 92 | 2026-04-01 | P3-1 | `app/ml/ml_trainer.py` | 🔧 47.P3-1: `CLEAN_DATA_CUTOFF=2026-03-25`, `MIN_CLEAN_SAMPLES=50`. `_fetch_training_data()` filters `signal_time >= cutoff`; `should_retrain()` checks floor first — blocks retrain if <50 clean records exist. Pre-fix records (corrupted gates) never used for training. | `0f3dfa3f` | ML data integrity |
+| 93 | 2026-04-01 | S19-B | `app/options/dte_selector.py` | ❌ DELETED — Sprint 2 legacy rule-based selector, fully superseded by `options_dte_selector.py`. Zero callers confirmed via repo-wide `Select-String` search. | manual | Dead code removed |
