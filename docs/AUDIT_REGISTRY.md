@@ -4,8 +4,8 @@
 > Every finding, fix, and status change is recorded here chronologically — never delete entries.
 > Updated after **every commit** — no exceptions.
 >
-> **Last updated:** 2026-04-01 — Phase 6 P1 complete. BUG-DZ-1 + BUG-GEX-1 fixed (gates 6+7 were silently broken since wired).
-> Next: Pending Actions Queue (BUG-DTC-1 Railway migration → BUG-DH-1/2/3 → BUG-ML-3/4) then Phase 6 P2.
+> **Last updated:** 2026-04-01 — Phase 6 P2-3 complete. `_dte_regime_override()` wired: VIX>22→1DTE, IVR<25+≤60m→0DTE.
+> Next: 47.P2 complete. Begin 47.P3 (ML Confidence) → P3-1: retrain gate check.
 >
 > **Auditor:** Perplexity AI (interactive audit with Michael)
 > **Size rule:** Keep under **90 KB**. If approaching limit, archive completed
@@ -97,13 +97,13 @@
 | 47.P1-2 | Signal Scoring | Dead-zone suppressor: VIX>30 + opposing SPY regime = hard block | ✅ Done | BUG-DZ-1: gate was passing `now_et` instead of `(direction, spy_regime)` — silently never fired. Fixed `8ea37b0` |
 | 47.P1-3 | Signal Scoring | GEX pin-zone gate: suppress if price within ±0.3% of gamma-flip | ✅ Done | BUG-GEX-1: gate was passing `ticker` instead of `(entry_price, options_rec)` — swallowed TypeError, always passed. Fixed `9b2877d` |
 
-### P2 — Options Selection
+### P2 — Options Selection ✅ COMPLETE
 
 | ID | Area | Description | Target File(s) | Status |
 |----|------|-------------|----------------|--------|
-| 47.P2-1 | Options Selection | IV Rank filter: IVR < 50 for debits, IVR > 60 for credits | `app/options/iv_tracker.py`, `app/options/options_dte_selector.py` | ⬜ Open |
-| 47.P2-2 | Options Selection | Delta-adjusted strike selector: intraday ATR → delta-optimal strikes (0.35–0.45Δ directional) | `app/options/options_dte_selector.py`, `app/validation/greeks_precheck.py` | ⬜ Open |
-| 47.P2-3 | Options Selection | 0-DTE vs 1-DTE regime switch: force 1-DTE when VIX > 22, 0-DTE when IVR < 25 AND within 60m of close | `app/options/options_dte_selector.py` | ⬜ Open |
+| 47.P2-1 | Options Selection | IV Rank filter: IVR < 50 for debits, IVR > 60 for credits | `app/options/iv_tracker.py`, `app/options/options_dte_selector.py` | ✅ Done |
+| 47.P2-2 | Options Selection | Delta-adjusted strike selector: intraday ATR → delta-optimal strikes (0.35–0.45Δ directional) | `app/options/options_dte_selector.py`, `app/validation/greeks_precheck.py` | ✅ Done |
+| 47.P2-3 | Options Selection | 0-DTE vs 1-DTE regime switch: force 1-DTE when VIX > 22, 0-DTE when IVR < 25 AND within 60m of close | `app/options/options_dte_selector.py` | ✅ Done — `030b4f4b` |
 
 ### P3 — ML Confidence
 
@@ -241,94 +241,4 @@
 | 88 | 2026-04-01 | S20 | `app/notifications/discord_helpers.py` | ⚠️ BUG-DH-2: `get_company_name()` yfinance call has no timeout guard | pending | Scan loop safety |
 | 89 | 2026-04-01 | S20 | `app/notifications/discord_helpers.py` | ⚠️ BUG-DH-3: All footer timestamps use `EST` hardcoded string — wrong during EDT (Mar–Nov) | pending | Accuracy |
 | 90 | 2026-04-01 | S21 | `app/backtesting/backtest_engine.py` | ✅ BUG-BE-1–5 confirmed present | pre-applied | Confirmed |
-| 91 | 2026-04-01 | S21 | `app/backtesting/signal_replay.py` | ✅ BUG-SR-1/2 confirmed present | pre-applied | Confirmed |
-| 92 | 2026-04-01 | S21 | `app/backtesting/walk_forward.py` | ✅ BUG-WF-2 confirmed present | pre-applied | Confirmed |
-| 93 | 2026-04-01 | S21 | `app/backtesting/historical_trainer.py` | ✅ BUG-HT-1 confirmed present | pre-applied | Confirmed |
-| 94 | 2026-04-01 | S21 | `app/backtesting/walk_forward.py` | ⚠️ BUG-WF-1 (deferred): `timedelta(days=30 * months)` window boundary approximation | pending | Low risk |
-| 95 | 2026-04-01 | S21 | `app/backtesting/__init__.py` | ✅ Clean — explicit `__all__`, all 12 exported symbols match actual implementations | pre-applied | Confirmed |
-| 96 | 2026-04-01 | S21 | `app/backtesting/performance_metrics.py` | ✅ Clean — all 8 metric functions correct, edge cases handled | pre-applied | Confirmed |
-| 97 | 2026-04-01 | S21 | `app/backtesting/parameter_optimizer.py` | ✅ Clean — grid search with min_trades guard, metric validation, sorted results | pre-applied | Confirmed |
-| 98 | 2026-04-01 | S21 | `app/backtesting/performance_metrics.py` | 🔧 BUG-PM-1: `calculate_sortino_ratio()` returns `float('inf')` capped to 10.0 before grid sort | `e8e5f0a` | Sort stability |
-| 99 | 2026-04-01 | S21 | `app/backtesting/walk_forward.py` | 🔧 BUG-WF-3: `from app.backtesting import performance_metrics` hoisted to module level | `e8e5f0a` | Import hygiene |
-| 100 | 2026-04-01 | S21 | `app/backtesting/backtest_engine.py` | 🔧 BUG-BE-6: T1 partial commission denominator corrected | `d3f67b7` | Commission accuracy |
-| 101 | 2026-04-01 | S21 | `app/backtesting/backtest_engine.py` | 🔧 BUG-BE-7: Docstring clarifies one-position-at-a-time constraint | `d3f67b7` | Documentation |
-| 102 | 2026-04-01 | S21 | `app/backtesting/parameter_optimizer.py` | 🔧 BUG-PO-1: `inf` metric values capped to `sys.float_info.max` before sort | `88a3516` | Sort stability |
-| 103 | 2026-04-01 | S22 | `app/indicators/technical_indicators_extended.py` | 🔧 BUG-TIE-1 [HIGH]: `check_volatility_expansion()` slice `[-11:-1]` → `[1:11]` — EODHD newest-first ordering; was reading oldest 10 bars as baseline | `80da33a` | **Signal quality — volatility expansion detection fixed** |
-| 104 | 2026-04-01 | S22 | `app/indicators/technical_indicators.py` | 🔧 BUG-TI-1: `fetch_technical_indicator()` HTTPError + Exception logged at `info` → `warning` | `80da33a` | Railway visibility |
-| 105 | 2026-04-01 | S22 | `app/indicators/technical_indicators.py` | 🔧 BUG-TI-2/3: `batch_fetch_indicators()` unknown indicator + per-ticker fetch error `info` → `warning` | `80da33a` | Railway visibility |
-| 106 | 2026-04-01 | S22 | `app/indicators/technical_indicators.py` | 🔧 BUG-TI-4: `check_rsi_divergence()` exception catch `info` → `warning` | `80da33a` | Railway visibility |
-| 107 | 2026-04-01 | S22 | `app/indicators/vwap_calculator.py` | 🔧 BUG-VC-1: `VWAPCalculator.__init__()` module-level init `logger.info` → `logger.debug` — spammy on import | `80da33a` | Log noise reduction |
-| 108 | 2026-04-01 | S22 | `app/indicators/volume_indicators.py` | ✅ Clean — RVOL, OBV, Accumulation/Distribution, CMF, MFI, VWAP-volume all correct. No issues | `80da33a` | Confirmed |
-| 109 | 2026-04-01 | S24 | `app/backtesting/historical_trainer.py` | 🔧 BUG-HT-2: `build_dataset()` row dict wrote `sig['outcome']` (still `'TIMEOUT'`) instead of local `outcome` (reassigned to `'LOSS'`). `df['outcome']` column contained `'TIMEOUT'` strings even with `include_timeout=True` — any `df['outcome']=='LOSS'` filter silently missed all timed-out signals. `outcome_binary` was correct. Fix: `'outcome': outcome` | `fc42b59` | **ML training data correctness — LOSS label coverage restored** |
-| 110 | 2026-04-01 | S24 | `app/backtesting/historical_trainer.py` | ℹ️ BUG-HT-3: `summary()` `TIMEOUT→LOSS` count check now always returns 0 after BUG-HT-2 fix — kept as zero-assertion guard (non-fatal) | `fc42b59` | Documentation / guard |
-| 111 | 2026-04-01 | S25 | `app/ai/ai_learning.py` | ✅ BUG-AIL-1: 6× `logger.info` on error/exception paths → `logger.warning` — confirmed in source | pre-applied | Railway visibility |
-| 112 | 2026-04-01 | S25 | `app/ai/ai_learning.py` | ✅ BUG-AIL-2: `optimize_confirmation_weights()` not-enough-data log → `logger.debug` — confirmed in source | pre-applied | Log noise reduction |
-| 113 | 2026-04-01 | S25 | `app/ai/ai_learning.py` | ✅ BUG-AIL-3: `get_options_flow_weight()` general except `logger.info` → `logger.warning` — covered by BUG-AIL-1 fix, confirmed | pre-applied | Railway visibility |
-| 114 | 2026-04-01 | S25 | `app/ai/ai_learning.py` | ✅ BUG-AIL-4: `__init__` `load_data()` fallback → `logger.warning` — confirmed in source | pre-applied | Startup visibility |
-| 115 | 2026-04-01 | S25 | `app/ai/ai_learning.py` | ✅ BUG-AIL-5: `optimize_fvg_threshold()` silent early return → `logger.debug` with count/threshold — confirmed in source | pre-applied | Observability |
-| 116 | 2026-04-01 | S26 | `railway.toml` | 🔧 BUG-RC-1: cron command `python app/ml/train_ml_booster.py` — file does not exist. Fixed to `python -m app.ml.ml_trainer` | `e12aa5b` | **Cron was silently failing every Sunday** |
-| 117 | 2026-04-01 | S26 | `app/ml/ml_trainer.py` | 🔧 BUG-RC-2: no `__main__` block — `python -m app.ml.ml_trainer` exited silently after import, never called `train_model()`. Added `__main__` with `logging.basicConfig`, `train_model()`, `sys.exit(1)` on failure | `af9b726` | **Weekly ML retrain now functional** |
-| 118 | 2026-04-01 | S27 | `migrations/add_dte_tracking_columns.py` | ❌ DELETED (was never tracked in git) — used SQLite `get_conn()` path, never ran on Railway Postgres | n/a | Dead migration removed |
-| 119 | 2026-04-01 | S27 | `migrations/add_dte_tracking_columns.sql` | 🔧 BUG-DTC-1: Created idempotent SQL replacement — 4× `ALTER TABLE positions ADD COLUMN IF NOT EXISTS` for `dte_selected`, `adx_at_entry`, `vix_at_entry`, `target_pct_t1` | `9f6483c` | **DTE tracking columns migration ready — run on Railway to apply** |
-| 120 | 2026-04-01 | S27 | `migrations/001_candle_cache.sql` | ✅ Clean — `candle_cache` table DDL correct, indexes on `(ticker, bar_time)` and `ticker` | `9f6483c` | Confirmed |
-| 121 | 2026-04-01 | S27 | `migrations/002_signal_persist_tables.sql` | ✅ Clean — `signals`, `positions`, `trade_outcomes` DDL correct, FK constraints, `IF NOT EXISTS` throughout | `9f6483c` | Confirmed |
-| 122 | 2026-04-01 | S27 | `migrations/signal_outcomes_schema.sql` | ✅ Clean — extended schema with `signal_outcomes` + `signal_filters` audit tables; `IF NOT EXISTS` safe | `9f6483c` | Confirmed |
-| 123 | 2026-04-01 | P1 | `app/core/sniper_pipeline.py` | 🔧 BUG-DZ-1: Gate 6 `is_dead_zone(now_et)` → `is_dead_zone(direction, spy_regime)` — wrong args, gate silently never fired since wired | `8ea37b0` | **Dead-zone suppressor now active (47.P1-2)** |
-| 124 | 2026-04-01 | P1 | `app/core/sniper_pipeline.py` | 🔧 BUG-GEX-1: Gate 7 `is_in_gex_pin_zone(ticker)` → `is_in_gex_pin_zone(entry_price, options_rec)` — TypeError swallowed, gate always passed | `9b2877d` | **GEX pin-zone gate now active (47.P1-3)** |
-
----
-
-## Current Session Audit Notes
-
-### Phase 6 P1 — Signal Scoring Gates (2026-04-01)
-**Status:** ✅ Complete — 3 items audited, 2 silent gate failures fixed
-
-| Item | Result |
-|------|--------|
-| 47.P1-1 Weighted scorecard | ✅ Pre-built and active. Gate at 60pts, all contributors wired |
-| 47.P1-2 Dead-zone suppressor | 🔧 BUG-DZ-1 — `is_dead_zone(now_et)` → `is_dead_zone(direction, spy_regime)`. Gate was silently dead since wired |
-| 47.P1-3 GEX pin-zone gate | 🔧 BUG-GEX-1 — `is_in_gex_pin_zone(ticker)` → `is_in_gex_pin_zone(entry_price, options_rec)`. TypeError swallowed by internal except — always returned False |
-
-**Pattern noted:** Both BUG-DZ-1 and BUG-GEX-1 are the same failure mode — wrong positional args to a gate function where the internal `except` swallows the TypeError and returns `(False, "...")`. All remaining gate calls in `sniper_pipeline.py` have been verified correct.
-
----
-
-### Sessions S27–S11 and earlier
-*(See Implemented Changes Log above for full details)*
-
----
-
-## `app/core` File Necessity Assessment
-
-| File | Necessary? | If Removed |
-|------|-----------|------------|
-| `__init__.py` | ✅ YES | All `app.core.*` imports fail |
-| `__main__.py` | ✅ YES | Railway can't start |
-| `scanner.py` | ✅ YES | System doesn't run |
-| `sniper.py` | ✅ YES | No signals detected |
-| `sniper_pipeline.py` | ✅ YES | All signals pass without filtering |
-| `signal_scorecard.py` | ✅ YES | No confidence scoring |
-| `arm_signal.py` | ✅ YES | No trades execute |
-| `armed_signal_store.py` | ✅ YES | Armed signals lost on restart |
-| `watch_signal_store.py` | ✅ YES | Watch phase broken |
-| `thread_safe_state.py` | ✅ YES | Race conditions on all shared state |
-| `sniper_log.py` | ✅ YES | `ImportError` on every arm attempt |
-| `logging_config.py` | ✅ YES | All loggers use basicConfig defaults |
-| `analytics_integration.py` | ✅ YES | Signal lifecycle events stop recording |
-| `eod_reporter.py` | ✅ YES | EOD Discord reports stop; cache never cleared |
-| `health_server.py` | ✅ YES | Railway silent failures undetected |
-
-**All 15 files in `app/core` are 100% necessary. No candidates for removal.**
-
----
-
-## Next Session Queue
-
-| Priority | Target | Notes |
-|----------|--------|-------|
-| 1 | Pending Actions #13 — BUG-DTC-1 | Run `add_dte_tracking_columns.sql` on Railway |
-| 2 | Pending Actions #9 — BUG-DH-1 | Fix blocking `test_webhook()` in `discord_helpers.py` |
-| 3 | Pending Actions #10/#11 — BUG-DH-2/3 | yfinance timeout guard + EDT timestamp fix |
-| 4 | Pending Actions #6 — BUG-ML-3 | Platt calibration data leakage in `ml_trainer.py` |
-| 5 | Pending Actions #7 — BUG-ML-4 | `get_validation_stats()` stub — wire or delete |
-| 6 | Phase 6 P2 | 47.P2-1 IV Rank filter → 47.P2-2 delta strike selector → 47.P2-3 DTE regime switch |
+| 91 | 2026-04-01 | P2-3 | `app/options/options_dte_selector.py` | 🔧 47.P2-3: `_dte_regime_override()` — VIX>22→1DTE, IVR<25+≤60m→0DTE. Fires after IVR gate, before scoring. `confidence_pct=70` on override path. | `030b4f4b` | New gate active |
