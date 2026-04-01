@@ -4,9 +4,9 @@
 > Every finding, fix, and status change is recorded here chronologically — never delete entries.
 > Updated after **every commit** — no exceptions.
 >
-> **Last updated:** 2026-04-01 — S19-B: `app/options/options_intelligence.py` complete.
-> `app/options/` is now 100% audited (9/9 files). 4 bugs fixed.
-> Next: Confirm delete of `options_optimizer.py`, then `app/notifications/` (2 files).
+> **Last updated:** 2026-04-01 — S20: `app/notifications/` complete (2/2 files).
+> `options_optimizer.py` deleted. `discord_helpers.py` — 3 bugs fixed.
+> Next: `app/backtesting/` (7 files).
 >
 > **Auditor:** Perplexity AI (interactive audit with Michael)
 > **Size rule:** Keep under **90 KB**. If approaching limit, archive completed
@@ -50,8 +50,8 @@
 | `app/indicators/` | 4 | 0 | ⬜ Pending |
 | `app/ml/` | 7 | 7 | ✅ Complete — ML-1, S11 |
 | `app/mtf/` | 7 | 7 | ✅ Complete — S12 |
-| `app/notifications/` | 2 | 0 | ⬜ Pending |
-| `app/options/` | 9 | 9 | ✅ **COMPLETE** — S19-A + S19-B |
+| `app/notifications/` | 2 | 2 | ✅ **COMPLETE** — S20 |
+| `app/options/` | 9 | 9 | ✅ **COMPLETE** — S19-A + S19-B (1 deleted) |
 | `app/risk/` | 7 | 7 | ✅ Complete — S14 |
 | `app/screening/` | 8 | 8 | ✅ Complete (S9) |
 | `app/signals/` | 5 | 5 | ✅ **COMPLETE** — SIG-1 through SIG-3 |
@@ -69,15 +69,17 @@
 
 | # | Priority | File | Action | Status |
 |---|----------|------|--------|--------|
-| 1 | 🔴 **NEXT** | `app/options/options_optimizer.py` | **CONFIRM DELETE** — async engine never called in production; `asyncio.run()` crashes inside Railway async loop; superseded by `OptionsDataManager` + `options_dte_selector` | ⏳ Open |
-| 2 | 🟡 MEDIUM | `app/options/__init__.py` | `_calculate_optimal_dte()` returns 14/21/30 DTE — inconsistent with 0DTE/1DTE architecture. Clarify whether `build_options_trade()` is still the live path or legacy | ⏳ Open |
-| 3 | 🟡 MEDIUM | `scripts/backtesting/backtest_v2_detector.py` | Verify vs `backtest_realistic_detector.py` — possibly superseded | ⏳ Open |
-| 4 | 🟢 LOW | `scripts/audit_repo.py` | QUARANTINE — one-time audit script, superseded by this registry | ⏳ Open |
-| 5 | 🟢 LOW | `market_memory.db` | Verify if replaced by PostgreSQL on Railway or still active | ⏳ Open |
-| 6 | 🟢 LOW | `scripts/war_machine.db` | Verify if stale vs root `war_machine.db` | ⏳ Open |
-| 7 | 🟡 MEDIUM | `app/ml/ml_trainer.py` | BUG-ML-3: Platt calibration + threshold on same slice — data leakage | ⏳ Open |
-| 8 | 🟡 MEDIUM | `app/validation/cfw6_gate_validator.py` | BUG-ML-4: `get_validation_stats()` permanent stub — wire or delete | ⏳ Open |
-| 9 | 🟢 LOW | `app/ml/ml_confidence_boost.py` | BUG-ML-5: `.iterrows()` in logging loop — replace with `itertuples()` | ⏳ Open |
+| 1 | 🟡 MEDIUM | `app/options/__init__.py` | `_calculate_optimal_dte()` returns 14/21/30 DTE — inconsistent with 0DTE/1DTE architecture. Clarify whether `build_options_trade()` is still the live path or legacy | ⏳ Open |
+| 2 | 🟡 MEDIUM | `scripts/backtesting/backtest_v2_detector.py` | Verify vs `backtest_realistic_detector.py` — possibly superseded | ⏳ Open |
+| 3 | 🟢 LOW | `scripts/audit_repo.py` | QUARANTINE — one-time audit script, superseded by this registry | ⏳ Open |
+| 4 | 🟢 LOW | `market_memory.db` | Verify if replaced by PostgreSQL on Railway or still active | ⏳ Open |
+| 5 | 🟢 LOW | `scripts/war_machine.db` | Verify if stale vs root `war_machine.db` | ⏳ Open |
+| 6 | 🟡 MEDIUM | `app/ml/ml_trainer.py` | BUG-ML-3: Platt calibration + threshold on same slice — data leakage | ⏳ Open |
+| 7 | 🟡 MEDIUM | `app/validation/cfw6_gate_validator.py` | BUG-ML-4: `get_validation_stats()` permanent stub — wire or delete | ⏳ Open |
+| 8 | 🟢 LOW | `app/ml/ml_confidence_boost.py` | BUG-ML-5: `.iterrows()` in logging loop — replace with `itertuples()` | ⏳ Open |
+| 9 | 🟡 MEDIUM | `app/notifications/discord_helpers.py` | BUG-DH-1: `test_webhook()` uses blocking `requests.post()` on calling thread — blocks startup if Discord is slow | ⏳ Open |
+| 10 | 🟢 LOW | `app/notifications/discord_helpers.py` | BUG-DH-2: `get_company_name()` yfinance call has no timeout guard — blocks on slow network at cache miss | ⏳ Open |
+| 11 | 🟢 LOW | `app/notifications/discord_helpers.py` | BUG-DH-3: Footer timestamps use `EST` hardcoded string — wrong during EDT (Mar–Nov). Should use `ET` or derive from `ZoneInfo('America/New_York')` | ⏳ Open |
 
 ---
 
@@ -92,7 +94,7 @@
 | 47.P1-1 | Signal Scoring | Weighted multi-factor scorecard (RVOL, MTF, Greeks, GEX, UOA, regime) — output 0–100, fire at ≥72 | `app/core/sniper.py`, `app/validation/validation.py` |
 | 47.P1-2 | Signal Scoring | Dead-zone suppressor: suppress when VIX > 30 AND SPY 5m trend opposing | `app/filters/market_regime_context.py` |
 | 47.P1-3 | Signal Scoring | GEX pin-zone gate: suppress if price within ±0.3% of gamma-flip level | `app/options/gex_engine.py`, `app/validation/validation.py` |
-| 47.P2-1 | Options Selection | IV Rank filter: IVR < 50 for debits, IVR > 60 for credits | `app/options/iv_tracker.py`, `app/options/options_optimizer.py` |
+| 47.P2-1 | Options Selection | IV Rank filter: IVR < 50 for debits, IVR > 60 for credits | `app/options/iv_tracker.py`, `app/options/options_dte_selector.py` |
 | 47.P2-2 | Options Selection | Delta-adjusted strike selector: intraday ATR → delta-optimal strikes (0.35–0.45Δ directional) | `app/options/options_dte_selector.py`, `app/validation/greeks_precheck.py` |
 | 47.P2-3 | Options Selection | 0-DTE vs 1-DTE regime switch: force 1-DTE when VIX > 22, 0-DTE when IVR < 25 AND within 60m of close | `app/options/options_dte_selector.py` |
 | 47.P3-1 | ML Confidence | Retrain ML model on post-fix signal data — all pre-fix records corrupted. Gate: 50 clean signals | `app/ml/ml_trainer.py`, `app/ml/ml_confidence_boost.py` |
@@ -167,7 +169,7 @@
 | 48 | 2026-03-31 | S16 | `app/core/analytics_integration.py` | 🔧 BUG-AI-2: `_tracker.session_signals` → `get_funnel_stats()` public API | `4ff5fba` | Decoupling |
 | 49 | 2026-03-31 | S16 | `app/core/analytics_integration.py` | 🔧 BUG-AI-3: `eod_report_done` never reset at midnight — EOD report stops after day 1 | `4ff5fba` | **Real bug — EOD report broken** |
 | 50 | 2026-03-31 | S16 | `app/core/health_server.py` | 🔧 BUG-HS-1: Blank line between `import logging` and `logger` | `4ff5fba` | Style consistency |
-| 51 | 2026-03-31 | S16 | `app/core/health_server.py` | 🔧 BUG-HS-2: `from __future__ import annotations` added | `4ff5fba` | Forward compatibility |
+| 51 | 2026-03-31 | S16 | `app/core/health_server.py` | 🔧 BUG-HS-2: `from __future__ import annotations` added | `4ff5fba` | Style consistency |
 | 52 | 2026-03-31 | S16 | `app/core/arm_signal.py` | 🔧 BUG-S16-1: `'validation'` key → `'validation_data'` — validation payload silently lost | `eea5239` | **Real bug — validation data never persisted** |
 | 53 | 2026-03-31 | S17 | `app/core/scanner.py` | 🔧 BUG-SC-1/5: PEP 8 fixes + startup Discord message correctness | `c6a6adf` | Style + UX accuracy |
 | 54 | 2026-03-31 | S18 | `app/core/armed_signal_store.py` | 🔧 BUG-ASS-3: `_persist_armed_signal()` key `'validation'` → `'validation_data'` — silent data loss | live | **Real bug — validation payload never written to DB** |
@@ -196,18 +198,91 @@
 | 77 | 2026-04-01 | S19-A | `app/options/dte_historical_advisor.py` | 🔧 BUG-DHA-1/2: 2× `logger.info` → `logger.warning` on error/init paths | S19-A | Logging level |
 | 78 | 2026-04-01 | S19-A | `app/options/options_data_manager.py` | 🔧 BUG-ODM-1: `f"{result['delta']:.2f}"` TypeError when delta is None | S19-A | Runtime crash prevention |
 | 79 | 2026-04-01 | S19-A | `app/options/options_dte_selector.py` | 🔧 BUG-ODTS-1: 2× bare `except:` → `except Exception as e: logger.warning(...)` | S19-A | Railway visibility |
-| 80 | 2026-04-01 | S19-B | `app/options/options_intelligence.py` | 🔧 BUG-OIN-1: `get_chain()` exception uses `logger.info` → `logger.warning` | `S19-B` | Railway visibility |
-| 81 | 2026-04-01 | S19-B | `app/options/options_intelligence.py` | 🔧 BUG-OIN-2: `get_options_score()` catches price fetch exception with bare `except` → `except Exception` | `S19-B` | Hygiene |
-| 82 | 2026-04-01 | S19-B | `app/options/options_intelligence.py` | 🔧 BUG-OIN-3: `_get_ivr_data()` stores IV observation on first ATM call only — loops through ALL expirations but returns on the first IV > 0 found; correct and intentional (earliest expiry = most liquid ATM IV) — **confirmed OK, no fix needed** | `S19-B` | ✅ Verified |
-| 83 | 2026-04-01 | S19-B | `app/options/options_intelligence.py` | 🔧 BUG-OIN-4: `_compute_gex_score()` direction-blind — awards +10 for pin above price and +5 for pin below regardless of bull/bear context. This is intentional for the scorer path (direction unknown at scan time), confirmed by docstring. **No fix needed — architecture is correct.** | `S19-B` | ✅ Verified |
-| 84 | 2026-04-01 | S19-B | `app/options/options_intelligence.py` | 🔧 BUG-OIN-5: `pin_headwind` field in `get_live_gex()` always returns `False` — never computed. Added correct bull/bear pin-headwind logic | `S19-B` | Runtime correctness |
+| 80 | 2026-04-01 | S19-B | `app/options/options_intelligence.py` | 🔧 BUG-OIN-1: `get_chain()` exception uses `logger.info` → `logger.warning` | `d6564a3f` | Railway visibility |
+| 81 | 2026-04-01 | S19-B | `app/options/options_intelligence.py` | 🔧 BUG-OIN-2: `get_options_score()` catches price fetch exception with bare `except` → `except Exception` | `d6564a3f` | Hygiene |
+| 82 | 2026-04-01 | S19-B | `app/options/options_intelligence.py` | ✅ BUG-OIN-3: `_get_ivr_data()` early-return on first ATM call — intentional, earliest expiry = most liquid IV proxy | `d6564a3f` | Verified OK |
+| 83 | 2026-04-01 | S19-B | `app/options/options_intelligence.py` | ✅ BUG-OIN-4: `_compute_gex_score()` direction-blind — intentional at scan time, direction unknown. `validate_for_trading()` handles directional GEX | `d6564a3f` | Verified OK |
+| 84 | 2026-04-01 | S19-B | `app/options/options_intelligence.py` | 🔧 BUG-OIN-5: `pin_headwind` stub always `False` — removed from return dict; callers use `gamma_pin` vs `current_price` directly | `d6564a3f` | Runtime correctness |
+| 85 | 2026-04-01 | S20 | `app/options/options_optimizer.py` | ❌ DELETED — zero callers, `asyncio.run()` crashes Railway loop, ET-naive, superseded by `OptionsDataManager` + `options_dte_selector` | `8b63b6f7` | Dead code removed |
+| 86 | 2026-04-01 | S20 | `app/notifications/__init__.py` | ✅ Clean — explicit re-export shim, correct `__all__`, matches `discord_helpers.py` public API exactly | `8b63b6f7` | No action needed |
+| 87 | 2026-04-01 | S20 | `app/notifications/discord_helpers.py` | ⚠️ BUG-DH-1: `test_webhook()` calls blocking `requests.post()` on the calling thread — blocks startup for up to 5s if Discord is slow or down. Recommend wrapping in daemon thread or fire-and-forget like all other send functions | pending | Railway startup safety |
+| 88 | 2026-04-01 | S20 | `app/notifications/discord_helpers.py` | ⚠️ BUG-DH-2: `get_company_name()` yfinance call has no timeout guard — if yfinance hangs at cache miss during a scan, the Discord alert builder blocks the scan loop thread until resolution | pending | Scan loop safety |
+| 89 | 2026-04-01 | S20 | `app/notifications/discord_helpers.py` | ⚠️ BUG-DH-3: All footer timestamps use `EST` hardcoded string year-round — incorrect during EDT (Mar–Nov). Should use `ET` or derive dynamically from `ZoneInfo('America/New_York')` | pending | Accuracy |
 
 ---
 
 ## Current Session Audit Notes
 
+### Session S20 — `app/notifications/` (2 files)
+**Date:** 2026-04-01 | **Commit:** `8b63b6f7`
+**Status:** ✅ `app/notifications/` 100% COMPLETE (2/2 files)
+**Also:** `app/options/options_optimizer.py` ❌ DELETED — `8b63b6f7`
+
+---
+
+#### `app/notifications/__init__.py` (1.1 KB) — ✅ Clean
+- Clean re-export shim: 8 functions imported from `discord_helpers.py` and re-exported via `__all__` ✅
+- `__all__` list matches imports exactly — no drift ✅
+- Docstring lists the same 8 functions with full import path — accurate reference ✅
+- No logic, no state, no side effects at import ✅
+- All 8 exported symbols are used by callers throughout the codebase ✅
+
+---
+
+#### `app/notifications/discord_helpers.py` (26 KB) — ⚠️ 3 findings (deferred)
+
+**Architecture Overview (confirmed)**
+- Module-level URL caching: `_SIGNALS_WEBHOOK` + `_WATCHLIST_WEBHOOK` — cached at import via `getattr(config, ...)` with `.strip().rstrip()` — prevents TypeError on unset env vars ✅
+- Rate limiter: `_rl_lock` + `_last_send_ts` + `_RATE_LIMIT_INTERVAL = 0.5s` shared across all Discord POSTs ✅
+- All 6 alert functions route through `_send_to_discord()` or `_send_to_discord_watchlist()` — both dispatch on daemon threads (M10 fix) ✅
+- `_truncate_payload()` (45.M-7): truncates `content` at 1900 chars, embed `description` at 1900 chars, embed field `value` at 1024 chars — prevents HTTP 400 from Discord ✅
+- Company name LRU cache: `@functools.lru_cache(maxsize=512)` on `get_company_name()` ✅
+- yfinance optional: `YFINANCE_AVAILABLE` guard at module level ✅
+
+**`send_equity_bos_fvg_alert()` — ✅ Clean**
+- All fields guarded with `.get()` and safe defaults ✅
+- R/R calculated from live entry/stop: `risk = abs(entry - stop)` — correct ✅
+- BOS strength `* 100` conversion from decimal — correct ✅
+- RVOL tier thresholds consistent with rest of codebase (≥4/≥3/≥2) ✅
+- MTF tier labels consistent: 4=Ultra-confluence, 3=Strong, 2=Moderate ✅
+- `timestamp` isinstance guard handles both `str` and `datetime` ✅
+
+**`send_options_signal_alert()` — ✅ Clean**
+- ML delta line appended to header when `|ml_adjustment| >= 1.0` — correct threshold ✅
+- `base_conf_pct = conf_pct - ml_adjustment` — correct reversal ✅
+- `mid` computed from `(bid + ask) / 2` when not provided — correct fallback ✅
+- `greeks_data.get("details")` guard prevents crash when `greeks_data` is populated but `"details"` key absent ✅
+- `explosive_mover` param accepted but not yet rendered in embed — unused param, not a bug (forward-compatible) ✅
+
+**`send_scaling_alert()` / `send_exit_alert()` / `send_daily_summary()` / `send_simple_message()` — ✅ Clean**
+- All use `_send_to_discord()` — threaded, non-blocking ✅
+- `send_exit_alert()` win/loss coloring correct: `total_pnl > 0` = green ✅
+
+**`send_premarket_watchlist()` — ✅ Clean**
+- Routes to `_send_to_discord_watchlist()` which falls back to `_SIGNALS_WEBHOOK` if watchlist URL unset ✅
+- `score_map` lookup via `ticker.get("ticker", "")` — safe ✅
+- Chunking at 15 tickers per embed: prevents Discord 4096-char description overflow ✅
+- Part numbering only appears when `len(chunks) > 1` — correct ✅
+
+**`_send_to_discord()` / `_send_to_discord_watchlist()` — ✅ Clean**
+- Rate limiter: `with _rl_lock: wait = _RATE_LIMIT_INTERVAL - (now - _last_send_ts)` — correct sleep pattern ✅
+- Both use `_truncate_payload()` before POST ✅
+- HTTP 200 and 204 both treated as success — correct (Discord returns 204 for webhooks) ✅
+- 45.M-10 fallback log on failure: `logger.info(f"... payload dropped: {str(payload)[:300]}")` ✅
+
+**`test_webhook()` — ⚠️ BUG-DH-1**
+- **BUG-DH-1**: Unlike all other send functions, `test_webhook()` calls `requests.post()` synchronously on the calling thread with `timeout=5`. Called at startup from `health_server.py`. If Discord webhook is slow or unreachable, blocks Railway health server startup for 5 full seconds. **Deferred — low risk at startup, not in hot path.**
+
+**`get_company_name()` — ⚠️ BUG-DH-2**
+- **BUG-DH-2**: `yf.Ticker(symbol).info` network call has no timeout parameter. If yfinance hangs at a cache miss (LRU not populated), the Discord alert-building thread (called from `_send_to_discord`) may stall. In practice this only blocks the daemon thread, not the scan loop — but could cause alert delivery delays on network issues. **Deferred — daemon thread isolation limits blast radius.**
+
+**Footer timestamps — ⚠️ BUG-DH-3**
+- **BUG-DH-3**: All 6 alert functions hardcode `EST` in footer strings (e.g., `'War Machine Sniper v2 | ... EST'`). During EDT (March–November), all Discord alerts will show the wrong timezone label. Cosmetic but inaccurate. **Deferred — low priority, fix with `ZoneInfo` abbreviation lookup.**
+
+---
+
 ### Session S19-B — `app/options/options_intelligence.py` (39 KB)
-**Date:** 2026-04-01 | **Commit:** S19-B
+**Date:** 2026-04-01 | **Commit:** `d6564a3f`
 **Status:** ✅ `app/options/` 100% COMPLETE (9/9 files)
 
 ---
@@ -222,103 +297,37 @@
 ---
 
 #### `get_chain()` — ⚠️ 1 fix
-- Cache TTL check correct: `age < self.cache_ttl` ✅
-- `_prev_chains` snapshot saved before overwriting cache ✅
-- Cache invalidation: `_score_cache`, `_gex_cache`, `_uoa_cache` all popped on fresh chain ✅
-- **BUG-OIN-1** 🔧: `except Exception as e: logger.info(...)` — chain fetch failure should be `logger.warning` for Railway visibility. Silent `logger.info` on a failed API call buries errors in the noise.
-
----
+- **BUG-OIN-1** 🔧: chain fetch failure `logger.info` → `logger.warning`
 
 #### `get_options_score()` — ⚠️ 1 fix
-- Score cache TTL check correct (outside lock, then re-entered for write) ✅
-- Score = liquidity(0–30) + UOA(0–30) + GEX(0–25) + IVR(0–15) = max 100 ✅
-- `tradeable = liquidity['tradeable'] and liquidity['score'] >= 15` — double gate correct ✅
-- **BUG-OIN-2** 🔧: Price fetch: `except Exception: current_price = 0` — bare `except` without binding. Changed to `except Exception`. Non-critical but consistent with codebase hygiene.
-
----
+- **BUG-OIN-2** 🔧: bare `except` → `except Exception`
 
 #### `validate_for_trading()` — ✅ Clean
-- Check order correct: chain → liquidity → GEX → IVR ✅
-- Hard fail on no chain, hard fail on low liquidity, hard fail on GEX pin drag >2% ✅
-- Soft warning on near-flip (<1%), soft warning on pin-cap-near (<3%) ✅
-- `pin_pct` sign logic: bull = `(pin - entry) / entry`, bear = `(entry - pin) / entry` — correct for both hard-fail (`< -0.02`) and soft-warn (`0.0 < pct < 0.03`) ✅
-- Return schema matches docstring exactly: `tradeable`, `reason`, `gex_context`, `tradeable_warnings`, `gex_data`, `ivr_data` ✅
-- No stray prints ✅
-
----
+- pin_pct sign logic correct for bull/bear; hard-fail at -2%, soft-warn at 0–3% ✅
 
 #### `get_live_gex()` — 🔧 1 fix
-- GEX cache TTL = 60 seconds (separate from 5-min chain cache) — intentional for position monitoring ✅
-- `force_refresh` correctly passed through to `get_chain()` ✅
-- **BUG-OIN-5** 🔧: `pin_headwind` is always `False` — the field is in the return dict but never computed. Logic should be: bull position → headwind if `pin < current_price`; bear position → headwind if `pin > current_price`. Since `get_live_gex()` is direction-agnostic (called from position monitor with context), the correct fix is to remove the `pin_headwind` stub from the return dict and let callers compute it from `gamma_pin` vs `current_price`. **Fixed: removed stub field, documented in caller contract.**
-
----
+- **BUG-OIN-5** 🔧: `pin_headwind` stub always `False` removed; callers compute from `gamma_pin` vs `current_price`
 
 #### `_compute_liquidity_score()` — ✅ Clean
-- ATM window = ±2% of current price ✅
-- Three hard-fail gates: `MIN_OPTION_OI`, `MIN_OPTION_VOLUME`, `MAX_BID_ASK_SPREAD_PCT` — all from `config` ✅
-- Spread uses midpoint: `(ask - bid) / mid` — correct ✅
-- `min_spread` initialized to `999.0` — safe default if no valid bid/ask found ✅
-- `max_oi` and `max_vol` passed through in all return paths — callers (`validate_for_trading` liq_label) use them ✅
-
----
-
 #### `_compute_uoa_score()` / `_calculate_uoa_score()` — ✅ Clean (FIX #20 verified)
-- FIX #20 baseline collection: 10% strike window, `statistics.median()` — correct ✅
-- `_calculate_uoa_score()` docstring explicitly states callers must pass baselines ✅
-- `None` baseline guard returns `0.0` with reason string ✅
-- Spread quality: `max(0, 1.0 - (spread_pct / MAX_SPREAD_PCT))` — correct linear decay ✅
-- UOA score formula: `volume_ratio * oi_ratio * spread_quality` — multiplicative, so all three must be elevated for high score ✅
-- `if not all([volume, oi, bid, ask]): continue` — skips zero-value contracts ✅
-
----
-
 #### `_compute_gex_score()` — ✅ Verified (direction-blind by design)
-- Awards NEG-GEX-ZONE +15 (best for directional moves) ✅
-- Pin >1% above price +10, pin >1% below +5 — asymmetric intentionally (bulls benefit more from pin above) ✅
-- **Reviewed: direction-blind is correct at scan time** — direction unknown when scanner scores watchlist. The `validate_for_trading()` path (which does know direction) uses the full GEX pin logic separately.
-
----
-
 #### `_compute_ivr_score()` / `_get_ivr_data()` — ✅ Clean
-- Falls back to `score=5.0, reason='IVR-BUILDING'` when unreliable ✅
-- IVR tiers: <30=15pts, <50=10pts, <70=5pts, ≥70=0pts — correctly penalizes high IV for debit buyers ✅
-- `_get_ivr_data()`: calls `store_iv_observation()` + `compute_ivr()` on first ATM call with IV>0 ✅
-- Early return on first valid IV is intentional — nearest expiry ATM call is the most reliable IV proxy ✅
-
----
-
-#### `scan_chain_for_uoa()` — ✅ Clean
-- FIX #20 baseline block present and correct ✅
-- Direction routing: bull → aligned=CALLs/opposing=PUTs, bear → aligned=PUTs/opposing=CALLs ✅
-- `uoa_aligned = max_aligned_score > max_opposing_score` — strictly greater, no tie-goes-to-aligned ✅
-- Multipliers: aligned=1.10, opposing=0.85, mixed=1.00 ✅
-- Returns top 3 aligned + opposing strikes for Discord embed ✅
-
----
-
+#### `scan_chain_for_uoa()` — ✅ Clean (FIX #20 verified)
 #### `clear_cache()` / `get_cache_stats()` — ✅ Clean
-- `clear_cache()` iterates all 6 cache dicts including `_prev_chains` ✅
-- `get_cache_stats()` reads inside lock — all 5 caches + TTL ✅
 
 ---
 
 ### Session S19-A — `app/options/` (8 of 9 files)
 **Date:** 2026-04-01 | **Commit:** `408531a0`
-**Files:** `__init__.py`, `dte_historical_advisor.py`, `dte_selector.py`, `gex_engine.py`, `iv_tracker.py`, `options_data_manager.py`, `options_dte_selector.py`, `options_optimizer.py`
 
----
-
-#### `app/options/__init__.py` — ⚠️ Architecture note
-- **BUG-OI-1**: `_calculate_optimal_dte()` returns 14/21/30 DTE — inconsistent with 0DTE/1DTE arch. Needs architectural decision.
-
-#### `app/options/dte_selector.py` — 🔧 1 fix (BUG-ODS-A1)
-#### `app/options/dte_historical_advisor.py` — 🔧 2 fixes (BUG-DHA-1/2)
+#### `app/options/__init__.py` — ⚠️ BUG-OI-1 (deferred — DTE architecture decision)
+#### `app/options/dte_selector.py` — 🔧 BUG-ODS-A1
+#### `app/options/dte_historical_advisor.py` — 🔧 BUG-DHA-1/2
 #### `app/options/iv_tracker.py` — ✅ Clean
 #### `app/options/gex_engine.py` — ✅ Clean
-#### `app/options/options_data_manager.py` — 🔧 1 fix (BUG-ODM-1)
-#### `app/options/options_optimizer.py` — ❌ DELETE CANDIDATE (BUG-OO-1/2/3/4 — asyncio crash, ET-naive, dev scaffolding, zero callers)
-#### `app/options/options_dte_selector.py` — 🔧 1 fix (BUG-ODTS-1)
+#### `app/options/options_data_manager.py` — 🔧 BUG-ODM-1
+#### `app/options/options_optimizer.py` — ❌ DELETED (S20)
+#### `app/options/options_dte_selector.py` — 🔧 BUG-ODTS-1
 
 ---
 
@@ -369,8 +378,8 @@
 
 | Priority | Target | Files | Notes |
 |----------|--------|-------|-------|
-| 1 🔥 | `app/options/options_optimizer.py` | 1 file | CONFIRM DELETE — zero callers |
-| 2 | `app/notifications/` | 2 files | Discord alert system |
-| 3 | `app/backtesting/` | 7 files | Backtest engine, walk-forward |
-| 4 | `app/indicators/`, `app/ai/` | 6 files | Technical indicators + AI |
-| 5 | Root config | `requirements.txt`, `railway.toml`, etc. | Deployment config |
+| 1 🔥 | `app/backtesting/` | 7 files | Backtest engine — largest unaudited folder |
+| 2 | `app/indicators/` | 4 files | Technical indicators |
+| 3 | `app/ai/` | 2 files | AI learning + signal weighting |
+| 4 | Root config | `requirements.txt`, `railway.toml`, `Procfile`, etc. | Deployment config |
+| 5 | `migrations/` | 4 files | DB schema migrations |
