@@ -23,6 +23,10 @@ window over long runs. For calendar-precise splits use dateutil.relativedelta.
 BUG-WF-2 (Apr 2026): create_windows() and run() used bars[0]['datetime'] directly.
 EODHD bars (from historical_trainer) use 'timestamp' key, not 'datetime'.
 Fixed with .get('datetime') or .get('timestamp') fallback pattern.
+
+BUG-WF-3 (Apr 2026): WalkForwardResults imported from app.backtesting.performance_metrics
+inside __init__() on every instantiation. Hoisted to module-level import to
+eliminate repeated import overhead and surface ImportError at load time.
 """
 from typing import Dict, List, Callable, Optional
 from datetime import datetime, timedelta
@@ -31,6 +35,13 @@ import statistics
 
 from app.backtesting.backtest_engine import BacktestEngine, BacktestResults
 from app.backtesting.parameter_optimizer import ParameterOptimizer
+# BUG-WF-3: hoisted from inside WalkForwardResults.__init__
+from app.backtesting.performance_metrics import (
+    calculate_win_rate,
+    calculate_profit_factor,
+    calculate_expectancy,
+    calculate_sharpe_ratio,
+)
 import logging
 
 logger = logging.getLogger(__name__)
@@ -90,13 +101,7 @@ class WalkForwardResults:
             self.net_pnl = self.total_pnl - self.total_commission
             self.total_return_pct = self.net_pnl / initial_capital * 100
 
-            from app.backtesting.performance_metrics import (
-                calculate_win_rate,
-                calculate_profit_factor,
-                calculate_expectancy,
-                calculate_sharpe_ratio,
-            )
-
+            # BUG-WF-3: imports hoisted to module level — no longer repeated here
             self.win_rate = calculate_win_rate(self.all_test_trades)
             self.profit_factor = calculate_profit_factor(self.all_test_trades)
             self.expectancy = calculate_expectancy(self.all_test_trades)

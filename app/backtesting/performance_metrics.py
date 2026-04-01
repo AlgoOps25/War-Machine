@@ -16,12 +16,25 @@ Usage:
 
   returns = [0.02, -0.01, 0.03, -0.005, 0.015]
   sharpe = calculate_sharpe_ratio(returns)
+
+FIX S21 (APR 1, 2026):
+  BUG-PM-1: calculate_sortino_ratio() returned float('inf') when no
+    downside returns exist (a perfect win streak). Callers propagate inf
+    into logs, JSON serialisation, and numeric comparisons silently.
+    Fixed: cap at 10.0 — a practical ceiling that signals "very low
+    downside risk" without poisoning downstream arithmetic.
 """
 from typing import List
 import statistics
 import logging
 
 logger = logging.getLogger(__name__)
+
+# Practical cap for ratios that would otherwise be float('inf').
+# Calmar and recovery factor retain inf semantics (deliberate — they are
+# used in display-only contexts). Sortino is used in numeric optimisation
+# comparisons, so it gets a finite cap.
+_SORTINO_INF_CAP = 10.0
 
 
 def calculate_sharpe_ratio(returns: List[float], risk_free_rate: float = 0.0) -> float:
@@ -63,12 +76,15 @@ def calculate_sortino_ratio(returns: List[float], risk_free_rate: float = 0.0) -
 
     Formula: (Mean Return - Risk Free Rate) / Downside Std Dev
 
+    BUG-PM-1 fix: capped at _SORTINO_INF_CAP (10.0) when no downside
+    returns exist, instead of returning float('inf').
+
     Args:
         returns: List of trade returns
         risk_free_rate: Risk-free rate
 
     Returns:
-        Sortino ratio
+        Sortino ratio (capped at 10.0 for all-win streaks)
     """
     if not returns or len(returns) < 2:
         return 0.0
@@ -77,8 +93,9 @@ def calculate_sortino_ratio(returns: List[float], risk_free_rate: float = 0.0) -
 
     downside_returns = [r for r in returns if r < risk_free_rate]
 
+    # BUG-PM-1: was float('inf') — poisons JSON serialisation and numeric comparisons
     if not downside_returns:
-        return float('inf')
+        return _SORTINO_INF_CAP
 
     downside_std = statistics.stdev(downside_returns) if len(downside_returns) > 1 else abs(downside_returns[0])
 
