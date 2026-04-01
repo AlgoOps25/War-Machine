@@ -60,6 +60,28 @@ MAR 27, 2026:
     Affected: classify_secondary_range() (5 sites), clear_cache() (1),
     _classify_from_bars() (1), detect_fvg_after_break() (4).
     No logic changes.
+
+APR 1, 2026 — BUG-OR-3 / BUG-OR-4 / FEATURE-OR-1:
+  BUG-OR-3: detect_fvg_after_break() used flat FVG_SOFT_PCT (0.15%) for ALL stocks.
+             On high-priced stocks (MU ~$325), 0.15% = $0.49 max overlap — nearly
+             every partial FVG rejected. Fixed: soft_fvg_pct now computed as an
+             ATR-adaptive value: clamp(atr_per_bar * 0.5, FVG_SOFT_PCT, FVG_SOFT_PCT * 5).
+             Scales with actual price/volatility. Diagnosed from MU 10:03 AM signal
+             that fired a BOS alert but never found a qualifying FVG entry.
+
+  BUG-OR-4: All [FVG] candidate-evaluation logs were at logger.debug — completely
+             invisible at INFO level on Railway. Promoted to logger.info so every
+             FVG miss/hit is visible in production logs for future diagnosis.
+
+  FEATURE-OR-1: Momentum Continuation Fallback entry (detect_momentum_continuation()).
+             When detect_fvg_after_break() returns (None, None) — price ran without
+             pulling back to form a FVG — the system now has a secondary entry path:
+               1. VWAP hold: 3 consecutive bars above VWAP after BOS = continuation
+               2. Flag consolidation: 3-bar tight range (< 0.3x ATR-per-bar) after
+                  impulse = flag/pennant, enter on range high break
+             Returns entry zone dict with entry_type='MOMENTUM_CONTINUATION'.
+             MU 10:03 was a textbook momentum continuation — price ripped $325→$340+
+             with no FVG. This fallback would have caught that move.
 """
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime, time, timedelta
@@ -80,6 +102,11 @@ OR_CACHE_DYNAMIC_TTL = timedelta(minutes=30)
 # Any bar whose high exceeds (median_close * SR_PRICE_SANITY_MULT) is discarded
 # as a corrupted tick/timestamp-leaked-into-price value.
 SR_PRICE_SANITY_MULT = 5.0
+
+# Momentum continuation constants (FEATURE-OR-1)
+MOMENTUM_VWAP_BARS     = 3    # consecutive bars above VWAP required
+MOMENTUM_FLAG_BARS     = 3    # consolidation bars to form a flag
+MOMENTUM_FLAG_ATR_MULT = 0.3  # flag range must be < this * ATR-per-bar to qualify
 
 
 def _to_et_time(dt) -> Optional[time]:
@@ -894,51 +921,245 @@ def detect_fvg_after_break(bars, breakout_idx, direction, soft_fvg_pct=None):
     Supports hard gaps AND soft/partial FVGs, but only if the overlap
     is <= 40% of c1's body size (prevents sloppy candle overlap from
     being misclassified as an FVG).
+
+    BUG-OR-3 FIX (Apr 1, 2026):
+      Previously used a flat FVG_SOFT_PCT (0.15%) for ALL price levels.
+      On high-priced stocks (MU ~$325), this = $0.49 max overlap — nearly
+      every partial FVG was rejected. Now computes an ATR-adaptive threshold:
+
+        atr_per_bar  = ATR estimated from c0/c1/c2 true ranges
+        adaptive_soft = clamp(atr_per_bar * 0.5, FVG_SOFT_PCT, FVG_SOFT_PCT * 5)
+
+      This scales the soft FVG tolerance with actual intraday volatility,
+      making it price-regime agnostic.
+
+    BUG-OR-4 FIX (Apr 1, 2026):
+      All [FVG] candidate logs promoted from logger.debug to logger.info
+      so every miss/hit is visible in Railway production logs.
     """
     from utils import config
     min_pct      = getattr(config, 'FVG_MIN_SIZE_PCT', 0.0003)
-    soft_fvg_pct = soft_fvg_pct or getattr(config, 'FVG_SOFT_PCT', 0.0015)
+    base_soft    = soft_fvg_pct or getattr(config, 'FVG_SOFT_PCT', 0.0015)
 
     for i in range(breakout_idx + 3, min(len(bars), breakout_idx + 33)):
         c0 = bars[i - 2]
         c1 = bars[i - 1]
         c2 = bars[i]
 
+        # ── BUG-OR-3: ATR-adaptive soft FVG threshold ──────────────────────────
+        # Estimate a per-bar ATR from the three candles in this window.
+        # Use this to scale the soft overlap tolerance to match current volatility.
+        try:
+            tr0 = c0["high"] - c0["low"]
+            tr1 = c1["high"] - c1["low"]
+            tr2 = c2["high"] - c2["low"]
+            atr_per_bar = (tr0 + tr1 + tr2) / 3.0
+            ref_price   = c0["high"] if direction == "bull" else c0["low"]
+            # adaptive = 50% of one bar's ATR as a % of price, clamped to [base, base*5]
+            adaptive_soft = float(np.clip(
+                (atr_per_bar * 0.5) / ref_price if ref_price > 0 else base_soft,
+                base_soft,
+                base_soft * 5.0
+            ))
+        except (KeyError, TypeError, ZeroDivisionError):
+            adaptive_soft = base_soft
+
         if direction == "bull":
             if c1["close"] <= c1["open"]:
+                logger.info(f"[FVG] BULL skip i={i} — c1 bearish (o={c1['open']:.2f} c={c1['close']:.2f})")
                 continue
             gap = c2["low"] - c0["high"]
             c1_body = abs(c1["close"] - c1["open"])
             if gap > 0 and (gap / c0["high"]) >= min_pct:
-                logger.debug(f"[FVG] BULL hard ${c0['high']:.2f}—${c2['low']:.2f}")
+                logger.info(f"[FVG] BULL hard ${c0['high']:.2f}—${c2['low']:.2f} gap={gap:.4f}")
                 return c0["high"], c2["low"]
-            if gap < 0 and abs(gap) / c0["high"] <= soft_fvg_pct:
+            if gap < 0 and abs(gap) / c0["high"] <= adaptive_soft:
                 if c1_body > 0 and abs(gap) > c1_body * 0.4:
+                    logger.info(
+                        f"[FVG] BULL soft SKIP i={i} — overlap {abs(gap):.4f} > 40% c1 body "
+                        f"{c1_body:.4f} (adaptive_soft={adaptive_soft:.4f})"
+                    )
                     continue
                 # doji c1 (c1_body == 0): skip — no impulse body to validate against
                 if c1_body == 0:
+                    logger.info(f"[FVG] BULL soft SKIP i={i} — c1 doji (no impulse body)")
                     continue
-                logger.debug(f"[FVG] BULL soft ${c2['low']:.2f}—${c0['high']:.2f} (gap={gap:.4f})")
+                logger.info(
+                    f"[FVG] BULL soft ${c2['low']:.2f}—${c0['high']:.2f} "
+                    f"gap={gap:.4f} adaptive_soft={adaptive_soft:.4f}"
+                )
                 return c2["low"], c0["high"]
 
         elif direction == "bear":
             if c1["close"] >= c1["open"]:
+                logger.info(f"[FVG] BEAR skip i={i} — c1 bullish (o={c1['open']:.2f} c={c1['close']:.2f})")
                 continue
             gap = c0["low"] - c2["high"]
             c1_body = abs(c1["close"] - c1["open"])
             if gap > 0 and (gap / c0["low"]) >= min_pct:
-                logger.debug(f"[FVG] BEAR hard ${c2['high']:.2f}—${c0['low']:.2f}")
+                logger.info(f"[FVG] BEAR hard ${c2['high']:.2f}—${c0['low']:.2f} gap={gap:.4f}")
                 return c2["high"], c0["low"]
-            if gap < 0 and abs(gap) / c0["low"] <= soft_fvg_pct:
+            if gap < 0 and abs(gap) / c0["low"] <= adaptive_soft:
                 if c1_body > 0 and abs(gap) > c1_body * 0.4:
+                    logger.info(
+                        f"[FVG] BEAR soft SKIP i={i} — overlap {abs(gap):.4f} > 40% c1 body "
+                        f"{c1_body:.4f} (adaptive_soft={adaptive_soft:.4f})"
+                    )
                     continue
                 # doji c1 (c1_body == 0): skip — no impulse body to validate against
                 if c1_body == 0:
+                    logger.info(f"[FVG] BEAR soft SKIP i={i} — c1 doji (no impulse body)")
                     continue
-                logger.debug(f"[FVG] BEAR soft ${c0['low']:.2f}—${c2['high']:.2f} (gap={gap:.4f})")
+                logger.info(
+                    f"[FVG] BEAR soft ${c0['low']:.2f}—${c2['high']:.2f} "
+                    f"gap={gap:.4f} adaptive_soft={adaptive_soft:.4f}"
+                )
                 return c0["low"], c2["high"]
 
+    logger.info(
+        f"[FVG] No FVG found | direction={direction} | "
+        f"scanned bars {breakout_idx + 3}–{min(len(bars), breakout_idx + 33) - 1}"
+    )
     return None, None
+
+
+def detect_momentum_continuation(
+    bars: List[Dict],
+    breakout_idx: int,
+    direction: str,
+    vwap_values: Optional[List[float]] = None,
+    ticker: str = "",
+) -> Optional[Dict]:
+    """
+    FEATURE-OR-1: Momentum Continuation Fallback entry.
+
+    Called when detect_fvg_after_break() returns (None, None) — i.e., price ran
+    hard after a BOS without pulling back to form a textbook FVG.
+
+    This is the pattern MU showed on 2026-03-31 at 10:03 AM:
+      - BOS fired at $325.10 / Level $324.22
+      - Price continued straight to $340+ with no FVG retrace
+      - System had no secondary entry — the trade was missed entirely
+
+    Two continuation patterns are checked (whichever fires first):
+
+    1. VWAP HOLD (requires vwap_values):
+       If 3 consecutive bars after breakout_idx stay above VWAP (bull) or
+       below VWAP (bear), price is confirming trend continuation.
+       Entry zone: (low of the 3-bar window, high of breakout candle).
+
+    2. FLAG / TIGHT CONSOLIDATION:
+       After the initial impulse, look for 3 bars with a total range
+       < MOMENTUM_FLAG_ATR_MULT * ATR-per-bar. This is a flag/pennant
+       structure — a tight pause after momentum = continuation likely.
+       Entry zone: (low of flag, high of flag) — enter on high break.
+
+    Args:
+        bars:          Full bar list (same list passed to detect_fvg_after_break)
+        breakout_idx:  Index of the BOS breakout bar
+        direction:     'bull' or 'bear'
+        vwap_values:   Parallel list of VWAP values aligned to bars (optional).
+                       If None, VWAP hold check is skipped.
+        ticker:        Ticker symbol for logging only.
+
+    Returns:
+        {
+          'entry_type':    'MOMENTUM_CONTINUATION',
+          'pattern':       'VWAP_HOLD' | 'FLAG',
+          'entry_low':     float,   # lower bound of entry zone
+          'entry_high':    float,   # upper bound of entry zone
+          'breakout_bar':  int,     # breakout_idx
+          'flag_start':    int,     # index where consolidation starts (FLAG only)
+        }
+        or None if no continuation pattern detected.
+    """
+    from utils import config
+
+    scan_start = breakout_idx + 1
+    scan_end   = min(len(bars), breakout_idx + 16)  # 15-bar lookahead max
+
+    if scan_start >= len(bars):
+        return None
+
+    # ── Estimate ATR-per-bar from breakout candle ─────────────────────────────
+    try:
+        bk_bar      = bars[breakout_idx]
+        atr_per_bar = bk_bar["high"] - bk_bar["low"]
+        if atr_per_bar <= 0:
+            atr_per_bar = bk_bar.get("close", 1.0) * 0.005  # fallback: 0.5% of price
+    except (KeyError, IndexError):
+        atr_per_bar = 1.0
+
+    flag_threshold = atr_per_bar * MOMENTUM_FLAG_ATR_MULT
+
+    # ── Pattern 1: VWAP HOLD ──────────────────────────────────────────────────
+    if vwap_values and len(vwap_values) >= scan_end:
+        consecutive = 0
+        hold_lows   = []
+        hold_highs  = []
+        for j in range(scan_start, scan_end):
+            bar  = bars[j]
+            vwap = vwap_values[j]
+            above = bar["close"] > vwap
+            below = bar["close"] < vwap
+            if (direction == "bull" and above) or (direction == "bear" and below):
+                consecutive += 1
+                hold_lows.append(bar["low"])
+                hold_highs.append(bar["high"])
+                if consecutive >= MOMENTUM_VWAP_BARS:
+                    entry_low  = min(hold_lows)
+                    entry_high = max(hold_highs)
+                    logger.info(
+                        f"[MOMENTUM] {ticker} VWAP_HOLD {direction.upper()} | "
+                        f"entry_zone=${entry_low:.2f}–${entry_high:.2f} | "
+                        f"bars {scan_start}–{j}"
+                    )
+                    return {
+                        "entry_type":   "MOMENTUM_CONTINUATION",
+                        "pattern":      "VWAP_HOLD",
+                        "direction":    direction,
+                        "entry_low":    round(entry_low, 4),
+                        "entry_high":   round(entry_high, 4),
+                        "breakout_bar": breakout_idx,
+                        "flag_start":   scan_start,
+                    }
+            else:
+                consecutive = 0
+                hold_lows   = []
+                hold_highs  = []
+
+    # ── Pattern 2: FLAG / TIGHT CONSOLIDATION ─────────────────────────────────
+    # Slide a MOMENTUM_FLAG_BARS-wide window looking for a tight range pause.
+    for j in range(scan_start, scan_end - MOMENTUM_FLAG_BARS + 1):
+        window = bars[j: j + MOMENTUM_FLAG_BARS]
+        w_high = max(b["high"] for b in window)
+        w_low  = min(b["low"]  for b in window)
+        w_range = w_high - w_low
+
+        if w_range < flag_threshold:
+            # Tight consolidation found — enter on range high break (bull) or low break (bear)
+            logger.info(
+                f"[MOMENTUM] {ticker} FLAG {direction.upper()} | "
+                f"range=${w_range:.4f} < threshold=${flag_threshold:.4f} | "
+                f"entry_zone=${w_low:.2f}–${w_high:.2f} | "
+                f"flag_start={j}"
+            )
+            return {
+                "entry_type":   "MOMENTUM_CONTINUATION",
+                "pattern":      "FLAG",
+                "direction":    direction,
+                "entry_low":    round(w_low, 4),
+                "entry_high":   round(w_high, 4),
+                "breakout_bar": breakout_idx,
+                "flag_start":   j,
+            }
+
+    logger.info(
+        f"[MOMENTUM] {ticker} — no continuation pattern | "
+        f"direction={direction} | scanned {scan_start}–{scan_end - 1}"
+    )
+    return None
+
 
 # ========================================
 # USAGE EXAMPLE
