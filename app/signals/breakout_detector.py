@@ -36,6 +36,12 @@ Mar 27, 2026 Fixes:
     Raw stdout bypassed Railway structured logging entirely (no timestamp,
     no log level). Now captured consistently with all other [BREAKOUT] logs.
 
+Apr 1, 2026 — BUG-BD-1:
+  - __init__: removed dead `risk_reward_ratio: float = 2.0,` line.
+    The trailing comma caused Python to store a 1-element tuple (2.0,)
+    instead of float 2.0. Unused (all logic uses t1/t2_reward_ratio),
+    but a latent type confusion hazard. Also removed matching Args entry.
+
 Risk Management:
   - Stop: ATR-based dynamic stop (typically 1.5-2x ATR)
   - T1: 1.5R (take 50% position, secure gains)
@@ -67,7 +73,6 @@ class BreakoutDetector:
             volume_multiplier:       Volume must be Nx EMA avg for confirmation
             atr_period:              Period for ATR calculation
             atr_stop_multiplier:     Stop distance = ATR * multiplier
-            risk_reward_ratio:       Default target (backwards compat)
             t1_reward_ratio:         T1 target ratio (1.5R = take 50% profit)
             t2_reward_ratio:         T2 target ratio (2.5R = let 50% run)
             min_candle_body_pct:     Min candle body% for strong price action (0.4 = 40%)
@@ -79,7 +84,6 @@ class BreakoutDetector:
         self.volume_multiplier       = volume_multiplier
         self.atr_period              = atr_period
         self.atr_stop_multiplier     = atr_stop_multiplier
-        risk_reward_ratio: float     = 2.0,   # kept for backwards compat, unused internally
         self.t1_reward_ratio         = t1_reward_ratio
         self.t2_reward_ratio         = t2_reward_ratio
         self.min_candle_body_pct     = min_candle_body_pct
