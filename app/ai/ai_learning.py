@@ -17,6 +17,12 @@ FIX #46 (Mar 27 2026): generate_performance_report() now calls logger.info() so 
 FIX #47 (Mar 27 2026): AILearningEngine.__init__() self.data = self.load_data() wrapped
                      in try/except with fallback to default_data — prevents Railway
                      startup crash if Postgres row is malformed or JSON file is corrupt.
+FIXED (Apr 01 2026): BUG-AIL-1: 6x logger.info on error/exception paths → logger.warning
+                     so data-loss events surface in Railway logs.
+                     BUG-AIL-2: optimize_confirmation_weights() not-enough-data message
+                     → logger.debug (spammy until 20 trades accumulated).
+                     BUG-AIL-4: __init__ load_data() fallback → logger.warning.
+                     BUG-AIL-5: optimize_fvg_threshold() silent early return → logger.debug.
 """
 
 import json
@@ -130,7 +136,8 @@ class AILearningEngine:
         try:
             self.data = self.load_data()
         except Exception as e:
-            logger.info(f"[AI] load_data() failed at init — starting with defaults: {e}")
+            # BUG-AIL-4: warning so startup fallback is visible in Railway logs.
+            logger.warning(f"[AI] load_data() failed at init — starting with defaults: {e}")
             self.data = dict(_DEFAULT_DATA)
 
     def _init_learning_table(self):
@@ -151,7 +158,8 @@ class AILearningEngine:
             """)
             conn.commit()
         except Exception as e:
-            logger.info(f"[AI] Error creating learning table: {e}")
+            # BUG-AIL-1: table creation failure is an error, not info.
+            logger.warning(f"[AI] Error creating learning table: {e}")
         finally:
             if conn:
                 db_connection.return_conn(conn)
@@ -173,7 +181,8 @@ class AILearningEngine:
                         d = json.loads(d)
                     return {**default_data, **d}
             except Exception as e:
-                logger.info(f"[AI] Error loading from PostgreSQL: {e}")
+                # BUG-AIL-1: PG load failure causes silent fallback to defaults — must be visible.
+                logger.warning(f"[AI] Error loading from PostgreSQL: {e}")
             finally:
                 if conn:
                     db_connection.return_conn(conn)
@@ -186,7 +195,8 @@ class AILearningEngine:
                 if isinstance(loaded, dict):
                     return {**default_data, **loaded}
             except Exception as e:
-                logger.info(f"[AI] Error loading JSON: {e}")
+                # BUG-AIL-1: JSON load failure causes silent fallback to defaults.
+                logger.warning(f"[AI] Error loading JSON: {e}")
         return default_data
 
     def save_data(self):
@@ -209,7 +219,8 @@ class AILearningEngine:
                 """, (json.dumps(self.data),))
                 conn.commit()
             except Exception as e:
-                logger.info(f"[AI] Error saving to PostgreSQL: {e}")
+                # BUG-AIL-1: PG save failure means learning state is lost — must surface.
+                logger.warning(f"[AI] Error saving to PostgreSQL: {e}")
             finally:
                 if conn:
                     db_connection.return_conn(conn)
@@ -219,7 +230,8 @@ class AILearningEngine:
             with open(self.db_path, "w") as f:
                 json.dump(self.data, f, indent=2)
         except Exception as e:
-            logger.info(f"[AI] Error saving JSON: {e}")
+            # BUG-AIL-1: JSON save failure means learning state is lost.
+            logger.warning(f"[AI] Error saving JSON: {e}")
 
     def record_trade(self, trade: Dict):
         """Record a completed trade for learning."""
@@ -286,7 +298,11 @@ class AILearningEngine:
         ]
 
         if len(trades_with_confirmations) < 20:
-            logger.info("[AI] Not enough data for confirmation optimization (need 20+ trades)")
+            # BUG-AIL-2: debug — fires every EOD cycle until 20 trades; not actionable as info.
+            logger.debug(
+                f"[AI] Confirmation optimization skipped — "
+                f"{len(trades_with_confirmations)}/20 trades with confirmations"
+            )
             return
 
         all_trades = self.data["trades"]
@@ -328,6 +344,11 @@ class AILearningEngine:
         recent_trades = self.data["trades"][-100:]
 
         if len(recent_trades) < 30:
+            # BUG-AIL-5: silent return gave caller no visibility — log at debug.
+            logger.debug(
+                f"[AI] FVG threshold optimization skipped — "
+                f"{len(recent_trades)}/30 trades required"
+            )
             return
 
         winning_fvg = [
@@ -379,11 +400,6 @@ class AILearningEngine:
         Now correctly imports from options_intelligence where options_dm is
         the backward-compat alias for OptionsIntelligence.
 
-        NOTE (Issue #45): except clause catches ImportError but not
-        AttributeError explicitly. If options_dm imports but get_options_score
-        is missing, it falls into the general except and logs. This is
-        acceptable for now — flagged for a future cleanup pass.
-
         Returns:
             1.0 if options_intelligence unavailable (neutral, no penalty)
             0.7-1.3 based on options score (0-100 scale)
@@ -402,7 +418,8 @@ class AILearningEngine:
         except ImportError:
             return 1.0
         except Exception as e:
-            logger.info(f"[AI] Error getting options flow weight for {ticker}: {e}")
+            # BUG-AIL-1/3: options flow weight failure should be visible in Railway logs.
+            logger.warning(f"[AI] Error getting options flow weight for {ticker}: {e}")
             return 1.0
 
     def get_optimal_parameters(self) -> Dict:
