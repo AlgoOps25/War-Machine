@@ -4,8 +4,8 @@
 > Every finding, fix, and status change is recorded here chronologically — never delete entries.
 > Updated after **every commit** — no exceptions.
 >
-> **Last updated:** 2026-04-01 — Phase 6 P2-3 complete. `_dte_regime_override()` wired: VIX>22→1DTE, IVR<25+≤60m→0DTE.
-> Next: 47.P2 complete. Begin 47.P3 (ML Confidence) → P3-1: retrain gate check.
+> **Last updated:** 2026-04-01 — Phase 6 P3-1 complete. Clean-data retrain gate: CLEAN_DATA_CUTOFF=2026-03-25, MIN_CLEAN_SAMPLES=50. `_fetch_training_data()` filters pre-fix records; `should_retrain()` checks floor first.
+> Next: 47.P3-2 (feature engineering: GEX_distance, IVR, time_to_close, SPY_5m_bias, RVOL_ratio).
 >
 > **Auditor:** Perplexity AI (interactive audit with Michael)
 > **Size rule:** Keep under **90 KB**. If approaching limit, archive completed
@@ -109,7 +109,7 @@
 
 | ID | Area | Description | Target File(s) | Status |
 |----|------|-------------|----------------|--------|
-| 47.P3-1 | ML Confidence | Retrain ML model on post-fix signal data — all pre-fix records corrupted. Gate: 50 clean signals | `app/ml/ml_trainer.py`, `app/ml/ml_confidence_boost.py` | ⬜ Open |
+| 47.P3-1 | ML Confidence | Retrain ML model on post-fix signal data — all pre-fix records corrupted. Gate: 50 clean signals | `app/ml/ml_trainer.py` | ✅ Done — `0f3dfa3f` |
 | 47.P3-2 | ML Confidence | Feature engineering: add GEX_distance, IVR, time_to_close, SPY_5m_bias, RVOL_ratio | `app/ml/ml_trainer.py` | ⬜ Open |
 | 47.P3-3 | ML Confidence | Confidence floor raise: reject ML confidence < 0.55 (current 0.45 too permissive) | `app/ml/ml_confidence_boost.py`, `app/core/sniper.py` | ⬜ Open |
 
@@ -242,3 +242,4 @@
 | 89 | 2026-04-01 | S20 | `app/notifications/discord_helpers.py` | ⚠️ BUG-DH-3: All footer timestamps use `EST` hardcoded string — wrong during EDT (Mar–Nov) | pending | Accuracy |
 | 90 | 2026-04-01 | S21 | `app/backtesting/backtest_engine.py` | ✅ BUG-BE-1–5 confirmed present | pre-applied | Confirmed |
 | 91 | 2026-04-01 | P2-3 | `app/options/options_dte_selector.py` | 🔧 47.P2-3: `_dte_regime_override()` — VIX>22→1DTE, IVR<25+≤60m→0DTE. Fires after IVR gate, before scoring. `confidence_pct=70` on override path. | `030b4f4b` | New gate active |
+| 92 | 2026-04-01 | P3-1 | `app/ml/ml_trainer.py` | 🔧 47.P3-1: `CLEAN_DATA_CUTOFF=2026-03-25`, `MIN_CLEAN_SAMPLES=50`. `_fetch_training_data()` filters `signal_time >= cutoff`; `should_retrain()` checks floor first — blocks retrain if <50 clean records exist. Pre-fix records (corrupted gates) never used for training. | `0f3dfa3f` | ML data integrity |
