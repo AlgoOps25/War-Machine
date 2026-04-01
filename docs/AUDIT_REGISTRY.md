@@ -4,8 +4,8 @@
 > Every finding, fix, and status change is recorded here chronologically — never delete entries.
 > Updated after **every commit** — no exceptions.
 >
-> **Last updated:** 2026-04-01 — S27: `migrations/` complete. BUG-DTC-1 (broken Python migration) fixed.
-> Next: `app/backtesting/` (Phase 6 backlog items)
+> **Last updated:** 2026-04-01 — Phase 6 P1 complete. BUG-DZ-1 + BUG-GEX-1 fixed (gates 6+7 were silently broken since wired).
+> Next: Pending Actions Queue (BUG-DTC-1 Railway migration → BUG-DH-1/2/3 → BUG-ML-3/4) then Phase 6 P2.
 >
 > **Auditor:** Perplexity AI (interactive audit with Michael)
 > **Size rule:** Keep under **90 KB**. If approaching limit, archive completed
@@ -84,33 +84,64 @@
 
 ---
 
-## Phase 6 — High-Probability Signal Architecture (Open Backlog)
+## Phase 6 — High-Probability Signal Architecture
 
 > Phase 6 shifts from bug-fixing to precision improvements.
 > Goal: raise signal win rate to ≥65%, reduce false-positive rate to <20%.
-> **19 items open** — none started yet.
 
-| ID | Area | Description | Target File(s) |
-|----|------|-------------|----------------|
-| 47.P1-1 | Signal Scoring | Weighted multi-factor scorecard (RVOL, MTF, Greeks, GEX, UOA, regime) — output 0–100, fire at ≥72 | `app/core/sniper.py`, `app/validation/validation.py` |
-| 47.P1-2 | Signal Scoring | Dead-zone suppressor: suppress when VIX > 30 AND SPY 5m trend opposing | `app/filters/market_regime_context.py` |
-| 47.P1-3 | Signal Scoring | GEX pin-zone gate: suppress if price within ±0.3% of gamma-flip level | `app/options/gex_engine.py`, `app/validation/validation.py` |
-| 47.P2-1 | Options Selection | IV Rank filter: IVR < 50 for debits, IVR > 60 for credits | `app/options/iv_tracker.py`, `app/options/options_dte_selector.py` |
-| 47.P2-2 | Options Selection | Delta-adjusted strike selector: intraday ATR → delta-optimal strikes (0.35–0.45Δ directional) | `app/options/options_dte_selector.py`, `app/validation/greeks_precheck.py` |
-| 47.P2-3 | Options Selection | 0-DTE vs 1-DTE regime switch: force 1-DTE when VIX > 22, 0-DTE when IVR < 25 AND within 60m of close | `app/options/options_dte_selector.py` |
-| 47.P3-1 | ML Confidence | Retrain ML model on post-fix signal data — all pre-fix records corrupted. Gate: 50 clean signals | `app/ml/ml_trainer.py`, `app/ml/ml_confidence_boost.py` |
-| 47.P3-2 | ML Confidence | Feature engineering: add GEX_distance, IVR, time_to_close, SPY_5m_bias, RVOL_ratio | `app/ml/ml_trainer.py` |
-| 47.P3-3 | ML Confidence | Confidence floor raise: reject ML confidence < 0.55 (current 0.45 too permissive) | `app/ml/ml_confidence_boost.py`, `app/core/sniper.py` |
-| 47.P4-1 | Backtesting | Walk-forward backtest on 90 days EODHD data for top-5 tickers | `scripts/backtesting/unified_production_backtest.py` |
-| 47.P4-2 | Backtesting | Per-hour win-rate map: replace fabricated `HOURLY_WIN_RATES` with real computed map | `app/validation/entry_timing.py`, `scripts/backtesting/` |
-| 47.P4-3 | Backtesting | Sweep parameter optimization: optimal `MIN_CONFIDENCE`, `FVG_MIN_SIZE_PCT`, `RVOL_MIN` | `scripts/backtesting/backtest_sweep.py`, `utils/config.py` |
-| 47.P5-1 | Risk | Dynamic position sizing via IVR: scale contract count down when IVR > 60 | `app/risk/vix_sizing.py`, `app/risk/trade_calculator.py` |
-| 47.P5-2 | Risk | Profit-lock trailing stop: once +50% of max gain, move stop to breakeven | `app/risk/position_manager.py` |
-| 47.P5-3 | Risk | Session loss limit: halt new signals after 2 consecutive losses | `app/risk/risk_manager.py` |
-| 47.P6-1 | Data Quality | EODHD bar quality validator: monotonic timestamps, no zero-volume RTH bars, no gaps > 2m | `app/data/data_manager.py`, `app/data/candle_cache.py` |
-| 47.P6-2 | Data Quality | Intraday ATR compute: rolling 14-bar ATR from live 1m bars — replace all daily-ATR hot-path calls | `app/indicators/technical_indicators_extended.py`, `app/signals/breakout_detector.py` |
-| 47.P7-1 | Observability | Signal scorecard Discord embed: full scorecard in alert — RVOL, MTF, IVR, GEX, ML confidence | `app/notifications/discord_helpers.py` |
-| 47.P7-2 | Observability | EOD signal quality report: auto Discord summary — signals generated/gated/fired, avg score, funnel | `app/core/eod_reporter.py` |
+### P1 — Signal Scoring ✅ COMPLETE
+
+| ID | Area | Description | Status | Notes |
+|----|------|-------------|--------|-------|
+| 47.P1-1 | Signal Scoring | Weighted multi-factor scorecard (0–100, gate ≥60) | ✅ Done | Pre-built; gate confirmed active |
+| 47.P1-2 | Signal Scoring | Dead-zone suppressor: VIX>30 + opposing SPY regime = hard block | ✅ Done | BUG-DZ-1: gate was passing `now_et` instead of `(direction, spy_regime)` — silently never fired. Fixed `8ea37b0` |
+| 47.P1-3 | Signal Scoring | GEX pin-zone gate: suppress if price within ±0.3% of gamma-flip | ✅ Done | BUG-GEX-1: gate was passing `ticker` instead of `(entry_price, options_rec)` — swallowed TypeError, always passed. Fixed `9b2877d` |
+
+### P2 — Options Selection
+
+| ID | Area | Description | Target File(s) | Status |
+|----|------|-------------|----------------|--------|
+| 47.P2-1 | Options Selection | IV Rank filter: IVR < 50 for debits, IVR > 60 for credits | `app/options/iv_tracker.py`, `app/options/options_dte_selector.py` | ⬜ Open |
+| 47.P2-2 | Options Selection | Delta-adjusted strike selector: intraday ATR → delta-optimal strikes (0.35–0.45Δ directional) | `app/options/options_dte_selector.py`, `app/validation/greeks_precheck.py` | ⬜ Open |
+| 47.P2-3 | Options Selection | 0-DTE vs 1-DTE regime switch: force 1-DTE when VIX > 22, 0-DTE when IVR < 25 AND within 60m of close | `app/options/options_dte_selector.py` | ⬜ Open |
+
+### P3 — ML Confidence
+
+| ID | Area | Description | Target File(s) | Status |
+|----|------|-------------|----------------|--------|
+| 47.P3-1 | ML Confidence | Retrain ML model on post-fix signal data — all pre-fix records corrupted. Gate: 50 clean signals | `app/ml/ml_trainer.py`, `app/ml/ml_confidence_boost.py` | ⬜ Open |
+| 47.P3-2 | ML Confidence | Feature engineering: add GEX_distance, IVR, time_to_close, SPY_5m_bias, RVOL_ratio | `app/ml/ml_trainer.py` | ⬜ Open |
+| 47.P3-3 | ML Confidence | Confidence floor raise: reject ML confidence < 0.55 (current 0.45 too permissive) | `app/ml/ml_confidence_boost.py`, `app/core/sniper.py` | ⬜ Open |
+
+### P4 — Backtesting
+
+| ID | Area | Description | Target File(s) | Status |
+|----|------|-------------|----------------|--------|
+| 47.P4-1 | Backtesting | Walk-forward backtest on 90 days EODHD data for top-5 tickers | `scripts/backtesting/unified_production_backtest.py` | ⬜ Open |
+| 47.P4-2 | Backtesting | Per-hour win-rate map: replace fabricated `HOURLY_WIN_RATES` with real computed map | `app/validation/entry_timing.py`, `scripts/backtesting/` | ⬜ Open |
+| 47.P4-3 | Backtesting | Sweep parameter optimization: optimal `MIN_CONFIDENCE`, `FVG_MIN_SIZE_PCT`, `RVOL_MIN` | `scripts/backtesting/backtest_sweep.py`, `utils/config.py` | ⬜ Open |
+
+### P5 — Risk
+
+| ID | Area | Description | Target File(s) | Status |
+|----|------|-------------|----------------|--------|
+| 47.P5-1 | Risk | Dynamic position sizing via IVR: scale contract count down when IVR > 60 | `app/risk/vix_sizing.py`, `app/risk/trade_calculator.py` | ⬜ Open |
+| 47.P5-2 | Risk | Profit-lock trailing stop: once +50% of max gain, move stop to breakeven | `app/risk/position_manager.py` | ⬜ Open |
+| 47.P5-3 | Risk | Session loss limit: halt new signals after 2 consecutive losses | `app/risk/risk_manager.py` | ⬜ Open |
+
+### P6 — Data Quality
+
+| ID | Area | Description | Target File(s) | Status |
+|----|------|-------------|----------------|--------|
+| 47.P6-1 | Data Quality | EODHD bar quality validator: monotonic timestamps, no zero-volume RTH bars, no gaps > 2m | `app/data/data_manager.py`, `app/data/candle_cache.py` | ⬜ Open |
+| 47.P6-2 | Data Quality | Intraday ATR compute: rolling 14-bar ATR from live 1m bars — replace all daily-ATR hot-path calls | `app/indicators/technical_indicators_extended.py`, `app/signals/breakout_detector.py` | ⬜ Open |
+
+### P7 — Observability
+
+| ID | Area | Description | Target File(s) | Status |
+|----|------|-------------|----------------|--------|
+| 47.P7-1 | Observability | Signal scorecard Discord embed: full scorecard in alert — RVOL, MTF, IVR, GEX, ML confidence | `app/notifications/discord_helpers.py` | ⬜ Open |
+| 47.P7-2 | Observability | EOD signal quality report: auto Discord summary — signals generated/gated/fired, avg score, funnel | `app/core/eod_reporter.py` | ⬜ Open |
 
 ---
 
@@ -229,7 +260,7 @@
 | 107 | 2026-04-01 | S22 | `app/indicators/vwap_calculator.py` | 🔧 BUG-VC-1: `VWAPCalculator.__init__()` module-level init `logger.info` → `logger.debug` — spammy on import | `80da33a` | Log noise reduction |
 | 108 | 2026-04-01 | S22 | `app/indicators/volume_indicators.py` | ✅ Clean — RVOL, OBV, Accumulation/Distribution, CMF, MFI, VWAP-volume all correct. No issues | `80da33a` | Confirmed |
 | 109 | 2026-04-01 | S24 | `app/backtesting/historical_trainer.py` | 🔧 BUG-HT-2: `build_dataset()` row dict wrote `sig['outcome']` (still `'TIMEOUT'`) instead of local `outcome` (reassigned to `'LOSS'`). `df['outcome']` column contained `'TIMEOUT'` strings even with `include_timeout=True` — any `df['outcome']=='LOSS'` filter silently missed all timed-out signals. `outcome_binary` was correct. Fix: `'outcome': outcome` | `fc42b59` | **ML training data correctness — LOSS label coverage restored** |
-| 110 | 2026-04-01 | S24 | `app/backtesting/historical_trainer.py` | ℹ️ BUG-HT-3: `summary()` `TIMEOUT→LOSS` count check now always returns 0 after BUG-HT-2 fix — kept as zero-assertion guard (non-zero = regression) | `fc42b59` | Documentation / guard |
+| 110 | 2026-04-01 | S24 | `app/backtesting/historical_trainer.py` | ℹ️ BUG-HT-3: `summary()` `TIMEOUT→LOSS` count check now always returns 0 after BUG-HT-2 fix — kept as zero-assertion guard (non-fatal) | `fc42b59` | Documentation / guard |
 | 111 | 2026-04-01 | S25 | `app/ai/ai_learning.py` | ✅ BUG-AIL-1: 6× `logger.info` on error/exception paths → `logger.warning` — confirmed in source | pre-applied | Railway visibility |
 | 112 | 2026-04-01 | S25 | `app/ai/ai_learning.py` | ✅ BUG-AIL-2: `optimize_confirmation_weights()` not-enough-data log → `logger.debug` — confirmed in source | pre-applied | Log noise reduction |
 | 113 | 2026-04-01 | S25 | `app/ai/ai_learning.py` | ✅ BUG-AIL-3: `get_options_flow_weight()` general except `logger.info` → `logger.warning` — covered by BUG-AIL-1 fix, confirmed | pre-applied | Railway visibility |
@@ -242,27 +273,27 @@
 | 120 | 2026-04-01 | S27 | `migrations/001_candle_cache.sql` | ✅ Clean — `candle_cache` table DDL correct, indexes on `(ticker, bar_time)` and `ticker` | `9f6483c` | Confirmed |
 | 121 | 2026-04-01 | S27 | `migrations/002_signal_persist_tables.sql` | ✅ Clean — `signals`, `positions`, `trade_outcomes` DDL correct, FK constraints, `IF NOT EXISTS` throughout | `9f6483c` | Confirmed |
 | 122 | 2026-04-01 | S27 | `migrations/signal_outcomes_schema.sql` | ✅ Clean — extended schema with `signal_outcomes` + `signal_filters` audit tables; `IF NOT EXISTS` safe | `9f6483c` | Confirmed |
+| 123 | 2026-04-01 | P1 | `app/core/sniper_pipeline.py` | 🔧 BUG-DZ-1: Gate 6 `is_dead_zone(now_et)` → `is_dead_zone(direction, spy_regime)` — wrong args, gate silently never fired since wired | `8ea37b0` | **Dead-zone suppressor now active (47.P1-2)** |
+| 124 | 2026-04-01 | P1 | `app/core/sniper_pipeline.py` | 🔧 BUG-GEX-1: Gate 7 `is_in_gex_pin_zone(ticker)` → `is_in_gex_pin_zone(entry_price, options_rec)` — TypeError swallowed, gate always passed | `9b2877d` | **GEX pin-zone gate now active (47.P1-3)** |
 
 ---
 
 ## Current Session Audit Notes
 
-### Session S27 — `migrations/` (2026-04-01)
-**Status:** ✅ Complete — 4 files audited, BUG-DTC-1 fixed
+### Phase 6 P1 — Signal Scoring Gates (2026-04-01)
+**Status:** ✅ Complete — 3 items audited, 2 silent gate failures fixed
 
-| File | Result |
+| Item | Result |
 |------|--------|
-| `001_candle_cache.sql` | ✅ Clean |
-| `002_signal_persist_tables.sql` | ✅ Clean |
-| `signal_outcomes_schema.sql` | ✅ Clean |
-| `add_dte_tracking_columns.py` | ❌ Was never git-tracked — dead migration using SQLite path |
-| `add_dte_tracking_columns.sql` | 🔧 BUG-DTC-1 — Created idempotent SQL replacement |
+| 47.P1-1 Weighted scorecard | ✅ Pre-built and active. Gate at 60pts, all contributors wired |
+| 47.P1-2 Dead-zone suppressor | 🔧 BUG-DZ-1 — `is_dead_zone(now_et)` → `is_dead_zone(direction, spy_regime)`. Gate was silently dead since wired |
+| 47.P1-3 GEX pin-zone gate | 🔧 BUG-GEX-1 — `is_in_gex_pin_zone(ticker)` → `is_in_gex_pin_zone(entry_price, options_rec)`. TypeError swallowed by internal except — always returned False |
 
-**BUG-DTC-1:** The original `add_dte_tracking_columns.py` used the SQLite `get_conn()` path and was never tracked in git, meaning the 4 DTE tracking columns (`dte_selected`, `adx_at_entry`, `vix_at_entry`, `target_pct_t1`) were never applied to Railway Postgres. Replaced with `add_dte_tracking_columns.sql` using `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`. **Action required:** run `psql $DATABASE_URL -f migrations/add_dte_tracking_columns.sql` on Railway to apply.
+**Pattern noted:** Both BUG-DZ-1 and BUG-GEX-1 are the same failure mode — wrong positional args to a gate function where the internal `except` swallows the TypeError and returns `(False, "...")`. All remaining gate calls in `sniper_pipeline.py` have been verified correct.
 
 ---
 
-### Sessions S26–S11 and earlier
+### Sessions S27–S11 and earlier
 *(See Implemented Changes Log above for full details)*
 
 ---
@@ -293,7 +324,11 @@
 
 ## Next Session Queue
 
-| Priority | Target | Files | Notes |
-|----------|--------|-------|-------|
-| 1 | Pending actions | Various | BUG-DTC-1: run `add_dte_tracking_columns.sql` on Railway |
-| 2 | Phase 6 backlog | Various | Start 47.P1-1 signal scoring |
+| Priority | Target | Notes |
+|----------|--------|-------|
+| 1 | Pending Actions #13 — BUG-DTC-1 | Run `add_dte_tracking_columns.sql` on Railway |
+| 2 | Pending Actions #9 — BUG-DH-1 | Fix blocking `test_webhook()` in `discord_helpers.py` |
+| 3 | Pending Actions #10/#11 — BUG-DH-2/3 | yfinance timeout guard + EDT timestamp fix |
+| 4 | Pending Actions #6 — BUG-ML-3 | Platt calibration data leakage in `ml_trainer.py` |
+| 5 | Pending Actions #7 — BUG-ML-4 | `get_validation_stats()` stub — wire or delete |
+| 6 | Phase 6 P2 | 47.P2-1 IV Rank filter → 47.P2-2 delta strike selector → 47.P2-3 DTE regime switch |
