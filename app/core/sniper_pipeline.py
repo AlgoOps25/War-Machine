@@ -4,6 +4,15 @@ app/core/sniper_pipeline.py — CFW6 Signal Pipeline
 
 FIX HISTORY (2026-04-01):
 
+  P3-3: Wired CONFIDENCE_ABSOLUTE_FLOOR into confidence gate (gate 12).
+    CONFIDENCE_ABSOLUTE_FLOOR was defined in utils/config.py (0.55) but
+    never imported or referenced in this file. The confidence mapping at
+    gate 12 used a hardcoded max(0.60, ...) — making the config value a
+    dead constant and applying a stricter floor (0.60) than intended (0.55).
+    Fixed: import CONFIDENCE_ABSOLUTE_FLOOR from utils.config and replace
+    the hardcoded 0.60 with max(CONFIDENCE_ABSOLUTE_FLOOR, ...) so the
+    floor is tunable in one place and reflects the documented intent.
+
   BUG-GEX-1: Gate 7 called is_in_gex_pin_zone(ticker) with a ticker string.
     is_in_gex_pin_zone() signature is (entry_price, options_rec) — passing
     ticker caused a silent type mismatch: abs(str - float) raises TypeError
@@ -90,7 +99,7 @@ import logging
 from datetime import time
 from zoneinfo import ZoneInfo
 from utils import config
-from utils.config import RVOL_SIGNAL_GATE, RVOL_CEILING
+from utils.config import RVOL_SIGNAL_GATE, RVOL_CEILING, CONFIDENCE_ABSOLUTE_FLOOR
 from utils.time_helpers import _now_et
 from utils.bar_utils import resample_bars as _resample_bars  # FIX #53: was a local duplicate
 from app.data.data_manager import data_manager
@@ -290,8 +299,10 @@ def _run_signal_pipeline(
         )
         return False
 
-    # Confidence mapped linearly from scorecard score (60-85+ -> 0.60-0.85)
-    _confidence = min(0.85, max(0.60, _sc.score / 100.0))
+    # P3-3: floor from config.CONFIDENCE_ABSOLUTE_FLOOR (0.55), not hardcoded 0.60.
+    # Previously max(0.60, ...) was inconsistent with the config value and made
+    # CONFIDENCE_ABSOLUTE_FLOOR a dead constant. Now tunable in one place.
+    _confidence = min(0.85, max(CONFIDENCE_ABSOLUTE_FLOOR, _sc.score / 100.0))
     logger.info(
         f"[{ticker}] SCORECARD PASS: {_sc.score:.1f}pts "
         f"confidence={_confidence:.2f} grade={grade} cfw6_base={confidence_base:.2f}"
