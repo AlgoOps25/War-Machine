@@ -4,8 +4,8 @@
 > Every finding, fix, and status change is recorded here chronologically — never delete entries.
 > Updated after **every commit** — no exceptions.
 >
-> **Last updated:** 2026-04-01 — S26: Root config files complete. BUG-RC-1 (broken cron path) + BUG-RC-2 (missing `__main__`) fixed.
-> Next: `migrations/` (4 files)
+> **Last updated:** 2026-04-01 — S27: `migrations/` complete. BUG-DTC-1 (broken Python migration) fixed.
+> Next: `app/backtesting/` (Phase 6 backlog items)
 >
 > **Auditor:** Perplexity AI (interactive audit with Michael)
 > **Size rule:** Keep under **90 KB**. If approaching limit, archive completed
@@ -56,7 +56,7 @@
 | `app/signals/` | 5 | 5 | ✅ **COMPLETE** — SIG-1 through SIG-3 |
 | `app/validation/` | 9 | 9 | ✅ Complete (S1, S9) |
 | `docs/` | 8 | — | Reference only |
-| `migrations/` | 4 | 0 | ⬜ Pending |
+| `migrations/` | 4 | 4 | ✅ **COMPLETE** — S27 |
 | `scripts/` | 55 | 55 | ✅ Complete (S7–S8) — 1 quarantine pending |
 | `tests/` | 9 | 9 | ✅ Complete (S8) |
 | `utils/` | 4 | 4 | ✅ Complete (S8–S9) |
@@ -80,6 +80,7 @@
 | 10 | 🟢 LOW | `app/notifications/discord_helpers.py` | BUG-DH-2: `get_company_name()` yfinance call has no timeout guard — blocks on slow network at cache miss | ⏳ Open |
 | 11 | 🟢 LOW | `app/notifications/discord_helpers.py` | BUG-DH-3: Footer timestamps use `EST` hardcoded string — wrong during EDT (Mar–Nov). Should use `ET` or derive from `ZoneInfo('America/New_York')` | ⏳ Open |
 | 12 | 🟢 LOW | `app/backtesting/walk_forward.py` | BUG-WF-1: `create_windows()` uses `timedelta(days=30 * months)` — Feb / 31-day months cause 1-2 day boundary drift. Low risk for dev/research use; fix with `dateutil.relativedelta` if production walk-forward is enabled | ⏳ Open |
+| 13 | 🟡 MEDIUM | `migrations/` | BUG-DTC-1: Run `add_dte_tracking_columns.sql` on Railway Postgres — columns not yet applied | ⏳ Open |
 
 ---
 
@@ -236,44 +237,32 @@
 | 115 | 2026-04-01 | S25 | `app/ai/ai_learning.py` | ✅ BUG-AIL-5: `optimize_fvg_threshold()` silent early return → `logger.debug` with count/threshold — confirmed in source | pre-applied | Observability |
 | 116 | 2026-04-01 | S26 | `railway.toml` | 🔧 BUG-RC-1: cron command `python app/ml/train_ml_booster.py` — file does not exist. Fixed to `python -m app.ml.ml_trainer` | `e12aa5b` | **Cron was silently failing every Sunday** |
 | 117 | 2026-04-01 | S26 | `app/ml/ml_trainer.py` | 🔧 BUG-RC-2: no `__main__` block — `python -m app.ml.ml_trainer` exited silently after import, never called `train_model()`. Added `__main__` with `logging.basicConfig`, `train_model()`, `sys.exit(1)` on failure | `af9b726` | **Weekly ML retrain now functional** |
+| 118 | 2026-04-01 | S27 | `migrations/add_dte_tracking_columns.py` | ❌ DELETED (was never tracked in git) — used SQLite `get_conn()` path, never ran on Railway Postgres | n/a | Dead migration removed |
+| 119 | 2026-04-01 | S27 | `migrations/add_dte_tracking_columns.sql` | 🔧 BUG-DTC-1: Created idempotent SQL replacement — 4× `ALTER TABLE positions ADD COLUMN IF NOT EXISTS` for `dte_selected`, `adx_at_entry`, `vix_at_entry`, `target_pct_t1` | `9f6483c` | **DTE tracking columns migration ready — run on Railway to apply** |
+| 120 | 2026-04-01 | S27 | `migrations/001_candle_cache.sql` | ✅ Clean — `candle_cache` table DDL correct, indexes on `(ticker, bar_time)` and `ticker` | `9f6483c` | Confirmed |
+| 121 | 2026-04-01 | S27 | `migrations/002_signal_persist_tables.sql` | ✅ Clean — `signals`, `positions`, `trade_outcomes` DDL correct, FK constraints, `IF NOT EXISTS` throughout | `9f6483c` | Confirmed |
+| 122 | 2026-04-01 | S27 | `migrations/signal_outcomes_schema.sql` | ✅ Clean — extended schema with `signal_outcomes` + `signal_filters` audit tables; `IF NOT EXISTS` safe | `9f6483c` | Confirmed |
 
 ---
 
 ## Current Session Audit Notes
 
-### Session S26 — Root Config Files (2026-04-01)
-**Status:** ✅ Complete — 8 files audited, 2 bugs fixed
+### Session S27 — `migrations/` (2026-04-01)
+**Status:** ✅ Complete — 4 files audited, BUG-DTC-1 fixed
 
 | File | Result |
 |------|--------|
-| `railway.toml` | 🔧 BUG-RC-1 + BUG-RC-2 fixed |
-| `requirements.txt` | ✅ Clean (previously audited S4, `yfinance` removed) |
-| `Procfile` | ✅ Clean — `web: python -m app.core.scanner` correct |
-| `.gitignore` | ✅ Clean — `.pkl`/`.joblib` exclusions correct, forward-slash fixed (`b910562`) |
-| `pyproject.toml` | ✅ Clean — black + isort config only, no runtime impact |
-| `runtime.txt` | ✅ Clean — Python version pinned |
-| `.env.example` | ✅ Clean — all required env vars documented, no secrets |
-| `nixpacks.toml` | ✅ Clean — Python version + pip install command correct |
+| `001_candle_cache.sql` | ✅ Clean |
+| `002_signal_persist_tables.sql` | ✅ Clean |
+| `signal_outcomes_schema.sql` | ✅ Clean |
+| `add_dte_tracking_columns.py` | ❌ Was never git-tracked — dead migration using SQLite path |
+| `add_dte_tracking_columns.sql` | 🔧 BUG-DTC-1 — Created idempotent SQL replacement |
 
-**BUG-RC-1:** `railway.toml` cron command pointed to `python app/ml/train_ml_booster.py` — a local SQLite-only script that doesn't exist in the repo. Every Sunday cron run was silently failing with FileNotFoundError. Fixed to `python -m app.ml.ml_trainer` which uses production PostgreSQL DB with walk-forward CV + Platt calibration.
-
-**BUG-RC-2:** `app/ml/ml_trainer.py` had no `__main__` block. Even after BUG-RC-1 fix, `python -m app.ml.ml_trainer` would import the module and exit silently without calling `train_model()`. Added proper `__main__` with `logging.basicConfig`, `train_model()` call, and `sys.exit(1)` on failure so Railway logs show success/failure.
+**BUG-DTC-1:** The original `add_dte_tracking_columns.py` used the SQLite `get_conn()` path and was never tracked in git, meaning the 4 DTE tracking columns (`dte_selected`, `adx_at_entry`, `vix_at_entry`, `target_pct_t1`) were never applied to Railway Postgres. Replaced with `add_dte_tracking_columns.sql` using `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`. **Action required:** run `psql $DATABASE_URL -f migrations/add_dte_tracking_columns.sql` on Railway to apply.
 
 ---
 
-### Session S25 — `app/ai/ai_learning.py` BUG-AIL-1–5 verification (2026-04-01)
-**Status:** ✅ Complete — all 5 findings confirmed fixed in source
-
-All 5 BUG-AIL fixes were pre-applied before this session. Verified line-by-line against source:
-- **BUG-AIL-1** ✅ All 6 error-path `logger.info` → `logger.warning` confirmed.
-- **BUG-AIL-2** ✅ `optimize_confirmation_weights()` not-enough-data log → `logger.debug` confirmed.
-- **BUG-AIL-3** ✅ Covered by BUG-AIL-1 — confirmed.
-- **BUG-AIL-4** ✅ `__init__` fallback uses `logger.warning` confirmed.
-- **BUG-AIL-5** ✅ `optimize_fvg_threshold()` early return now logs `logger.debug` with count/threshold confirmed.
-
----
-
-### Sessions S24, S23, S22, S21, S20, S19-A/B, SIG-1–3, DATA-1–4, CORE-1–6, ML-1, S14–S18, S11–S12
+### Sessions S26–S11 and earlier
 *(See Implemented Changes Log above for full details)*
 
 ---
@@ -306,4 +295,5 @@ All 5 BUG-AIL fixes were pre-applied before this session. Verified line-by-line 
 
 | Priority | Target | Files | Notes |
 |----------|--------|-------|-------|
-| 1 | `migrations/` | 4 files | DB schema migrations |
+| 1 | Pending actions | Various | BUG-DTC-1: run `add_dte_tracking_columns.sql` on Railway |
+| 2 | Phase 6 backlog | Various | Start 47.P1-1 signal scoring |
