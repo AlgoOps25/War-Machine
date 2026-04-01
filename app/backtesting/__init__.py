@@ -24,7 +24,10 @@ from app.backtesting.performance_metrics import (
     calculate_max_drawdown,
     calculate_win_rate,
     calculate_profit_factor,
-    calculate_expectancy
+    calculate_expectancy,
+    calculate_calmar_ratio,
+    calculate_recovery_factor,
+    calculate_trade_distribution_stats,
 )
 from app.backtesting.walk_forward import WalkForward, WalkForwardResults
 from app.backtesting.parameter_optimizer import ParameterOptimizer
@@ -40,7 +43,7 @@ __all__ = [
     'BacktestResults',
     'Trade',
     'Position',
-    
+
     # Performance metrics
     'calculate_sharpe_ratio',
     'calculate_sortino_ratio',
@@ -48,16 +51,19 @@ __all__ = [
     'calculate_win_rate',
     'calculate_profit_factor',
     'calculate_expectancy',
-    
+    'calculate_calmar_ratio',
+    'calculate_recovery_factor',
+    'calculate_trade_distribution_stats',
+
     # Walk-forward validation
     'WalkForward',
     'WalkForwardResults',
-    
+
     # Parameter optimization
     'ParameterOptimizer',
-    
+
     # Signal replay helpers
     'create_strategy_from_breakout_detector',
     'create_strategy_from_signal_generator',
-    'example_simple_breakout_strategy'
+    'example_simple_breakout_strategy',
 ]
