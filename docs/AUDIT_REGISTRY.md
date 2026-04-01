@@ -4,9 +4,9 @@
 > Every finding, fix, and status change is recorded here chronologically — never delete entries.
 > Updated after **every commit** — no exceptions.
 >
-> **Last updated:** 2026-04-01 — Consolidation commit. Merged root `audit_registry.md`,
-> `docs/remediation_tracker.md`, and `docs/AUDIT_REGISTRY.md` into this single file.
-> Next: `app/options/` full audit (S19).
+> **Last updated:** 2026-04-01 — S19-A: `app/options/` 8-of-9 files audited.
+> 6 bugs fixed. `options_optimizer.py` flagged (async/sync conflict + dev scaffolding).
+> Next: S19-B — `app/options/options_intelligence.py` (39 KB, own session).
 >
 > **Auditor:** Perplexity AI (interactive audit with Michael)
 > **Size rule:** Keep under **90 KB**. If approaching limit, archive completed
@@ -51,7 +51,7 @@
 | `app/ml/` | 7 | 7 | ✅ Complete — ML-1, S11 |
 | `app/mtf/` | 7 | 7 | ✅ Complete — S12 |
 | `app/notifications/` | 2 | 0 | ⬜ Pending |
-| `app/options/` | 9 | 0 | ⬜ **NEXT — S19** |
+| `app/options/` | 9 | 8 | 🔄 **S19-A done (8/9) — S19-B pending (`options_intelligence.py`)** |
 | `app/risk/` | 7 | 7 | ✅ Complete — S14 |
 | `app/screening/` | 8 | 8 | ✅ Complete (S9) |
 | `app/signals/` | 5 | 5 | ✅ **COMPLETE** — SIG-1 through SIG-3 |
@@ -69,14 +69,16 @@
 
 | # | Priority | File | Action | Status |
 |---|----------|------|--------|--------|
-| 1 | 🔴 **NEXT** | `app/options/` (9 files) | **S19 full audit** | ⏳ Open |
-| 2 | 🟡 MEDIUM | `scripts/backtesting/backtest_v2_detector.py` | Verify vs `backtest_realistic_detector.py` — possibly superseded | ⏳ Open |
-| 3 | 🟢 LOW | `scripts/audit_repo.py` | QUARANTINE — one-time audit script, superseded by this registry | ⏳ Open |
-| 4 | 🟢 LOW | `market_memory.db` | Verify if replaced by PostgreSQL on Railway or still active | ⏳ Open |
-| 5 | 🟢 LOW | `scripts/war_machine.db` | Verify if stale vs root `war_machine.db` | ⏳ Open |
-| 6 | 🟡 MEDIUM | `app/ml/ml_trainer.py` | BUG-ML-3: Platt calibration + threshold on same slice — data leakage | ⏳ Open |
-| 7 | 🟡 MEDIUM | `app/validation/cfw6_gate_validator.py` | BUG-ML-4: `get_validation_stats()` permanent stub — wire or delete | ⏳ Open |
-| 8 | 🟢 LOW | `app/ml/ml_confidence_boost.py` | BUG-ML-5: `.iterrows()` in logging loop — replace with `itertuples()` | ⏳ Open |
+| 1 | 🔴 **NEXT** | `app/options/options_intelligence.py` | **S19-B full audit** (39 KB, own session) | ⏳ Open |
+| 2 | 🔴 HIGH | `app/options/options_optimizer.py` | **DELETE CANDIDATE** — async engine never called in production; `asyncio.run()` in sync wrapper crashes inside async Railway loop; `__main__` block with `logger.info` print-style dev scaffolding; superseded by `OptionsDataManager` + `options_dte_selector` | ⏳ Open |
+| 3 | 🟡 MEDIUM | `app/options/__init__.py` | `_calculate_optimal_dte()` returns 14/21/30 DTE — these are multi-week targets, inconsistent with system's 0DTE/1DTE architecture. Clarify whether `build_options_trade()` is still the live path or a legacy entry point | ⏳ Open |
+| 4 | 🟡 MEDIUM | `scripts/backtesting/backtest_v2_detector.py` | Verify vs `backtest_realistic_detector.py` — possibly superseded | ⏳ Open |
+| 5 | 🟢 LOW | `scripts/audit_repo.py` | QUARANTINE — one-time audit script, superseded by this registry | ⏳ Open |
+| 6 | 🟢 LOW | `market_memory.db` | Verify if replaced by PostgreSQL on Railway or still active | ⏳ Open |
+| 7 | 🟢 LOW | `scripts/war_machine.db` | Verify if stale vs root `war_machine.db` | ⏳ Open |
+| 8 | 🟡 MEDIUM | `app/ml/ml_trainer.py` | BUG-ML-3: Platt calibration + threshold on same slice — data leakage | ⏳ Open |
+| 9 | 🟡 MEDIUM | `app/validation/cfw6_gate_validator.py` | BUG-ML-4: `get_validation_stats()` permanent stub — wire or delete | ⏳ Open |
+| 10 | 🟢 LOW | `app/ml/ml_confidence_boost.py` | BUG-ML-5: `.iterrows()` in logging loop — replace with `itertuples()` | ⏳ Open |
 
 ---
 
@@ -193,10 +195,106 @@
 | 73 | 2026-04-01 | CONSOLIDATION | `audit_registry.md` (root) | ❌ DELETED — merged into `docs/AUDIT_REGISTRY.md` | this commit | Cleanup |
 | 74 | 2026-04-01 | CONSOLIDATION | `docs/remediation_tracker.md` | ❌ DELETED — Phase 6 backlog absorbed into this file | this commit | Cleanup |
 | 75 | 2026-04-01 | CONSOLIDATION | `audit_reports/AUDIT_2026-03-26.md` | ❌ DELETED — old snapshot, fully superseded | this commit | Cleanup |
+| 76 | 2026-04-01 | S19-A | `app/options/dte_selector.py` | 🔧 BUG-ODS-A1: `datetime.now().replace(...)` → `current_time.replace(...)` — post-strip naive rebuild used wrong base | S19-A commit | TZ correctness |
+| 77 | 2026-04-01 | S19-A | `app/options/dte_historical_advisor.py` | 🔧 BUG-DHA-1: DB query error logs `logger.info` → `logger.warning` | S19-A commit | Logging level |
+| 78 | 2026-04-01 | S19-A | `app/options/dte_historical_advisor.py` | 🔧 BUG-DHA-2: Module-level `dte_advisor` init failure logs `logger.info` → `logger.warning` | S19-A commit | Logging level |
+| 79 | 2026-04-01 | S19-A | `app/options/iv_tracker.py` | ✅ Clean — no fixes | S19-A commit | — |
+| 80 | 2026-04-01 | S19-A | `app/options/gex_engine.py` | ✅ Clean — no fixes | S19-A commit | — |
+| 81 | 2026-04-01 | S19-A | `app/options/options_data_manager.py` | 🔧 BUG-ODM-1: `_select_best_strike()` `logger.info` on `delta` format crash — `delta` may be `None`, `f"{result['delta']:.2f}"` raises `TypeError` | S19-A commit | Runtime crash prevention |
+| 82 | 2026-04-01 | S19-A | `app/options/options_optimizer.py` | ⚠️ BUG-OO-1: `asyncio.run()` in sync wrapper crashes when called from an already-running async loop (Railway) | S19-A commit | Flagged — DELETE candidate |
+| 83 | 2026-04-01 | S19-A | `app/options/options_optimizer.py` | ⚠️ BUG-OO-2: `fetch_optimal_strikes_parallel()` uses naive `datetime.now()` for market-close calc — ET-unaware, wrong outside US/Eastern | S19-A commit | Flagged — DELETE candidate |
+| 84 | 2026-04-01 | S19-A | `app/options/__init__.py` | 🔧 BUG-OI-1: `_calculate_optimal_dte()` returns 14/21/30 DTE — inconsistent with system 0DTE/1DTE arch; added clarifying comment + open review item | S19-A commit | Architecture clarity |
+| 85 | 2026-04-01 | S19-A | `app/options/options_dte_selector.py` | 🔧 BUG-ODTS-1: `fetch_options_chain()` bare `except: return []` and `except: continue` → `except Exception as e: logger.warning(...)` | S19-A commit | Railway visibility |
 
 ---
 
 ## Current Session Audit Notes
+
+### Session S19-A — `app/options/` (8 of 9 files)
+**Date:** 2026-04-01 | **Commit:** S19-A
+**Files:** `__init__.py`, `dte_historical_advisor.py`, `dte_selector.py`, `gex_engine.py`, `iv_tracker.py`, `options_data_manager.py`, `options_dte_selector.py`, `options_optimizer.py`
+**Remaining:** `options_intelligence.py` → S19-B (39 KB, own session)
+
+---
+
+#### `app/options/__init__.py` (25.7 KB) — ⚠️ Architecture note
+- Import block: `logging`, `os`, `requests`, `datetime`, `zoneinfo` — correct order ✅
+- `build_options_trade()` flows correctly: price → DTE → strike → IVR → price → qty → symbol ✅
+- `get_greeks()` handles 404/401/400/Timeout distinctly ✅
+- `_get_iv_rank()` wired to `iv_tracker.compute_ivr()` — stores observation, falls back to 50.0 ✅
+- `_build_contract_symbol()` OCC format correct ✅
+- `__all__ = ['build_options_trade', 'get_greeks']` — `build_0dte_trade` confirmed removed ✅
+- **BUG-OI-1** ⚠️: `_calculate_optimal_dte()` returns 14/21/30 DTE. The rest of the system is 0DTE/1DTE architecture. This function is only called from `build_options_trade()` which is the legacy entry point (no current callers visible in core scan paths). Added clarifying comment. Needs architectural decision: is `build_options_trade()` still live or legacy?
+
+---
+
+#### `app/options/dte_selector.py` (4.1 KB) — 🔧 1 fix
+- Logic flow clean: Rule 1 (post-2PM) → Rule 2 (VIX>25) → Rule 3 (VIX>20+early) → default 0DTE ✅
+- `backports.zoneinfo` fallback import ✅
+- All log messages include ticker context via `tag` ✅
+- **BUG-ODS-A1** 🔧: In both `cutoff` and `early_cutoff` constructions, code uses `datetime.now().replace(...)` to build the time constant after having already stripped tzinfo from `current_time`. This is harmless on Railway (UTC→ET conversion doesn't change the date at market hours), but semantically wrong — the base should be `current_time.replace(...)` since `current_time` is already the ET-naive datetime being used for all comparisons. Fixed to use `current_time.replace(...)` for both cutoff calculations.
+
+---
+
+#### `app/options/dte_historical_advisor.py` (5.3 KB) — 🔧 2 fixes
+- `_bucket()` bucket logic inclusive-low/exclusive-high, handles `UNKNOWN` fallback ✅
+- `get_recommendation()` try/finally `return_conn(conn)` pattern correct ✅
+- Context string (`hour_bucket_adx_bucket_vix_bucket_target_bucket`) consistent ✅
+- Win rate calc: `sum(1 for t in dte0 if t['pnl'] > 0) / len(dte0) * 100` — safe (guarded by `if not dte0` check above) ✅
+- Confidence formula: `min(100, (n/30)*75 + min(25, abs_delta))` — reasonable, documented ✅
+- **BUG-DHA-1** 🔧: DB query exception uses `logger.info` — should be `logger.warning` for Railway visibility.
+- **BUG-DHA-2** 🔧: Module-level `dte_advisor` init failure block uses `logger.info` — should be `logger.warning`.
+
+---
+
+#### `app/options/iv_tracker.py` (5.5 KB) — ✅ Clean
+- `store_iv_observation()`: lazy import of DB inside function (correct — avoids circular import at module load) ✅
+- `CREATE TABLE IF NOT EXISTS` + `CREATE INDEX IF NOT EXISTS` on every call — idempotent, correct ✅
+- `return_conn(conn)` always in `finally` block ✅
+- `compute_ivr()`: `max_iv <= min_iv` flat-IV guard returns 50.0 (neutral) ✅
+- `ivr_to_confidence_multiplier()`: clean tier table, `IVR-BUILDING` fallback ✅
+- No stray prints, no bare excepts ✅
+
+---
+
+#### `app/options/gex_engine.py` (10.1 KB) — ✅ Clean
+- `compute_gex_levels()`: iterates `chain_data["data"]` dict of expirations correctly ✅
+- Calls/puts summed per strike into single `gex_by_strike` dict — puts subtract ✅
+- `gamma_pin = max(positive_strikes, key=positive_strikes.get)` — safe (guarded by `if positive_strikes`) ✅
+- `gamma_flip` linear interpolation between zero-crossing strikes — mathematically correct ✅
+- Fallback: if no zero-crossing, use closest strike to current price ✅
+- `get_gex_signal_context()`: bull/bear symmetric pin logic, multiplier clamped `[0.70, 1.30]` ✅
+- No DB calls, no imports, no side effects — pure computation module ✅
+
+---
+
+#### `app/options/options_data_manager.py` (12.3 KB) — 🔧 1 fix
+- `get_optimized_chain()` cache key `{ticker}_{direction}_{target_dte}` — correct, per-direction ✅
+- `_fetch_chain()`: 3-retry logic with 2s backoff on Timeout, separate HTTP/Exception paths ✅
+- `_filter_by_liquidity()`: 0DTE uses `OR` (lenient), regular uses `AND` (strict) — intentional and correct ✅
+- `_select_best_strike()`: delta ranges by strategy, liquidity score tie-break ✅
+- **BUG-ODM-1** 🔧: `logger.info(f"... delta={result['delta']:.2f} ...")` — `result['delta']` comes from `attrs.get('delta')` which can return `None` if the API field is absent. `f"{None:.2f}"` raises `TypeError`. Fixed with `result['delta'] or 0.0` guard.
+
+---
+
+#### `app/options/options_optimizer.py` (25.9 KB) — ❌ DELETE CANDIDATE
+- **BUG-OO-1** 🔴: `get_optimal_strikes_sync()` calls `asyncio.run(_run())`. On Railway, the process runs inside an async event loop (aiohttp server + asyncio task). `asyncio.run()` raises `RuntimeError: This event loop is already running` if called from any async context. This file cannot be safely called from production code.
+- **BUG-OO-2** ⚠️: `fetch_optimal_strikes_parallel()` computes `market_close` using `datetime.now()` (naive, local TZ) — Railway containers run UTC, so `hours_left` is wrong by 4–5 hours and the 0DTE/1DTE switch fires at the wrong time.
+- **BUG-OO-3** ⚠️: `generate_test_strike_data()` uses `random.uniform()` — introduces non-determinism into production paths if `test_mode` is accidentally `True`.
+- **BUG-OO-4** ⚠️: `__main__` block with `logger.info` used as a print statement throughout (development scaffolding, not production logging).
+- **Architecture verdict**: `OptionsChainOptimizer` provides parallel async Greek fetching. However: (a) `OptionsDataManager` already provides synchronous chain fetching with retry logic, and (b) `options_dte_selector.py` + `options_data_manager.py` handle all production 0DTE/1DTE selection. Zero callers of `get_optimal_strikes_sync()` found in `app/core/`, `app/validation/`, or `app/signals/`. **Recommend DELETE** after confirming zero callers repo-wide.
+
+---
+
+#### `app/options/options_dte_selector.py` (15.9 KB) — 🔧 1 fix
+- `calculate_optimal_dte()` architecture correct — time-remaining guard, API fetch, combined scoring ✅
+- `_calculate_combined_score()` weighted 40/35/25 historical/live/regime ✅
+- `_calculate_regime_score()` — FIX #19 `favors = 0` safe default confirmed present ✅
+- `select_best_strikes()` method exists (confirmed in full read) — returns sorted contracts ✅
+- `_get_next_trading_day()` helper present ✅
+- **BUG-ODTS-1** 🔧: `fetch_options_chain()` has two bare `except:` blocks: (1) wrapping `requests.get()` — `except: return []`, (2) inside the contract parsing loop — `except: continue`. Both silently swallow all exceptions with zero Railway visibility. Fixed to `except Exception as e: logger.warning(f"[OPTIONS-DTE] fetch error: {e}")`.
+
+---
 
 ### Session SIG-3 — `app/signals/vwap_reclaim.py`
 **Date:** 2026-04-01 | **Commit:** N/A — no fixes required
@@ -360,9 +458,9 @@ BUG-WSS-1, WSS-2, WSS-3 fixed.
 
 | Priority | Target | Files | Notes |
 |----------|--------|-------|-------|
-| 1 🔥 | `app/options/` | 9 files | Options chain, Greeks, GEX, DTE selection |
-| 2 | `app/notifications/` | 2 files | Discord alert system |
-| 3 | `app/backtesting/` | 7 files | Backtest engine, walk-forward |
-| 4 | `app/filters/`, `app/indicators/`, `app/mtf/`, `app/screening/`, `app/validation/`, `app/risk/`, `app/ai/` | All | Secondary modules |
-| 5 | `scripts/`, `tests/`, `utils/` | All | Support infrastructure |
+| 1 🔥 | `app/options/options_intelligence.py` | 1 file | 39 KB — S19-B, own session |
+| 2 🔴 | `app/options/options_optimizer.py` | 1 file | DELETE after confirming zero callers |
+| 3 | `app/notifications/` | 2 files | Discord alert system |
+| 4 | `app/backtesting/` | 7 files | Backtest engine, walk-forward |
+| 5 | `app/indicators/`, `app/ai/` | 6 files | Technical indicators + AI |
 | 6 | Root config | `requirements.txt`, `railway.toml`, etc. | Deployment config |
