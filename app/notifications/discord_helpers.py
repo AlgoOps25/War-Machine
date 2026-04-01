@@ -20,10 +20,25 @@ PHASE 1.29 (Mar 16 2026):
   (separate #watchlist channel) with a rich embed per stage showing
   rank, score, RVOL, gap, catalyst, and price for each ticker.
 - Falls back to DISCORD_SIGNALS_WEBHOOK_URL if watchlist URL not set.
+
+BUG-DH-1 (Apr 1 2026):
+- test_webhook() now dispatches on a daemon thread (non-blocking).
+  Startup is never stalled by a slow or unreachable Discord endpoint.
+
+BUG-DH-2 (Apr 1 2026):
+- get_company_name() yfinance call now runs in a ThreadPoolExecutor
+  with a 2-second timeout. Slow DNS / network at cache-miss can no
+  longer block the scan loop.
+
+BUG-DH-3 (Apr 1 2026):
+- All footer timestamps now use 'ET' (timezone-neutral abbreviation)
+  instead of the hardcoded 'EST' string, which was incorrect during
+  EDT (March–November).
 """
 import requests
 import functools
 import threading
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from typing import Dict, List, Optional
 from datetime import datetime
 from utils import config
@@ -40,6 +55,9 @@ _last_send_ts: float = 0.0
 _RATE_LIMIT_INTERVAL: float = 0.5   # minimum seconds between Discord POSTs
 _rl_lock = threading.Lock()
 
+# BUG-DH-2: executor for yfinance calls with timeout guard
+_yf_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="yf_name")
+
 # ══════════════════════════════════════════════════════════════════════════════
 # COMPANY NAME RESOLUTION
 # ══════════════════════════════════════════════════════════════════════════════
@@ -52,13 +70,27 @@ except ImportError:
 
 @functools.lru_cache(maxsize=512)
 def get_company_name(symbol: str) -> str:
-    """Resolve ticker to company name. Cached to avoid repeated API calls."""
+    """Resolve ticker to company name. Cached to avoid repeated API calls.
+
+    BUG-DH-2: yfinance network call is dispatched on a ThreadPoolExecutor
+    with a 2-second timeout so a slow DNS lookup at cache-miss can never
+    block the scan loop.
+    """
     if not YFINANCE_AVAILABLE:
         return symbol
+    def _fetch() -> str:
+        try:
+            ticker = yf.Ticker(symbol)
+            info = ticker.info or {}
+            return info.get("longName") or info.get("shortName") or symbol
+        except Exception:
+            return symbol
     try:
-        ticker = yf.Ticker(symbol)
-        info = ticker.info or {}
-        return info.get("longName") or info.get("shortName") or symbol
+        future = _yf_executor.submit(_fetch)
+        return future.result(timeout=2.0)
+    except FuturesTimeoutError:
+        logger.warning("[DISCORD] get_company_name(%s) timed out — returning ticker", symbol)
+        return symbol
     except Exception:
         return symbol
 
@@ -208,7 +240,7 @@ def send_equity_bos_fvg_alert(signal: Dict):
         "color": color,
         "fields": fields,
         "footer": {
-            "text": f"War Machine BOS/FVG | {datetime.now().strftime('%Y-%m-%d %I:%M %p EST')}",
+            "text": f"War Machine BOS/FVG | {datetime.now().strftime('%Y-%m-%d %I:%M %p ET')}",
         },
     }
     
@@ -393,7 +425,7 @@ def send_options_signal_alert(
         "color": color,
         "fields": fields,
         "footer": {
-            "text": f"War Machine Sniper v2 | {datetime.now().strftime('%Y-%m-%d %I:%M %p EST')}",
+            "text": f"War Machine Sniper v2 | {datetime.now().strftime('%Y-%m-%d %I:%M %p ET')}",
         },
     }
     
@@ -427,7 +459,7 @@ def send_scaling_alert(
             {"name": "🎯 Next Target",   "value": "Target 2 (3.5R)",               "inline": True},
         ],
         "footer": {
-            "text": f"War Machine  |  {datetime.now().strftime('%Y-%m-%d %H:%M:%S EST')}"
+            "text": f"War Machine  |  {datetime.now().strftime('%Y-%m-%d %H:%M:%S ET')}"
         }
     }
     _send_to_discord({"embeds": [embed]})
@@ -453,7 +485,7 @@ def send_exit_alert(
             {"name": "💰 Total P&L",  "value": f"${total_pnl:+.2f}",  "inline": False},
         ],
         "footer": {
-            "text": f"War Machine  |  {datetime.now().strftime('%Y-%m-%d %H:%M:%S EST')}"
+            "text": f"War Machine  |  {datetime.now().strftime('%Y-%m-%d %H:%M:%S ET')}"
         }
     }
     _send_to_discord({"embeds": [embed]})
@@ -561,7 +593,7 @@ def send_daily_summary(stats: Dict):
             {"name": "💰 Net P&L",       "value": f"${total_pnl:+.2f}",    "inline": True},
         ],
         "footer": {
-            "text": f"War Machine  |  {datetime.now().strftime('%Y-%m-%d %H:%M:%S EST')}"
+            "text": f"War Machine  |  {datetime.now().strftime('%Y-%m-%d %H:%M:%S ET')}"
         }
     }
     _send_to_discord({"embeds": [embed]})
@@ -673,21 +705,30 @@ def _send_to_discord(payload: Dict):
     t.start()
 
 
-def test_webhook():
-    """Call once at startup to verify Discord is working."""
+def test_webhook() -> None:
+    """Call once at startup to verify Discord is working.
+
+    BUG-DH-1: Dispatched on a daemon thread — never blocks the calling
+    thread (startup or scanner loop). Result is logged only; callers
+    should not depend on the return value for control flow.
+    """
     webhook_url = _SIGNALS_WEBHOOK
     if not webhook_url:
         logger.info("[DISCORD] ❌ DISCORD_SIGNALS_WEBHOOK_URL is empty!")
-        return False
+        return
 
     logger.info(f"[DISCORD] URL length: {len(webhook_url)} chars")
     logger.info(f"[DISCORD] URL ends with: {repr(webhook_url[-10:])}")
 
-    try:
-        r = requests.post(webhook_url, json={"content": "🚀 War Machine Online!"}, timeout=5)
-        logger.info(f"[DISCORD] Test result: {r.status_code}")
-        return r.status_code in (200, 204)
-    except Exception as e:
-        logger.info(f"[DISCORD] Test failed: {e}")
-        return False
+    def _probe():
+        try:
+            r = requests.post(webhook_url, json={"content": "🚀 War Machine Online!"}, timeout=5)
+            if r.status_code in (200, 204):
+                logger.info("[DISCORD] ✅ Webhook test OK (%s)", r.status_code)
+            else:
+                logger.warning("[DISCORD] ⚠️  Webhook test returned HTTP %s", r.status_code)
+        except Exception as e:
+            logger.warning("[DISCORD] ⚠️  Webhook test failed: %s", e)
 
+    t = threading.Thread(target=_probe, daemon=True)
+    t.start()
