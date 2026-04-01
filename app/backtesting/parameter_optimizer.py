@@ -23,15 +23,27 @@ Example:
   )
 
   best_params = results[0]['params']
+
+FIX S21 (APR 1, 2026):
+  BUG-PO-1: metric_value could be float('inf') when profit_factor has zero
+    gross loss (all-winner run on thin data). inf sorts to the top silently,
+    making an unreliable parameter set appear optimal. Capped at
+    _METRIC_INF_CAP (10.0) before appending to results list.
 """
 from typing import Dict, List, Callable
 from itertools import product
 from dataclasses import dataclass
+import math
 
 from app.backtesting.backtest_engine import BacktestEngine, BacktestResults
 import logging
 
 logger = logging.getLogger(__name__)
+
+# Finite cap applied to any metric_value that resolves to inf/nan.
+# Keeps sort stable and prevents thin-data all-winner runs from
+# appearing as the best parameter set.
+_METRIC_INF_CAP = 10.0
 
 
 @dataclass
@@ -119,16 +131,25 @@ class ParameterOptimizer:
                     logger.debug(f"[OPTIMIZER] Skipped (only {backtest_results.total_trades} trades)")
                     continue
 
-                metric_value = getattr(backtest_results, self.optimization_metric)
+                raw_metric = getattr(backtest_results, self.optimization_metric)
+
+                # BUG-PO-1: cap inf/nan so thin-data all-winner runs don't
+                # silently float to the top of the sorted results.
+                if not math.isfinite(raw_metric):
+                    logger.debug(
+                        f"[OPTIMIZER] [{i}/{total_combinations}] metric_value={raw_metric} "
+                        f"capped to {_METRIC_INF_CAP} (params={params})"
+                    )
+                    raw_metric = _METRIC_INF_CAP
 
                 results.append({
                     'params': params,
                     'results': backtest_results,
-                    'metric_value': metric_value,
+                    'metric_value': raw_metric,
                 })
 
                 logger.info(
-                    f"[OPTIMIZER] [{i}/{total_combinations}] {self.optimization_metric}={metric_value:.2f} "
+                    f"[OPTIMIZER] [{i}/{total_combinations}] {self.optimization_metric}={raw_metric:.2f} "
                     f"trades={backtest_results.total_trades} pnl=${backtest_results.net_pnl:,.2f}"
                 )
 
