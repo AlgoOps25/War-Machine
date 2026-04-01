@@ -55,6 +55,10 @@ Bug fixes applied
 * BUG 9:  MTF asks direction-aware bull confirmation not all-same test.
 * BUG 10: MTF uses SMA slope (sma_now > sma_prev) not price position.
 * BUG 11: Dropped 4 dead/redundant features; added 4 outcome-correlated.
+* BUG-HT-1 (Apr 2026): ticker_win_rate assignment was inside the
+  `if outcome == 'TIMEOUT':` block — WIN/LOSS rows silently received
+  the 0.40 fallback in _signal_to_features(). Dedented so all signals
+  get the correctly computed per-ticker win rate.
 """
 from __future__ import annotations
 
@@ -292,15 +296,15 @@ def _resistance(bars: List[Dict], lookback: int = 20) -> float:
     window = bars[-lookback - 1:-1]
     if not window:
         return bars[-1]['high']
-    
+
     level = max(b['high'] for b in window)
-    
+
     # Require price to have respected this level (not just grazed it once)
     recent = bars[-6:-1]
     rejections = sum(1 for b in recent if b['high'] < level * 0.999)
     if rejections >= 3:
         return level
-    
+
     # Fallback: use a longer lookback for a more established level
     wider = bars[-40:-1] if len(bars) >= 40 else window
     return max(b['high'] for b in wider)
@@ -776,7 +780,7 @@ def _label_outcome(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Feature vector builder — 15 real, non-redundant features
+# Feature vector builder — 20 real, non-redundant features
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Dropped (BUG-11):
@@ -986,7 +990,7 @@ class HistoricalMLTrainer:
             logger.warning("[HIST-TRAINER] No signals generated — check EODHD key / tickers / thresholds")
             return pd.DataFrame()
 
-                # ── Compute per-ticker win rates from this dataset ────────────────────
+        # ── Compute per-ticker win rates from this dataset ────────────────────
         from collections import defaultdict
         ticker_wins   = defaultdict(int)
         ticker_totals = defaultdict(int)
@@ -1010,7 +1014,12 @@ class HistoricalMLTrainer:
                 timeout_count += 1
                 outcome = 'LOSS'
 
-                sig['ticker_win_rate'] = ticker_win_rates.get(sig.get('ticker', ''), 0.40)
+            # BUG-HT-1 FIX: assign ticker_win_rate for ALL signals,
+            # not just TIMEOUT rows. Previously this line was indented
+            # inside the `if outcome == 'TIMEOUT':` block, causing
+            # WIN/LOSS rows to silently receive the 0.40 fallback.
+            sig['ticker_win_rate'] = ticker_win_rates.get(sig.get('ticker', ''), 0.40)
+
             features = _signal_to_features(sig)
 
             row = {
