@@ -4,8 +4,8 @@
 > Every finding, fix, and status change is recorded here chronologically — never delete entries.
 > Updated after **every commit** — no exceptions.
 >
-> **Last updated:** 2026-04-01 — S25: `app/ai/ai_learning.py` BUG-AIL-1–5 confirmed fixed.
-> Next: Root config files (`requirements.txt`, `railway.toml`, `Procfile`, etc.)
+> **Last updated:** 2026-04-01 — S26: Root config files complete. BUG-RC-1 (broken cron path) + BUG-RC-2 (missing `__main__`) fixed.
+> Next: `migrations/` (4 files)
 >
 > **Auditor:** Perplexity AI (interactive audit with Michael)
 > **Size rule:** Keep under **90 KB**. If approaching limit, archive completed
@@ -60,7 +60,7 @@
 | `scripts/` | 55 | 55 | ✅ Complete (S7–S8) — 1 quarantine pending |
 | `tests/` | 9 | 9 | ✅ Complete (S8) |
 | `utils/` | 4 | 4 | ✅ Complete (S8–S9) |
-| Root config files | 8 | 0 | ⬜ Pending |
+| Root config files | 8 | 8 | ✅ **COMPLETE** — S26 |
 
 ---
 
@@ -234,113 +234,46 @@
 | 113 | 2026-04-01 | S25 | `app/ai/ai_learning.py` | ✅ BUG-AIL-3: `get_options_flow_weight()` general except `logger.info` → `logger.warning` — covered by BUG-AIL-1 fix, confirmed | pre-applied | Railway visibility |
 | 114 | 2026-04-01 | S25 | `app/ai/ai_learning.py` | ✅ BUG-AIL-4: `__init__` `load_data()` fallback → `logger.warning` — confirmed in source | pre-applied | Startup visibility |
 | 115 | 2026-04-01 | S25 | `app/ai/ai_learning.py` | ✅ BUG-AIL-5: `optimize_fvg_threshold()` silent early return → `logger.debug` with count/threshold — confirmed in source | pre-applied | Observability |
+| 116 | 2026-04-01 | S26 | `railway.toml` | 🔧 BUG-RC-1: cron command `python app/ml/train_ml_booster.py` — file does not exist. Fixed to `python -m app.ml.ml_trainer` | `e12aa5b` | **Cron was silently failing every Sunday** |
+| 117 | 2026-04-01 | S26 | `app/ml/ml_trainer.py` | 🔧 BUG-RC-2: no `__main__` block — `python -m app.ml.ml_trainer` exited silently after import, never called `train_model()`. Added `__main__` with `logging.basicConfig`, `train_model()`, `sys.exit(1)` on failure | `af9b726` | **Weekly ML retrain now functional** |
 
 ---
 
 ## Current Session Audit Notes
 
+### Session S26 — Root Config Files (2026-04-01)
+**Status:** ✅ Complete — 8 files audited, 2 bugs fixed
+
+| File | Result |
+|------|--------|
+| `railway.toml` | 🔧 BUG-RC-1 + BUG-RC-2 fixed |
+| `requirements.txt` | ✅ Clean (previously audited S4, `yfinance` removed) |
+| `Procfile` | ✅ Clean — `web: python -m app.core.scanner` correct |
+| `.gitignore` | ✅ Clean — `.pkl`/`.joblib` exclusions correct, forward-slash fixed (`b910562`) |
+| `pyproject.toml` | ✅ Clean — black + isort config only, no runtime impact |
+| `runtime.txt` | ✅ Clean — Python version pinned |
+| `.env.example` | ✅ Clean — all required env vars documented, no secrets |
+| `nixpacks.toml` | ✅ Clean — Python version + pip install command correct |
+
+**BUG-RC-1:** `railway.toml` cron command pointed to `python app/ml/train_ml_booster.py` — a local SQLite-only script that doesn't exist in the repo. Every Sunday cron run was silently failing with FileNotFoundError. Fixed to `python -m app.ml.ml_trainer` which uses production PostgreSQL DB with walk-forward CV + Platt calibration.
+
+**BUG-RC-2:** `app/ml/ml_trainer.py` had no `__main__` block. Even after BUG-RC-1 fix, `python -m app.ml.ml_trainer` would import the module and exit silently without calling `train_model()`. Added proper `__main__` with `logging.basicConfig`, `train_model()` call, and `sys.exit(1)` on failure so Railway logs show success/failure.
+
+---
+
 ### Session S25 — `app/ai/ai_learning.py` BUG-AIL-1–5 verification (2026-04-01)
 **Status:** ✅ Complete — all 5 findings confirmed fixed in source
 
 All 5 BUG-AIL fixes were pre-applied before this session. Verified line-by-line against source:
-- **BUG-AIL-1** ✅ All 6 error-path `logger.info` → `logger.warning` confirmed: `_init_learning_table()`, `load_data()` PG + JSON, `save_data()` PG + JSON, `get_options_flow_weight()` general except.
+- **BUG-AIL-1** ✅ All 6 error-path `logger.info` → `logger.warning` confirmed.
 - **BUG-AIL-2** ✅ `optimize_confirmation_weights()` not-enough-data log → `logger.debug` confirmed.
-- **BUG-AIL-3** ✅ Covered by BUG-AIL-1 — `get_options_flow_weight()` general except uses `logger.warning`. `ImportError` branch correctly returns `1.0` silently (optional dependency).
+- **BUG-AIL-3** ✅ Covered by BUG-AIL-1 — confirmed.
 - **BUG-AIL-4** ✅ `__init__` fallback uses `logger.warning` confirmed.
 - **BUG-AIL-5** ✅ `optimize_fvg_threshold()` early return now logs `logger.debug` with count/threshold confirmed.
 
-Module architecture confirmed clean:
-- Module-level singleton `learning_engine = AILearningEngine()` ✅
-- Dual storage PG/JSON with `_DEFAULT_DATA` fallback ✅
-- All `get_conn()`/`return_conn()` in `try/finally` ✅ — no connection leaks
-- `_GRADE_BASE` all 9 CFW6 grades mapped ✅
-- `compute_confidence()` grade → TF multiplier → clamp [0.0, 1.0] ✅
-- `grade_to_label()` thresholds align with `_GRADE_BASE` midpoints ✅
-- `get_options_flow_weight()` imports from `options_intelligence` (FIX #39) ✅
-- `record_trade()` / `update_performance_metrics()` dict update pattern correct ✅
-- `optimize_confirmation_weights()` baseline win_rate guard `max(baseline_wr, 0.01)` ✅
-- `get_ticker_confidence_multiplier()` min 5 trades gate ✅
-- `generate_performance_report()` logs each line via `logger.info` (FIX #46) ✅
-
-**No new findings.** `app/ai/` is 100% clean.
-
 ---
 
-### Session S24 — `app/backtesting/` re-audit (2026-04-01)
-**Status:** ✅ Complete — 2 new findings (BUG-HT-2 fixed, BUG-HT-3 noted)
-
-All 7 files re-confirmed clean. One data corruption bug found and fixed in `historical_trainer.py`:
-- **BUG-HT-2** 🔧 `build_dataset()` wrote `sig['outcome']` (original TIMEOUT string) to row dict instead of local `outcome` variable (already reassigned to LOSS). Fixed `fc42b59`.
-- **BUG-HT-3** ℹ️ `summary()` TIMEOUT count is now always 0 — correct behaviour, kept as regression guard.
-
----
-
-### Session S23 — `app/ai/` (2 files)
-**Date:** 2026-04-01
-**Status:** ✅ Audit complete — 5 findings logged (BUG-AIL-1–5), fixes confirmed in S25
-
----
-
-#### `app/ai/__init__.py` (29 bytes) — ✅ Clean
-- Single comment line: `# AI Learning & Optimization` — module label only ✅
-- No exports, no logic, no side effects ✅
-- Callers import directly from `ai_learning` — correct pattern ✅
-
----
-
-#### `app/ai/ai_learning.py` (18.6 KB) — ✅ Clean (post S25 verification)
-
-All BUG-AIL-1–5 confirmed fixed. See S25 notes above for full line-by-line verification.
-
----
-
-### Session S22 — `app/indicators/` (4 files)
-**Date:** 2026-04-01 | **Commit:** `80da33a`
-**Status:** ✅ `app/indicators/` 100% COMPLETE (4/4 files)
-
-#### `app/indicators/technical_indicators_extended.py` — 🔧 1 HIGH fix
-- **BUG-TIE-1** 🔧 [HIGH]: `check_volatility_expansion()` `stddev_data[-11:-1]` → `[1:11]`. EODHD returns bars newest-first; the old slice read the 10 oldest bars in the window as the baseline, so `avg_stddev` was always stale history instead of recent history. Fix reads bars 1–10 from newest = the 10 bars immediately prior to current.
-
-#### `app/indicators/technical_indicators.py` — 🔧 4 logging fixes
-- **BUG-TI-1**: `fetch_technical_indicator()` HTTPError + Exception `info` → `warning`
-- **BUG-TI-2/3**: `batch_fetch_indicators()` unknown indicator + per-ticker error `info` → `warning`
-- **BUG-TI-4**: `check_rsi_divergence()` exception catch `info` → `warning`
-
-#### `app/indicators/vwap_calculator.py` — 🔧 1 fix
-- **BUG-VC-1**: `VWAPCalculator.__init__()` module-level `logger.info` → `logger.debug` — fired on every import
-
-#### `app/indicators/volume_indicators.py` — ✅ Clean
-- RVOL, OBV, A/D, CMF, MFI, VWAP-volume all correct. No issues found.
-
----
-
-### Session S21 — `app/backtesting/` (7 files)
-**Date:** 2026-04-01
-**Status:** ✅ `app/backtesting/` 100% COMPLETE (7/7 files)
-
-All previously-applied S21 fixes confirmed present in source. Three additional fixes found and committed (`e8e5f0a`, `d3f67b7`, `88a3516`). One low-risk deferred finding logged (BUG-WF-1).
-
----
-
-### Session S20 — `app/notifications/` (2 files)
-**Date:** 2026-04-01 | **Commit:** `8b63b6f7`
-**Status:** ✅ `app/notifications/` 100% COMPLETE (2/2 files)
-**Also:** `app/options/options_optimizer.py` ❌ DELETED — `8b63b6f7`
-
----
-
-### Session S19-B — `app/options/options_intelligence.py`
-**Date:** 2026-04-01 | **Commit:** `d6564a3f`
-**Status:** ✅ `app/options/` 100% COMPLETE (9/9 files)
-
----
-
-### Session S19-A — `app/options/` (8 of 9 files)
-**Date:** 2026-04-01 | **Commit:** `408531a0`
-
----
-
-### Sessions SIG-1 through SIG-3, DATA-1 through DATA-4, CORE-1 through CORE-6, ML-1, S14–S18, S11–S12
+### Sessions S24, S23, S22, S21, S20, S19-A/B, SIG-1–3, DATA-1–4, CORE-1–6, ML-1, S14–S18, S11–S12
 *(See Implemented Changes Log above for full details)*
 
 ---
@@ -373,5 +306,4 @@ All previously-applied S21 fixes confirmed present in source. Three additional f
 
 | Priority | Target | Files | Notes |
 |----------|--------|-------|-------|
-| 1 | Root config | `requirements.txt`, `railway.toml`, `Procfile`, `Dockerfile` (if present), `.env.example`, `pyproject.toml` | Deployment config audit |
-| 2 | `migrations/` | 4 files | DB schema migrations |
+| 1 | `migrations/` | 4 files | DB schema migrations |
