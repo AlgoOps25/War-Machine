@@ -31,6 +31,25 @@ Phase 6 P2-2 (2026-04-01):
     on wider swings so a 0.30Δ entry is acceptable.
   - delta_band label appended to reasoning string for Discord visibility.
   - Backward-compatible: atr=None defaults to normal regime (atr_pct=0.75%).
+
+Phase 6 P2-3 (2026-04-01):
+  Hard DTE regime override via _dte_regime_override().
+  Fires AFTER IVR gate, BEFORE weighted scoring (_calculate_combined_score).
+
+  Rule 1 — VIX > 22 → force 1DTE:
+    Elevated implied volatility means 0DTE premium is expensive (high theta
+    decay) and intraday moves are erratic.  A 1DTE buffer lets the trade
+    survive overnight noise if needed and reduces gamma risk.
+
+  Rule 2 — IVR < 25 AND ≤60 min to close → force 0DTE:
+    Cheap IV (low IVR) near EOD is the ideal 0DTE setup: premium is
+    inexpensive, same-day theta acceleration works in our favour, and the
+    position is closed before overnight gap risk.
+
+  If VIX > 22 AND IVR < 25 near close, Rule 1 wins (VIX safety trumps
+  IVR cheapness — erratic moves dominate near-close risk).
+
+  Neither rule fires → scored path runs unchanged.
 """
 from typing import Dict, List, Optional
 from datetime import datetime, timedelta, date
@@ -49,6 +68,11 @@ IVR_CREDIT_MIN = 60   # block credit spreads at or below this IVR
 # ATR delta-band thresholds (47.P2-2)
 _ATR_TIGHT_PCT    = 0.005   # < 0.5%  → tight regime
 _ATR_VOLATILE_PCT = 0.012   # > 1.2%  → volatile regime
+
+# DTE regime override thresholds (47.P2-3)
+_VIX_FORCE_1DTE          = 22    # VIX above this → force 1DTE
+_IVR_FORCE_0DTE          = 25    # IVR below this (cheap IV) eligible for 0DTE force
+_MINS_TO_CLOSE_FORCE_0DTE = 60   # must be within this many minutes of close to trigger 0DTE force
 
 
 class OptionsDTESelector:
@@ -127,6 +151,79 @@ class OptionsDTESelector:
         return False, "", ivr_label
 
     # ------------------------------------------------------------------
+    # DTE Regime Override (47.P2-3)
+    # ------------------------------------------------------------------
+
+    def _dte_regime_override(
+        self,
+        ticker: str,
+        vix: Optional[float],
+        contracts: list,
+        time_remaining_hours: float,
+    ) -> tuple:
+        """
+        Hard DTE regime override — fires before weighted scoring.
+
+        Checks two mutually-exclusive rules in priority order:
+
+          Rule 1 (VIX safety): VIX > _VIX_FORCE_1DTE → force 1DTE
+            Elevated vol → 0DTE premium is expensive + intraday moves erratic.
+            Rationale: avoid being short-dated gamma in a jittery tape.
+
+          Rule 2 (EOD cheap IV): IVR < _IVR_FORCE_0DTE
+                                  AND ≤ _MINS_TO_CLOSE_FORCE_0DTE to close
+                                  → force 0DTE
+            Cheap IV near EOD is ideal for 0DTE: inexpensive premium, same-day
+            theta acceleration in our favour, position closed before gap risk.
+
+        Rule 1 beats Rule 2 when both conditions hold simultaneously —
+        erratic tape risk dominates cheap-premium benefit near close.
+
+        Args:
+            ticker:                 Ticker symbol (for logging).
+            vix:                    Current VIX level (None → no VIX override).
+            contracts:              Options contracts already fetched
+                                    (used to derive current IV → IVR for Rule 2).
+            time_remaining_hours:   Hours until 16:00 ET close.
+
+        Returns:
+            (override_dte: int | None, label: str | None)
+            override_dte=None → no override, continue to scored path.
+        """
+        mins_remaining = time_remaining_hours * 60
+
+        # Rule 1: VIX safety — highest priority
+        if vix is not None and vix > _VIX_FORCE_1DTE:
+            label = (
+                f"⚡ OVERRIDE P2-3 Rule 1: VIX {vix:.1f} > {_VIX_FORCE_1DTE} "
+                f"→ forced 1DTE (elevated vol, avoid 0DTE gamma risk)"
+            )
+            logger.info(f"[DTE-OVERRIDE] {ticker} {label}")
+            return 1, label
+
+        # Rule 2: EOD cheap IV — only within final window of the session
+        if mins_remaining <= _MINS_TO_CLOSE_FORCE_0DTE and contracts:
+            ivs = [c.get('volatility', 0.0) for c in contracts if c.get('volatility', 0.0) > 0]
+            if ivs:
+                try:
+                    from app.options.iv_tracker import compute_ivr
+                    current_iv = sum(ivs) / len(ivs)
+                    # Use first contract ticker as proxy — same ticker throughout
+                    ivr, _obs, is_reliable = compute_ivr(ticker, current_iv)
+                    if is_reliable and ivr < _IVR_FORCE_0DTE:
+                        label = (
+                            f"⚡ OVERRIDE P2-3 Rule 2: IVR {ivr:.0f} < {_IVR_FORCE_0DTE} "
+                            f"AND {mins_remaining:.0f}m to close "
+                            f"→ forced 0DTE (cheap IV + EOD theta play)"
+                        )
+                        logger.info(f"[DTE-OVERRIDE] {ticker} {label}")
+                        return 0, label
+                except Exception as e:
+                    logger.warning(f"[DTE-OVERRIDE] {ticker} IVR lookup failed for Rule 2: {e}")
+
+        return None, None
+
+    # ------------------------------------------------------------------
     # Main entry point
     # ------------------------------------------------------------------
 
@@ -175,6 +272,36 @@ class OptionsDTESelector:
         ivr_blocked, ivr_reason, ivr_label = self._ivr_gate(ticker, direction, options_data)
         if ivr_blocked:
             return self._create_skip_response(ivr_reason, time_remaining_hours)
+
+        # DTE regime override (47.P2-3) — runs before weighted scoring
+        override_dte, override_label = self._dte_regime_override(
+            ticker, vix, options_data, time_remaining_hours
+        )
+        if override_dte is not None:
+            selected_contracts = [opt for opt in options_data if opt['dte'] == override_dte]
+            if not selected_contracts:
+                # Override DTE has no contracts — fall through to scored path
+                logger.warning(
+                    f"[DTE-OVERRIDE] {ticker} override={override_dte}DTE but no contracts "
+                    f"available — falling through to scored path"
+                )
+            else:
+                best_strikes, delta_band_label = self.select_best_strikes(
+                    selected_contracts, entry_price, direction, atr_pct=atr_pct
+                )
+                if not best_strikes:
+                    return self._create_regime_fallback(
+                        time_remaining_hours, adx, vix, t1_price, entry_price,
+                        f"No {override_dte}DTE strikes (override)"
+                    )
+                return {
+                    'dte': override_dte,
+                    'expiry_date': best_strikes[0]['exp_date'],
+                    'recommended_strikes': best_strikes[:2],
+                    'reasoning': override_label + f"\n📊 {ivr_label}" + f"\n🎯 {delta_band_label}",
+                    'time_remaining_hours': round(time_remaining_hours, 2),
+                    'confidence_pct': 70,   # override confidence: higher than fallback (40), lower than scored (variable)
+                }
 
         dte_0_contracts = [opt for opt in options_data if opt['dte'] == 0]
         dte_1_contracts = [opt for opt in options_data if opt['dte'] == 1]
