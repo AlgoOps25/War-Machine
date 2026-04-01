@@ -43,7 +43,7 @@ class VWAPCalculator:
         # Session cache: {ticker -> vwap_data}
         self._session_cache: Dict[str, Dict] = {}
         
-        logger.info(f"[VWAP] Calculator initialized | Bands: {', '.join([f'{x}σ' for x in num_std_devs])}")
+        logger.debug(f"[VWAP] Calculator initialized | Bands: {', '.join([f'{x}σ' for x in num_std_devs])}")
     
     def calculate_vwap(self, bars: List[Dict]) -> Optional[Dict]:
         """

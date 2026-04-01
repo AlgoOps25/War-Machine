@@ -396,35 +396,39 @@ def check_volatility_expansion(
 ) -> Tuple[bool, Optional[Dict]]:
     """
     Detect volatility expansion (breakout setup).
-    
-    Compares recent STDDEV to average STDDEV.
+
+    Compares current STDDEV to average of the 10 bars immediately prior.
+    EODHD returns stddev_data newest-first (index 0 = today), so:
+      - current  = stddev_data[0]
+      - baseline = stddev_data[1:11]  (bars 1-10, i.e. prior 10 sessions)
+
     Expansion signals potential breakout.
-    
+
     Args:
         ticker: Stock symbol
         expansion_threshold: Multiplier for expansion (default 1.5)
-    
+
     Returns:
         (is_expanding, details_dict)
     """
     stddev_data = fetch_stddev(ticker, period=20)
-    if not stddev_data or len(stddev_data) < 10:
+    if not stddev_data or len(stddev_data) < 11:
         return False, None
-    
+
     current_stddev = get_latest_value(stddev_data, 'stddev')
     if not current_stddev:
         return False, None
-    
-    # Average STDDEV over last 10 bars
-    recent_stddevs = [d.get('stddev') for d in stddev_data[-11:-1] if d.get('stddev')]
+
+    # stddev_data is newest-first; [1:11] = the 10 sessions prior to today
+    recent_stddevs = [d.get('stddev') for d in stddev_data[1:11] if d.get('stddev')]
     if not recent_stddevs:
         return False, None
-    
+
     avg_stddev = sum(recent_stddevs) / len(recent_stddevs)
-    
+
     expansion_ratio = current_stddev / avg_stddev if avg_stddev > 0 else 0
     is_expanding = expansion_ratio >= expansion_threshold
-    
+
     details = {
         'current_stddev': round(current_stddev, 2),
         'avg_stddev': round(avg_stddev, 2),
@@ -432,7 +436,7 @@ def check_volatility_expansion(
         'threshold': expansion_threshold,
         'is_expanding': is_expanding
     }
-    
+
     return is_expanding, details
 
 

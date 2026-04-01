@@ -177,10 +177,10 @@ def fetch_technical_indicator(
             _indicator_cache.set(cache_key, data)
         return data
     except requests.exceptions.HTTPError as e:
-        logger.info(f"[INDICATORS] API error for {ticker} {function}: {e}")
+        logger.warning(f"[INDICATORS] API error for {ticker} {function}: {e}")
         return None
     except Exception as e:
-        logger.info(f"[INDICATORS] Unexpected error for {ticker} {function}: {e}")
+        logger.warning(f"[INDICATORS] Unexpected error for {ticker} {function}: {e}")
         return None
 
 
@@ -328,12 +328,12 @@ def batch_fetch_indicators(
         for name in indicators:
             func = indicator_map.get(name)
             if not func:
-                logger.info(f"[INDICATORS] Unknown indicator: {name}")
+                logger.warning(f"[INDICATORS] Unknown indicator: {name}")
                 continue
             try:
                 results[ticker][name] = func(ticker, use_cache=use_cache)
             except Exception as e:
-                logger.info(f"[INDICATORS] Error fetching {name} for {ticker}: {e}")
+                logger.warning(f"[INDICATORS] Error fetching {name} for {ticker}: {e}")
                 results[ticker][name] = None
 
     return results
@@ -569,7 +569,7 @@ def check_rsi_divergence(
         return 'NO_DIV', details
 
     except Exception as e:
-        logger.info(f"[INDICATORS] RSI divergence error for {ticker}: {e}")
+        logger.warning(f"[INDICATORS] RSI divergence error for {ticker}: {e}")
         return None, None
 
 
