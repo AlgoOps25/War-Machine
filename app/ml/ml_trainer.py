@@ -61,6 +61,19 @@ Key improvements (Mar 2026)
     below the floor it logs the deficit and returns False so the stale model
     stays in service rather than being replaced by a model trained on too
     few (or corrupted) samples.
+* FIX 2026-04-01 (47.P3-2) — 5-feature expansion of LIVE_FEATURE_COLS:
+  - gex_distance  : abs(price − GEX pin level) / price — measures proximity to
+    gamma wall; lower → more pinned, higher → freer movement.
+  - ivr           : alias for iv_rank column already in the DB (rename for
+    clarity; backward-compat alias preserved in _fetch_training_data()).
+  - time_to_close : minutes until 4 PM ET close at signal time — captures
+    intraday time-decay urgency.
+  - spy_5m_bias   : SPY 5-minute EMA bias stored at signal time (−1/0/+1 or
+    continuous); sourced from signals.spy_5m_bias column.
+  - rvol_ratio    : RVOL / 20-day average RVOL — normalises raw RVOL across
+    tickers with different baseline volumes.
+  Migration 005_ml_feature_columns.sql adds the columns with IF NOT EXISTS so
+  it is safe to run on an already-migrated DB.
 """
 import logging
 import os
@@ -131,9 +144,27 @@ HIST_FEATURE_COLS = [
 # If you hot-swap the historical model with the live EOD model the feature
 # vector will mismatch → silent wrong predictions.  Do not swap without
 # aligning features first.
+#
+# 47.P3-2 (Apr 1 2026): Added 5 new features:
+#   gex_distance  — abs proximity to GEX gamma wall (normalised by price)
+#   ivr           — IV Rank at signal time (alias of iv_rank in DB)
+#   time_to_close — minutes until 4 PM ET close at signal time
+#   spy_5m_bias   — SPY 5-min EMA directional bias at signal time
+#   rvol_ratio    — RVOL / 20-day average RVOL (cross-ticker normalisation)
 LIVE_FEATURE_COLS = [
-    'confidence', 'rvol', 'adx', 'time_minutes',
-    'spy_correlation', 'iv_rank', 'mtf_convergence',
+    'confidence',
+    'rvol',
+    'adx',
+    'time_minutes',
+    'spy_correlation',
+    'iv_rank',
+    'mtf_convergence',
+    # 47.P3-2 — new features
+    'gex_distance',
+    'ivr',
+    'time_to_close',
+    'spy_5m_bias',
+    'rvol_ratio',
     # pattern_type and or_classification are one-hot encoded dynamically
     # in _prepare_features() — do not add them here.
 ]
@@ -590,6 +621,15 @@ def _fetch_training_data() -> Optional[pd.DataFrame]:
     GEX pin gate (BUG-GEX-1), and IVR filter (47.P2-1) were silently broken —
     their WIN/LOSS labels are corrupted and must not pollute the feature matrix.
 
+    47.P3-2: SELECT expanded to pull 5 new feature columns:
+      - gex_distance  : ABS proximity to GEX gamma wall, normalised by price
+      - ivr           : alias for iv_rank (same column, clearer name in feature vector)
+      - time_to_close : computed as minutes from signal_time until 4 PM ET
+      - spy_5m_bias   : SPY 5-min EMA directional bias stored at signal time
+      - rvol_ratio    : RVOL / 20-day avg RVOL for cross-ticker normalisation
+    All 5 columns are nullable — _prepare_features() fills missing values with
+    the column median, so existing rows without these values degrade gracefully.
+
     FIX #26 (Mar 26 2026): Uses db_connection pool (get_conn/return_conn)
     instead of a raw psycopg2.connect() — consistent with the rest of the
     codebase and benefits from pool config / SSL settings.
@@ -604,6 +644,15 @@ def _fetch_training_data() -> Optional[pd.DataFrame]:
                     + EXTRACT(MINUTE FROM signal_time) AS time_minutes,
                 spy_correlation, pattern_type, or_classification, iv_rank,
                 mtf_convergence,
+                -- 47.P3-2: new feature columns
+                gex_distance,
+                iv_rank                                          AS ivr,
+                (16 * 60)
+                    - (EXTRACT(HOUR FROM signal_time AT TIME ZONE 'America/New_York') * 60
+                       + EXTRACT(MINUTE FROM signal_time AT TIME ZONE 'America/New_York'))
+                                                                 AS time_to_close,
+                spy_5m_bias,
+                rvol_ratio,
                 CASE WHEN outcome = 'WIN' THEN 1 ELSE 0 END AS outcome
             FROM signals
             WHERE outcome IN ('WIN', 'LOSS')
@@ -636,6 +685,11 @@ def _prepare_features(df: pd.DataFrame) -> Tuple[Optional[np.ndarray], Optional[
     pandas Copy-on-Write (CoW, default from pandas 2.0+). Without the copy,
     df[col] = ... on a DataFrame slice raises SettingWithCopyWarning and may
     silently not persist the fillna() changes, corrupting the feature matrix.
+
+    47.P3-2 (2026-04-01): New numeric columns (gex_distance, ivr, time_to_close,
+    spy_5m_bias, rvol_ratio) are handled by the existing median-fill loop — no
+    special-casing needed.  All new columns are in LIVE_FEATURE_COLS so they
+    are included automatically in the feature list.
     """
     try:
         df = df.copy()  # BUG-MLT-1: CoW-safe — ensures mutations are on our own copy
@@ -650,10 +704,13 @@ def _prepare_features(df: pd.DataFrame) -> Tuple[Optional[np.ndarray], Optional[
             features.extend(dummies.columns.tolist())
         for col in features:
             if col in df.columns:
-                if df[col].dtype in ['float64', 'int64']:
+                if df[col].dtype in ['float64', 'int64', 'float32', 'int32']:
                     df[col] = df[col].fillna(df[col].median())
                 else:
                     df[col] = df[col].fillna(0)
+            else:
+                # Column missing from DB (pre-migration rows) — fill with 0
+                df[col] = 0.0
         return df[features].values, df['outcome'].values, features
     except Exception as exc:
         logger.error(f"[ML-TRAIN] Feature prep failed: {exc}")
