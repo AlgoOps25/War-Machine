@@ -4,9 +4,9 @@
 > Every finding, fix, and status change is recorded here chronologically — never delete entries.
 > Updated after **every commit** — no exceptions.
 >
-> **Last updated:** 2026-04-01 — S22: `app/indicators/` complete (4/4 files).
-> S23: `app/ai/` audit complete — 5 findings (BUG-AIL-1–5), fixes pending commit.
-> Next: commit S23 fixes, then `Root config files`.
+> **Last updated:** 2026-04-01 — S24: `app/backtesting/` re-audit complete.
+> BUG-HT-2 fixed (`fc42b59`). BUG-HT-3 noted (zero-assertion guard).
+> Next: commit BUG-AIL-1–5 (`app/ai/ai_learning.py`), then Root config files.
 >
 > **Auditor:** Perplexity AI (interactive audit with Michael)
 > **Size rule:** Keep under **90 KB**. If approaching limit, archive completed
@@ -43,7 +43,7 @@
 | `app/` (root) | 1 | 1 | ✅ Complete |
 | `app/ai/` | 2 | 2 | ✅ **COMPLETE** — S23 |
 | `app/analytics/` | 9 | 9 | ✅ Complete (S4–S10) |
-| `app/backtesting/` | 7 | 7 | ✅ **COMPLETE** — S21 |
+| `app/backtesting/` | 7 | 7 | ✅ **COMPLETE** — S21 + S24 |
 | `app/core/` | 15 | 15 | ✅ **COMPLETE** — CORE-1 through CORE-6 + S9–S18 |
 | `app/data/` | 10 | 10 | ✅ **COMPLETE** — DATA-1 through DATA-4 |
 | `app/filters/` | 12 | 12 | ✅ Complete (S4, S9) — 2 deleted |
@@ -233,10 +233,21 @@
 | 106 | 2026-04-01 | S22 | `app/indicators/technical_indicators.py` | 🔧 BUG-TI-4: `check_rsi_divergence()` exception catch `info` → `warning` | `80da33a` | Railway visibility |
 | 107 | 2026-04-01 | S22 | `app/indicators/vwap_calculator.py` | 🔧 BUG-VC-1: `VWAPCalculator.__init__()` module-level init `logger.info` → `logger.debug` — spammy on import | `80da33a` | Log noise reduction |
 | 108 | 2026-04-01 | S22 | `app/indicators/volume_indicators.py` | ✅ Clean — RVOL, OBV, Accumulation/Distribution, CMF, MFI, VWAP-volume all correct. No issues | `80da33a` | Confirmed |
+| 109 | 2026-04-01 | S24 | `app/backtesting/historical_trainer.py` | 🔧 BUG-HT-2: `build_dataset()` row dict wrote `sig['outcome']` (still `'TIMEOUT'`) instead of local `outcome` (reassigned to `'LOSS'`). `df['outcome']` column contained `'TIMEOUT'` strings even with `include_timeout=True` — any `df['outcome']=='LOSS'` filter silently missed all timed-out signals. `outcome_binary` was correct. Fix: `'outcome': outcome` | `fc42b59` | **ML training data correctness — LOSS label coverage restored** |
+| 110 | 2026-04-01 | S24 | `app/backtesting/historical_trainer.py` | ℹ️ BUG-HT-3: `summary()` `TIMEOUT→LOSS` count check now always returns 0 after BUG-HT-2 fix — kept as zero-assertion guard (non-zero = regression) | `fc42b59` | Documentation / guard |
 
 ---
 
 ## Current Session Audit Notes
+
+### Session S24 — `app/backtesting/` re-audit (2026-04-01)
+**Status:** ✅ Complete — 2 new findings (BUG-HT-2 fixed, BUG-HT-3 noted)
+
+All 7 files re-confirmed clean. One data corruption bug found and fixed in `historical_trainer.py`:
+- **BUG-HT-2** 🔧 `build_dataset()` wrote `sig['outcome']` (original TIMEOUT string) to row dict instead of local `outcome` variable (already reassigned to LOSS). Fixed `fc42b59`.
+- **BUG-HT-3** ℹ️ `summary()` TIMEOUT count is now always 0 — correct behaviour, kept as regression guard.
+
+---
 
 ### Session S23 — `app/ai/` (2 files)
 **Date:** 2026-04-01
@@ -278,7 +289,7 @@ The following paths all use `logger.info` where `logger.warning` is correct:
 All 6 should be `logger.warning` — errors on these paths cause silent data loss on Railway.
 
 **⚠️ BUG-AIL-2 — `optimize_confirmation_weights()` spammy not-enough-data log**
-`logger.info("[AI] Not enough data for confirmation optimization (need 20+ trades)")` fires every time this is called until 20 trades are recorded. Called from EOD cycle. Should be `logger.debug` — not actionable until trade count climbs.
+`logger.info("Not enough data for confirmation optimization (need 20+ trades)")` fires every time this is called until 20 trades are recorded. Called from EOD cycle. Should be `logger.debug` — not actionable until trade count climbs.
 
 **⚠️ BUG-AIL-3 — `get_options_flow_weight()` `ImportError` vs `Exception` split**
 `ImportError` returns `1.0` silently (correct — optional dependency). General `except Exception` logs at `logger.info` (should be `logger.warning`). Covered by BUG-AIL-1 fix above.
