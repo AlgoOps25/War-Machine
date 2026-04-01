@@ -44,11 +44,10 @@ The naming similarity is misleading but the responsibilities are distinct.
 Issue #39 (rename) raised to clarify intent going forward.
 
 Optimizations:
-1. Parallel Greeks fetching (ThreadPoolExecutor) - 50-70% latency reduction
-2. Smart strike filtering (volume + OI requirements)
-3. Greeks caching (60s TTL) - avoid redundant API calls
-4. Delta/gamma targeting for 0DTE scalps
-5. 0DTE-specific strike selection (tighter ATM focus)
+1. Smart strike filtering (volume + OI requirements)
+2. Greeks caching (60s TTL) - avoid redundant API calls
+3. Delta/gamma targeting for 0DTE scalps
+4. 0DTE-specific strike selection (tighter ATM focus)
 
 Usage:
     from app.options.options_data_manager import OptionsDataManager
@@ -60,7 +59,6 @@ import logging
 import os
 import requests
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
@@ -71,7 +69,7 @@ logger = logging.getLogger(__name__)
 # EODHD Configuration
 EODHD_API_KEY = os.getenv('EODHD_API_KEY', '')
 EODHD_BASE_URL = 'https://eodhd.com/api/mp/unicornbay'
-REQUEST_TIMEOUT = 30  # Reduced from 30s for 0DTE speed
+REQUEST_TIMEOUT = 30
 
 # Cache Configuration
 CACHE_TTL = 60  # 60 seconds cache for Greeks during rapid scanning
@@ -98,11 +96,10 @@ DELTA_RANGES_REGULAR = {
 
 
 class OptionsDataManager:
-    """High-performance options chain manager with parallel fetching and caching."""
+    """High-performance options chain manager with caching and delta-targeting."""
 
     def __init__(self):
         self._cache = {}  # ticker -> {timestamp, data}
-        self._executor = ThreadPoolExecutor(max_workers=5)  # Parallel API calls
 
     def get_optimized_chain(
         self,
@@ -135,7 +132,7 @@ class OptionsDataManager:
                 return cached['data']
 
         # Fetch chain
-        chain = self._fetch_chain_parallel(ticker, direction, target_dte, for_0dte)
+        chain = self._fetch_chain(ticker, direction, target_dte, for_0dte)
 
         if not chain:
             logger.warning(f"[OPTIONS-DM] No chain data for {ticker}")
@@ -156,7 +153,7 @@ class OptionsDataManager:
 
         return best_contract
 
-    def _fetch_chain_parallel(
+    def _fetch_chain(
         self,
         ticker: str,
         direction: str,
@@ -164,10 +161,10 @@ class OptionsDataManager:
         for_0dte: bool
     ) -> List[Dict]:
         """
-        Fetch options chain with parallel API calls for speed.
+        Fetch options chain from EODHD UnicornBay API.
 
         For 0DTE: Fetch today's expiration only
-        For regular: Fetch target_dte ± 7 days
+        For regular: Fetch target_dte +/- 7 days
         """
         if not EODHD_API_KEY:
             logger.warning("[OPTIONS-DM] EODHD_API_KEY not set")
@@ -184,7 +181,6 @@ class OptionsDataManager:
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                # Fetch contracts
                 url = f"{EODHD_BASE_URL}/options/contracts"
                 params = {
                     'filter[underlying_symbol]': ticker,
