@@ -48,6 +48,19 @@ Key improvements (Mar 2026)
 * FIX 2026-04-01 (BUG-RC-2):
   - Added __main__ block so 'python -m app.ml.ml_trainer' (Railway cron)
     actually calls train_model() instead of exiting silently on import.
+* FIX 2026-04-01 (47.P3-1) — Clean-data retrain gate:
+  - CLEAN_DATA_CUTOFF = 2026-03-25 00:00 ET added as a module constant.
+    Signals before this date were generated while the dead-zone suppressor
+    (BUG-DZ-1), GEX pin gate (BUG-GEX-1), and IVR gate (47.P2-1) were all
+    silently broken — their WIN/LOSS labels are corrupted and must not be
+    used for training.
+  - _fetch_training_data() filters to signal_time >= CLEAN_DATA_CUTOFF so
+    the live EOD retrain path never ingests pre-fix records.
+  - should_retrain() now checks MIN_CLEAN_SAMPLES (50) against the cutoff-
+    filtered count BEFORE proceeding with any other retrain logic.  When
+    below the floor it logs the deficit and returns False so the stale model
+    stays in service rather than being replaced by a model trained on too
+    few (or corrupted) samples.
 """
 import logging
 import os
@@ -79,6 +92,14 @@ RETRAIN_THRESHOLD    = 50
 MODEL_VERSION        = 'historical_v6'
 
 MIN_RECALL_FLOOR = 0.30
+
+# 47.P3-1 — Clean-data cutoff.
+# All signals recorded before this date were generated while the dead-zone
+# suppressor (BUG-DZ-1), GEX pin gate (BUG-GEX-1), and IVR filter (47.P2-1)
+# were silently broken.  Their WIN/LOSS labels are corrupted; do not train on
+# them.  The cutoff is the date our first gate-fix commit landed (Mar 25 2026).
+CLEAN_DATA_CUTOFF   = datetime(2026, 3, 25, 0, 0, 0, tzinfo=ET)
+MIN_CLEAN_SAMPLES   = 50   # refuse to retrain until at least this many clean records exist
 
 # Feature set used by train_from_dataframe() — historical pre-training path.
 HIST_FEATURE_COLS = [
@@ -562,7 +583,13 @@ def train_model(
 
 def _fetch_training_data() -> Optional[pd.DataFrame]:
     """
-    Fetch historical signal outcomes from PostgreSQL.
+    Fetch post-fix signal outcomes from PostgreSQL.
+
+    47.P3-1: Filters to signal_time >= CLEAN_DATA_CUTOFF (2026-03-25 00:00 ET).
+    Pre-cutoff records were generated while the dead-zone suppressor (BUG-DZ-1),
+    GEX pin gate (BUG-GEX-1), and IVR filter (47.P2-1) were silently broken —
+    their WIN/LOSS labels are corrupted and must not pollute the feature matrix.
+
     FIX #26 (Mar 26 2026): Uses db_connection pool (get_conn/return_conn)
     instead of a raw psycopg2.connect() — consistent with the rest of the
     codebase and benefits from pool config / SSL settings.
@@ -581,11 +608,18 @@ def _fetch_training_data() -> Optional[pd.DataFrame]:
             FROM signals
             WHERE outcome IN ('WIN', 'LOSS')
               AND completed_at IS NOT NULL
-              AND signal_time >= NOW() - INTERVAL '90 days'
-            ORDER BY signal_time DESC
+              AND signal_time >= %(cutoff)s
+            ORDER BY signal_time ASC
         """
-        df = pd.read_sql_query(query, conn)
-        logger.info(f"[ML-TRAIN] Fetched {len(df)} completed signals from DB")
+        # 47.P3-1: pass cutoff as parameter so psycopg2 handles TZ serialisation
+        df = pd.read_sql_query(
+            query, conn,
+            params={'cutoff': CLEAN_DATA_CUTOFF.isoformat()},
+        )
+        logger.info(
+            f"[ML-TRAIN] Fetched {len(df)} clean signals from DB "
+            f"(cutoff={CLEAN_DATA_CUTOFF.date()})"
+        )
         return df
     except Exception as exc:
         logger.error(f"[ML-TRAIN] DB fetch failed: {exc}")
@@ -629,7 +663,35 @@ def _prepare_features(df: pd.DataFrame) -> Tuple[Optional[np.ndarray], Optional[
 # ── Retrain check ──────────────────────────────────────────────────
 
 def should_retrain() -> bool:
-    """Check if model should be retrained based on new data availability."""
+    """
+    Check if model should be retrained based on new data availability.
+
+    47.P3-1 — Clean-data gate:
+      Step 0 (new): Count clean post-cutoff completed signals in DB.  If fewer
+      than MIN_CLEAN_SAMPLES (50) exist, block retrain regardless of model age
+      or sample-delta.  This prevents training on a dataset that is too small
+      or still dominated by pre-fix corrupted records.
+    """
+    # ── Step 0: clean-data floor check (47.P3-1) ─────────────────────────
+    try:
+        df_clean = _fetch_training_data()
+        n_clean = len(df_clean) if df_clean is not None else 0
+        if n_clean < MIN_CLEAN_SAMPLES:
+            logger.info(
+                f"[ML-TRAIN] P3-1 gate: only {n_clean} clean signals "
+                f"(need {MIN_CLEAN_SAMPLES} from cutoff {CLEAN_DATA_CUTOFF.date()}) "
+                "— retrain blocked, keeping current model"
+            )
+            return False
+        logger.info(
+            f"[ML-TRAIN] P3-1 gate: {n_clean} clean signals >= {MIN_CLEAN_SAMPLES} — "
+            "proceeding with retrain eligibility check"
+        )
+    except Exception as exc:
+        logger.error(f"[ML-TRAIN] P3-1 clean-data check failed ({exc}) — blocking retrain")
+        return False
+
+    # ── Step 1–3: original age / delta logic ─────────────────────────────
     try:
         if not os.path.exists(MODEL_PATH):
             logger.info("[ML-TRAIN] No existing model — training recommended")
@@ -649,11 +711,9 @@ def should_retrain() -> bool:
         if days_old > 30:
             logger.info(f"[ML-TRAIN] Model is {days_old}d old — retraining recommended")
             return True
-        df = _fetch_training_data()
-        if df is None:
-            return False
+        # df_clean already fetched above — reuse it
         n_at_train  = model_data['metrics']['n_train'] + model_data['metrics'].get('n_val', 0)
-        new_samples = len(df) - n_at_train
+        new_samples = n_clean - n_at_train
         if new_samples >= RETRAIN_THRESHOLD:
             logger.info(f"[ML-TRAIN] {new_samples} new samples — retraining recommended")
             return True
