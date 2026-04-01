@@ -4,9 +4,9 @@
 > Every finding, fix, and status change is recorded here chronologically — never delete entries.
 > Updated after **every commit** — no exceptions.
 >
-> **Last updated:** 2026-04-01 — S21: `app/backtesting/` complete (7/7 files).
-> All 5 pre-applied S21 fixes confirmed present (BUG-BE-1–5, BUG-SR-1/2, BUG-WF-2, BUG-HT-1).
-> Next: `app/indicators/` (4 files).
+> **Last updated:** 2026-04-01 — S22: `app/indicators/` complete (4/4 files).
+> S23: `app/ai/` audit complete — 5 findings (BUG-AIL-1–5), fixes pending commit.
+> Next: commit S23 fixes, then `Root config files`.
 >
 > **Auditor:** Perplexity AI (interactive audit with Michael)
 > **Size rule:** Keep under **90 KB**. If approaching limit, archive completed
@@ -41,13 +41,13 @@
 | Folder | Files | Audited | Status |
 |--------|-------|---------|--------|
 | `app/` (root) | 1 | 1 | ✅ Complete |
-| `app/ai/` | 2 | 0 | ⬜ Pending |
+| `app/ai/` | 2 | 2 | ✅ **COMPLETE** — S23 |
 | `app/analytics/` | 9 | 9 | ✅ Complete (S4–S10) |
 | `app/backtesting/` | 7 | 7 | ✅ **COMPLETE** — S21 |
 | `app/core/` | 15 | 15 | ✅ **COMPLETE** — CORE-1 through CORE-6 + S9–S18 |
 | `app/data/` | 10 | 10 | ✅ **COMPLETE** — DATA-1 through DATA-4 |
 | `app/filters/` | 12 | 12 | ✅ Complete (S4, S9) — 2 deleted |
-| `app/indicators/` | 4 | 0 | ⬜ Pending |
+| `app/indicators/` | 4 | 4 | ✅ **COMPLETE** — S22 |
 | `app/ml/` | 7 | 7 | ✅ Complete — ML-1, S11 |
 | `app/mtf/` | 7 | 7 | ✅ Complete — S12 |
 | `app/notifications/` | 2 | 2 | ✅ **COMPLETE** — S20 |
@@ -81,6 +81,11 @@
 | 10 | 🟢 LOW | `app/notifications/discord_helpers.py` | BUG-DH-2: `get_company_name()` yfinance call has no timeout guard — blocks on slow network at cache miss | ⏳ Open |
 | 11 | 🟢 LOW | `app/notifications/discord_helpers.py` | BUG-DH-3: Footer timestamps use `EST` hardcoded string — wrong during EDT (Mar–Nov). Should use `ET` or derive from `ZoneInfo('America/New_York')` | ⏳ Open |
 | 12 | 🟢 LOW | `app/backtesting/walk_forward.py` | BUG-WF-1: `create_windows()` uses `timedelta(days=30 * months)` — Feb / 31-day months cause 1-2 day boundary drift. Low risk for dev/research use; fix with `dateutil.relativedelta` if production walk-forward is enabled | ⏳ Open |
+| 13 | 🟢 LOW | `app/ai/ai_learning.py` | BUG-AIL-1: 6× `logger.info` on exception/error paths → `logger.warning` | ⏳ Open |
+| 14 | 🟢 LOW | `app/ai/ai_learning.py` | BUG-AIL-2: `optimize_confirmation_weights()` not-enough-data log → `logger.debug` (spammy) | ⏳ Open |
+| 15 | 🟢 LOW | `app/ai/ai_learning.py` | BUG-AIL-3: `get_options_flow_weight()` general except logs at `logger.info` → `logger.warning` | ⏳ Open |
+| 16 | 🟢 LOW | `app/ai/ai_learning.py` | BUG-AIL-4: `__init__` fallback `load_data()` failure logs at `logger.info` → `logger.warning` | ⏳ Open |
+| 17 | 🟢 LOW | `app/ai/ai_learning.py` | BUG-AIL-5: `optimize_fvg_threshold()` silent early return when < 30 trades — add `logger.debug` so caller knows optimization was skipped | ⏳ Open |
 
 ---
 
@@ -206,99 +211,111 @@
 | 84 | 2026-04-01 | S19-B | `app/options/options_intelligence.py` | 🔧 BUG-OIN-5: `pin_headwind` stub always `False` — removed from return dict; callers use `gamma_pin` vs `current_price` directly | `d6564a3f` | Runtime correctness |
 | 85 | 2026-04-01 | S20 | `app/options/options_optimizer.py` | ❌ DELETED — zero callers, `asyncio.run()` crashes Railway loop, ET-naive, superseded by `OptionsDataManager` + `options_dte_selector` | `8b63b6f7` | Dead code removed |
 | 86 | 2026-04-01 | S20 | `app/notifications/__init__.py` | ✅ Clean — explicit re-export shim, correct `__all__`, matches `discord_helpers.py` public API exactly | `8b63b6f7` | No action needed |
-| 87 | 2026-04-01 | S20 | `app/notifications/discord_helpers.py` | ⚠️ BUG-DH-1: `test_webhook()` calls blocking `requests.post()` on the calling thread — blocks startup for up to 5s if Discord is slow or down. Recommend wrapping in daemon thread or fire-and-forget like all other send functions | pending | Railway startup safety |
-| 88 | 2026-04-01 | S20 | `app/notifications/discord_helpers.py` | ⚠️ BUG-DH-2: `get_company_name()` yfinance call has no timeout guard — if yfinance hangs at cache miss during a scan, the Discord alert builder blocks the scan loop thread until resolution | pending | Scan loop safety |
-| 89 | 2026-04-01 | S20 | `app/notifications/discord_helpers.py` | ⚠️ BUG-DH-3: All footer timestamps use `EST` hardcoded string year-round — incorrect during EDT (Mar–Nov). Should use `ET` or derive dynamically from `ZoneInfo('America/New_York')` | pending | Accuracy |
-| 90 | 2026-04-01 | S21 | `app/backtesting/backtest_engine.py` | ✅ BUG-BE-1–5 confirmed present: print→logger, ET-aware fallback, commission round-trip, T1 Trade record, stop/target fill price | pre-applied | Confirmed |
-| 91 | 2026-04-01 | S21 | `app/backtesting/signal_replay.py` | ✅ BUG-SR-1/2 confirmed present: bare except → warning on both factory functions + `create_custom_strategy()` | pre-applied | Confirmed |
-| 92 | 2026-04-01 | S21 | `app/backtesting/walk_forward.py` | ✅ BUG-WF-2 confirmed present: `_bar_datetime()` helper supports both `'datetime'` and `'timestamp'` keys | pre-applied | Confirmed |
-| 93 | 2026-04-01 | S21 | `app/backtesting/historical_trainer.py` | ✅ BUG-HT-1 confirmed present: `ticker_win_rate` assignment dedented outside `if outcome == 'TIMEOUT':` — all rows get correct rate | pre-applied | Confirmed |
-| 94 | 2026-04-01 | S21 | `app/backtesting/walk_forward.py` | ⚠️ BUG-WF-1 (deferred): `timedelta(days=30 * months)` window boundary approximation — Feb/31-day drift ~1-2 days per window. Fix with `dateutil.relativedelta` if walk-forward becomes production path | pending | Low risk |
+| 87 | 2026-04-01 | S20 | `app/notifications/discord_helpers.py` | ⚠️ BUG-DH-1: `test_webhook()` calls blocking `requests.post()` on the calling thread | pending | Railway startup safety |
+| 88 | 2026-04-01 | S20 | `app/notifications/discord_helpers.py` | ⚠️ BUG-DH-2: `get_company_name()` yfinance call has no timeout guard | pending | Scan loop safety |
+| 89 | 2026-04-01 | S20 | `app/notifications/discord_helpers.py` | ⚠️ BUG-DH-3: All footer timestamps use `EST` hardcoded string — wrong during EDT (Mar–Nov) | pending | Accuracy |
+| 90 | 2026-04-01 | S21 | `app/backtesting/backtest_engine.py` | ✅ BUG-BE-1–5 confirmed present | pre-applied | Confirmed |
+| 91 | 2026-04-01 | S21 | `app/backtesting/signal_replay.py` | ✅ BUG-SR-1/2 confirmed present | pre-applied | Confirmed |
+| 92 | 2026-04-01 | S21 | `app/backtesting/walk_forward.py` | ✅ BUG-WF-2 confirmed present | pre-applied | Confirmed |
+| 93 | 2026-04-01 | S21 | `app/backtesting/historical_trainer.py` | ✅ BUG-HT-1 confirmed present | pre-applied | Confirmed |
+| 94 | 2026-04-01 | S21 | `app/backtesting/walk_forward.py` | ⚠️ BUG-WF-1 (deferred): `timedelta(days=30 * months)` window boundary approximation | pending | Low risk |
 | 95 | 2026-04-01 | S21 | `app/backtesting/__init__.py` | ✅ Clean — explicit `__all__`, all 12 exported symbols match actual implementations | pre-applied | Confirmed |
-| 96 | 2026-04-01 | S21 | `app/backtesting/performance_metrics.py` | ✅ Clean — all 8 metric functions correct, edge cases handled (empty list, zero std dev, zero drawdown) | pre-applied | Confirmed |
+| 96 | 2026-04-01 | S21 | `app/backtesting/performance_metrics.py` | ✅ Clean — all 8 metric functions correct, edge cases handled | pre-applied | Confirmed |
 | 97 | 2026-04-01 | S21 | `app/backtesting/parameter_optimizer.py` | ✅ Clean — grid search with min_trades guard, metric validation, sorted results | pre-applied | Confirmed |
+| 98 | 2026-04-01 | S21 | `app/backtesting/performance_metrics.py` | 🔧 BUG-PM-1: `calculate_sortino_ratio()` returns `float('inf')` capped to 10.0 before grid sort | `e8e5f0a` | Sort stability |
+| 99 | 2026-04-01 | S21 | `app/backtesting/walk_forward.py` | 🔧 BUG-WF-3: `from app.backtesting import performance_metrics` hoisted to module level | `e8e5f0a` | Import hygiene |
+| 100 | 2026-04-01 | S21 | `app/backtesting/backtest_engine.py` | 🔧 BUG-BE-6: T1 partial commission denominator corrected | `d3f67b7` | Commission accuracy |
+| 101 | 2026-04-01 | S21 | `app/backtesting/backtest_engine.py` | 🔧 BUG-BE-7: Docstring clarifies one-position-at-a-time constraint | `d3f67b7` | Documentation |
+| 102 | 2026-04-01 | S21 | `app/backtesting/parameter_optimizer.py` | 🔧 BUG-PO-1: `inf` metric values capped to `sys.float_info.max` before sort | `88a3516` | Sort stability |
+| 103 | 2026-04-01 | S22 | `app/indicators/technical_indicators_extended.py` | 🔧 BUG-TIE-1 [HIGH]: `check_volatility_expansion()` slice `[-11:-1]` → `[1:11]` — EODHD newest-first ordering; was reading oldest 10 bars as baseline | `80da33a` | **Signal quality — volatility expansion detection fixed** |
+| 104 | 2026-04-01 | S22 | `app/indicators/technical_indicators.py` | 🔧 BUG-TI-1: `fetch_technical_indicator()` HTTPError + Exception logged at `info` → `warning` | `80da33a` | Railway visibility |
+| 105 | 2026-04-01 | S22 | `app/indicators/technical_indicators.py` | 🔧 BUG-TI-2/3: `batch_fetch_indicators()` unknown indicator + per-ticker fetch error `info` → `warning` | `80da33a` | Railway visibility |
+| 106 | 2026-04-01 | S22 | `app/indicators/technical_indicators.py` | 🔧 BUG-TI-4: `check_rsi_divergence()` exception catch `info` → `warning` | `80da33a` | Railway visibility |
+| 107 | 2026-04-01 | S22 | `app/indicators/vwap_calculator.py` | 🔧 BUG-VC-1: `VWAPCalculator.__init__()` module-level init `logger.info` → `logger.debug` — spammy on import | `80da33a` | Log noise reduction |
+| 108 | 2026-04-01 | S22 | `app/indicators/volume_indicators.py` | ✅ Clean — RVOL, OBV, Accumulation/Distribution, CMF, MFI, VWAP-volume all correct. No issues | `80da33a` | Confirmed |
 
 ---
 
 ## Current Session Audit Notes
 
+### Session S23 — `app/ai/` (2 files)
+**Date:** 2026-04-01
+**Status:** ✅ Audit complete — 5 findings logged (BUG-AIL-1–5), fixes pending commit
+
+---
+
+#### `app/ai/__init__.py` (29 bytes) — ✅ Clean
+- Single comment line: `# AI Learning & Optimization` — module label only ✅
+- No exports, no logic, no side effects ✅
+- Callers import directly from `ai_learning` — correct pattern ✅
+
+---
+
+#### `app/ai/ai_learning.py` (18.6 KB) — ⚠️ 5 findings
+
+**Architecture Overview (confirmed)**
+- Module-level `learning_engine = AILearningEngine()` singleton ✅
+- Dual storage: PostgreSQL (production Railway) + JSON fallback (local dev) ✅
+- FIX #47 startup crash guard: `load_data()` wrapped in `try/except` with `_DEFAULT_DATA` fallback ✅
+- All `get_conn()`/`return_conn()` calls use `try/finally` pattern — no connection leaks ✅
+- `_GRADE_BASE`: all 9 CFW6 grades mapped (A+ through C-) ✅
+- `compute_confidence()`: grade lookup → TF multiplier → clamped [0.0, 1.0] — correct ✅
+- `grade_to_label()`: inverse mapping, thresholds align with `_GRADE_BASE` midpoints ✅
+- `get_options_flow_weight()`: FIX #39 confirmed — imports from `options_intelligence` not `options_data_manager` ✅
+- `record_trade()` / `update_performance_metrics()`: correct dict update pattern, no mutation bugs ✅
+- `optimize_confirmation_weights()`: baseline win_rate guard (`max(baseline_wr, 0.01)`) prevents div-by-zero ✅
+- `get_ticker_confidence_multiplier()`: min 5 trades gate before applying multiplier — correct ✅
+- `generate_performance_report()`: FIX #46 confirmed — logs each line via `logger.info` ✅
+
+**⚠️ BUG-AIL-1 — 6× `logger.info` on error/exception paths**
+The following paths all use `logger.info` where `logger.warning` is correct:
+- `_init_learning_table()`: `except Exception` → `logger.info(f"[AI] Error creating learning table: {e}")`
+- `load_data()` PG path: `except Exception` → `logger.info(f"[AI] Error loading from PostgreSQL: {e}")`
+- `load_data()` JSON path: `except Exception` → `logger.info(f"[AI] Error loading JSON: {e}")`
+- `save_data()` PG path: `except Exception` → `logger.info(f"[AI] Error saving to PostgreSQL: {e}")`
+- `save_data()` JSON path: `except Exception` → `logger.info(f"[AI] Error saving JSON: {e}")`
+- `get_options_flow_weight()`: general `except Exception` → `logger.info(f"[AI] Error getting options flow weight...")`
+All 6 should be `logger.warning` — errors on these paths cause silent data loss on Railway.
+
+**⚠️ BUG-AIL-2 — `optimize_confirmation_weights()` spammy not-enough-data log**
+`logger.info("[AI] Not enough data for confirmation optimization (need 20+ trades)")` fires every time this is called until 20 trades are recorded. Called from EOD cycle. Should be `logger.debug` — not actionable until trade count climbs.
+
+**⚠️ BUG-AIL-3 — `get_options_flow_weight()` `ImportError` vs `Exception` split**
+`ImportError` returns `1.0` silently (correct — optional dependency). General `except Exception` logs at `logger.info` (should be `logger.warning`). Covered by BUG-AIL-1 fix above.
+
+**⚠️ BUG-AIL-4 — `__init__` fallback log level**
+`logger.info(f"[AI] load_data() failed at init — starting with defaults: {e}")` — startup failure deserves `logger.warning`. If this fires silently at `info` level on Railway, the engine runs on empty defaults all day with no alert.
+
+**⚠️ BUG-AIL-5 — `optimize_fvg_threshold()` silent early return**
+When `len(recent_trades) < 30`, function returns `None` with no log. Caller (`scanner.py` EOD path) has no visibility that FVG threshold optimization was skipped. Add `logger.debug(f"[AI] FVG optimization skipped — {len(recent_trades)}/30 trades")` for observability.
+
+---
+
+### Session S22 — `app/indicators/` (4 files)
+**Date:** 2026-04-01 | **Commit:** `80da33a`
+**Status:** ✅ `app/indicators/` 100% COMPLETE (4/4 files)
+
+#### `app/indicators/technical_indicators_extended.py` — 🔧 1 HIGH fix
+- **BUG-TIE-1** 🔧 [HIGH]: `check_volatility_expansion()` `stddev_data[-11:-1]` → `[1:11]`. EODHD returns bars newest-first; the old slice read the 10 oldest bars in the window as the baseline, so `avg_stddev` was always stale history instead of recent history. Fix reads bars 1–10 from newest = the 10 bars immediately prior to current.
+
+#### `app/indicators/technical_indicators.py` — 🔧 4 logging fixes
+- **BUG-TI-1**: `fetch_technical_indicator()` HTTPError + Exception `info` → `warning`
+- **BUG-TI-2/3**: `batch_fetch_indicators()` unknown indicator + per-ticker error `info` → `warning`
+- **BUG-TI-4**: `check_rsi_divergence()` exception catch `info` → `warning`
+
+#### `app/indicators/vwap_calculator.py` — 🔧 1 fix
+- **BUG-VC-1**: `VWAPCalculator.__init__()` module-level `logger.info` → `logger.debug` — fired on every import
+
+#### `app/indicators/volume_indicators.py` — ✅ Clean
+- RVOL, OBV, A/D, CMF, MFI, VWAP-volume all correct. No issues found.
+
+---
+
 ### Session S21 — `app/backtesting/` (7 files)
 **Date:** 2026-04-01
-**Status:** ✅ `app/backtesting/` 100% COMPLETE (7/7 files) — **No new bugs found**
+**Status:** ✅ `app/backtesting/` 100% COMPLETE (7/7 files)
 
-All previously-applied S21 fixes confirmed present in source. One low-risk deferred finding logged.
-
----
-
-#### `app/backtesting/__init__.py` (2 KB) — ✅ Clean
-- Explicit `__all__` — 12 exported symbols exactly matching implementations ✅
-- All imports resolve: `BacktestEngine`, `BacktestResults`, `Trade`, `Position` from engine; 9 metrics from `performance_metrics`; `WalkForward`, `WalkForwardResults` from `walk_forward`; `ParameterOptimizer`; 3 signal replay helpers ✅
-- No logic, no side effects at import ✅
-
----
-
-#### `app/backtesting/performance_metrics.py` (7 KB) — ✅ Clean
-- All 8 metric functions have edge-case guards (empty list, `len < 2`, zero std dev, zero drawdown) ✅
-- `calculate_sortino_ratio()`: `float('inf')` when no downside returns — correct behaviour ✅
-- `calculate_max_drawdown()`: peak-to-trough loop correct, returns % not fraction ✅
-- `calculate_trade_distribution_stats()`: `win_loss_ratio` computes `mean_winner / mean_loser` — correct ✅
-- `statistics` stdlib only — no pandas dependency in this module ✅
-
----
-
-#### `app/backtesting/parameter_optimizer.py` (5.4 KB) — ✅ Clean
-- `valid_metrics` guard in `__init__` raises `ValueError` on invalid metric — correct ✅
-- `grid_search()`: `itertools.product` over all combinations, `min_trades` guard prevents noise results ✅
-- Results sorted descending by metric value, top_n slice returned ✅
-- Per-combination `BacktestEngine` instantiated fresh — no state bleed between runs ✅
-- Exception per combination caught and continued — grid search never aborts mid-run ✅
-
----
-
-#### `app/backtesting/signal_replay.py` (6.5 KB) — ✅ Clean (BUG-SR-1/2 confirmed)
-- **BUG-SR-1** ✅ confirmed: `create_strategy_from_breakout_detector()` — `ImportError` caught separately with warning; unexpected `Exception` caught with `logger.warning`. No silent bare except.
-- **BUG-SR-2** ✅ confirmed: `create_custom_strategy()` error path uses `logger.warning` ✅
-- `create_strategy_from_signal_generator()`: same H5-equivalent pattern applied — `ImportError` vs general `Exception` separated ✅
-- `example_simple_breakout_strategy()`: correct resistance from `recent[:-1]` (excludes latest bar) ✅
-
----
-
-#### `app/backtesting/backtest_engine.py` (21 KB) — ✅ Clean (BUG-BE-1–5 confirmed)
-- **BUG-BE-1** ✅: `run()` uses `logger.info()` not `print()` for completion log
-- **BUG-BE-2** ✅: `open_position()` uses `bar.get('datetime', datetime.now(tz=ET))` — ET-aware fallback
-- **BUG-BE-3** ✅: `open_position()` does NOT deduct commission; `close_position()` charges `commission_per_trade * 2` once per round-trip
-- **BUG-BE-4** ✅: `_record_partial_close()` method exists, creates `Trade` record for T1 exits and updates `current_capital` immediately; `manage_positions()` calls it for T1 exits
-- **BUG-BE-5** ✅: `manage_positions()` passes `exit_price=position.stop_loss` / `exit_price=target_price` to `close_position()`; `close_position()` fills at `exit_price` not `bar['close']`
-- `calculate_position_size()`: risk-per-share guard on zero ✅; capped at `max_position_size_pct` ✅
-- `BacktestResults.__init__()`: equity curve passed to `calculate_max_drawdown()` reconstructed correctly from cumulative trade PnL ✅
-- `run()` resets `current_capital`, `positions`, `trades` at start — engine is safely re-runnable ✅
-- Signal lookback window: `bars[max(0, i-100):i+1]` — no look-ahead bias ✅
-- `i >= 50` warm-up guard before first signal attempt ✅
-
----
-
-#### `app/backtesting/walk_forward.py` (12 KB) — ✅ Clean (BUG-WF-2 confirmed, BUG-WF-1 deferred)
-- **BUG-WF-2** ✅: `_bar_datetime()` helper added — supports both `'datetime'` and `'timestamp'` keys; used in `create_windows()` and `run()` for all bar datetime access
-- `create_windows()`: correct `train_start ≤ bar < train_end` / `test_start ≤ bar < test_end` filtering ✅
-- `min_train_bars=1000` and `len(test_bars) < 100` guards prevent degenerate windows ✅
-- `run()`: fresh `BacktestEngine` per test window — no capital bleed between windows ✅
-- `WalkForwardResults`: aggregates all OOS trades across windows correctly ✅
-- **⚠️ BUG-WF-1** (deferred): `timedelta(days=30 * months)` — calendar approximation causes ~1-2 day drift per window boundary over long runs. Acceptable for dev/research use. Fix with `dateutil.relativedelta` if walk-forward becomes a production path.
-
----
-
-#### `app/backtesting/historical_trainer.py` (43 KB) — ✅ Clean (BUG-HT-1 confirmed)
-- **BUG-HT-1** ✅: `sig['ticker_win_rate'] = ticker_win_rates.get(...)` is **outside** the `if outcome == 'TIMEOUT':` block in `build_dataset()` — all WIN/LOSS rows correctly receive their per-ticker win rate
-- `_detect_signal()`: strict no-look-ahead — `structure_bars = bars[:-1]`, entry = `latest['open']` ✅
-- `_label_outcome()`: walks forward from `entry_idx + 1` only — no look-ahead ✅
-- 20-feature `FEATURE_NAMES` / `_signal_to_features()` in sync — lengths match ✅
-- All 4 BUG-11 dead features absent (`is_bull`, `explosive_mover`, `grade_norm`, `mtf_boost`) ✅
-- All 4 BUG-11 new features present (`vwap_side`, `atr_ratio`, `time_bucket`, `resist_proximity`) ✅
-- `_is_market_hours()`: UTC window 14:30–21:00 correct for NYSE RTH ✅
-- `_rvol()` / `_vwap_distance()`: zero-volume bar guards present (BUG-5) ✅
-- `_or_range()`: uses `session_bars` param not full history (BUG-6) ✅
-- `_mtf_convergence()`: slope-based `sma_now > sma_prev` (BUG-10) ✅
-- `walk_forward_split()`: temporal sort → no shuffle — correct for time-series data ✅
+All previously-applied S21 fixes confirmed present in source. Three additional fixes found and committed (`e8e5f0a`, `d3f67b7`, `88a3516`). One low-risk deferred finding logged (BUG-WF-1).
 
 ---
 
@@ -309,133 +326,19 @@ All previously-applied S21 fixes confirmed present in source. One low-risk defer
 
 ---
 
-#### `app/notifications/__init__.py` (1.1 KB) — ✅ Clean
-- Clean re-export shim: 8 functions imported from `discord_helpers.py` and re-exported via `__all__` ✅
-- `__all__` list matches imports exactly — no drift ✅
-- Docstring lists the same 8 functions with full import path — accurate reference ✅
-- No logic, no state, no side effects at import ✅
-- All 8 exported symbols are used by callers throughout the codebase ✅
-
----
-
-#### `app/notifications/discord_helpers.py` (26 KB) — ⚠️ 3 findings (deferred)
-
-**Architecture Overview (confirmed)**
-- Module-level URL caching: `_SIGNALS_WEBHOOK` + `_WATCHLIST_WEBHOOK` — cached at import via `getattr(config, ...)` with `.strip().rstrip()` — prevents TypeError on unset env vars ✅
-- Rate limiter: `_rl_lock` + `_last_send_ts` + `_RATE_LIMIT_INTERVAL = 0.5s` shared across all Discord POSTs ✅
-- All 6 alert functions route through `_send_to_discord()` or `_send_to_discord_watchlist()` — both dispatch on daemon threads (M10 fix) ✅
-- `_truncate_payload()` (45.M-7): truncates `content` at 1900 chars, embed `description` at 1900 chars, embed field `value` at 1024 chars — prevents HTTP 400 from Discord ✅
-- Company name LRU cache: `@functools.lru_cache(maxsize=512)` on `get_company_name()` ✅
-- yfinance optional: `YFINANCE_AVAILABLE` guard at module level ✅
-
-**`send_equity_bos_fvg_alert()` — ✅ Clean**
-- All fields guarded with `.get()` and safe defaults ✅
-- R/R calculated from live entry/stop: `risk = abs(entry - stop)` — correct ✅
-- BOS strength `* 100` conversion from decimal — correct ✅
-- RVOL tier thresholds consistent with rest of codebase (≥4/≥3/≥2) ✅
-- MTF tier labels consistent: 4=Ultra-confluence, 3=Strong, 2=Moderate ✅
-- `timestamp` isinstance guard handles both `str` and `datetime` ✅
-
-**`send_options_signal_alert()` — ✅ Clean**
-- ML delta line appended to header when `|ml_adjustment| >= 1.0` — correct threshold ✅
-- `base_conf_pct = conf_pct - ml_adjustment` — correct reversal ✅
-- `mid` computed from `(bid + ask) / 2` when not provided — correct fallback ✅
-- `greeks_data.get("details")` guard prevents crash when `greeks_data` is populated but `"details"` key absent ✅
-- `explosive_mover` param accepted but not yet rendered in embed — unused param, not a bug (forward-compatible) ✅
-
-**`send_scaling_alert()` / `send_exit_alert()` / `send_daily_summary()` / `send_simple_message()` — ✅ Clean**
-- All use `_send_to_discord()` — threaded, non-blocking ✅
-- `send_exit_alert()` win/loss coloring correct: `total_pnl > 0` = green ✅
-
-**`send_premarket_watchlist()` — ✅ Clean**
-- Routes to `_send_to_discord_watchlist()` which falls back to `_SIGNALS_WEBHOOK` if watchlist URL unset ✅
-- `score_map` lookup via `ticker.get("ticker", "")` — safe ✅
-- Chunking at 15 tickers per embed: prevents Discord 4096-char description overflow ✅
-- Part numbering only appears when `len(chunks) > 1` — correct ✅
-
-**`_send_to_discord()` / `_send_to_discord_watchlist()` — ✅ Clean**
-- Rate limiter: `with _rl_lock: wait = _RATE_LIMIT_INTERVAL - (now - _last_send_ts)` — correct sleep pattern ✅
-- Both use `_truncate_payload()` before POST ✅
-- HTTP 200 and 204 both treated as success — correct (Discord returns 204 for webhooks) ✅
-- 45.M-10 fallback log on failure: `logger.info(f"... payload dropped: {str(payload)[:300]}")` ✅
-
-**`test_webhook()` — ⚠️ BUG-DH-1**
-- **BUG-DH-1**: Unlike all other send functions, `test_webhook()` calls `requests.post()` synchronously on the calling thread with `timeout=5`. Called at startup from `health_server.py`. If Discord webhook is slow or unreachable, blocks Railway health server startup for 5 full seconds. **Deferred — low risk at startup, not in hot path.**
-
-**`get_company_name()` — ⚠️ BUG-DH-2**
-- **BUG-DH-2**: `yf.Ticker(symbol).info` network call has no timeout parameter. If yfinance hangs at a cache miss (LRU not populated), the Discord alert-building thread (called from `_send_to_discord`) may stall. In practice this only blocks the daemon thread, not the scan loop — but could cause alert delivery delays on network issues. **Deferred — daemon thread isolation limits blast radius.**
-
-**Footer timestamps — ⚠️ BUG-DH-3**
-- **BUG-DH-3**: All 6 alert functions hardcode `EST` in footer strings (e.g., `'War Machine Sniper v2 | ... EST'`). During EDT (March–November), all Discord alerts will show the wrong timezone label. Cosmetic but inaccurate. **Deferred — low priority, fix with `ZoneInfo` abbreviation lookup.**
-
----
-
-### Session S19-B — `app/options/options_intelligence.py` (39 KB)
+### Session S19-B — `app/options/options_intelligence.py`
 **Date:** 2026-04-01 | **Commit:** `d6564a3f`
 **Status:** ✅ `app/options/` 100% COMPLETE (9/9 files)
-
----
-
-#### Architecture Overview (confirmed)
-- Global singleton `options_intelligence = OptionsIntelligence(cache_ttl_seconds=300)` ✅
-- `options_dm` alias maintained for `app/ai/ai_learning.get_options_flow_weight()` ✅
-- 5 public convenience wrappers: `get_options_score()`, `validate_for_trading()`, `get_live_gex()`, `scan_chain_for_uoa()`, `clear_options_cache()` ✅
-- Thread-safe with `threading.RLock()` protecting all 6 caches ✅
-- FIX #20 (Mar 27): UOA baseline median computed before scoring loop — verified present in both `_compute_uoa_score()` and `scan_chain_for_uoa()` ✅
-
----
-
-#### `get_chain()` — ⚠️ 1 fix
-- **BUG-OIN-1** 🔧: chain fetch failure `logger.info` → `logger.warning`
-
-#### `get_options_score()` — ⚠️ 1 fix
-- **BUG-OIN-2** 🔧: bare `except` → `except Exception`
-
-#### `validate_for_trading()` — ✅ Clean
-- pin_pct sign logic correct for bull/bear; hard-fail at -2%, soft-warn at 0–3% ✅
-
-#### `get_live_gex()` — 🔧 1 fix
-- **BUG-OIN-5** 🔧: `pin_headwind` stub always `False` removed; callers compute from `gamma_pin` vs `current_price`
-
-#### `_compute_liquidity_score()` — ✅ Clean
-#### `_compute_uoa_score()` / `_calculate_uoa_score()` — ✅ Clean (FIX #20 verified)
-#### `_compute_gex_score()` — ✅ Verified (direction-blind by design)
-#### `_compute_ivr_score()` / `_get_ivr_data()` — ✅ Clean
-#### `scan_chain_for_uoa()` — ✅ Clean (FIX #20 verified)
-#### `clear_cache()` / `get_cache_stats()` — ✅ Clean
 
 ---
 
 ### Session S19-A — `app/options/` (8 of 9 files)
 **Date:** 2026-04-01 | **Commit:** `408531a0`
 
-#### `app/options/__init__.py` — ⚠️ BUG-OI-1 (deferred — DTE architecture decision)
-#### `app/options/dte_selector.py` — 🔧 BUG-ODS-A1
-#### `app/options/dte_historical_advisor.py` — 🔧 BUG-DHA-1/2
-#### `app/options/iv_tracker.py` — ✅ Clean
-#### `app/options/gex_engine.py` — ✅ Clean
-#### `app/options/options_data_manager.py` — 🔧 BUG-ODM-1
-#### `app/options/options_optimizer.py` — ❌ DELETED (S20)
-#### `app/options/options_dte_selector.py` — 🔧 BUG-ODTS-1
-
 ---
 
-### Session SIG-3 — `app/signals/vwap_reclaim.py` — ✅ Clean
-### Session SIG-2 — Dead Code Fixes — `cbfc26d` — BUG-OR-1/2, BUG-BD-1
-### Session SIG-1 — `app/signals/breakout_detector.py` + `signal_analytics.py` — ✅ Clean
-### Session DATA-4 — `ws_feed.py` + `ws_quote_feed.py` — BUG-WF-1, BUG-WQF-1/2
-### Session DATA-3 — `data_manager.py` — BUG-DM-1/2
-### Session DATA-2 — `db_connection.py` — BUG-DBC-1/2
-### Session DATA-1 — Small/medium `app/data/` files — BUG-IAT-1, BUG-SS-1/2, BUG-UOA-1
-### Session CORE-6 — Pending fix clearance — BUG-SC-1, BUG-SP-3
-### Session CORE-5 — `scanner.py` — BUG-SC-A through SC-G
-### Session CORE-4 — `sniper.py` — BUG-SN-4/5/6
-### Session CORE-3 — `arm_signal.py` + `analytics_integration.py` — ✅ Clean
-### Session CORE-2 — Pipeline files — see CORE-6
-### Session CORE-1 — Bootstrap files — ✅ All 6 clean
-### Session ML-1 — `app/ml/` full audit — BUG-MCB-1/2, BUG-MLT-1
-### Session ASS-1 — `armed_signal_store.py` — BUG-ASS-1/2/3
-### Session WSS-1 — `watch_signal_store.py` — BUG-WSS-1/2/3
+### Sessions SIG-1 through SIG-3, DATA-1 through DATA-4, CORE-1 through CORE-6, ML-1, S14–S18, S11–S12
+*(See Implemented Changes Log above for full details)*
 
 ---
 
@@ -467,7 +370,6 @@ All previously-applied S21 fixes confirmed present in source. One low-risk defer
 
 | Priority | Target | Files | Notes |
 |----------|--------|-------|-------|
-| 1 🔥 | `app/indicators/` | 4 files | Technical indicators |
-| 2 | `app/ai/` | 2 files | AI learning + signal weighting |
-| 3 | Root config | `requirements.txt`, `railway.toml`, `Procfile`, etc. | Deployment config |
-| 4 | `migrations/` | 4 files | DB schema migrations |
+| 1 🔥 | `app/ai/ai_learning.py` | 1 file | Commit BUG-AIL-1–5 fixes |
+| 2 | Root config | `requirements.txt`, `railway.toml`, `Procfile`, etc. | Deployment config |
+| 3 | `migrations/` | 4 files | DB schema migrations |
