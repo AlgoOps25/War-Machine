@@ -16,25 +16,15 @@ Example:
 
   ... continue rolling forward
 
-Usage:
-  wf = WalkForward(
-      train_months=3,
-      test_months=1,
-      step_months=1
-  )
-
-  results = wf.run(
-      ticker='AAPL',
-      bars=historical_bars,
-      strategy=my_strategy,
-      param_grid={'volume_threshold': [2.0, 3.0], 'min_confidence': [60, 70]}
-  )
-
 NOTE (BUG-WF-1, S21): Window boundaries are computed as timedelta(days=30 * months).
-This is a known approximation — February and 31-day months cause 1-2 day drift per
+This is a known approximation -- February and 31-day months cause 1-2 day drift per
 window over long runs. For calendar-precise splits use dateutil.relativedelta.
+
+BUG-WF-2 (Apr 2026): create_windows() and run() used bars[0]['datetime'] directly.
+EODHD bars (from historical_trainer) use 'timestamp' key, not 'datetime'.
+Fixed with .get('datetime') or .get('timestamp') fallback pattern.
 """
-from typing import Dict, List, Callable
+from typing import Dict, List, Callable, Optional
 from datetime import datetime, timedelta
 from dataclasses import dataclass
 import statistics
@@ -44,6 +34,27 @@ from app.backtesting.parameter_optimizer import ParameterOptimizer
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+def _bar_datetime(bar: Dict) -> Optional[datetime]:
+    """
+    BUG-WF-2: Safely extract datetime from a bar dict.
+    Supports both 'datetime' key (BacktestEngine bars) and
+    'timestamp' key (EODHD bars from historical_trainer).
+    Returns None if neither key is present or value is unparseable.
+    """
+    val = bar.get('datetime') or bar.get('timestamp')
+    if val is None:
+        return None
+    if isinstance(val, datetime):
+        return val
+    # Try parsing common string formats
+    for fmt in ('%Y-%m-%d %H:%M:%S', '%Y-%m-%dT%H:%M:%S', '%Y-%m-%d'):
+        try:
+            return datetime.strptime(str(val), fmt)
+        except ValueError:
+            continue
+    return None
 
 
 @dataclass
@@ -162,7 +173,7 @@ class WalkForward:
         self.min_train_bars = min_train_bars
 
         logger.info(
-            f"[WALK-FORWARD] Initialized — train={train_months}m test={test_months}m "
+            f"[WALK-FORWARD] Initialized -- train={train_months}m test={test_months}m "
             f"step={step_months}m optimize={optimization_metric}"
         )
 
@@ -170,11 +181,12 @@ class WalkForward:
         """
         Create train/test windows from bars.
 
-        NOTE: Month boundaries use timedelta(days=30 * months) — approximation.
+        NOTE: Month boundaries use timedelta(days=30 * months) -- approximation.
         See module docstring (BUG-WF-1) for details.
 
         Args:
-            bars: Historical OHLCV bars with 'datetime' field
+            bars: Historical OHLCV bars with 'datetime' or 'timestamp' field
+                  (BUG-WF-2: both keys supported via _bar_datetime())
 
         Returns:
             List of WalkForwardWindow objects
@@ -182,24 +194,32 @@ class WalkForward:
         if not bars:
             return []
 
-        windows = []
-        start_date = bars[0]['datetime']
-        end_date = bars[-1]['datetime']
+        # BUG-WF-2: use _bar_datetime() instead of bare ['datetime'] key
+        start_date = _bar_datetime(bars[0])
+        end_date   = _bar_datetime(bars[-1])
+        if start_date is None or end_date is None:
+            logger.warning("[WALK-FORWARD] Could not parse bar datetimes -- check 'datetime'/'timestamp' keys")
+            return []
 
+        windows = []
         current_start = start_date
 
         while True:
             train_start = current_start
-            train_end = train_start + timedelta(days=30 * self.train_months)
-
-            test_start = train_end
-            test_end = test_start + timedelta(days=30 * self.test_months)
+            train_end   = train_start + timedelta(days=30 * self.train_months)
+            test_start  = train_end
+            test_end    = test_start + timedelta(days=30 * self.test_months)
 
             if test_end > end_date:
                 break
 
-            train_bars = [b for b in bars if train_start <= b['datetime'] < train_end]
-            test_bars = [b for b in bars if test_start <= b['datetime'] < test_end]
+            # BUG-WF-2: filter using _bar_datetime() not ['datetime']
+            train_bars = [b for b in bars
+                          if _bar_datetime(b) is not None
+                          and train_start <= _bar_datetime(b) < train_end]
+            test_bars  = [b for b in bars
+                          if _bar_datetime(b) is not None
+                          and test_start  <= _bar_datetime(b) < test_end]
 
             if len(train_bars) < self.min_train_bars or len(test_bars) < 100:
                 current_start += timedelta(days=30 * self.step_months)
@@ -229,7 +249,7 @@ class WalkForward:
 
         Args:
             ticker: Stock ticker
-            bars: Historical OHLCV bars
+            bars: Historical OHLCV bars (supports 'datetime' or 'timestamp' key)
             strategy: Strategy function
             param_grid: Parameter grid for optimization
             initial_capital: Starting capital
@@ -238,20 +258,27 @@ class WalkForward:
             WalkForwardResults object
         """
         logger.info(f"[WALK-FORWARD] Starting validation for {ticker} | bars={len(bars)}")
-        logger.info(f"  Period: {bars[0]['datetime'].date()} to {bars[-1]['datetime'].date()}")
+
+        # BUG-WF-2: use _bar_datetime() instead of bare ['datetime'] key
+        first_dt = _bar_datetime(bars[0]) if bars else None
+        last_dt  = _bar_datetime(bars[-1]) if bars else None
+        if first_dt and last_dt:
+            logger.info(f"  Period: {first_dt.date()} to {last_dt.date()}")
+        else:
+            logger.warning("[WALK-FORWARD] Could not parse bar datetimes for period log")
 
         windows = self.create_windows(bars)
         logger.info(f"[WALK-FORWARD] Windows created: {len(windows)}")
 
         if not windows:
-            logger.warning("[WALK-FORWARD] No valid windows created — insufficient data")
+            logger.warning("[WALK-FORWARD] No valid windows created -- insufficient data")
             return WalkForwardResults([], initial_capital)
 
         for i, window in enumerate(windows, 1):
             logger.info(
-                f"[WALK-FORWARD] Window {i}/{len(windows)} — "
-                f"Train: {window.train_start.date()}–{window.train_end.date()} ({len(window.train_bars)} bars) | "
-                f"Test: {window.test_start.date()}–{window.test_end.date()} ({len(window.test_bars)} bars)"
+                f"[WALK-FORWARD] Window {i}/{len(windows)} -- "
+                f"Train: {window.train_start.date()}-{window.train_end.date()} ({len(window.train_bars)} bars) | "
+                f"Test: {window.test_start.date()}-{window.test_end.date()} ({len(window.test_bars)} bars)"
             )
 
             optimizer = ParameterOptimizer(
@@ -272,7 +299,7 @@ class WalkForward:
 
             best_result = train_results[0]
             window.optimal_params = best_result['params']
-            window.train_results = best_result['results']
+            window.train_results  = best_result['results']
 
             logger.info(
                 f"  [TRAIN] Best params: {window.optimal_params} "
@@ -296,7 +323,7 @@ class WalkForward:
         results = WalkForwardResults(windows, initial_capital)
 
         logger.info(
-            f"[WALK-FORWARD] Complete — OOS trades={len(results.all_test_trades)} "
+            f"[WALK-FORWARD] Complete -- OOS trades={len(results.all_test_trades)} "
             f"pnl=${results.net_pnl:,.2f} ({results.total_return_pct:+.1f}%)"
         )
 
