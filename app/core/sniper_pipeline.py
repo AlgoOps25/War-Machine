@@ -2,6 +2,15 @@
 """
 app/core/sniper_pipeline.py — CFW6 Signal Pipeline
 
+FIX HISTORY (2026-04-01):
+
+  BUG-DZ-1: Gate 6 called is_dead_zone(now_et) with a timestamp argument.
+    is_dead_zone() signature is (direction, spy_regime) — the timestamp arg
+    caused a silent type mismatch: 'direction' received a datetime object,
+    the string comparisons always failed, and the gate NEVER fired.
+    Fixed: is_dead_zone(direction, spy_regime) with correct args.
+    spy_regime was already available in scope — it just was not forwarded.
+
 FIX HISTORY (2026-03-31):
 
   BUG-SP-3: Removed unused `BEAR_SIGNALS_ENABLED` import.
@@ -114,7 +123,7 @@ def _run_signal_pipeline(
       3. RVOL floor gate
       4. RVOL ceiling gate
       5. VWAP gate
-      6. Dead zone gate
+      6. Dead zone gate  (BUG-DZ-1 fix: was passing now_et instead of direction+spy_regime)
       7. GEX pin gate
       8. Cooldown gate
       9. CFW6 confirmation (skipped for INTRADAY / VWAP-reclaim paths)
@@ -162,9 +171,12 @@ def _run_signal_pipeline(
         )
         return False
 
-    # -- 6. Dead zone ---------------------------------------------------------
-    if is_dead_zone(now_et):
-        logger.info(f"[{ticker}] DEAD ZONE: {now_et.strftime('%H:%M')} — signal dropped")
+    # -- 6. Dead zone (BUG-DZ-1: was is_dead_zone(now_et) — wrong signature) --
+    # is_dead_zone(direction, spy_regime) — both were already in scope but
+    # the call site was passing now_et, causing silent gate failure.
+    _dz_blocked, _dz_reason = is_dead_zone(direction, spy_regime or {})
+    if _dz_blocked:
+        logger.info(f"[{ticker}] DEAD ZONE: {_dz_reason} — signal dropped")
         return False
 
     # -- 7. GEX pin zone ------------------------------------------------------
