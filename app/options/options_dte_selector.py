@@ -19,6 +19,18 @@ Phase 6 P2-1 (2026-04-01):
   - Debit trades (BUY calls / SELL puts) blocked when IVR >= 50 — paying inflated premium
   - Credit trades (SELL calls / BUY puts) blocked when IVR <= 60 — selling cheap premium
   - IVR-BUILDING state passes through — no false blocks during data accumulation
+
+Phase 6 P2-2 (2026-04-01):
+  ATR-adjusted delta target band in select_best_strikes().
+  - atr_pct (ATR as % of entry price) shifts the optimal delta window:
+      atr_pct < 0.5%  → tight market  → target 0.40–0.45Δ
+      atr_pct 0.5–1.2% → normal        → target 0.35–0.45Δ  (default)
+      atr_pct > 1.2%  → volatile       → target 0.30–0.45Δ
+  - Rationale: in tight markets a 0.40Δ strike costs less in theta/premium
+    and provides cleaner directional exposure; in volatile markets gamma pays
+    on wider swings so a 0.30Δ entry is acceptable.
+  - delta_band label appended to reasoning string for Discord visibility.
+  - Backward-compatible: atr=None defaults to normal regime (atr_pct=0.75%).
 """
 from typing import Dict, List, Optional
 from datetime import datetime, timedelta, date
@@ -33,6 +45,10 @@ ET = ZoneInfo("America/New_York")
 # IVR gate thresholds (47.P2-1)
 IVR_DEBIT_MAX  = 50   # block debit spreads at or above this IVR
 IVR_CREDIT_MIN = 60   # block credit spreads at or below this IVR
+
+# ATR delta-band thresholds (47.P2-2)
+_ATR_TIGHT_PCT    = 0.005   # < 0.5%  → tight regime
+_ATR_VOLATILE_PCT = 0.012   # > 1.2%  → volatile regime
 
 
 class OptionsDTESelector:
@@ -114,10 +130,26 @@ class OptionsDTESelector:
     # Main entry point
     # ------------------------------------------------------------------
 
-    def calculate_optimal_dte(self, ticker: str, entry_price: float, direction: str, confidence: float,
-                             adx: float = None, vix: float = None, t1_price: float = None, t2_price: float = None,
-                             current_time: Optional[datetime] = None) -> Dict:
-        """Calculate optimal DTE using historical + live + regime data."""
+    def calculate_optimal_dte(
+        self,
+        ticker: str,
+        entry_price: float,
+        direction: str,
+        confidence: float,
+        adx: float = None,
+        vix: float = None,
+        t1_price: float = None,
+        t2_price: float = None,
+        current_time: Optional[datetime] = None,
+        atr: float = None,          # 47.P2-2: intraday ATR in price units
+    ) -> Dict:
+        """Calculate optimal DTE using historical + live + regime data.
+
+        Args:
+            atr: Intraday ATR in price units (e.g. 1.25 for a $1.25 ATR on a
+                 $250 stock).  Converted internally to atr_pct for
+                 select_best_strikes().  Defaults to None → normal regime.
+        """
         if current_time is None:
             current_time = datetime.now(ET)
 
@@ -126,6 +158,10 @@ class OptionsDTESelector:
 
         if time_remaining_hours <= 0:
             return self._create_skip_response("Market closed", time_remaining_hours)
+
+        # Compute ATR as a fraction of price for downstream band selection.
+        # Default 0.0075 (0.75%) → normal regime when ATR not supplied.
+        atr_pct: float = (atr / entry_price) if (atr and entry_price > 0) else 0.0075
 
         # Fetch options data from EODHD
         try:
@@ -156,7 +192,11 @@ class OptionsDTESelector:
             return self._create_skip_response("No viable DTE", time_remaining_hours)
 
         selected_contracts = dte_0_contracts if final_dte == 0 else dte_1_contracts
-        best_strikes = self.select_best_strikes(selected_contracts, entry_price, direction)
+
+        # 47.P2-2: pass atr_pct so strike selector uses ATR-aware delta band
+        best_strikes, delta_band_label = self.select_best_strikes(
+            selected_contracts, entry_price, direction, atr_pct=atr_pct
+        )
 
         if not best_strikes:
             return self._create_regime_fallback(time_remaining_hours, adx, vix, t1_price, entry_price, f"No {final_dte}DTE strikes")
@@ -165,7 +205,7 @@ class OptionsDTESelector:
             'dte': final_dte,
             'expiry_date': best_strikes[0]['exp_date'],
             'recommended_strikes': best_strikes[:2],
-            'reasoning': reasoning + f"\n📊 {ivr_label}",
+            'reasoning': reasoning + f"\n📊 {ivr_label}" + f"\n🎯 {delta_band_label}",
             'time_remaining_hours': round(time_remaining_hours, 2),
             'confidence_pct': round(confidence_pct, 1)
         }
@@ -381,21 +421,90 @@ class OptionsDTESelector:
         score += 1.0 if factors['volume_sufficient'] else 0
         return score
 
-    def select_best_strikes(self, contracts, entry_price, direction):
+    def select_best_strikes(
+        self,
+        contracts: list,
+        entry_price: float,
+        direction: str,
+        atr_pct: float = 0.0075,    # 47.P2-2: ATR as fraction of price; default = 0.75% (normal)
+    ):
+        """
+        Score and rank option contracts, selecting the best strikes.
+
+        47.P2-2 — ATR-adjusted delta target band:
+          The delta scoring window narrows or widens based on intraday ATR:
+
+          atr_pct < 0.5%  (tight)    → target 0.40–0.45Δ  — directional, cheaper premium
+          atr_pct 0.5–1.2% (normal)  → target 0.35–0.45Δ  — balanced (default)
+          atr_pct > 1.2%  (volatile) → target 0.30–0.45Δ  — wider, more gamma acceptable
+
+        Rationale:
+          In tight markets price moves are small and predictable; a tighter
+          delta (closer to 0.40) minimises premium overpay.
+          In volatile markets wide swings benefit from slightly deeper OTM
+          strikes (more gamma leverage) even at the cost of lower initial Δ.
+
+        Score tiers:
+          In ATR-derived target band            → 10 pts
+          In extended catch-all band (0.30–0.70)  →  3 pts  (reduced from 5 to incentivise target)
+          Outside extended band                  →  0 pts
+
+        Returns:
+            (scored_list, delta_band_label)  — backward-compatible via tuple
+        """
+        # Derive ATR regime and target delta band
+        if atr_pct < _ATR_TIGHT_PCT:
+            delta_lo, delta_hi = 0.40, 0.45
+            regime_label = f"tight-ATR ({atr_pct*100:.2f}%)"
+        elif atr_pct > _ATR_VOLATILE_PCT:
+            delta_lo, delta_hi = 0.30, 0.45
+            regime_label = f"volatile-ATR ({atr_pct*100:.2f}%)"
+        else:
+            delta_lo, delta_hi = 0.35, 0.45
+            regime_label = f"normal-ATR ({atr_pct*100:.2f}%)"
+
+        delta_band_label = (
+            f"Δ-band [{delta_lo:.2f}–{delta_hi:.2f}] | regime={regime_label}"
+        )
+        logger.info(f"[SELECT-STRIKES] {delta_band_label}")
+
         scored = []
         for c in contracts:
-            delta, oi, bid, ask = abs(c.get('delta', 0)), c.get('open_interest', 0), c.get('bid', 0), c.get('ask', 0)
+            delta = abs(c.get('delta', 0))
+            oi    = c.get('open_interest', 0)
+            bid   = c.get('bid', 0)
+            ask   = c.get('ask', 0)
             if bid <= 0 or ask <= 0:
                 continue
             spread = ((ask - bid) / ((ask + bid) / 2)) * 100
-            delta_score = 10 if 0.4 <= delta <= 0.6 else (5 if 0.3 <= delta <= 0.7 else 0)
-            oi_score = min(oi / 100, 10)
+
+            # Delta score — ATR-adjusted target band (47.P2-2)
+            if delta_lo <= delta <= delta_hi:
+                delta_score = 10                         # in target band
+            elif 0.30 <= delta <= 0.70:
+                delta_score = 3                          # extended catch-all
+            else:
+                delta_score = 0
+
+            oi_score     = min(oi / 100, 10)
             spread_score = max(10 - spread, 0)
-            scored.append({'contract': c.get('contract'), 'strike': c.get('strike'), 'exp_date': c.get('exp_date'),
-                          'delta': delta, 'theta': c.get('theta'), 'bid': bid, 'ask': ask, 'mid_price': (bid + ask) / 2,
-                          'spread_pct': round(spread, 2), 'open_interest': oi, 'score': round(delta_score + oi_score + spread_score, 2)})
+
+            scored.append({
+                'contract':      c.get('contract'),
+                'strike':        c.get('strike'),
+                'exp_date':      c.get('exp_date'),
+                'delta':         delta,
+                'theta':         c.get('theta'),
+                'bid':           bid,
+                'ask':           ask,
+                'mid_price':     (bid + ask) / 2,
+                'spread_pct':    round(spread, 2),
+                'open_interest': oi,
+                'score':         round(delta_score + oi_score + spread_score, 2),
+            })
+
         scored.sort(key=lambda x: x['score'], reverse=True)
-        return scored
+        return scored, delta_band_label
 
     def _get_next_trading_day(self, start_date, offset=0):
         current = start_date + timedelta(days=offset)
