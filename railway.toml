@@ -12,4 +12,4 @@ healthcheckTimeout = 30
 [[cron]]
 name = "ml-retrain"
 schedule = "0 7 * * 0"  # Sunday 7 AM UTC (2 AM ET)
-command = "python app/ml/train_ml_booster.py"
+command = "python scripts/ml/train_ml_booster.py"
