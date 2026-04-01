@@ -477,10 +477,12 @@ class OptionsChainOptimizer:
         
         if valid_strikes:
             best = valid_strikes[0]
-            print(f"[OPTIONS-OPT] 🏆 BEST: ${best['strike']:.2f} "
-                  f"Δ={best['delta']:.3f} γ={best['gamma']:.4f} "
-                  f"Bid/Ask=${best['bid']:.2f}/${best['ask']:.2f} "
-                  f"Score={best['score']:.1f}")
+            logger.info(
+                f"[OPTIONS-OPT] 🏆 BEST: ${best['strike']:.2f} "
+                f"Δ={best['delta']:.3f} γ={best['gamma']:.4f} "
+                f"Bid/Ask=${best['bid']:.2f}/${best['ask']:.2f} "
+                f"Score={best['score']:.1f}"
+            )
         else:
             logger.info(f"[OPTIONS-OPT] ⚠️  No valid strikes found (filtered: {self.stats['strikes_filtered']})")
         
