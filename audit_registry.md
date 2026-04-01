@@ -42,7 +42,7 @@
 | `app/options/` | — | — | ⬜ Pending |
 | `app/risk/` | — | — | ⬜ Pending |
 | `app/screening/` | — | — | ⬜ Pending |
-| `app/signals/` | ~10 | 3 | 🔄 In Progress — SIG-1 |
+| `app/signals/` | ~10 | 3 | 🔄 In Progress — SIG-1, SIG-2 |
 | `app/validation/` | — | — | ⬜ Pending |
 | `audit_reports/` | 1 | — | Reference only |
 | `backtests/` | — | — | ⬜ Pending |
@@ -55,162 +55,99 @@
 
 ---
 
-## Session SIG-2 — `app/signals/opening_range.py` Bug Fixes
+## Session SIG-2 — Dead Code Fixes (BUG-OR-1, BUG-OR-2, BUG-BD-1)
 **Date:** 2026-04-01
 **Auditor:** Perplexity AI
-**Commit:** this commit
-**Files fixed:** 1 — `app/signals/opening_range.py`
-**Fixes applied:** BUG-OR-1, BUG-OR-2
+**Commit:** `cbfc26d`
+**Files fixed:** `app/signals/opening_range.py`, `app/signals/breakout_detector.py`
+**Fixes applied:** BUG-OR-1, BUG-OR-2, BUG-BD-1
 
 ---
 
 ### `app/signals/opening_range.py`
-**SHA pre-fix:** `343aa405` | **Status:** ✅ Fixed — 2 findings resolved
+**SHA post-fix:** `cbfc26d` | **Status:** ✅ Fixed — 2 findings resolved
 
 **BUG-OR-1** ⚠️ → 🔧 **FIXED**
-- *Location:* `should_scan_now()` method
-- *Issue:* `or_data = self.classify_or(ticker, current_time)` — result was computed
-  (triggering a full ATR + bar extraction pass) but the variable was never read.
-  The method unconditionally returned `True` on the next line regardless of `or_data`.
-  Dead assignment wasted a classify_or() call on every scanner tick for every ticker.
-- *Fix:* Removed the dead `or_data = ...` line entirely. Added inline comment
-  explaining that scan frequency is handled by the scanner loop via `get_scan_frequency()`.
-  No behaviour change — method still returns `True` as before.
+- *Location:* `should_scan_now()` — `or_data = self.classify_or(ticker, current_time)`
+- *Issue:* Result of `classify_or()` assigned to `or_data` but never read. Function
+  always returns `True` unconditionally. Dead call wasted CPU on every scanner tick.
+- *Fix:* Removed the dead `or_data = ...` line entirely.
 
 **BUG-OR-2** ⚠️ → 🔧 **FIXED**
-- *Location:* `detect_breakout_after_or()` function — inside the `for` loop body
-- *Issue:* `from utils import config` appeared twice:
-  1. At the top of the function body (correct)
-  2. Again inside the `for i, bar in enumerate(bars):` loop on every iteration
-  Python caches module imports so this did not cause incorrect behaviour, but it
-  triggered a redundant `sys.modules` lookup on every bar iteration — potentially
-  hundreds of times per scan cycle across all tickers.
-- *Fix:* Removed the inner duplicate import. The outer function-level import is
-  sufficient. Also hoisted `cutoff = getattr(config, 'ORB_SCAN_CUTOFF', time(11, 0))`
-  to before the loop (was inside the loop) to avoid recomputing it on every iteration.
+- *Location:* `detect_breakout_after_or()` — duplicate `from utils import config`
+- *Issue:* `from utils import config` appeared once at the top of the function and
+  again inside the `for` loop on every iteration. Redundant sys.modules lookup per bar.
+- *Fix:* Removed the second `from utils import config` inside the loop.
 
-**Checks re-confirmed clean after fix:**
-- `should_scan_now()` still returns `True` in both branches — no logic change ✅
-- `detect_breakout_after_or()` cutoff now computed once before loop — minor perf win ✅
-- All other functions in file unmodified ✅
-- File docstring updated to record BUG-OR-1/2 fix with date ✅
+---
+
+### `app/signals/breakout_detector.py`
+**SHA post-fix:** `cbfc26d` | **Status:** ✅ Fixed — 1 finding resolved
+
+**BUG-BD-1** ⚠️ → 🔧 **FIXED**
+- *Location:* `BreakoutDetector.__init__()` — `risk_reward_ratio: float = 2.0,`
+- *Issue:* Annotated assignment with trailing comma — stored value was tuple `(2.0,)`
+  not `2.0`. Variable never read anywhere. Latent confusion hazard.
+- *Fix:* Removed the dead line entirely.
 
 ---
 
 ## Session SIG-1 — `app/signals/breakout_detector.py` + `app/signals/signal_analytics.py`
 **Date:** 2026-03-31
 **Auditor:** Perplexity AI
-**Commit:** pending (this entry)
+**Commit:** `cbfc26d` (BUG-BD-1 applied here)
 **Files audited:** 2
-**Fixes applied:** BUG-BD-1 (dead variable in `__init__`)
 
 ---
 
 ### `app/signals/breakout_detector.py`
-**SHA:** `eaa1062a` | **Size:** ~18 KB | **Status:** ✅ Fixed — 1 finding resolved
+**SHA:** `eaa1062a` | **Size:** ~18 KB | **Status:** ✅ Fixed — see SIG-2 for BUG-BD-1
 
 **Purpose:** Core pattern detector for `app/core/sniper.py`. Detects BULL BREAKOUT,
-BEAR BREAKDOWN, and RETEST ENTRY signals using session-anchored support/resistance
-levels (Phase 1.17), EMA volume confirmation, ATR-based dynamic stops, and T1/T2
-split targets. Returns structured signal dicts consumed by `signal_validator.py`.
+BEAR BREAKDOWN, and RETEST ENTRY signals using session-anchored S/R levels (Phase 1.17),
+EMA volume confirmation, ATR-based dynamic stops, and T1/T2 split targets.
 
-**BUG-BD-1** ⚠️ → 🔧 **FIXED**
-- *Location:* `__init__()` — line `risk_reward_ratio: float = 2.0,`
-- *Issue:* Dead variable assignment masquerading as a keyword argument. The line
-  `risk_reward_ratio: float = 2.0,` inside `__init__` body (not in the signature)
-  creates a local variable `risk_reward_ratio` that is never used. Python evaluates
-  it as a valid annotated assignment with a trailing comma — the comma is parsed as
-  a tuple literal `(2.0,)` assigned to `risk_reward_ratio`. This means the actual
-  value stored is a 1-element tuple `(2.0,)`, not `2.0`. While harmless because
-  the variable is never read, it is a latent confusion hazard and should be cleaned.
-  The header docstring already notes "kept for backwards compat, unused internally".
-- *Fix:* Remove the dead line entirely. All internal logic uses `t1_reward_ratio`
-  and `t2_reward_ratio`. No callers pass `risk_reward_ratio` as a kwarg.
-
-**Checks confirmed clean (no action required):**
-- `calculate_atr()` — bar-count cache avoids redundant computation ✅
-- `get_pdh_pdl()` — `(ticker, as_of_date)` composite cache key supports backtests ✅
-- `clear_pdh_pdl_cache()` / `clear_atr_cache()` — both present and callable at EOD ✅
-- `calculate_support_resistance()` — rolling → session-anchor → PDH/PDL priority correct ✅
-- `resistance_source` / `support_source` initialized immediately after rolling calc (NameError fix confirmed in place) ✅
-- `get_session_levels()` import inside try/except — fail-silent if opening_range unavailable ✅
-- Session-anchor logic `>=` / `<=` comparisons for true-day-high/low override — correct ✅
-- PDH/PDL confluence within 1% threshold applied once (duplicate fetch removed) ✅
-- `calculate_ema_volume()` — EMA multiplier `2/(period+1)` correct ✅
-- `calculate_average_volume()` deprecated shim — correctly delegates to EMA version ✅
-- `analyze_candle_strength()` — Marubozu, Hammer/Shooting Star, Engulfing — all correct ✅
-- `detect_breakout()` — uses `bars[:-1]` for S/R and volume so current bar excluded ✅
-- `min_bars_since_breakout=0` — correctly bypasses confirmation delay block ✅
-- BULL BREAKOUT / BEAR BREAKDOWN / RETEST ENTRY — symmetric logic confirmed ✅
-- `session_anchored` flag added to all returned signal dicts ✅
+**Checks confirmed clean:** `calculate_atr()` bar-count cache, `get_pdh_pdl()` composite
+cache key, `clear_pdh_pdl_cache()` / `clear_atr_cache()`, `calculate_support_resistance()`
+rolling→session-anchor→PDH/PDL priority, `resistance_source`/`support_source` init,
+`get_session_levels()` fail-silent import, EMA volume multiplier, `analyze_candle_strength()`
+Marubozu/Hammer/Engulfing, `detect_breakout()` uses `bars[:-1]`, BULL/BEAR/RETEST
+symmetric logic, `session_anchored` flag ✅
 
 ---
 
 ### `app/signals/signal_analytics.py`
-**SHA:** `8722c950` | **Size:** ~17 KB | **Status:** ✅ Clean — no fixes required
+**SHA:** `8722c950` | **Size:** ~17 KB | **Status:** ✅ Clean
 
-**Purpose:** Full signal lifecycle tracker for the CFW6 pipeline.
+**Purpose:** Full signal lifecycle tracker. Persists GENERATED→VALIDATED→ARMED→TRADED
+events to `signal_events` table. Funnel stats, grade distribution, multiplier impact,
+rejection breakdown, hourly patterns. Used by `eod_reporter.py`.
 
-**Checks confirmed clean (no action required):**
-- All `get_conn()` calls wrapped in `try/finally: return_conn(conn)` ✅
-- `_initialize_database()` — `conn = None` guard before `finally` ✅
-- `signal_events` table schema — all lifecycle columns present ✅
-- Postgres `RETURNING id` vs SQLite `cursor.lastrowid` dual-path in all 4 write methods ✅
-- All 4 write methods update `session_signals[ticker]['stage']` cache after commit ✅
-- `get_funnel_stats()` — ZeroDivisionError guarded ✅
-- `get_multiplier_impact()` — `base_avg = row['base_avg'] or 0.7` fallback ✅
-- `get_rejection_breakdown()` — filters `rejection_reason != ''` ✅
-- `get_daily_summary()` — calls today-scoped helpers only ✅
-- Module-level singleton `signal_tracker = SignalTracker()` — appropriate ✅
+**Checks confirmed clean:** `get_conn()` try/finally, `_initialize_database()` guard,
+table schema all lifecycle columns, 4 indexes, Postgres/SQLite dual-path, all stage guards,
+ZeroDivisionError guards, `get_multiplier_impact()` fallback, singleton ✅
 
 ---
 
 ## Session DATA-4 — `app/data/ws_feed.py` + `app/data/ws_quote_feed.py`
-**Date:** 2026-03-31
-**Auditor:** Perplexity AI
-**Commits:** `e77b5ba2` (ws_feed.py), `9ab785f6` (ws_quote_feed.py)
-**Files audited:** 2
-**Fixes applied:** BUG-WF-1, BUG-WQF-1, BUG-WQF-2
-**`app/data/` now 100% complete (10/10 files).**
+**Date:** 2026-03-31 | **Commits:** `e77b5ba2`, `9ab785f6`
+**Fixes:** BUG-WF-1, BUG-WQF-1, BUG-WQF-2 | **`app/data/` 100% complete (10/10)**
 
----
-
-### `app/data/ws_feed.py`
-**SHA post-fix:** `73b7eab6` | **Status:** ✅ Fixed
-
-**BUG-WF-1** ⚠️ → 🔧 `materialize_5m_bars()` moved inside `if count:` block.
-
----
-
-### `app/data/ws_quote_feed.py`
-**SHA post-fix:** `affb8882` | **Status:** ✅ Fixed
-
-**BUG-WQF-1** ⚠️ → 🔧 ask parsing: `or` → `is not None` — prevents 0.0 falsy discard.
-**BUG-WQF-2** ⚠️ → 🔧 bid parsing: `or` → `is not None` — prevents 0.0 falsy discard.
+**BUG-WF-1** — `materialize_5m_bars()` moved inside `if count:` block
+**BUG-WQF-1** — ask field: `or` → `is not None` (0.0 falsy trap)
+**BUG-WQF-2** — bid field: `or` → `is not None` (0.0 falsy trap)
 
 ---
 
 ## Session DATA-3 — `app/data/data_manager.py`
-**Date:** 2026-03-31 | **Fixes:** BUG-DM-1, BUG-DM-2
-
-**BUG-DM-1** ⚠️ → 🔧 `cleanup_old_bars()` cutoff now ET-naive.
-**BUG-DM-2** ⚠️ → 🔧 `bulk_fetch_live_snapshots()` explicit WS/API counters.
+**Date:** 2026-03-31 | **Commit:** `b0524d51`
+**Fixes:** BUG-DM-1 (`cleanup_old_bars()` ET-naive cutoff), BUG-DM-2 (explicit WS/API counters)
 
 ---
 
 ## Session DATA-2 — `app/data/db_connection.py`
-**Date:** 2026-03-31 | **Commit:** `b0524d51` | **Fixes:** BUG-DBC-1, BUG-DBC-2
-
-**BUG-DBC-1** ⚠️ → 🔧 `datetime.now()` → `datetime.now(_ET)` in `check_pool_health()`.
-**BUG-DBC-2** ⚠️ → 🔧 `force_close_stale_connections()` logs → `logger.warning`.
-
----
-
-## Session CORE-6 — Pending Fix Clearance
-**Date:** 2026-03-31 | **Commit:** `0c2290af`
-
-**BUG-SC-1** ⚠️ → 🔧 `signal_scorecard.py` — blank line + removed unused `field` import.
-**BUG-SP-3** ⚠️ → 🔧 `sniper_pipeline.py` — `BEAR_SIGNALS_ENABLED` dead import removed.
+**Date:** 2026-03-31 | **Commit:** `b0524d51`
+**Fixes:** BUG-DBC-1 (`datetime.now()` → `datetime.now(_ET)`), BUG-DBC-2 (logs → `logger.warning`)
 
 ---
 
@@ -218,11 +155,20 @@ split targets. Returns structured signal dicts consumed by `signal_validator.py`
 **Date:** 2026-03-31 | **Commit:** `a982d079`
 **Fixes:** BUG-IAT-1, BUG-SS-1, BUG-SS-2, BUG-UOA-1
 
+`app/data/__init__.py` ✅ · `database.py` ✅ 🔁 · `intraday_atr.py` ✅ Fixed ·
+`sql_safe.py` ✅ Fixed · `candle_cache.py` ✅ · `unusual_options.py` ✅ Fixed
+
+---
+
+## Session CORE-6 — Pending Fix Clearance
+**Date:** 2026-03-31 | **Commit:** `0c2290af`
+**Fixes:** BUG-SC-1 (`signal_scorecard.py`), BUG-SP-3 (`sniper_pipeline.py`)
+
 ---
 
 ## Session CORE-5 — `app/core/scanner.py`
 **Date:** 2026-03-31 | **Commit:** `7ece10fd`
-**Fixes:** SC-A through SC-G (6 fixes). `app/core/` 100% complete.
+**Fixes:** SC-A through SC-G (6 fixes). **`app/core/` 100% complete (15/15 files).**
 
 ---
 
@@ -233,18 +179,21 @@ split targets. Returns structured signal dicts consumed by `signal_validator.py`
 ---
 
 ## Session CORE-3 — `app/core/arm_signal.py` + `analytics_integration.py`
-**Date:** 2026-03-31 | Both files ✅ Clean.
+**Date:** 2026-03-31 | Both ✅ Clean.
 
 ---
 
 ## Session CORE-2 — `app/core/` Pipeline Files
 **Date:** 2026-03-31
-`thread_safe_state.py` ✅ Clean. `signal_scorecard.py` / `sniper_pipeline.py` — see CORE-6.
+`thread_safe_state.py` ✅ · `signal_scorecard.py` / `sniper_pipeline.py` — see CORE-6.
 
 ---
 
 ## Session CORE-1 — `app/core/` Bootstrap Files
 **Date:** 2026-03-31 | All 6 files ✅ Clean.
+
+`app/__init__.py` · `app/core/__init__.py` · `app/core/__main__.py` ·
+`logging_config.py` · `sniper_log.py` · `eod_reporter.py` · `health_server.py`
 
 ---
 
@@ -267,16 +216,14 @@ split targets. Returns structured signal dicts consumed by `signal_validator.py`
 
 ---
 
-## Session S-OR-1 — `app/signals/opening_range.py` (Initial Audit)
-**Date:** 2026-03-31 | **SHA:** `8c141c9a` | ✅ Clean at time of audit — BUG-OR-1/2 queued.
+## Session S-OR-1 — `app/signals/opening_range.py`
+**Date:** 2026-03-31 | ✅ Clean audit — BUG-OR-1/2 fixed in SIG-2.
 
 ---
 
 ## Open Fix Queue
 
-| Fix ID | File | Severity | Description | Status |
-|--------|------|----------|-------------|--------|
-| BUG-BD-1 | `app/signals/breakout_detector.py` | ⚠️ | Dead `risk_reward_ratio` tuple in `__init__` | ⬜ Pending commit |
+*No open items — queue is clear.*
 
 ---
 
@@ -284,15 +231,16 @@ split targets. Returns structured signal dicts consumed by `signal_validator.py`
 
 | Fix ID | File | Commit | Description |
 |--------|------|--------|-------------|
-| BUG-OR-1 | `opening_range.py` | this commit | `should_scan_now()` dead `or_data` assignment removed |
-| BUG-OR-2 | `opening_range.py` | this commit | Duplicate `from utils import config` in loop removed; `cutoff` hoisted before loop |
-| BUG-WF-1 | `ws_feed.py` | `e77b5ba2` | `materialize_5m_bars()` inside `if count:` |
-| BUG-WQF-1 | `ws_quote_feed.py` | `9ab785f6` | ask `or` → `is not None` |
-| BUG-WQF-2 | `ws_quote_feed.py` | `9ab785f6` | bid `or` → `is not None` |
-| BUG-DM-1 | `data_manager.py` | this commit | `cleanup_old_bars()` ET-naive cutoff |
-| BUG-DM-2 | `data_manager.py` | this commit | explicit WS/API counters in `bulk_fetch_live_snapshots()` |
+| BUG-OR-1 | `opening_range.py` | `cbfc26d` | `should_scan_now()` dead `or_data` variable removed |
+| BUG-OR-2 | `opening_range.py` | `cbfc26d` | Duplicate `from utils import config` inside loop removed |
+| BUG-BD-1 | `breakout_detector.py` | `cbfc26d` | Dead `risk_reward_ratio` tuple assignment removed |
+| BUG-WF-1 | `ws_feed.py` | `e77b5ba2` | `materialize_5m_bars()` moved inside `if count:` |
+| BUG-WQF-1 | `ws_quote_feed.py` | `9ab785f6` | ask parsing: `or` → `is not None` |
+| BUG-WQF-2 | `ws_quote_feed.py` | `9ab785f6` | bid parsing: `or` → `is not None` |
+| BUG-DM-1 | `data_manager.py` | `b0524d51` | `cleanup_old_bars()` cutoff ET-naive |
+| BUG-DM-2 | `data_manager.py` | `b0524d51` | `bulk_fetch_live_snapshots()` explicit WS/API counters |
 | BUG-DBC-1 | `db_connection.py` | `b0524d51` | `datetime.now()` → `datetime.now(_ET)` |
-| BUG-DBC-2 | `db_connection.py` | `b0524d51` | `force_close_stale_connections()` → `logger.warning` |
+| BUG-DBC-2 | `db_connection.py` | `b0524d51` | `force_close_stale_connections()` logs → `logger.warning` |
 | BUG-SC-1 | `signal_scorecard.py` | `0c2290af` | Blank line + removed unused `field` import |
 | BUG-SP-3 | `sniper_pipeline.py` | `0c2290af` | `BEAR_SIGNALS_ENABLED` dead import removed |
 | BUG-ASS-3 | `armed_signal_store.py` | `7ea03339` | `_persist_armed_signal()` reads `'validation_data'` |
@@ -300,13 +248,13 @@ split targets. Returns structured signal dicts consumed by `signal_validator.py`
 | BUG-UOA-1 | `unusual_options.py` | `a982d079` | `_cache_result()` stores `.isoformat()` |
 | BUG-SS-2 | `sql_safe.py` | `a982d079` | `safe_insert/update_dict()` call `sanitize_table_name()` |
 | BUG-SS-1 | `sql_safe.py` | `a982d079` | `build_insert/update/delete()` call `sanitize_table_name()` |
-| BUG-IAT-1 | `intraday_atr.py` | `a982d079` | `logger.info` → `logger.warning` on exception |
-| BUG-SC-A–G | `scanner.py` | `7ece10fd` | 6 fixes |
-| BUG-SN-4–6 | `sniper.py` | `e25f3200` | 3 fixes |
-| BUG-WSS-1–3 | `watch_signal_store.py` | in-file | 3 fixes |
-| BUG-ASS-1–2 | `armed_signal_store.py` | in-file | 2 fixes |
-| BUG-MCB-1–2 | `ml_confidence_boost.py` | `5255863` | 2 fixes |
-| BUG-MLT-1 | `ml_trainer.py` | `5255863` | CoW-safe `df.copy()` |
+| BUG-IAT-1 | `intraday_atr.py` | `a982d079` | `logger.info` → `logger.warning` on compute exception |
+| BUG-SC-A–G | `scanner.py` | `7ece10fd` | 6 fixes — version, dead var, `.get()` guards, constants |
+| BUG-SN-4–6 | `sniper.py` | `e25f3200` | 3 fixes — dispatcher doc, import order, `.get()` guard |
+| BUG-WSS-1–3 | `watch_signal_store.py` | in-file | info→warning, print→logger, empty `()` |
+| BUG-ASS-1–2 | `armed_signal_store.py` | in-file | logging import order, redundant inner import |
+| BUG-MCB-1–2 | `ml_confidence_boost.py` | `5255863a` | logging import order, 3× info→warning |
+| BUG-MLT-1 | `ml_trainer.py` | `5255863a` | `df = df.copy()` CoW-safe |
 
 ---
 
@@ -314,11 +262,10 @@ split targets. Returns structured signal dicts consumed by `signal_validator.py`
 
 | Priority | Target | Files | Notes |
 |----------|--------|-------|-------|
-| 1 🔥 | `app/signals/breakout_detector.py` | 1 | Apply BUG-BD-1 fix (dead `risk_reward_ratio`) |
-| 2 | `app/signals/` remaining | ~7 files | Continue signal file audit |
-| 3 | `app/options/` | All files | Options chain, Greeks |
-| 4 | `app/notifications/` | All files | Discord alert system |
-| 5 | `app/backtesting/` | All files | Backtest engine |
-| 6 | `app/filters/`, `app/indicators/`, `app/mtf/`, `app/screening/`, `app/validation/`, `app/risk/`, `app/ai/` | All | Secondary modules |
-| 7 | `scripts/`, `tests/`, `utils/` | All | Support infrastructure |
-| 8 | Root config | `requirements.txt`, `railway.toml`, etc. | Deployment config |
+| 1 🔥 | `app/signals/` | Remaining ~7 files | `signal_validator.py`, `arm_trigger.py`, etc. |
+| 2 | `app/options/` | All files | Options chain, Greeks, pre-validation |
+| 3 | `app/notifications/` | All files | Discord alert system |
+| 4 | `app/backtesting/` | All files | Backtest engine, walk-forward |
+| 5 | `app/filters/`, `app/indicators/`, `app/mtf/`, `app/screening/`, `app/validation/`, `app/risk/`, `app/ai/` | All | Secondary modules |
+| 6 | `scripts/`, `tests/`, `utils/` | All | Support infrastructure |
+| 7 | Root config | `requirements.txt`, `railway.toml`, etc. | Deployment config |
