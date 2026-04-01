@@ -25,6 +25,12 @@ FIX S21 (APR 1, 2026):
     and updates current_capital immediately. Previously T1 P&L was silently lost.
   BUG-BE-5: manage_positions() exits now fill at stop/target price (with
     slippage) rather than bar close. Improves stop loss accuracy.
+  BUG-BE-6: _record_partial_close() commission denominator used
+    (position.shares + shares_closed) at call time, which equals 1.5x the
+    original share count for a 50% T1 exit, yielding ~67% of round-trip
+    commission instead of 50%. Fixed to shares_closed / position.shares.
+  BUG-BE-7: run() one-position-at-a-time design documented inline so future
+    multi-position work doesn't silently break capital accounting.
 
 Usage:
   engine = BacktestEngine(initial_capital=10000, commission=0.50)
@@ -329,6 +335,10 @@ class BacktestEngine:
         """
         Record a partial position close as a Trade without removing the position.
         Used for T1 partial exits (BUG-BE-4 fix).
+
+        Commission is prorated as (shares_closed / original_shares) * round-trip.
+        position.shares at call time is the FULL count before the caller halves it,
+        so this division always yields the correct fraction (BUG-BE-6 fix).
         """
         filled_price = self.simulate_fill(exit_price, 'SELL' if position.side == 'LONG' else 'BUY')
 
@@ -339,8 +349,9 @@ class BacktestEngine:
 
         pnl_pct = (pnl / (position.entry_price * shares_closed) * 100) if shares_closed > 0 else 0
 
-        # Round-trip commission proportional to share fraction
-        commission = self.commission_per_trade * 2 * (shares_closed / max(position.shares + shares_closed, 1))
+        # BUG-BE-6 fix: denominator is position.shares (full count before halving),
+        # not position.shares + shares_closed (which equalled 1.5x and over-charged).
+        commission = self.commission_per_trade * 2 * (shares_closed / max(position.shares, 1))
 
         self.current_capital += pnl - commission
 
@@ -477,6 +488,11 @@ class BacktestEngine:
             strategy_params: Dict = None) -> BacktestResults:
         """
         Run backtest on historical data.
+
+        Design note (BUG-BE-7): this engine is intentionally one-position-at-a-time.
+        A new signal is only evaluated when self.positions is empty. Capital accounting
+        in close_position() and _record_partial_close() assumes a single open position;
+        adding multi-position support requires a full capital-isolation refactor.
 
         Args:
             ticker: Stock ticker
