@@ -13,6 +13,12 @@ Architecture note (Phase 2, Mar 26 2026):
   OptionsDataManager / options_strike_selector.py's job).
 
   Callers: app/core/sniper_pipeline.py (indirectly via dte_selector global instance)
+
+Phase 6 P2-1 (2026-04-01):
+  Added IVR hard gate via _ivr_gate().
+  - Debit trades (BUY calls / SELL puts) blocked when IVR >= 50 — paying inflated premium
+  - Credit trades (SELL calls / BUY puts) blocked when IVR <= 60 — selling cheap premium
+  - IVR-BUILDING state passes through — no false blocks during data accumulation
 """
 from typing import Dict, List, Optional
 from datetime import datetime, timedelta, date
@@ -23,6 +29,11 @@ import logging
 logger = logging.getLogger(__name__)
 
 ET = ZoneInfo("America/New_York")
+
+# IVR gate thresholds (47.P2-1)
+IVR_DEBIT_MAX  = 50   # block debit spreads at or above this IVR
+IVR_CREDIT_MIN = 60   # block credit spreads at or below this IVR
+
 
 class OptionsDTESelector:
     def __init__(self, eodhd_api_key: Optional[str] = None):
@@ -40,11 +51,68 @@ class OptionsDTESelector:
         try:
             from app.options.dte_historical_advisor import dte_advisor
             self.historical_advisor = dte_advisor
-        except:
+        except Exception:
             self.historical_advisor = None
             logger.info("[OPTIONS-DTE] Historical advisor unavailable")
 
         logger.info("[OPTIONS-DTE] Initialized with data-driven approach")
+
+    # ------------------------------------------------------------------
+    # IVR Hard Gate (47.P2-1)
+    # ------------------------------------------------------------------
+
+    def _ivr_gate(self, ticker: str, direction: str, contracts: list) -> tuple:
+        """
+        Hard IVR gate — blocks trades where IV cost/benefit is unfavourable.
+
+        Trade type classification:
+          BUY  direction → buying calls  → DEBIT  → want cheap IV (IVR < 50)
+          SELL direction → buying puts   → DEBIT  → want cheap IV (IVR < 50)
+          (credit spreads are the inverse — want expensive IV)
+
+        For War Machine's 0DTE/1DTE architecture all directional trades are
+        debit buys (long call or long put).  Direction 'BUY' = long call,
+        direction 'SELL' = long put.  Both are debits.
+
+        Returns:
+          (blocked: bool, reason: str, ivr_label: str)
+          blocked=False when IVR is building (< MIN_OBSERVATIONS) — pass through.
+        """
+        from app.options.iv_tracker import compute_ivr, ivr_to_confidence_multiplier
+
+        if not contracts:
+            return False, "", "IVR-NO-DATA"
+
+        # Use average IV from the fetched contracts as current_iv proxy
+        ivs = [c.get('volatility', 0.0) for c in contracts if c.get('volatility', 0.0) > 0]
+        if not ivs:
+            return False, "", "IVR-NO-IV"
+
+        current_iv = sum(ivs) / len(ivs)
+        ivr, observations, is_reliable = compute_ivr(ticker, current_iv)
+        _multiplier, ivr_label = ivr_to_confidence_multiplier(ivr, is_reliable)
+
+        if not is_reliable:
+            # Still accumulating history — never block
+            logger.info(f"[IVR-GATE] {ticker} IVR building ({observations} obs) — pass through")
+            return False, "", ivr_label
+
+        # War Machine trades are always debit (long call or long put)
+        # Block debit when IV is at or above neutral (IVR >= 50)
+        if ivr >= IVR_DEBIT_MAX:
+            reason = (
+                f"IVR {ivr:.0f} >= {IVR_DEBIT_MAX} — debit options overpriced "
+                f"(IV crush risk). Gate: P2-1."
+            )
+            logger.warning(f"[IVR-GATE] {ticker} BLOCKED — {reason}")
+            return True, reason, ivr_label
+
+        logger.info(f"[IVR-GATE] {ticker} PASSED — {ivr_label} (IVR {ivr:.0f} < {IVR_DEBIT_MAX})")
+        return False, "", ivr_label
+
+    # ------------------------------------------------------------------
+    # Main entry point
+    # ------------------------------------------------------------------
 
     def calculate_optimal_dte(self, ticker: str, entry_price: float, direction: str, confidence: float,
                              adx: float = None, vix: float = None, t1_price: float = None, t2_price: float = None,
@@ -66,6 +134,11 @@ class OptionsDTESelector:
                 return self._create_regime_fallback(time_remaining_hours, adx, vix, t1_price, entry_price, "No options data")
         except Exception as e:
             return self._create_regime_fallback(time_remaining_hours, adx, vix, t1_price, entry_price, f"API error: {e}")
+
+        # IVR hard gate (47.P2-1) — runs before DTE scoring
+        ivr_blocked, ivr_reason, ivr_label = self._ivr_gate(ticker, direction, options_data)
+        if ivr_blocked:
+            return self._create_skip_response(ivr_reason, time_remaining_hours)
 
         dte_0_contracts = [opt for opt in options_data if opt['dte'] == 0]
         dte_1_contracts = [opt for opt in options_data if opt['dte'] == 1]
@@ -92,7 +165,7 @@ class OptionsDTESelector:
             'dte': final_dte,
             'expiry_date': best_strikes[0]['exp_date'],
             'recommended_strikes': best_strikes[:2],
-            'reasoning': reasoning,
+            'reasoning': reasoning + f"\n📊 {ivr_label}",
             'time_remaining_hours': round(time_remaining_hours, 2),
             'confidence_pct': round(confidence_pct, 1)
         }
@@ -223,7 +296,7 @@ class OptionsDTESelector:
             response = requests.get(url, params=params, timeout=10)
             response.raise_for_status()
             data = response.json()
-        except:
+        except Exception:
             return []
         if not data or 'data' not in data:
             return []
@@ -243,7 +316,7 @@ class OptionsDTESelector:
                                  'open_interest': int(c.get('openInterest', 0)), 'delta': float(c.get('delta', 0)),
                                  'gamma': float(c.get('gamma', 0)), 'theta': float(c.get('theta', 0)),
                                  'vega': float(c.get('vega', 0)), 'volatility': float(c.get('impliedVolatility', 0))})
-            except:
+            except Exception:
                 continue
         return contracts
 
@@ -336,5 +409,5 @@ class OptionsDTESelector:
 
 try:
     dte_selector = OptionsDTESelector()
-except:
+except Exception:
     dte_selector = None
