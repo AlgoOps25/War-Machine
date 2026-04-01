@@ -89,6 +89,13 @@ APR 1, 2026 — BUG-OR-1 / BUG-OR-2:
   BUG-OR-2: detect_breakout_after_or() imported 'from utils import config' at the
              top of the function AND again inside the for-loop body — duplicate
              import on every iteration. Removed the inner duplicate.
+
+APR 1, 2026 — HOTFIX: resolve git merge conflict at line 830.
+  Conflict between HEAD (cutoff variable assigned inside loop body) and
+  branch c61213d (BUG-OR-2 fix: config + cutoff hoisted to function top).
+  Kept the c61213d version — correct resolution. HEAD side was malformed:
+  the function body after the def line was entirely inside the conflict marker,
+  causing IndentationError and crash-loop on Railway.
 """
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime, time, timedelta
@@ -827,9 +834,6 @@ def compute_premarket_range(bars):
 
 
 def detect_breakout_after_or(bars, or_high, or_low):
-<<<<<<< HEAD
-    """Scan bars after 9:45 for ORB breakout. Returns (direction, idx) or (None, None)."""
-=======
     """
     Scan bars after 9:45 for ORB breakout.
     Returns (direction, idx) or (None, None).
@@ -840,15 +844,10 @@ def detect_breakout_after_or(bars, or_high, or_low):
     from utils.time_helpers import _bar_time
     from utils import config
     cutoff = getattr(config, 'ORB_SCAN_CUTOFF', time(11, 0))
->>>>>>> c61213daf728bb22cf6161271130b5671f835c03
     for i, bar in enumerate(bars):
         bt = _bar_time(bar)
         if bt is None or bt < time(9, 45):
             continue
-<<<<<<< HEAD
-        cutoff = getattr(config, 'ORB_SCAN_CUTOFF', time(11, 0))
-=======
->>>>>>> c61213daf728bb22cf6161271130b5671f835c03
         if bt >= cutoff:
             break
         if bar["close"] > or_high * (1 + config.ORB_BREAK_THRESHOLD):
