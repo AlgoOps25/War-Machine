@@ -235,6 +235,7 @@ models/signal_predictor.pkl
 # Heavy cache/scratch files above are still excluded.
 
 
-docs\remediation_tracker.md
+# Stale deleted file — forward-slash pattern for Linux/Railway compatibility
+docs/remediation_tracker.md
 
 output/
