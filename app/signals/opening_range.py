@@ -65,7 +65,8 @@ from typing import Dict, List, Optional, Tuple
 from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 import numpy as np
-
+from utils.time_helpers import _bar_time
+from utils import config
 from app.data.data_manager import data_manager
 import logging
 logger = logging.getLogger(__name__)
@@ -472,7 +473,6 @@ class OpeningRangeDetector:
             current_time = datetime.now(ET)
         if not self._is_or_complete(current_time):
             return True
-        or_data = self.classify_or(ticker, current_time)
         return True  # scan frequency handled by scanner loop
 
     def adjust_signal_confidence(self, signal: Dict, current_time: Optional[datetime] = None) -> Dict:
@@ -863,13 +863,10 @@ def compute_premarket_range(bars):
 
 def detect_breakout_after_or(bars, or_high, or_low):
     """Scan bars after 9:45 for ORB breakout. Returns (direction, idx) or (None, None)."""
-    from utils.time_helpers import _bar_time
-    from utils import config
     for i, bar in enumerate(bars):
         bt = _bar_time(bar)
         if bt is None or bt < time(9, 45):
             continue
-        from utils import config
         cutoff = getattr(config, 'ORB_SCAN_CUTOFF', time(11, 0))
         if bt >= cutoff:
             break

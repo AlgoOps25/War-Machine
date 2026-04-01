@@ -79,7 +79,6 @@ class BreakoutDetector:
         self.volume_multiplier       = volume_multiplier
         self.atr_period              = atr_period
         self.atr_stop_multiplier     = atr_stop_multiplier
-        risk_reward_ratio: float     = 2.0,   # kept for backwards compat, unused internally
         self.t1_reward_ratio         = t1_reward_ratio
         self.t2_reward_ratio         = t2_reward_ratio
         self.min_candle_body_pct     = min_candle_body_pct
