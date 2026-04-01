@@ -60,6 +60,35 @@ MAR 27, 2026:
     Affected: classify_secondary_range() (5 sites), clear_cache() (1),
     _classify_from_bars() (1), detect_fvg_after_break() (4).
     No logic changes.
+
+APR 1, 2026 — BUG-OR-3 / BUG-OR-4 / FEATURE-OR-1:
+  BUG-OR-3: detect_fvg_after_break() used flat FVG_SOFT_PCT (0.15%) for ALL stocks.
+             On high-priced stocks (MU ~$325), 0.15% = $0.49 max overlap — nearly
+             every partial FVG rejected. Fixed: soft_fvg_pct now computed as an
+             ATR-adaptive value: clamp(atr_per_bar * 0.5, FVG_SOFT_PCT, FVG_SOFT_PCT * 5).
+             Scales with actual price/volatility. Diagnosed from MU 10:03 AM signal
+             that fired a BOS alert but never found a qualifying FVG entry.
+
+  BUG-OR-4: All [FVG] candidate-evaluation logs were at logger.debug — completely
+             invisible at INFO level on Railway. Promoted to logger.info so every
+             FVG miss/hit is visible in production logs for future diagnosis.
+
+  FEATURE-OR-1: Momentum Continuation Fallback entry (detect_momentum_continuation()).
+             When detect_fvg_after_break() returns (None, None) — price ran without
+             pulling back to form a FVG — the system now has a secondary entry path:
+               1. VWAP hold: 3 consecutive bars above VWAP after BOS = continuation
+               2. Flag consolidation: 3-bar tight range (< 0.3x ATR-per-bar) after
+                  impulse = flag/pennant, enter on range high break
+             Returns entry zone dict with entry_type='MOMENTUM_CONTINUATION'.
+             MU 10:03 was a textbook momentum continuation — price ripped $325->$340+
+             with no FVG. This fallback would have caught that move.
+
+APR 1, 2026 — BUG-OR-1 / BUG-OR-2:
+  BUG-OR-1: should_scan_now() assigned result of classify_or() to or_data but
+             never used it — dead code. Removed the dead assignment.
+  BUG-OR-2: detect_breakout_after_or() imported 'from utils import config' at the
+             top of the function AND again inside the for-loop body — duplicate
+             import on every iteration. Removed the inner duplicate.
 """
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime, time, timedelta
@@ -82,13 +111,18 @@ OR_CACHE_DYNAMIC_TTL = timedelta(minutes=30)
 # as a corrupted tick/timestamp-leaked-into-price value.
 SR_PRICE_SANITY_MULT = 5.0
 
+# Momentum continuation constants (FEATURE-OR-1)
+MOMENTUM_VWAP_BARS     = 3    # consecutive bars above VWAP required
+MOMENTUM_FLAG_BARS     = 3    # consolidation bars to form a flag
+MOMENTUM_FLAG_ATR_MULT = 0.3  # flag range must be < this * ATR-per-bar to qualify
+
 
 def _to_et_time(dt) -> Optional[time]:
     """
     Return the ET wall-clock time for a datetime that may be:
-      - tz-aware (any tz)  → convert to ET first
-      - tz-naive           → assume already ET
-      - a string           → parse via fromisoformat, then convert
+      - tz-aware (any tz)  -> convert to ET first
+      - tz-naive           -> assume already ET
+      - a string           -> parse via fromisoformat, then convert
 
     Returns None if dt is None or unparseable.
     """
@@ -227,8 +261,6 @@ class OpeningRangeDetector:
         or_bars = self._extract_or_bars(bars_1m)
 
         if or_bars:
-            # Happy path — OR window was captured (or was just re-evaluated and
-            # enough bars now exist to build a real OR)
             return self._classify_from_bars(ticker, or_bars, classification_label=None,
                                             current_time=current_time)
 
@@ -287,25 +319,8 @@ class OpeningRangeDetector:
         """
         Classify the 10:00-10:30 AM ET 'Power Hour' consolidation range.
 
-        This provides a mid-session BOS anchor when:
-          - The 9:30 OR produced no signal before 10:00, OR
-          - Price has exhausted the initial OR move and re-consolidated
-
-        Only evaluated AFTER the 10:30 window closes.  Before 10:30 returns None.
+        Only evaluated AFTER the 10:30 window closes. Before 10:30 returns None.
         Result is cached permanently (the window is immutable).
-
-        Classifications (same ATR ratio logic as primary OR):
-          SECONDARY_TIGHT  : < 0.5 ATR  — strong compression, breakout likely
-          SECONDARY_NORMAL : 0.5-1.5 ATR — standard mid-day range
-          SECONDARY_WIDE   : > 1.5 ATR   — choppy; require higher confidence
-
-        Returns dict with keys:
-            sr_high, sr_low, sr_range, sr_range_pct, sr_range_atr,
-            classification, bar_count, timestamp
-        or None if:
-            - Before 10:30 AM
-            - Fewer than SECONDARY_RANGE_MIN_BARS bars in the window
-            - Range < SECONDARY_RANGE_MIN_PCT (too tight to be useful)
         """
         if current_time is None:
             current_time = datetime.now(ET)
@@ -334,9 +349,6 @@ class OpeningRangeDetector:
             return None
 
         # ── Price sanity clamp (Phase B1 Bug Fix #6) ────────────────────────────────
-        # Estimate a reference price from the median close of valid bars,
-        # then discard any bar whose high exceeds reference * SR_PRICE_SANITY_MULT.
-        # This catches timestamp-leaked-into-price corruption (e.g. $1336 for TSEM).
         closes = [b["close"] for b in sr_bars if b.get("close") and b["close"] > 0]
         if closes:
             ref_price = float(np.median(closes))
@@ -348,7 +360,7 @@ class OpeningRangeDetector:
             discarded = len(sr_bars) - len(sane_bars)
             if discarded > 0:
                 logger.debug(
-                    f"[OR-SR] {ticker} ⚠️  Discarded {discarded} bar(s) with "
+                    f"[OR-SR] {ticker} Discarded {discarded} bar(s) with "
                     f"corrupted price (ref=${ref_price:.2f}, mult={SR_PRICE_SANITY_MULT}x)"
                 )
             sr_bars = sane_bars
@@ -414,16 +426,6 @@ class OpeningRangeDetector:
     def get_secondary_range_levels(self, ticker: str) -> Dict:
         """
         Return secondary range high/low for use as BOS anchor in sniper.py.
-
-        Returns:
-            {
-              'sr_high':       float,
-              'sr_low':        float,
-              'sr_range_pct':  float,   # % width
-              'classification': str,
-              'bar_count':     int
-            }
-            or {} if secondary range not yet available or insufficient data.
         """
         sr = self.classify_secondary_range(ticker)
         if sr is None:
@@ -469,6 +471,9 @@ class OpeningRangeDetector:
         return False
 
     def should_scan_now(self, ticker: str, current_time: Optional[datetime] = None) -> bool:
+        # BUG-OR-1 FIX: removed dead `or_data = self.classify_or(ticker, current_time)`
+        # — result was computed but never used. Scan frequency is handled by the
+        # scanner loop via get_scan_frequency(); this method always returns True.
         if current_time is None:
             current_time = datetime.now(ET)
         if not self._is_or_complete(current_time):
@@ -596,10 +601,6 @@ class OpeningRangeDetector:
     ) -> Optional[Dict]:
         """
         Shared classification logic for both normal OR bars and session fallback bars.
-
-        Args:
-            classification_label: If set (e.g. 'DYNAMIC'), skip ATR ratio
-                                  classification and use that label directly.
         """
         or_high     = max(b['high'] for b in bars)
         or_low      = min(b['low']  for b in bars)
@@ -614,7 +615,6 @@ class OpeningRangeDetector:
 
         or_range_atr = or_range / atr
 
-        # Determine classification
         if classification_label == "DYNAMIC":
             classification        = "DYNAMIC"
             scan_frequency        = self.scan_freq_normal
@@ -650,15 +650,11 @@ class OpeningRangeDetector:
             'min_confidence':       min_confidence,
             'bar_count':            len(bars),
             'timestamp':            current_time.isoformat(),
-            # Internal TTL field — only meaningful for DYNAMIC entries.
-            # Stored as tz-naive ET datetime for consistent comparison.
             '_cached_at':           current_time.replace(tzinfo=None),
         }
 
-        # Cache it
         self.or_cache[ticker] = result
 
-        # Log the result
         emoji_map = {'TIGHT': '\U0001f3af', 'WIDE': '\u26a0\ufe0f',
                      'DYNAMIC': '\U0001f504', 'NORMAL': '\u2705'}
         emoji = emoji_map.get(classification, '\u2705')
@@ -687,13 +683,7 @@ class OpeningRangeDetector:
                           end_time: Optional[time] = None) -> List[Dict]:
         """
         Extract bars within OR window (9:30-9:40).
-
-        PHASE 1.17 FIX: data_manager returns bar['datetime'] (datetime object),
-        NOT bar['timestamp'] (string). Previous code threw KeyError on every bar
-        causing perpetual empty OR.
-
-        PHASE B1 FIX: Use _to_et_time() so tz-aware UTC datetimes are correctly
-        converted to ET before the window comparison.
+        Uses _to_et_time() so tz-aware UTC datetimes are correctly converted to ET.
         """
         if end_time is None:
             end_time = self.or_end_time
@@ -709,14 +699,7 @@ class OpeningRangeDetector:
         return or_bars
 
     def _extract_session_bars(self, bars_1m: List[Dict]) -> List[Dict]:
-        """
-        Extract all bars from 9:30 AM onwards (session bars).
-
-        PHASE 1.17: Used as fallback when OR window was missed.
-        Returns everything from 9:30 to the most recent bar.
-
-        PHASE B1 FIX: Use _to_et_time() for correct tz handling.
-        """
+        """Extract all bars from 9:30 AM onwards (session bars)."""
         session_bars = []
         for bar in bars_1m:
             bar_time = _to_et_time(bar.get('datetime'))
@@ -727,17 +710,7 @@ class OpeningRangeDetector:
         return session_bars
 
     def _extract_secondary_bars(self, bars_1m: List[Dict]) -> List[Dict]:
-        """
-        Extract bars within the secondary range window (10:00-10:30 ET).
-
-        PHASE B1 BUG FIX (#6): Previously called dt.time() directly on tz-aware
-        datetimes, which returned UTC wall time instead of ET wall time.
-        A 10:05 AM ET bar stored as UTC (14:05) was read as 14:05 and excluded
-        from the 10:00-10:30 filter — allowing out-of-window bars with corrupted
-        prices to remain in sr_bars and produce wildly wrong sr_high values.
-
-        Fix: delegate to _to_et_time() which always converts to ET before .time().
-        """
+        """Extract bars within the secondary range window (10:00-10:30 ET)."""
         from utils import config
         sr_bars = []
         for bar in bars_1m:
@@ -751,11 +724,7 @@ class OpeningRangeDetector:
     def _calculate_atr(self, ticker: str, period: int = 14) -> Optional[float]:
         """
         Calculate ATR(14) for a ticker.
-
-        PHASE 1.17 FIX: Now uses get_bars_from_memory() (historical DB bars)
-        first so ATR is available immediately at session open or after restart,
-        not just after 14 intraday bars accumulate. Falls back to today's bars
-        if historical unavailable.
+        Uses get_bars_from_memory() (historical DB) first, falls back to today's bars.
         """
         bars = data_manager.get_bars_from_memory(ticker, limit=60)
 
@@ -823,17 +792,12 @@ def get_scan_frequency(ticker: str) -> int:
 def get_secondary_range_levels(ticker: str) -> Dict:
     """
     Phase B1: Get secondary (10:00-10:30) range high/low for use as BOS anchor.
-
-    Returns:
-        {'sr_high': float, 'sr_low': float, 'sr_range_pct': float,
-         'classification': str, 'bar_count': int}
-        or {} if window not yet closed or insufficient data.
     """
     return or_detector.get_secondary_range_levels(ticker)
 
+
 # ========================================
 # PHASE 5 #24 — OR Scanner Functions
-# (extracted from app/core/sniper.py)
 # ========================================
 def compute_opening_range_from_bars(bars, or_end_time: Optional[time] = None):
     """Compute OR high/low from 9:30 to or_end_time (default 9:40)."""
@@ -847,6 +811,7 @@ def compute_opening_range_from_bars(bars, or_end_time: Optional[time] = None):
     if len(or_bars) < 3:
         return None, None
     return max(b["high"] for b in or_bars), min(b["low"] for b in or_bars)
+
 
 def compute_premarket_range(bars):
     """Compute premarket high/low from 4:00-9:30 bars."""
@@ -862,12 +827,28 @@ def compute_premarket_range(bars):
 
 
 def detect_breakout_after_or(bars, or_high, or_low):
+<<<<<<< HEAD
     """Scan bars after 9:45 for ORB breakout. Returns (direction, idx) or (None, None)."""
+=======
+    """
+    Scan bars after 9:45 for ORB breakout.
+    Returns (direction, idx) or (None, None).
+
+    BUG-OR-2 FIX: removed duplicate `from utils import config` that was
+    inside the for-loop body — config was already imported at function top.
+    """
+    from utils.time_helpers import _bar_time
+    from utils import config
+    cutoff = getattr(config, 'ORB_SCAN_CUTOFF', time(11, 0))
+>>>>>>> c61213daf728bb22cf6161271130b5671f835c03
     for i, bar in enumerate(bars):
         bt = _bar_time(bar)
         if bt is None or bt < time(9, 45):
             continue
+<<<<<<< HEAD
         cutoff = getattr(config, 'ORB_SCAN_CUTOFF', time(11, 0))
+=======
+>>>>>>> c61213daf728bb22cf6161271130b5671f835c03
         if bt >= cutoff:
             break
         if bar["close"] > or_high * (1 + config.ORB_BREAK_THRESHOLD):
@@ -883,59 +864,184 @@ def detect_fvg_after_break(bars, breakout_idx, direction, soft_fvg_pct=None):
     """
     Textbook SMC FVG: 3-candle pattern after BOS.
 
-    Scans up to 30 bars AFTER the breakout candle for a Fair Value Gap:
-      c0 = impulse start (bars[i-2])
-      c1 = impulse body  (bars[i-1]) — must be directional
-      c2 = reaction bar  (bars[i])
-
-    Supports hard gaps AND soft/partial FVGs, but only if the overlap
-    is <= 40% of c1's body size (prevents sloppy candle overlap from
-    being misclassified as an FVG).
+    BUG-OR-3 FIX: ATR-adaptive soft FVG threshold (Apr 1, 2026).
+    BUG-OR-4 FIX: All [FVG] candidate logs promoted to logger.info.
     """
     from utils import config
     min_pct      = getattr(config, 'FVG_MIN_SIZE_PCT', 0.0003)
-    soft_fvg_pct = soft_fvg_pct or getattr(config, 'FVG_SOFT_PCT', 0.0015)
+    base_soft    = soft_fvg_pct or getattr(config, 'FVG_SOFT_PCT', 0.0015)
 
     for i in range(breakout_idx + 3, min(len(bars), breakout_idx + 33)):
         c0 = bars[i - 2]
         c1 = bars[i - 1]
         c2 = bars[i]
 
+        try:
+            tr0 = c0["high"] - c0["low"]
+            tr1 = c1["high"] - c1["low"]
+            tr2 = c2["high"] - c2["low"]
+            atr_per_bar = (tr0 + tr1 + tr2) / 3.0
+            ref_price   = c0["high"] if direction == "bull" else c0["low"]
+            adaptive_soft = float(np.clip(
+                (atr_per_bar * 0.5) / ref_price if ref_price > 0 else base_soft,
+                base_soft,
+                base_soft * 5.0
+            ))
+        except (KeyError, TypeError, ZeroDivisionError):
+            adaptive_soft = base_soft
+
         if direction == "bull":
             if c1["close"] <= c1["open"]:
+                logger.info(f"[FVG] BULL skip i={i} — c1 bearish (o={c1['open']:.2f} c={c1['close']:.2f})")
                 continue
             gap = c2["low"] - c0["high"]
             c1_body = abs(c1["close"] - c1["open"])
             if gap > 0 and (gap / c0["high"]) >= min_pct:
-                logger.debug(f"[FVG] BULL hard ${c0['high']:.2f}—${c2['low']:.2f}")
+                logger.info(f"[FVG] BULL hard ${c0['high']:.2f}—${c2['low']:.2f} gap={gap:.4f}")
                 return c0["high"], c2["low"]
-            if gap < 0 and abs(gap) / c0["high"] <= soft_fvg_pct:
+            if gap < 0 and abs(gap) / c0["high"] <= adaptive_soft:
                 if c1_body > 0 and abs(gap) > c1_body * 0.4:
+                    logger.info(
+                        f"[FVG] BULL soft SKIP i={i} — overlap {abs(gap):.4f} > 40% c1 body "
+                        f"{c1_body:.4f} (adaptive_soft={adaptive_soft:.4f})"
+                    )
                     continue
-                # doji c1 (c1_body == 0): skip — no impulse body to validate against
                 if c1_body == 0:
+                    logger.info(f"[FVG] BULL soft SKIP i={i} — c1 doji (no impulse body)")
                     continue
-                logger.debug(f"[FVG] BULL soft ${c2['low']:.2f}—${c0['high']:.2f} (gap={gap:.4f})")
+                logger.info(
+                    f"[FVG] BULL soft ${c2['low']:.2f}—${c0['high']:.2f} "
+                    f"gap={gap:.4f} adaptive_soft={adaptive_soft:.4f}"
+                )
                 return c2["low"], c0["high"]
 
         elif direction == "bear":
             if c1["close"] >= c1["open"]:
+                logger.info(f"[FVG] BEAR skip i={i} — c1 bullish (o={c1['open']:.2f} c={c1['close']:.2f})")
                 continue
             gap = c0["low"] - c2["high"]
             c1_body = abs(c1["close"] - c1["open"])
             if gap > 0 and (gap / c0["low"]) >= min_pct:
-                logger.debug(f"[FVG] BEAR hard ${c2['high']:.2f}—${c0['low']:.2f}")
+                logger.info(f"[FVG] BEAR hard ${c2['high']:.2f}—${c0['low']:.2f} gap={gap:.4f}")
                 return c2["high"], c0["low"]
-            if gap < 0 and abs(gap) / c0["low"] <= soft_fvg_pct:
+            if gap < 0 and abs(gap) / c0["low"] <= adaptive_soft:
                 if c1_body > 0 and abs(gap) > c1_body * 0.4:
+                    logger.info(
+                        f"[FVG] BEAR soft SKIP i={i} — overlap {abs(gap):.4f} > 40% c1 body "
+                        f"{c1_body:.4f} (adaptive_soft={adaptive_soft:.4f})"
+                    )
                     continue
-                # doji c1 (c1_body == 0): skip — no impulse body to validate against
                 if c1_body == 0:
+                    logger.info(f"[FVG] BEAR soft SKIP i={i} — c1 doji (no impulse body)")
                     continue
-                logger.debug(f"[FVG] BEAR soft ${c0['low']:.2f}—${c2['high']:.2f} (gap={gap:.4f})")
+                logger.info(
+                    f"[FVG] BEAR soft ${c0['low']:.2f}—${c2['high']:.2f} "
+                    f"gap={gap:.4f} adaptive_soft={adaptive_soft:.4f}"
+                )
                 return c0["low"], c2["high"]
 
+    logger.info(
+        f"[FVG] No FVG found | direction={direction} | "
+        f"scanned bars {breakout_idx + 3}–{min(len(bars), breakout_idx + 33) - 1}"
+    )
     return None, None
+
+
+def detect_momentum_continuation(
+    bars: List[Dict],
+    breakout_idx: int,
+    direction: str,
+    vwap_values: Optional[List[float]] = None,
+    ticker: str = "",
+) -> Optional[Dict]:
+    """
+    FEATURE-OR-1: Momentum Continuation Fallback entry.
+    Called when detect_fvg_after_break() returns (None, None).
+    """
+    from utils import config
+
+    scan_start = breakout_idx + 1
+    scan_end   = min(len(bars), breakout_idx + 16)
+
+    if scan_start >= len(bars):
+        return None
+
+    try:
+        bk_bar      = bars[breakout_idx]
+        atr_per_bar = bk_bar["high"] - bk_bar["low"]
+        if atr_per_bar <= 0:
+            atr_per_bar = bk_bar.get("close", 1.0) * 0.005
+    except (KeyError, IndexError):
+        atr_per_bar = 1.0
+
+    flag_threshold = atr_per_bar * MOMENTUM_FLAG_ATR_MULT
+
+    # Pattern 1: VWAP HOLD
+    if vwap_values and len(vwap_values) >= scan_end:
+        consecutive = 0
+        hold_lows   = []
+        hold_highs  = []
+        for j in range(scan_start, scan_end):
+            bar  = bars[j]
+            vwap = vwap_values[j]
+            above = bar["close"] > vwap
+            below = bar["close"] < vwap
+            if (direction == "bull" and above) or (direction == "bear" and below):
+                consecutive += 1
+                hold_lows.append(bar["low"])
+                hold_highs.append(bar["high"])
+                if consecutive >= MOMENTUM_VWAP_BARS:
+                    entry_low  = min(hold_lows)
+                    entry_high = max(hold_highs)
+                    logger.info(
+                        f"[MOMENTUM] {ticker} VWAP_HOLD {direction.upper()} | "
+                        f"entry_zone=${entry_low:.2f}–${entry_high:.2f} | "
+                        f"bars {scan_start}–{j}"
+                    )
+                    return {
+                        "entry_type":   "MOMENTUM_CONTINUATION",
+                        "pattern":      "VWAP_HOLD",
+                        "direction":    direction,
+                        "entry_low":    round(entry_low, 4),
+                        "entry_high":   round(entry_high, 4),
+                        "breakout_bar": breakout_idx,
+                        "flag_start":   scan_start,
+                    }
+            else:
+                consecutive = 0
+                hold_lows   = []
+                hold_highs  = []
+
+    # Pattern 2: FLAG / TIGHT CONSOLIDATION
+    for j in range(scan_start, scan_end - MOMENTUM_FLAG_BARS + 1):
+        window = bars[j: j + MOMENTUM_FLAG_BARS]
+        w_high = max(b["high"] for b in window)
+        w_low  = min(b["low"]  for b in window)
+        w_range = w_high - w_low
+
+        if w_range < flag_threshold:
+            logger.info(
+                f"[MOMENTUM] {ticker} FLAG {direction.upper()} | "
+                f"range=${w_range:.4f} < threshold=${flag_threshold:.4f} | "
+                f"entry_zone=${w_low:.2f}–${w_high:.2f} | "
+                f"flag_start={j}"
+            )
+            return {
+                "entry_type":   "MOMENTUM_CONTINUATION",
+                "pattern":      "FLAG",
+                "direction":    direction,
+                "entry_low":    round(w_low, 4),
+                "entry_high":   round(w_high, 4),
+                "breakout_bar": breakout_idx,
+                "flag_start":   j,
+            }
+
+    logger.info(
+        f"[MOMENTUM] {ticker} — no continuation pattern | "
+        f"direction={direction} | scanned {scan_start}–{scan_end - 1}"
+    )
+    return None
+
 
 # ========================================
 # USAGE EXAMPLE
