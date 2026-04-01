@@ -4,6 +4,15 @@ app/core/sniper_pipeline.py — CFW6 Signal Pipeline
 
 FIX HISTORY (2026-04-01):
 
+  BUG-GEX-1: Gate 7 called is_in_gex_pin_zone(ticker) with a ticker string.
+    is_in_gex_pin_zone() signature is (entry_price, options_rec) — passing
+    ticker caused a silent type mismatch: abs(str - float) raises TypeError
+    which was swallowed by the except-pass inside the gate, so it always
+    returned (False, "gex_pin_gate error") and NEVER blocked a signal.
+    Fixed: is_in_gex_pin_zone(entry_price, options_rec) with correct args.
+    Both were already in scope (entry_price computed at gate 5,
+    options_rec is a pipeline parameter).
+
   BUG-DZ-1: Gate 6 called is_dead_zone(now_et) with a timestamp argument.
     is_dead_zone() signature is (direction, spy_regime) — the timestamp arg
     caused a silent type mismatch: 'direction' received a datetime object,
@@ -124,7 +133,7 @@ def _run_signal_pipeline(
       4. RVOL ceiling gate
       5. VWAP gate
       6. Dead zone gate  (BUG-DZ-1 fix: was passing now_et instead of direction+spy_regime)
-      7. GEX pin gate
+      7. GEX pin gate    (BUG-GEX-1 fix: was passing ticker instead of entry_price+options_rec)
       8. Cooldown gate
       9. CFW6 confirmation (skipped for INTRADAY / VWAP-reclaim paths)
      10. MTF trend bias (counter-trend rejected if RVOL < 1.8x)
@@ -172,16 +181,16 @@ def _run_signal_pipeline(
         return False
 
     # -- 6. Dead zone (BUG-DZ-1: was is_dead_zone(now_et) — wrong signature) --
-    # is_dead_zone(direction, spy_regime) — both were already in scope but
-    # the call site was passing now_et, causing silent gate failure.
     _dz_blocked, _dz_reason = is_dead_zone(direction, spy_regime or {})
     if _dz_blocked:
         logger.info(f"[{ticker}] DEAD ZONE: {_dz_reason} — signal dropped")
         return False
 
-    # -- 7. GEX pin zone ------------------------------------------------------
-    if is_in_gex_pin_zone(ticker):
-        logger.info(f"[{ticker}] GEX PIN ZONE — signal dropped")
+    # -- 7. GEX pin zone (BUG-GEX-1: was is_in_gex_pin_zone(ticker)) ---------
+    # entry_price computed at gate 5; options_rec is a pipeline parameter.
+    _gex_blocked, _gex_reason = is_in_gex_pin_zone(entry_price, options_rec or {})
+    if _gex_blocked:
+        logger.info(f"[{ticker}] GEX PIN ZONE: {_gex_reason} — signal dropped")
         return False
 
     # -- 8. Cooldown ----------------------------------------------------------
