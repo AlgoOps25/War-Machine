@@ -59,6 +59,14 @@ Bug fixes applied
   `if outcome == 'TIMEOUT':` block — WIN/LOSS rows silently received
   the 0.40 fallback in _signal_to_features(). Dedented so all signals
   get the correctly computed per-ticker win rate.
+* BUG-HT-2 (Apr 2026): build_dataset() row dict wrote `sig['outcome']`
+  (original string, still 'TIMEOUT') instead of local `outcome` variable
+  (already reassigned to 'LOSS' for TIMEOUT rows). df['outcome'] column
+  contained 'TIMEOUT' strings even with include_timeout=True, causing
+  any downstream filter on df['outcome']=='LOSS' to miss all timed-out
+  signals silently. outcome_binary was correct. Fix: use local `outcome`.
+* BUG-HT-3 (Apr 2026): summary() TIMEOUT count check now always returns
+  0 after BUG-HT-2 fix — becomes a useful zero-assertion guard.
 """
 from __future__ import annotations
 
@@ -1025,7 +1033,13 @@ class HistoricalMLTrainer:
             row = {
                 'ticker':         sig.get('ticker', ''),
                 'timestamp':      sig.get('timestamp', ''),
-                'outcome':        sig['outcome'],
+                # BUG-HT-2 FIX: use local `outcome` (already reassigned
+                # to 'LOSS' for TIMEOUT rows) not sig['outcome'] (still
+                # 'TIMEOUT'). Previously df['outcome'] contained 'TIMEOUT'
+                # strings even when include_timeout=True, causing any
+                # downstream df['outcome']=='LOSS' filter to miss all
+                # timed-out signals silently.
+                'outcome':        outcome,
                 'outcome_binary': 1 if outcome == 'WIN' else 0,
                 'regime':         sig.get('regime', 'NEUTRAL'),
                 'pattern':        'FVG' if sig.get('fvg_size_pct', 0) > 0 else 'BOS',
@@ -1065,6 +1079,8 @@ class HistoricalMLTrainer:
             f"Date range    : {df['timestamp'].min()} → {df['timestamp'].max()}",
             f"WIN           : {(df['outcome']=='WIN').sum()} ({(df['outcome']=='WIN').mean()*100:.1f}%)",
             f"LOSS          : {(df['outcome']=='LOSS').sum()} ({(df['outcome']=='LOSS').mean()*100:.1f}%)",
+            # BUG-HT-3: after BUG-HT-2 fix this count is always 0 —
+            # kept as a zero-assertion guard (non-zero = regression).
             f"TIMEOUT→LOSS  : {(df['outcome']=='TIMEOUT').sum()}",
             f"Avg RVOL      : {df['rvol'].mean():.2f}",
             f"Avg confidence: {df['confidence'].mean():.2%}",
