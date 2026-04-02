@@ -7,7 +7,7 @@ Unified Production Backtesting Engine for War Machine
   - FVG detection on 3-bar sequence after BOS
   - VWAP gate, entry-timing filter, MTF boost wired when modules available
   - strategy() callable matches BacktestEngine.run() signature exactly
-  - --walk-forward runs WalkForward with 2-month train / 1-month test windows
+  - --walk-forward runs WalkForward with auto-scaled window params
   - --batch runs all 5 default tickers sequentially
   - Hourly win-rate map printed at end (feeds 47.P4-2)
 
@@ -38,11 +38,29 @@ BUG-BT-4 (Apr 02 2026): Inverted R:R on NVDA/AMD (avg loss > avg win).
 BUG-BT-5 (Apr 02 2026): FVG scan window bars[-10:] can include pre-market.
   Fix: filter to RTH bars only before passing to _detect_fvg.
 
+BUG-BT-6 (Apr 02 2026): RVOL avg_vol baseline included pre-market bars
+  (04:00-09:29) which have near-zero volume, deflating the denominator and
+  making RVOL appear artificially high (suppressing real signals via threshold
+  mismatch) or artificially low (filtering valid setups). Fix: restrict the
+  20-bar volume history used for avg_vol to RTH bars only.
+
+BUG-BT-7 (Apr 02 2026): rvol_min=1.5 is a global default that blocks AAPL
+  and MSFT entirely — their intraday RVOL on 5m bars rarely exceeds 1.3 in
+  normal sessions. Added TICKER_PARAMS per-ticker override table. Strategy
+  now accepts an optional _ticker kwarg (injected by run_single) and merges
+  ticker-specific overrides over CLI params before evaluating any signal.
+
+BUG-BT-8 (Apr 02 2026): Walk-forward produced 0 windows on --days 90.
+  Data started 2026-02-02 (~60 calendar days of bars). train_months=2 +
+  test_months=1 needs 90 contiguous calendar days but the dataset ends before
+  the first test window closes. Fix: auto-scale window params based on data
+  span: >=120 days -> 2m/1m; 60-119 days -> 1m/1m; <60 days -> warn+skip.
+
 Usage:
     # Single ticker, 90-day single-pass
     python unified_production_backtest.py --ticker AAPL --days 90
 
-    # Walk-forward (2m train / 1m test)
+    # Walk-forward (auto-scales window to data span)
     python unified_production_backtest.py --ticker AAPL --days 90 --walk-forward
 
     # Batch all 5 default tickers
@@ -119,10 +137,31 @@ EOD_CUT   = dtime(15, 45)  # No new entries after this
 # low-vol tickers (AAPL, MSFT) whose OR ranges average ~0.10-0.15%.
 OR_MIN_RANGE_PCT = 0.001
 
+# BUG-BT-7: Hard cap on stop distance as % of entry price.
+# Prevents high-ATR tickers (NVDA, AMD) from placing $3-4 stops on
+# $100 entries while T1 is only $1-2 away (inverted R:R).
+MAX_STOP_PCT = 0.01  # 1.0% of entry price
+
+# BUG-BT-7: Per-ticker parameter overrides.
+# Keys must be uppercase. Values override CLI defaults for that ticker only.
+# Rationale:
+#   AAPL / MSFT: low intraday RVOL (rarely exceeds 1.3 on 5m), tight OR ranges
+#                -> lower rvol_min + smaller fvg threshold
+#   TSLA:        high intraday RVOL, wide gaps -> default params are fine
+#   NVDA / AMD:  high RVOL but wide ATR; rvol_min=1.3 to catch setups without
+#                inflating position risk via the stop cap
+TICKER_PARAMS: Dict[str, Dict] = {
+    "AAPL": {"rvol_min": 1.2, "fvg_min_size_pct": 0.003},
+    "MSFT": {"rvol_min": 1.2, "fvg_min_size_pct": 0.003},
+    "TSLA": {"rvol_min": 1.5, "fvg_min_size_pct": 0.005},
+    "NVDA": {"rvol_min": 1.3, "fvg_min_size_pct": 0.004},
+    "AMD":  {"rvol_min": 1.3, "fvg_min_size_pct": 0.004},
+}
+
 DEFAULT_PARAM_GRID = {
     "fvg_min_size_pct": [0.003, 0.005, 0.008],
     "min_confidence":   [60,    65,    70],
-    "rvol_min":         [1.5,   2.0,   2.5],
+    "rvol_min":         [1.2,   1.5,   2.0],
 }
 
 
@@ -315,7 +354,7 @@ class DataFetcher:
 def _rth_bars(bars: List[Dict]) -> List[Dict]:
     """
     Return only Regular Trading Hours bars (>= 09:30 ET).
-    BUG-BT-3/4/5: Pre-market bars pollute ATR, VWAP, and FVG detection.
+    BUG-BT-3/4/5/6: Pre-market bars pollute ATR, VWAP, FVG detection, and RVOL.
     """
     return [b for b in bars if b["datetime"].time() >= RTH_START]
 
@@ -363,9 +402,10 @@ def war_machine_strategy(
     War Machine BOS + FVG strategy — compatible with BacktestEngine.run().
 
     Params accepted:
-        fvg_min_size_pct  (default 0.005)
+        fvg_min_size_pct  (default 0.005; TICKER_PARAMS may override)
         min_confidence    (default 65)
-        rvol_min          (default 1.5)
+        rvol_min          (default 1.5; TICKER_PARAMS may override)
+        _ticker           (optional; injected by run_single for per-ticker overrides)
 
     BacktestEngine passes lookback_bars = bars[max(0, i-100) : i+1] (last 100 bars).
     At 5m resolution that covers ~500 minutes / ~1.3 sessions, so OR bars
@@ -373,9 +413,18 @@ def war_machine_strategy(
 
     Returns signal dict or None.
     """
-    fvg_min   = params.get("fvg_min_size_pct", 0.005)
-    min_conf  = params.get("min_confidence",   65)
-    rvol_min  = params.get("rvol_min",         1.5)
+    # BUG-BT-7: merge per-ticker overrides over CLI params
+    ticker = params.get("_ticker", "").upper()
+    effective_params = dict(params)
+    if ticker and ticker in TICKER_PARAMS:
+        # Only override if the caller didn't explicitly set a non-default value.
+        # We treat the TICKER_PARAMS values as calibrated minimums — apply them
+        # unconditionally so the per-ticker tuning always takes effect in batch mode.
+        effective_params.update(TICKER_PARAMS[ticker])
+
+    fvg_min   = effective_params.get("fvg_min_size_pct", 0.005)
+    min_conf  = effective_params.get("min_confidence",   65)
+    rvol_min  = effective_params.get("rvol_min",         1.5)
 
     if len(lookback_bars) < 20:
         return None
@@ -417,15 +466,16 @@ def war_machine_strategy(
     else:
         return None
 
-    # RVOL filter (uses all lookback bars for volume history)
-    recent_vols = [b["volume"] for b in lookback_bars[-20:]]
-    avg_vol = np.mean(recent_vols[:-1]) if len(recent_vols) > 1 else 1
+    # BUG-BT-6: RVOL baseline uses RTH bars only to exclude pre-market
+    # near-zero volume bars that deflate avg_vol and distort the ratio.
+    rth_lookback = _rth_bars(lookback_bars)
+    rth_vols = [b["volume"] for b in rth_lookback[-20:]]
+    avg_vol = np.mean(rth_vols[:-1]) if len(rth_vols) > 1 else 1
     rvol    = current_bar["volume"] / avg_vol if avg_vol > 0 else 0
     if rvol < rvol_min:
         return None
 
     # BUG-BT-5: FVG scan on RTH bars only to exclude pre-market candles
-    rth_lookback = _rth_bars(lookback_bars)
     fvg = _detect_fvg(rth_lookback[-10:], direction, fvg_min)
     if not fvg:
         return None
@@ -459,24 +509,29 @@ def war_machine_strategy(
     atr_approx  = np.mean([b["high"] - b["low"] for b in rth_for_atr[-14:]]) if rth_for_atr else 0.01
     atr_approx  = max(atr_approx, 0.01)  # floor to avoid zero-size stop
 
+    # BUG-BT-7: hard cap — stop distance cannot exceed MAX_STOP_PCT of entry.
+    # Prevents NVDA/AMD wide-body candles from placing $3-4 stops on $100 entries
+    # while T1 is only ATR*1.0 away, which inverts R:R despite BUG-BT-4 fix.
+    max_stop_distance = close * MAX_STOP_PCT
+
     if direction == "BULL":
-        entry  = close
-        stop   = max(fvg["fvg_bottom"] - atr_approx * 0.1,
-                     close - atr_approx * 1.0)   # tighter: 1.0x ATR
-        t1     = entry + atr_approx * 1.0         # T1 at 1R
-        t2     = entry + atr_approx * 2.0         # T2 at 2R
-        signal = "BUY"
+        raw_stop   = max(fvg["fvg_bottom"] - atr_approx * 0.1,
+                         close - atr_approx * 1.0)
+        stop       = max(raw_stop, close - max_stop_distance)  # cap at 1% below entry
+        t1         = close + atr_approx * 1.0                  # T1 at 1R
+        t2         = close + atr_approx * 2.0                  # T2 at 2R
+        signal_key = "BUY"
     else:
-        entry  = close
-        stop   = min(fvg["fvg_top"] + atr_approx * 0.1,
-                     close + atr_approx * 1.0)
-        t1     = entry - atr_approx * 1.0
-        t2     = entry - atr_approx * 2.0
-        signal = "SELL"
+        raw_stop   = min(fvg["fvg_top"] + atr_approx * 0.1,
+                         close + atr_approx * 1.0)
+        stop       = min(raw_stop, close + max_stop_distance)  # cap at 1% above entry
+        t1         = close - atr_approx * 1.0
+        t2         = close - atr_approx * 2.0
+        signal_key = "SELL"
 
     return {
-        "signal":     signal,
-        "entry":      entry,
+        "signal":     signal_key,
+        "entry":      close,
         "stop":       stop,
         "t1":         t1,
         "t2":         t2,
@@ -527,6 +582,37 @@ def print_hourly_map(hourly: Dict[int, Dict], ticker: str = ""):
 
 
 # ===========================================================================
+# WALK-FORWARD WINDOW PARAMS  (BUG-BT-8)
+# ===========================================================================
+
+def _wf_params_for_span(days: int) -> Optional[Dict]:
+    """
+    BUG-BT-8: Auto-scale walk-forward window params based on data span.
+
+    The data actually starts from the earliest bar in intraday_bars_5m which
+    may be significantly less than --days. We use the requested days as a proxy
+    since we don't know the actual span before fetching.
+
+    Returns dict with train_months/test_months/step_months, or None if
+    insufficient data for even the smallest valid window.
+    """
+    if days >= 120:
+        return {"train_months": 2, "test_months": 1, "step_months": 1}
+    elif days >= 60:
+        logger.info(
+            f"[WALK-FORWARD] Data span {days}d < 120d — using 1m/1m windows "
+            f"(train=1m test=1m). Use --days 180 for 2m/1m windows."
+        )
+        return {"train_months": 1, "test_months": 1, "step_months": 1}
+    else:
+        logger.warning(
+            f"[WALK-FORWARD] Data span {days}d < 60d — insufficient for "
+            f"any walk-forward window. Re-run with --days 120 or more."
+        )
+        return None
+
+
+# ===========================================================================
 # SINGLE-TICKER RUNNER
 # ===========================================================================
 
@@ -537,10 +623,14 @@ def run_single(
     walk_forward: bool,
     save: bool,
     output_dir: str,
+    days: int = 90,
 ) -> Optional[Dict]:
     """
     Run either a single-pass backtest or walk-forward for one ticker.
     Returns a summary dict.
+
+    BUG-BT-7: Injects _ticker into params so war_machine_strategy can apply
+    per-ticker overrides from TICKER_PARAMS at signal evaluation time.
     """
     if not BACKTEST_AVAILABLE:
         logger.error("BacktestEngine not available — install War Machine dependencies")
@@ -550,11 +640,21 @@ def run_single(
         logger.warning(f"[{ticker}] No bars — skipping")
         return None
 
+    # BUG-BT-7: inject ticker so strategy can look up TICKER_PARAMS
+    run_params = dict(params)
+    run_params["_ticker"] = ticker
+
     if walk_forward:
+        # BUG-BT-8: auto-scale window params to data span
+        wf_kwargs = _wf_params_for_span(days)
+        if wf_kwargs is None:
+            logger.warning(f"[{ticker}] Walk-forward skipped — data span too short")
+            return None
+
         wf = WalkForward(
-            train_months=2,
-            test_months=1,
-            step_months=1,
+            train_months=wf_kwargs["train_months"],
+            test_months=wf_kwargs["test_months"],
+            step_months=wf_kwargs["step_months"],
             optimization_metric="sharpe_ratio",
             min_train_bars=500,
         )
@@ -595,7 +695,7 @@ def run_single(
             ticker=ticker,
             bars=bars,
             strategy=war_machine_strategy,
-            strategy_params=params,
+            strategy_params=run_params,
         )
         logger.info(results.summary())
 
@@ -671,7 +771,7 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="War Machine — Unified Production Backtest (47.P4-1 / BUG-BT-1-5)"
+        description="War Machine — Unified Production Backtest (47.P4-1 / BUG-BT-1-8)"
     )
     parser.add_argument("--ticker",        help="Single ticker to backtest")
     parser.add_argument("--batch",         action="store_true",
@@ -682,7 +782,7 @@ def main():
     parser.add_argument("--days",          type=int, default=90,
                         help="Days back from today (default 90)")
     parser.add_argument("--walk-forward",  action="store_true",
-                        help="Run walk-forward validation (2m train / 1m test)")
+                        help="Run walk-forward validation (auto-scales window to data span)")
     parser.add_argument("--save",          action="store_true",
                         help="Save JSON results to output dir")
     parser.add_argument("--output-dir",    default="backtests/results",
@@ -728,6 +828,7 @@ def main():
             walk_forward=args.walk_forward,
             save=args.save,
             output_dir=args.output_dir,
+            days=args.days,
         )
         summaries.append(summary)
 
