@@ -25,6 +25,7 @@ import logging
 import time
 from datetime import datetime, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import requests
 
@@ -35,6 +36,8 @@ TRADIER_TOKEN           = os.getenv("TRADIER_API_TOKEN", "")
 TRADIER_BASE_URL        = os.getenv("TRADIER_BASE_URL", "https://api.tradier.com")
 TRADIER_FUTURES_ENABLED = os.getenv("TRADIER_FUTURES_ENABLED", "false").lower() == "true"
 EODHD_API_KEY           = os.getenv("EODHD_API_KEY", "")
+
+ET = ZoneInfo("America/New_York")
 
 # Tradier rate limit: 120 req/min on sandbox, 500 req/min on production.
 # We poll at most once per 30s so we stay well under both limits.
@@ -53,8 +56,31 @@ def _tradier_headers() -> dict:
 
 
 def _today_date_str() -> str:
-    from zoneinfo import ZoneInfo
-    return datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+    return datetime.now(ET).strftime("%Y-%m-%d")
+
+
+def _rth_unix_window() -> tuple[int, int]:
+    """
+    Return (from_unix, to_unix) for today's RTH window (09:30–16:00 ET)
+    as integer Unix epoch seconds.
+
+    Using Unix integers instead of ISO strings avoids EODHD's 422
+    'Unprocessable Content' rejection of timezone-naive ISO timestamps.
+    """
+    today = datetime.now(ET).date()
+    from_dt = datetime(today.year, today.month, today.day, 9, 30, 0, tzinfo=ET)
+    to_dt   = datetime(today.year, today.month, today.day, 16, 0, 0, tzinfo=ET)
+    return int(from_dt.timestamp()), int(to_dt.timestamp())
+
+
+def _is_rth_or_past_open() -> bool:
+    """
+    Return True if the current ET time is at or after 09:30.
+    Prevents requesting a future window before the market opens, which
+    would also produce a 422 from EODHD.
+    """
+    now_et = datetime.now(ET)
+    return (now_et.hour, now_et.minute) >= (9, 30)
 
 
 def _fetch_tradier_1m_bars(symbol: str) -> list[dict]:
@@ -112,13 +138,26 @@ def _fetch_eodhd_qqq_fallback() -> list[dict]:
     """
     Fallback: fetch QQQ 1-min bars from EODHD as a NQ proxy.
     Used when TRADIER_FUTURES_ENABLED=false or Tradier returns no data.
+
+    FIX (2026-04-02): switched `from`/`to` params from ISO 8601 strings
+    (e.g. "2026-04-02T09:30:00") to integer Unix epoch seconds.
+    EODHD's intraday endpoint rejects timezone-naive ISO strings with
+    HTTP 422 Unprocessable Content; Unix integers are accepted unconditionally.
+
+    Also guards against calling before 09:30 ET to avoid requesting a
+    future window (which also triggers 422).
     """
     if not EODHD_API_KEY:
         return []
-    today = _today_date_str()
+
+    if not _is_rth_or_past_open():
+        logger.debug("[FUTURES-FEED] QQQ fallback skipped — market not yet open (before 09:30 ET)")
+        return []
+
+    from_unix, to_unix = _rth_unix_window()
     url = (
         f"https://eodhd.com/api/intraday/QQQ.US"
-        f"?interval=1m&from={today}T09:30:00&to={today}T16:00:00"
+        f"?interval=1m&from={from_unix}&to={to_unix}"
         f"&api_token={EODHD_API_KEY}&fmt=json"
     )
     try:
