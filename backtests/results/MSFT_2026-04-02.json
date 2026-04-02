@@ -1,0 +1,40 @@
+{
+  "ticker": "MSFT",
+  "mode": "single_pass",
+  "start": "2026-02-02T04:00:00",
+  "end": "2026-04-02T15:05:00",
+  "total_trades": 10,
+  "win_rate": 40.0,
+  "net_pnl": -129.7627895282947,
+  "profit_factor": 0.4854939934195113,
+  "sharpe_ratio": -0.01867742855107714,
+  "expectancy": -12.07827895282947,
+  "max_drawdown": 1.7787055484282916,
+  "hourly_win_rates": {
+    "9": {
+      "wins": 0,
+      "total": 1,
+      "win_rate": 0.0
+    },
+    "10": {
+      "wins": 2,
+      "total": 4,
+      "win_rate": 50.0
+    },
+    "11": {
+      "wins": 0,
+      "total": 1,
+      "win_rate": 0.0
+    },
+    "13": {
+      "wins": 0,
+      "total": 1,
+      "win_rate": 0.0
+    },
+    "14": {
+      "wins": 2,
+      "total": 3,
+      "win_rate": 66.7
+    }
+  }
+}

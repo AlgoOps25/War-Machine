@@ -1,0 +1,40 @@
+{
+  "ticker": "TSLA",
+  "mode": "single_pass",
+  "start": "2026-02-02T04:00:00",
+  "end": "2026-04-02T15:05:00",
+  "total_trades": 8,
+  "win_rate": 50.0,
+  "net_pnl": -44.596439721683346,
+  "profit_factor": 0.7888006609062961,
+  "sharpe_ratio": 0.1825354016089773,
+  "expectancy": -4.704772356514766,
+  "max_drawdown": 0.9842291472061431,
+  "hourly_win_rates": {
+    "9": {
+      "wins": 0,
+      "total": 1,
+      "win_rate": 0.0
+    },
+    "10": {
+      "wins": 2,
+      "total": 3,
+      "win_rate": 66.7
+    },
+    "11": {
+      "wins": 0,
+      "total": 1,
+      "win_rate": 0.0
+    },
+    "13": {
+      "wins": 0,
+      "total": 1,
+      "win_rate": 0.0
+    },
+    "15": {
+      "wins": 2,
+      "total": 2,
+      "win_rate": 100.0
+    }
+  }
+}

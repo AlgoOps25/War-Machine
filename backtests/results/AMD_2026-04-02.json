@@ -1,0 +1,40 @@
+{
+  "ticker": "AMD",
+  "mode": "single_pass",
+  "start": "2026-02-02T04:00:00",
+  "end": "2026-04-02T15:05:00",
+  "total_trades": 18,
+  "win_rate": 50.0,
+  "net_pnl": -83.45026770442468,
+  "profit_factor": 0.8694553391724871,
+  "sharpe_ratio": 0.2025484385687114,
+  "expectancy": -3.777308461298369,
+  "max_drawdown": 2.949994211589841,
+  "hourly_win_rates": {
+    "9": {
+      "wins": 2,
+      "total": 4,
+      "win_rate": 50.0
+    },
+    "10": {
+      "wins": 3,
+      "total": 7,
+      "win_rate": 42.9
+    },
+    "12": {
+      "wins": 0,
+      "total": 1,
+      "win_rate": 0.0
+    },
+    "13": {
+      "wins": 0,
+      "total": 1,
+      "win_rate": 0.0
+    },
+    "15": {
+      "wins": 4,
+      "total": 5,
+      "win_rate": 80.0
+    }
+  }
+}
