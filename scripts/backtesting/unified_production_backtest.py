@@ -11,6 +11,14 @@ Unified Production Backtesting Engine for War Machine
   - --batch runs all 5 default tickers sequentially
   - Hourly win-rate map printed at end (feeds 47.P4-2)
 
+BUG-BT-1 (Apr 02 2026): fetch_from_cache() queried intraday_bars (1m, ~39k bars).
+  With BacktestEngine's 100-bar lookback window, most slices lacked OR bars
+  entirely (or_bars < 2), causing the strategy to return None on every call.
+  Fix: query intraday_bars_5m first; if empty, resample 1m bars to 5m.
+
+BUG-BT-2 (Apr 02 2026): Add first-bar datetime diagnostic to surface
+  UTC-vs-ET timezone issues immediately on fetch.
+
 Usage:
     # Single ticker, 90-day single-pass
     python unified_production_backtest.py --ticker AAPL --days 90
@@ -95,11 +103,55 @@ DEFAULT_PARAM_GRID = {
 
 
 # ===========================================================================
+# 1m → 5m RESAMPLER  (BUG-BT-1 fallback)
+# ===========================================================================
+
+def resample_1m_to_5m(bars_1m: List[Dict]) -> List[Dict]:
+    """
+    Aggregate 1-minute bars into 5-minute bars.
+    Groups by floor(minute / 5) bucket on a per-session basis.
+    Returns bars sorted by datetime.
+    """
+    if not bars_1m:
+        return []
+
+    buckets: Dict[datetime, Dict] = {}
+    for b in bars_1m:
+        dt = b["datetime"]
+        # Floor to nearest 5-minute boundary
+        floored = dt.replace(minute=(dt.minute // 5) * 5, second=0, microsecond=0)
+        if floored not in buckets:
+            buckets[floored] = {
+                "datetime": floored,
+                "open":     b["open"],
+                "high":     b["high"],
+                "low":      b["low"],
+                "close":    b["close"],
+                "volume":   b["volume"],
+            }
+        else:
+            bucket = buckets[floored]
+            bucket["high"]   = max(bucket["high"],  b["high"])
+            bucket["low"]    = min(bucket["low"],   b["low"])
+            bucket["close"]  = b["close"]           # last close wins
+            bucket["volume"] += b["volume"]
+
+    return sorted(buckets.values(), key=lambda x: x["datetime"])
+
+
+# ===========================================================================
 # DATA FETCHER
 # ===========================================================================
 
 class DataFetcher:
-    """Fetch historical 5m bars — PostgreSQL cache first, EODHD fallback."""
+    """
+    Fetch historical 5m bars for backtesting.
+
+    Priority:
+      1. intraday_bars_5m  (materialized 5m table)
+      2. intraday_bars     (1m table) resampled to 5m  [BUG-BT-1 fallback]
+      3. EODHD API         (5m interval)
+    """
 
     def __init__(self):
         self.api_key = os.getenv("EODHD_API_KEY")
@@ -107,13 +159,60 @@ class DataFetcher:
             logger.warning("EODHD_API_KEY not set — will use PostgreSQL cache only")
 
     # ------------------------------------------------------------------
+    def _rows_to_bars(self, rows, source_label: str) -> List[Dict]:
+        """Convert DB rows to normalized bar dicts with ET-naive datetimes."""
+        bars = []
+        for row in rows:
+            dt = row["datetime"]
+            if isinstance(dt, str):
+                dt = datetime.fromisoformat(dt)
+            # BUG-BT-2: convert tz-aware Postgres timestamps to ET-naive
+            if dt.tzinfo is not None:
+                dt = dt.astimezone(ET).replace(tzinfo=None)
+            bars.append({
+                "datetime": dt,
+                "open":     float(row["open"]),
+                "high":     float(row["high"]),
+                "low":      float(row["low"]),
+                "close":    float(row["close"]),
+                "volume":   int(row["volume"]),
+            })
+        return bars
+
+    # ------------------------------------------------------------------
     def fetch_from_cache(self, ticker: str, start: datetime, end: datetime) -> List[Dict]:
+        """
+        BUG-BT-1 fix: query intraday_bars_5m first.
+        If empty, fall back to intraday_bars (1m) and resample to 5m.
+        """
         try:
             from app.data.db_connection import get_conn, return_conn, ph, dict_cursor
-            p = ph()
+            p   = ph()
             conn = get_conn()
             try:
                 cur = dict_cursor(conn)
+
+                # --- Primary: 5m materialized table ---
+                cur.execute(
+                    f"SELECT datetime, open, high, low, close, volume "
+                    f"FROM intraday_bars_5m "
+                    f"WHERE ticker = {p} AND datetime >= {p} AND datetime <= {p} "
+                    f"ORDER BY datetime",
+                    (ticker, start, end),
+                )
+                rows_5m = cur.fetchall()
+
+                if rows_5m:
+                    bars = self._rows_to_bars(rows_5m, "5m cache")
+                    logger.info(f"[DATA] {ticker}: {len(bars)} bars from intraday_bars_5m")
+                    self._log_bar_diagnostic(ticker, bars)
+                    return bars
+
+                # --- Fallback: 1m table resampled to 5m (BUG-BT-1) ---
+                logger.info(
+                    f"[DATA] {ticker}: intraday_bars_5m empty — "
+                    f"falling back to 1m resample"
+                )
                 cur.execute(
                     f"SELECT datetime, open, high, low, close, volume "
                     f"FROM intraday_bars "
@@ -121,31 +220,38 @@ class DataFetcher:
                     f"ORDER BY datetime",
                     (ticker, start, end),
                 )
-                rows = cur.fetchall()
+                rows_1m = cur.fetchall()
+
             finally:
                 return_conn(conn)
 
-            bars = []
-            for row in rows:
-                dt = row["datetime"]
-                if isinstance(dt, str):
-                    dt = datetime.fromisoformat(dt)
-                if dt.tzinfo is not None:
-                    dt = dt.astimezone(ET).replace(tzinfo=None)
-                bars.append({
-                    "datetime": dt,
-                    "open":  float(row["open"]),
-                    "high":  float(row["high"]),
-                    "low":   float(row["low"]),
-                    "close": float(row["close"]),
-                    "volume": int(row["volume"]),
-                })
-            if bars:
-                logger.info(f"[DATA] {ticker}: {len(bars)} bars from cache")
-            return bars
+            if rows_1m:
+                bars_1m = self._rows_to_bars(rows_1m, "1m cache")
+                bars_5m = resample_1m_to_5m(bars_1m)
+                logger.info(
+                    f"[DATA] {ticker}: resampled {len(bars_1m)} 1m bars "
+                    f"→ {len(bars_5m)} 5m bars"
+                )
+                self._log_bar_diagnostic(ticker, bars_5m)
+                return bars_5m
+
+            return []
+
         except Exception as e:
             logger.warning(f"[DATA] Cache fetch failed for {ticker}: {e}")
             return []
+
+    # ------------------------------------------------------------------
+    def _log_bar_diagnostic(self, ticker: str, bars: List[Dict]):
+        """
+        BUG-BT-2: Log first 3 and last bar datetime so UTC-vs-ET issues
+        are immediately visible in the run log.
+        """
+        if not bars:
+            return
+        sample = bars[:3] + (bars[-1:] if len(bars) > 3 else [])
+        times  = [b["datetime"].strftime("%Y-%m-%d %H:%M") for b in sample]
+        logger.info(f"[DATA] {ticker} bar datetimes (ET-naive): {times}")
 
     # ------------------------------------------------------------------
     def fetch_from_eodhd(self, ticker: str, start: datetime, end: datetime) -> List[Dict]:
@@ -168,14 +274,14 @@ class DataFetcher:
                     dt = datetime.utcfromtimestamp(r["timestamp"]).astimezone(ET).replace(tzinfo=None)
                     bars.append({
                         "datetime": dt,
-                        "open":  float(r["open"]),
-                        "high":  float(r["high"]),
-                        "low":   float(r["low"]),
-                        "close": float(r["close"]),
-                        "volume": int(r["gmtoffset"] if "volume" not in r else r["volume"]),
+                        "open":   float(r["open"]),
+                        "high":   float(r["high"]),
+                        "low":    float(r["low"]),
+                        "close":  float(r["close"]),
+                        "volume": int(r.get("volume", 0)),
                     })
-                    bars[-1]["volume"] = int(r.get("volume", 0))
                 logger.info(f"[DATA] {ticker}: {len(bars)} bars from EODHD")
+                self._log_bar_diagnostic(ticker, bars)
                 return bars
             else:
                 logger.error(f"[DATA] EODHD {resp.status_code} for {ticker}")
@@ -241,6 +347,10 @@ def war_machine_strategy(
         min_confidence    (default 65)
         rvol_min          (default 1.5)
 
+    BacktestEngine passes lookback_bars = bars[max(0, i-100) : i+1] (last 100 bars).
+    At 5m resolution that covers ~500 minutes / ~1.3 sessions, so OR bars
+    from the current session are always present in the lookback window.
+
     Returns signal dict or None.
     """
     fvg_min   = params.get("fvg_min_size_pct", 0.005)
@@ -267,13 +377,13 @@ def war_machine_strategy(
     if len(or_bars) < 2:
         return None
 
-    or_high = max(b["high"] for b in or_bars)
-    or_low  = min(b["low"]  for b in or_bars)
+    or_high  = max(b["high"] for b in or_bars)
+    or_low   = min(b["low"]  for b in or_bars)
     or_range = or_high - or_low
     if or_range / or_low < 0.002:   # OR too narrow — skip
         return None
 
-    # Structure: BOS above OR high (BULL) or below OR low (BEAR)
+    # BOS: price has broken out of OR
     close = current_bar["close"]
     if close > or_high:
         direction = "BULL"
@@ -304,7 +414,7 @@ def war_machine_strategy(
     if direction == "BEAR" and close > vwap:
         return None
 
-    # Confidence scoring (simple: grade based on rvol + or_range_pct)
+    # Confidence scoring
     or_range_pct = or_range / or_low
     conf_score = min(100, int(
         40
@@ -539,21 +649,31 @@ def print_aggregate(summaries: List[Dict]):
 def main():
     import argparse
 
-    parser = argparse.ArgumentParser(description="War Machine — Unified Production Backtest (47.P4-1)")
+    parser = argparse.ArgumentParser(
+        description="War Machine — Unified Production Backtest (47.P4-1 / BUG-BT-1)"
+    )
     parser.add_argument("--ticker",        help="Single ticker to backtest")
-    parser.add_argument("--batch",         action="store_true", help=f"Run all default tickers: {DEFAULT_TICKERS}")
-    parser.add_argument("--tickers",       help="Comma-separated custom ticker list (overrides --batch defaults)")
+    parser.add_argument("--batch",         action="store_true",
+                        help=f"Run all default tickers: {DEFAULT_TICKERS}")
+    parser.add_argument("--tickers",       help="Comma-separated custom ticker list")
     parser.add_argument("--start",         help="Start date YYYY-MM-DD")
     parser.add_argument("--end",           help="End date YYYY-MM-DD")
-    parser.add_argument("--days",          type=int, default=90, help="Days back from today (default 90)")
-    parser.add_argument("--walk-forward",  action="store_true", help="Run walk-forward validation (2m train / 1m test)")
-    parser.add_argument("--save",          action="store_true", help="Save JSON results to output dir")
-    parser.add_argument("--output-dir",    default="backtests/results", help="Output directory for JSON results")
+    parser.add_argument("--days",          type=int, default=90,
+                        help="Days back from today (default 90)")
+    parser.add_argument("--walk-forward",  action="store_true",
+                        help="Run walk-forward validation (2m train / 1m test)")
+    parser.add_argument("--save",          action="store_true",
+                        help="Save JSON results to output dir")
+    parser.add_argument("--output-dir",    default="backtests/results",
+                        help="Output directory for JSON results")
 
     # Strategy param overrides
-    parser.add_argument("--fvg-min",       type=float, default=0.005, help="FVG min size pct (default 0.005)")
-    parser.add_argument("--min-conf",      type=int,   default=65,    help="Min confidence score (default 65)")
-    parser.add_argument("--rvol-min",      type=float, default=1.5,   help="Min RVOL (default 1.5)")
+    parser.add_argument("--fvg-min",  type=float, default=0.005,
+                        help="FVG min size pct (default 0.005)")
+    parser.add_argument("--min-conf", type=int,   default=65,
+                        help="Min confidence score (default 65)")
+    parser.add_argument("--rvol-min", type=float, default=1.5,
+                        help="Min RVOL (default 1.5)")
 
     args = parser.parse_args()
 
