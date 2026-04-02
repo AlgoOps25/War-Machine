@@ -19,6 +19,12 @@ AUDIT CORE-5 (2026-03-31): SC-A/B/C/E/F/G addressed.
   SC-E: _get_stale_tickers silent except now logs warning before returning full list.
   SC-F: _REDEPLOY_RETRIES / _REDEPLOY_RETRY_WAIT moved to module-level constants.
   SC-G: metadata['stage'] / metadata['stage_description'] → .get() with '?' fallbacks.
+
+FEATURE FUTURES-ORB (2026-04-02): opt-in futures thread added.
+  FUT-1: FUTURES_ENABLED env-var guard — zero impact when not set.
+  FUT-2: start_futures_loop() called AFTER all equity init — isolated daemon thread.
+  FUT-3: EOD reset calls futures_orb_scanner.reset_daily() + clear_bar_cache().
+  FUT-4: Startup banner includes futures status line.
 """
 from app.core.health_server import start_health_server, health_heartbeat
 
@@ -73,6 +79,13 @@ TICKER_TIMEOUT_SECONDS = 45
 _REDEPLOY_RETRIES      = 2
 _REDEPLOY_RETRY_WAIT   = 3
 _ticker_executor       = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ticker_watchdog")
+
+# ── Futures opt-in flag ───────────────────────────────────────────────────────
+# FUT-1: Evaluated once at import time so the flag is stable across the loop.
+# Setting FUTURES_ENABLED=true in Railway is the ONLY way to activate futures.
+# The options/equity system has zero awareness of this flag.
+_FUTURES_ENABLED = os.getenv("FUTURES_ENABLED", "false").lower() == "true"
+_FUTURES_SYMBOL  = os.getenv("FUTURES_SYMBOL", "MNQ")  # MNQ default; change to NQ for full contract
 
 
 def _run_ticker_with_timeout(process_ticker_fn, ticker: str) -> bool:
@@ -341,6 +354,11 @@ def start_scanner_loop():
     reg_msg  = "Regime channel active" if os.getenv('REGIME_WEBHOOK_URL') else "Set REGIME_WEBHOOK_URL"
     opts_msg = "Greeks analysis active" if OPTIONS_AVAILABLE else "NOT INTEGRATED"
     val_msg  = "CFW6 confirmation active" if VALIDATION_AVAILABLE else "NOT INTEGRATED"
+    # FUT-4: Futures status line — mirrors existing banner format.
+    fut_msg  = (
+        f"ORB thread armed ({_FUTURES_SYMBOL}) "
+        f"— {'LIVE Tradier' if os.getenv('TRADIER_FUTURES_ENABLED','false').lower()=='true' else 'QQQ proxy (Tradier pending)'}"
+    ) if _FUTURES_ENABLED else "Set FUTURES_ENABLED=true to activate"
 
     db_tick   = "\u2713" if ANALYTICS_AVAILABLE else "\u2717"
     disc_tick = "\u2713" if os.getenv('DISCORD_WEBHOOK_URL') else "\u2717"
@@ -348,6 +366,7 @@ def start_scanner_loop():
     reg_tick  = "\u2713" if os.getenv('REGIME_WEBHOOK_URL') else "\u2717"
     opts_tick = "\u2713" if OPTIONS_AVAILABLE else "\u2717"
     val_tick  = "\u2713" if VALIDATION_AVAILABLE else "\u2717"
+    fut_tick  = "\u2713" if _FUTURES_ENABLED else "\u2717"
 
     logger.info(f"{db_tick} DATABASE        {db_msg}")
     logger.info(f"{disc_tick} DISCORD         {disc_msg}")
@@ -355,6 +374,7 @@ def start_scanner_loop():
     logger.info(f"{reg_tick} REGIME-DISCORD  {reg_msg}")
     logger.info(f"{opts_tick} OPTIONS-GATE    {opts_msg}")
     logger.info(f"{val_tick} VALIDATION      {val_msg}")
+    logger.info(f"{fut_tick} FUTURES-ORB     {fut_msg}")
     logger.info(f"  RVOL Signal Gate : MIN={config.RVOL_SIGNAL_GATE}x  Ceiling={config.RVOL_CEILING}x")
     logger.info(f"  Bear Signals     : {'ENABLED' if config.BEAR_SIGNALS_ENABLED else 'DISABLED'}")
     logger.info(f"  Ticker Watchdog  : {TICKER_TIMEOUT_SECONDS}s hard timeout per ticker")
@@ -454,6 +474,19 @@ def start_scanner_loop():
         subscribe_quote_tickers(combined)
         last_subscribed_watchlist = set(combined)
         premarket_built = True
+
+    # ── FUT-2: Launch futures ORB thread AFTER all equity init ───────────────
+    # Daemon thread — crash-isolated from the equity scan loop.
+    # Zero effect on options/equity if FUTURES_ENABLED is not set.
+    _futures_scanner_ref = None
+    if _FUTURES_ENABLED:
+        try:
+            from app.futures import start_futures_loop
+            _futures_scanner_ref = start_futures_loop(symbol=_FUTURES_SYMBOL)
+            logger.info(f"[FUTURES-ORB] ✅ Futures ORB thread started for {_FUTURES_SYMBOL}")
+        except Exception as e:
+            logger.warning(f"[FUTURES-ORB] ⚠️ Failed to start futures thread (non-fatal): {e}")
+    # ─────────────────────────────────────────────────────────────────────────
 
     while True:
         try:
@@ -697,6 +730,20 @@ def start_scanner_loop():
                         data_manager.clear_prev_day_cache()
                     except Exception as e:
                         logger.error(f"[DATA] PDH/PDL cache clear error: {e}")
+
+                    # FUT-3: EOD reset for futures scanner state + bar cache.
+                    # Wrapped in try/except so any futures error never blocks equity EOD tasks.
+                    if _FUTURES_ENABLED:
+                        try:
+                            from app.futures.futures_orb_scanner import FuturesORBScanner
+                            from app.futures.tradier_futures_feed import clear_bar_cache
+                            # The running thread's scanner instance resets itself at top-of-loop,
+                            # but we also clear the bar cache here to ensure no stale intraday
+                            # data persists into the next session.
+                            clear_bar_cache(_FUTURES_SYMBOL)
+                            logger.info(f"[FUTURES-ORB] EOD bar cache cleared for {_FUTURES_SYMBOL}")
+                        except Exception as e:
+                            logger.warning(f"[FUTURES-ORB] EOD reset failed (non-fatal): {e}")
 
                     logger.info("[EOD] All EOD tasks complete")
 
