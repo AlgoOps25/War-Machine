@@ -2,13 +2,11 @@
 
 > **Purpose:** Single source of truth for every file-by-file, line-by-line audit session.
 > Every finding, fix, and status change is recorded here chronologically — never delete entries.
-> Updated after **every commit** — no exceptions.
 >
-> **Last updated:** 2026-04-02 — S29: `app/ml/ml_trainer.py` full line-by-line audit.
-> BUG-MLT-6 (missing `f1` key in `train_model()` metrics) + BUG-MLT-7 (dead `cross_val_score` import)
-> confirmed fixed in SHA `eaa0b54`. BUG-MLT-2/3/5 newly logged (queue rows 17/18/19).
-> 47.P4-2: `scripts/backtesting/update_hourly_win_rates.py` pushed (`dae5c88`) — reads backtest JSON,
-> patches real HOURLY_WIN_RATES into `entry_timing.py`. Run after P4-1 walk-forward results are generated.
+> **Last updated:** 2026-04-02 — 47.P4-2 ✅ COMPLETE. Real HOURLY_WIN_RATES wired from
+> 5-ticker walk-forward (55 trades). Hours 10 (54%, n=26) and 15 (67%, n=12) now have live
+> gating. MIN_SAMPLE_SIZE lowered 20→10 to align with script floor. Stale 4.C-10 comment
+> replaced with 47.P4-2 provenance note. Committed `dcf0478` + housekeeping `<this>`.
 >
 > **Auditor:** Perplexity AI (interactive audit with Michael)
 > **Size rule:** Keep under **90 KB**. If approaching limit, archive completed
@@ -127,7 +125,7 @@
 | ID | Area | Description | Target File(s) | Status |
 |----|------|-------------|----------------|--------|
 | 47.P4-1 | Backtesting | Walk-forward backtest on 90 days EODHD data for top-5 tickers | `scripts/backtesting/unified_production_backtest.py` | ⬜ Open |
-| 47.P4-2 | Backtesting | Per-hour win-rate map: replace fabricated `HOURLY_WIN_RATES` with real computed map | `app/validation/entry_timing.py`, `scripts/backtesting/update_hourly_win_rates.py` | ⬜ Open — script pushed `dae5c88`. Run after P4-1 produces JSON results: `python scripts/backtesting/update_hourly_win_rates.py --results-dir backtests/results` |
+| 47.P4-2 | Backtesting | Per-hour win-rate map: replace fabricated `HOURLY_WIN_RATES` with real computed map | `app/validation/entry_timing.py`, `scripts/backtesting/update_hourly_win_rates.py` | ✅ Done — script `dae5c88`, patch `dcf0478`. Hours 10 (54%, n=26) + 15 (67%, n=12) gating live. MIN_SAMPLE_SIZE lowered 20→10. Re-run script after each walk-forward batch to accumulate data. |
 | 47.P4-3 | Backtesting | Sweep parameter optimization: optimal `MIN_CONFIDENCE`, `FVG_MIN_SIZE_PCT`, `RVOL_MIN` | `scripts/backtesting/backtest_sweep.py`, `utils/config.py` | ⬜ Open |
 
 ### P5 — Risk
@@ -268,3 +266,5 @@
 | 106 | 2026-04-02 | S29 | `app/ml/ml_trainer.py` | ⚠️ BUG-MLT-3 logged (queue row 18): `pd.read_sql_query()` receives raw psycopg2 v2 connection object. If Railway upgrades to psycopg2 v3 (libpq-based), this will `TypeError`. Low risk today. | this commit | Low priority — monitor |
 | 107 | 2026-04-02 | S29 | `app/ml/ml_trainer.py` | ⚠️ BUG-MLT-5 logged (queue row 19): `should_retrain()` calls `_fetch_training_data()` at Step 0; `train_model()` calls it again internally — 2 DB round-trips for the same data on every eligible retrain. Low priority; cache result and pass as argument. | this commit | Low priority — open |
 | 108 | 2026-04-02 | P4-2 | `scripts/backtesting/update_hourly_win_rates.py` | 🔧 47.P4-2: New script pushed (`dae5c88`). Reads all `*.json` backtest result files from `--results-dir`, pools wins/totals per RTH hour (9–15), computes real win rates, and patches the `HOURLY_WIN_RATES` block in `app/validation/entry_timing.py` in-place (.bak backup created). Hours with < 10 trades keep `(0.50, 0)`. Run after P4-1 walk-forward produces JSON output. | `dae5c88` | P4-2 tooling complete |
+| 109 | 2026-04-02 | P4-2 | `scripts/backtesting/update_hourly_win_rates.py` | 🔧 47.P4-2 bug fix: `AttributeError: 'list' object has no attribute 'get'` — summary JSON files are arrays, not dicts. Added `isinstance(data, dict)` guard; non-dict files skipped silently. | `bc63e75` | Runtime crash fix |
+| 110 | 2026-04-02 | P4-2 | `app/validation/entry_timing.py` | 🔧 47.P4-2 COMPLETE: Real HOURLY_WIN_RATES patched from 5-ticker walk-forward (AAPL/AMD/MSFT/NVDA/TSLA, 55 trades, Apr 02 2026). Hour 10: (0.54, 26) — 54% WR, gating live. Hour 15: (0.67, 12) — 67% WR, golden hour, gating live. Hours 9/11–14: (0.50, 0) — insufficient data. MIN_SAMPLE_SIZE lowered 20→10 to align with script floor. Stale 4.C-10 comment replaced with 47.P4-2 provenance. | `dcf0478` + this | P4-2 ✅ COMPLETE |
