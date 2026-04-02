@@ -21,6 +21,7 @@ Workflow:
 
 Aggregation:
   - Loads all *.json files from the results dir.
+  - Skips files that are JSON arrays (summary files) or lack hourly_win_rates.
   - Pools all trades across all tickers per hour bucket.
   - Computes win_rate = wins / total for each hour.
   - Only writes a rate if total trades >= MIN_SAMPLE (default 10).
@@ -58,7 +59,7 @@ MIN_SAMPLE = 10
 ENTRY_TIMING_PATH = Path("app/validation/entry_timing.py")
 
 # Regex that matches the entire HOURLY_WIN_RATES dict block.
-# Anchored on the class-level assignment; stops at the blank line after.
+# Anchored on the class-level assignment; stops at the closing brace.
 HOURLY_BLOCK_RE = re.compile(
     r"(    HOURLY_WIN_RATES\s*=\s*\{)[^}]*(\})",
     re.DOTALL,
@@ -69,8 +70,11 @@ def load_results(results_dir: Path) -> Dict[int, Dict]:
     """
     Load all JSON result files and pool hourly win-rate data across tickers.
 
-    Each file must contain a 'hourly_win_rates' key mapping
-    str(hour) -> {'wins': int, 'total': int, 'win_rate': float}.
+    Each qualifying file must be a JSON object (dict) containing a
+    'hourly_win_rates' key mapping str(hour) -> {'wins': int, 'total': int}.
+
+    Files that are JSON arrays (e.g. summary files) or lack the key are
+    skipped with a warning.
 
     Returns pooled {hour: {'wins': int, 'total': int}} across all files.
     """
@@ -81,16 +85,22 @@ def load_results(results_dir: Path) -> Dict[int, Dict]:
         logger.error(f"No JSON files found in {results_dir}")
         sys.exit(1)
 
+    loaded = 0
     for fpath in files:
         try:
             data = json.loads(fpath.read_text())
         except Exception as e:
-            logger.warning(f"Skipping {fpath.name}: {e}")
+            logger.warning(f"Skipping {fpath.name}: parse error — {e}")
+            continue
+
+        # Skip JSON arrays (summary files, batch output, etc.)
+        if not isinstance(data, dict):
+            logger.debug(f"Skipping {fpath.name}: not a JSON object (type={type(data).__name__})")
             continue
 
         hourly = data.get("hourly_win_rates")
         if not hourly:
-            logger.warning(f"No hourly_win_rates in {fpath.name} \u2014 skipping")
+            logger.warning(f"Skipping {fpath.name}: no 'hourly_win_rates' key")
             continue
 
         ticker = data.get("ticker", fpath.stem)
@@ -103,8 +113,16 @@ def load_results(results_dir: Path) -> Dict[int, Dict]:
             f"  Loaded {fpath.name} ({ticker}): "
             f"{data.get('total_trades', '?')} trades"
         )
+        loaded += 1
 
-    logger.info(f"Loaded {len(files)} result file(s) from {results_dir}")
+    if loaded == 0:
+        logger.error(
+            "No qualifying result files found. Ensure the backtest was run with "
+            "--save and that each output file is a JSON object with 'hourly_win_rates'."
+        )
+        sys.exit(1)
+
+    logger.info(f"Loaded {loaded} result file(s) from {results_dir} (skipped {len(files) - loaded})")
     return dict(pooled)
 
 
