@@ -3,10 +3,9 @@
 > **Purpose:** Single source of truth for every file-by-file, line-by-line audit session.
 > Every finding, fix, and status change is recorded here chronologically — never delete entries.
 >
-> **Last updated:** 2026-04-02 — 47.P4-2 ✅ COMPLETE. Real HOURLY_WIN_RATES wired from
-> 5-ticker walk-forward (55 trades). Hours 10 (54%, n=26) and 15 (67%, n=12) now have live
-> gating. MIN_SAMPLE_SIZE lowered 20→10 to align with script floor. Stale 4.C-10 comment
-> replaced with 47.P4-2 provenance note. Committed `dcf0478` + housekeeping `<this>`.
+> **Last updated:** 2026-04-02 — BUG-DTC-1 ✅ COMPLETE. `add_dte_tracking_columns.sql` applied
+> to Railway Postgres via Python db pool. Columns `dte_selected`, `adx_at_entry`, `vix_at_entry`,
+> `target_pct_t1` now live on `positions` table. Queue #13 closed.
 >
 > **Auditor:** Perplexity AI (interactive audit with Michael)
 > **Size rule:** Keep under **90 KB**. If approaching limit, archive completed
@@ -81,7 +80,7 @@
 | 10 | ~~🟢 LOW~~ | ~~`app/notifications/discord_helpers.py`~~ | ~~BUG-DH-2: `get_company_name()` no timeout~~ | ✅ Fixed (S28 confirmed) |
 | 11 | ~~🟢 LOW~~ | ~~`app/notifications/discord_helpers.py`~~ | ~~BUG-DH-3: `EST` hardcoded footer timestamps~~ | ✅ Fixed (S28 confirmed) |
 | 12 | 🟢 LOW | `app/backtesting/walk_forward.py` | BUG-WF-1: `create_windows()` uses `timedelta(days=30 * months)` — Feb / 31-day months cause 1-2 day boundary drift. Low risk for dev/research use; fix with `dateutil.relativedelta` if production walk-forward is enabled | ⏳ Open |
-| 13 | 🟡 MEDIUM | `migrations/` | BUG-DTC-1: Run `add_dte_tracking_columns.sql` on Railway Postgres — columns not yet applied | ⏳ Open |
+| 13 | ~~🟡 MEDIUM~~ | ~~`migrations/`~~ | ~~BUG-DTC-1: Run `add_dte_tracking_columns.sql` on Railway Postgres — columns not yet applied~~ | ✅ Done (Apr 02 2026) |
 | 14 | 🟢 LOW | `app/notifications/discord_helpers.py` | BUG-DH-4: `global _last_send_ts` declared inside inner `_post()` closure — works correctly due to `_rl_lock` guard, but unusual pattern worth noting. No fix required. | ⏳ Monitor |
 | 15 | 🟢 LOW | `app/notifications/discord_helpers.py` | BUG-DH-5: `send_options_signal_alert()` — confirmation section checks `if mtf_convergence:` (falsy for 0) while quality section uses `is not None`. Inconsistent but harmless since 0-MTF convergence is meaningless. | ⏳ Open |
 | 16 | 🟢 LOW | `app/core/eod_reporter.py` | BUG-EOD-1: `win_rate` pulled from `daily_stats` — if `risk_manager` returns it as 0–1 decimal (0.65) instead of 0–100 (65.0), Discord footer shows `0.7%` instead of `65.0%`. Verify `get_session_status()` always returns 0–100. | ⏳ Open |
@@ -268,3 +267,4 @@
 | 108 | 2026-04-02 | P4-2 | `scripts/backtesting/update_hourly_win_rates.py` | 🔧 47.P4-2: New script pushed (`dae5c88`). Reads all `*.json` backtest result files from `--results-dir`, pools wins/totals per RTH hour (9–15), computes real win rates, and patches the `HOURLY_WIN_RATES` block in `app/validation/entry_timing.py` in-place (.bak backup created). Hours with < 10 trades keep `(0.50, 0)`. Run after P4-1 walk-forward produces JSON output. | `dae5c88` | P4-2 tooling complete |
 | 109 | 2026-04-02 | P4-2 | `scripts/backtesting/update_hourly_win_rates.py` | 🔧 47.P4-2 bug fix: `AttributeError: 'list' object has no attribute 'get'` — summary JSON files are arrays, not dicts. Added `isinstance(data, dict)` guard; non-dict files skipped silently. | `bc63e75` | Runtime crash fix |
 | 110 | 2026-04-02 | P4-2 | `app/validation/entry_timing.py` | 🔧 47.P4-2 COMPLETE: Real HOURLY_WIN_RATES patched from 5-ticker walk-forward (AAPL/AMD/MSFT/NVDA/TSLA, 55 trades, Apr 02 2026). Hour 10: (0.54, 26) — 54% WR, gating live. Hour 15: (0.67, 12) — 67% WR, golden hour, gating live. Hours 9/11–14: (0.50, 0) — insufficient data. MIN_SAMPLE_SIZE lowered 20→10 to align with script floor. Stale 4.C-10 comment replaced with 47.P4-2 provenance. | `dcf0478` + this | P4-2 ✅ COMPLETE |
+| 111 | 2026-04-02 | BUG-DTC-1 | `migrations/add_dte_tracking_columns.sql` | 🔧 BUG-DTC-1 COMPLETE: Migration applied to Railway Postgres via Python db pool. Columns `dte_selected INTEGER`, `adx_at_entry NUMERIC(8,4)`, `vix_at_entry NUMERIC(8,4)`, `target_pct_t1 NUMERIC(8,4)` added to `positions` table with `IF NOT EXISTS` guard. Queue #13 closed. | manual | DTE tracking columns live |
