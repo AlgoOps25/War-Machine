@@ -7,6 +7,8 @@
 > **Last updated:** 2026-04-02 — S29: `app/ml/ml_trainer.py` full line-by-line audit.
 > BUG-MLT-6 (missing `f1` key in `train_model()` metrics) + BUG-MLT-7 (dead `cross_val_score` import)
 > confirmed fixed in SHA `eaa0b54`. BUG-MLT-2/3/5 newly logged (queue rows 17/18/19).
+> 47.P4-2: `scripts/backtesting/update_hourly_win_rates.py` pushed (`dae5c88`) — reads backtest JSON,
+> patches real HOURLY_WIN_RATES into `entry_timing.py`. Run after P4-1 walk-forward results are generated.
 >
 > **Auditor:** Perplexity AI (interactive audit with Michael)
 > **Size rule:** Keep under **90 KB**. If approaching limit, archive completed
@@ -125,7 +127,7 @@
 | ID | Area | Description | Target File(s) | Status |
 |----|------|-------------|----------------|--------|
 | 47.P4-1 | Backtesting | Walk-forward backtest on 90 days EODHD data for top-5 tickers | `scripts/backtesting/unified_production_backtest.py` | ⬜ Open |
-| 47.P4-2 | Backtesting | Per-hour win-rate map: replace fabricated `HOURLY_WIN_RATES` with real computed map | `app/validation/entry_timing.py`, `scripts/backtesting/` | ⬜ Open |
+| 47.P4-2 | Backtesting | Per-hour win-rate map: replace fabricated `HOURLY_WIN_RATES` with real computed map | `app/validation/entry_timing.py`, `scripts/backtesting/update_hourly_win_rates.py` | ⬜ Open — script pushed `dae5c88`. Run after P4-1 produces JSON results: `python scripts/backtesting/update_hourly_win_rates.py --results-dir backtests/results` |
 | 47.P4-3 | Backtesting | Sweep parameter optimization: optimal `MIN_CONFIDENCE`, `FVG_MIN_SIZE_PCT`, `RVOL_MIN` | `scripts/backtesting/backtest_sweep.py`, `utils/config.py` | ⬜ Open |
 
 ### P5 — Risk
@@ -265,3 +267,4 @@
 | 105 | 2026-04-02 | S29 | `app/ml/ml_trainer.py` | ⚠️ BUG-MLT-2 logged (queue row 17): Platt calibration (Step 3) and threshold tuning (Step 4) both use `X_last_val`/`y_last_val` — calibrator already fit on that slice, so threshold tuning sees optimistically calibrated probs. Threshold will be systematically too low. Needs dedicated holdout split. | this commit | Medium priority — open |
 | 106 | 2026-04-02 | S29 | `app/ml/ml_trainer.py` | ⚠️ BUG-MLT-3 logged (queue row 18): `pd.read_sql_query()` receives raw psycopg2 v2 connection object. If Railway upgrades to psycopg2 v3 (libpq-based), this will `TypeError`. Low risk today. | this commit | Low priority — monitor |
 | 107 | 2026-04-02 | S29 | `app/ml/ml_trainer.py` | ⚠️ BUG-MLT-5 logged (queue row 19): `should_retrain()` calls `_fetch_training_data()` at Step 0; `train_model()` calls it again internally — 2 DB round-trips for the same data on every eligible retrain. Low priority; cache result and pass as argument. | this commit | Low priority — open |
+| 108 | 2026-04-02 | P4-2 | `scripts/backtesting/update_hourly_win_rates.py` | 🔧 47.P4-2: New script pushed (`dae5c88`). Reads all `*.json` backtest result files from `--results-dir`, pools wins/totals per RTH hour (9–15), computes real win rates, and patches the `HOURLY_WIN_RATES` block in `app/validation/entry_timing.py` in-place (.bak backup created). Hours with < 10 trades keep `(0.50, 0)`. Run after P4-1 walk-forward produces JSON output. | `dae5c88` | P4-2 tooling complete |
