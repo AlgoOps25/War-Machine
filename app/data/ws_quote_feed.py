@@ -28,14 +28,17 @@ Design:
   - Separate _started guard prevents duplicate threads.
   - Exponential backoff on reconnect: 2^attempt seconds, capped at 60s.
 
-500 / entitlement handling (v3):
+500 / entitlement handling (v4):
   - Consecutive 500s are counted. First one logs normally. Subsequent ones are
     suppressed (log every 10th) to prevent log spam.
   - After SERVER_500_BACKOFF_THRESHOLD consecutive 500s (default 3), the feed
     backs off hard. Backoff duration grows exponentially:
       attempt 1: 300s, attempt 2: 600s, attempt 3: 1200s, … capped at 3600s.
-    This prevents a reconnect storm where a flat 300s backoff expires and the
-    feed immediately hammers a still-degraded EODHD endpoint.
+  - CRITICAL FIX (v4): The hard-backoff attempt counter now lives OUTSIDE the
+    TCP connect block and is only reset on a confirmed 200 auth from the server.
+    Previously it was reset on every TCP connect success, which meant the
+    counter always stayed at 1 (300s) even during prolonged EODHD outages where
+    the server accepted TCP but immediately returned 500s at the application layer.
   - If the server sends a non-200 status_code that is NOT 500 (e.g. 401/403),
     the feed logs a permanent entitlement warning and stops retrying — no
     point hammering an auth-rejected endpoint.
@@ -328,6 +331,15 @@ async def _ws_run():
         i.e. 300s → 600s → 1200s → … capped at 3600s.
       Fatal auth error (401/403) → stops retrying entirely.
 
+    FIX v4 changes vs v3:
+      - hard_backoff_attempt counter moved OUTSIDE the TCP connect block.
+        Previously it lived inside `async with websockets.connect()` and was
+        reset to 0 on every TCP connect, so the 300→600→1200 ladder never
+        accumulated during EODHD application-layer 500 storms (TCP accepts
+        the connection fine, but immediately returns 500 status messages).
+      - hard_backoff_attempt now only resets to 0 on a confirmed 200 auth
+        message from EODHD — the only real signal that the server is healthy.
+
     FIX v3 changes vs v2:
       - Hard backoff is now exponential (300 * 2^(attempt-1), max 3600s) instead of
         a flat 300s. This prevents the reconnect storm where the flat timeout expired
@@ -347,21 +359,25 @@ async def _ws_run():
     """
     global _connected, _ws_connection, _subscribed
 
-    url     = f"{QUOTE_WS_BASE_URL}?api_token={config.EODHD_API_KEY}"
-    attempt = 0
+    url                  = f"{QUOTE_WS_BASE_URL}?api_token={config.EODHD_API_KEY}"
+    reconnect_attempt    = 0   # normal TCP reconnect backoff counter
+    hard_backoff_attempt = 0   # 500-flood backoff counter — persists across TCP connects
+                               # only resets on confirmed 200 auth from EODHD
 
     while True:
         try:
             logger.info(
                 f"[QUOTE] Connecting -> {QUOTE_WS_BASE_URL}"
-                + (f" (attempt {attempt + 1})" if attempt > 0 else "")
+                + (f" (attempt {reconnect_attempt + 1})" if reconnect_attempt > 0 else "")
             )
 
             async with websockets.connect(
                 url, ping_interval=20, ping_timeout=10, close_timeout=5
             ) as ws:
-                _ws_connection = ws
-                attempt        = 0  # clean TCP connect — reset normal backoff
+                _ws_connection     = ws
+                reconnect_attempt  = 0  # clean TCP connect — reset normal backoff only
+                # NOTE: hard_backoff_attempt is intentionally NOT reset here.
+                # It only resets on a confirmed 200 auth message below.
 
                 with _sub_lock:
                     _subscribed.clear()
@@ -382,7 +398,7 @@ async def _ws_run():
                 )
 
                 # Per-connection 500 counter — reset to [0] on each new connection
-                consecutive_500s = [0]
+                consecutive_500s       = [0]
                 hard_backoff_triggered = False
 
                 async for raw in ws:
@@ -404,12 +420,13 @@ async def _ws_run():
 
                             if action == "count_500":
                                 if consecutive_500s[0] >= SERVER_500_BACKOFF_THRESHOLD:
-                                    # Too many 500s — break out of message loop,
-                                    # trigger hard backoff below
                                     hard_backoff_triggered = True
                                     break
+                            elif action == "ok":
+                                # Confirmed 200 auth — server is healthy, reset both counters
+                                consecutive_500s[0]  = 0
+                                hard_backoff_attempt = 0
                             else:
-                                # 200 ok or ignore — reset 500 counter
                                 consecutive_500s[0] = 0
 
                             continue
@@ -443,15 +460,14 @@ async def _ws_run():
                 _ws_connection = None
 
                 if hard_backoff_triggered:
-                    attempt += 1
-                    # Exponential hard backoff: 300s → 600s → 1200s → … capped at 3600s
+                    hard_backoff_attempt += 1
                     backoff = min(
-                        SERVER_500_HARD_BACKOFF_BASE * (2 ** (attempt - 1)),
+                        SERVER_500_HARD_BACKOFF_BASE * (2 ** (hard_backoff_attempt - 1)),
                         SERVER_500_HARD_BACKOFF_MAX
                     )
                     logger.warning(
                         f"[QUOTE] \U0001f534 {consecutive_500s[0]} consecutive 500s — "
-                        f"hard backoff {backoff}s before retry (attempt {attempt})"
+                        f"hard backoff {backoff}s before retry (attempt {hard_backoff_attempt})"
                     )
                     await asyncio.sleep(backoff)
 
@@ -459,11 +475,11 @@ async def _ws_run():
             _connected     = False
             _ws_connection = None
 
-            delay   = min(2 ** attempt, RECONNECT_DELAY_MAX)
-            attempt += 1
+            delay              = min(2 ** reconnect_attempt, RECONNECT_DELAY_MAX)
+            reconnect_attempt += 1
             logger.info(
                 f"[QUOTE] Disconnected ({exc}) — reconnecting in {delay}s "
-                f"(attempt {attempt})"
+                f"(attempt {reconnect_attempt})"
             )
             await asyncio.sleep(delay)
 
