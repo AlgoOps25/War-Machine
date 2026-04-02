@@ -4,9 +4,9 @@
 > Every finding, fix, and status change is recorded here chronologically — never delete entries.
 > Updated after **every commit** — no exceptions.
 >
-> **Last updated:** 2026-04-02 — P3-2 and P3-3 marked complete (both were already implemented).
-> No unaudited source files exist. Audit is 100% complete across all folders.
-> Next: Phase 6 — P4-1 walk-forward backtest (`scripts/backtesting/unified_production_backtest.py`).
+> **Last updated:** 2026-04-02 — S28: `discord_helpers.py` + `eod_reporter.py` line-by-line audit complete.
+> BUG-DH-1/2/3 confirmed fixed in repo. BUG-DH-4/5 + BUG-EOD-1 newly logged (all low-severity).
+> Pending queue rows 9/10/11 closed.
 >
 > **Auditor:** Perplexity AI (interactive audit with Michael)
 > **Size rule:** Keep under **90 KB**. If approaching limit, archive completed
@@ -50,7 +50,7 @@
 | `app/indicators/` | 4 | 4 | ✅ **COMPLETE** — S22 |
 | `app/ml/` | 5 py + 2 md | 5 py + 2 md | ✅ Complete — ML-1, S11 |
 | `app/mtf/` | 7 | 7 | ✅ Complete — S12 |
-| `app/notifications/` | 2 | 2 | ✅ **COMPLETE** — S20 |
+| `app/notifications/` | 2 | 2 | ✅ **COMPLETE** — S20 + S28 re-audit |
 | `app/options/` | 9 audited → 7 remain | 9 | ✅ **COMPLETE** — S19-A + S19-B (2 deleted) |
 | `app/risk/` | 7 | 7 | ✅ Complete — S14 |
 | `app/screening/` | 8 | 8 | ✅ Complete (S9) |
@@ -77,11 +77,14 @@
 | 6 | 🟡 MEDIUM | `app/ml/ml_trainer.py` | BUG-ML-3: Platt calibration + threshold on same slice — data leakage | ⏳ Open |
 | 7 | 🟡 MEDIUM | `app/validation/cfw6_gate_validator.py` | BUG-ML-4: `get_validation_stats()` permanent stub — wire or delete | ⏳ Open |
 | 8 | 🟢 LOW | `app/ml/ml_confidence_boost.py` | BUG-ML-5: `.iterrows()` in logging loop — replace with `itertuples()` | ⏳ Open |
-| 9 | 🟡 MEDIUM | `app/notifications/discord_helpers.py` | BUG-DH-1: `test_webhook()` uses blocking `requests.post()` on calling thread — blocks startup if Discord is slow | ⏳ Open |
-| 10 | 🟢 LOW | `app/notifications/discord_helpers.py` | BUG-DH-2: `get_company_name()` yfinance call has no timeout guard — blocks on slow network at cache miss | ⏳ Open |
-| 11 | 🟢 LOW | `app/notifications/discord_helpers.py` | BUG-DH-3: Footer timestamps use `EST` hardcoded string — wrong during EDT (Mar–Nov). Should use `ET` or derive from `ZoneInfo('America/New_York')` | ⏳ Open |
+| 9 | ~~🟡 MEDIUM~~ | ~~`app/notifications/discord_helpers.py`~~ | ~~BUG-DH-1: `test_webhook()` blocking~~ | ✅ Fixed (S28 confirmed) |
+| 10 | ~~🟢 LOW~~ | ~~`app/notifications/discord_helpers.py`~~ | ~~BUG-DH-2: `get_company_name()` no timeout~~ | ✅ Fixed (S28 confirmed) |
+| 11 | ~~🟢 LOW~~ | ~~`app/notifications/discord_helpers.py`~~ | ~~BUG-DH-3: `EST` hardcoded footer timestamps~~ | ✅ Fixed (S28 confirmed) |
 | 12 | 🟢 LOW | `app/backtesting/walk_forward.py` | BUG-WF-1: `create_windows()` uses `timedelta(days=30 * months)` — Feb / 31-day months cause 1-2 day boundary drift. Low risk for dev/research use; fix with `dateutil.relativedelta` if production walk-forward is enabled | ⏳ Open |
 | 13 | 🟡 MEDIUM | `migrations/` | BUG-DTC-1: Run `add_dte_tracking_columns.sql` on Railway Postgres — columns not yet applied | ⏳ Open |
+| 14 | 🟢 LOW | `app/notifications/discord_helpers.py` | BUG-DH-4: `global _last_send_ts` declared inside inner `_post()` closure — works correctly due to `_rl_lock` guard, but unusual pattern worth noting. No fix required. | ⏳ Monitor |
+| 15 | 🟢 LOW | `app/notifications/discord_helpers.py` | BUG-DH-5: `send_options_signal_alert()` — confirmation section checks `if mtf_convergence:` (falsy for 0) while quality section uses `is not None`. Inconsistent but harmless since 0-MTF convergence is meaningless. | ⏳ Open |
+| 16 | 🟢 LOW | `app/core/eod_reporter.py` | BUG-EOD-1: `win_rate` pulled from `daily_stats` — if `risk_manager` returns it as 0–1 decimal (0.65) instead of 0–100 (65.0), Discord footer shows `0.7%` instead of `65.0%`. Verify `get_session_status()` always returns 0–100. | ⏳ Open |
 
 ---
 
@@ -248,3 +251,8 @@
 | 94 | 2026-04-02 | COUNT-FIX | `docs/AUDIT_REGISTRY.md` | 🔧 Header table file counts corrected after full filesystem cross-check. analytics/: 9→10, ml/: clarified 5py+2md, validation/: 9→10, migrations/: 4→5, utils/: 4→5, Root config: 8→10. All were `__init__.py` omissions or uncounted docs/configs. No unaudited source files. | this commit | Registry accuracy |
 | 95 | 2026-04-02 | P3-2 | `app/ml/ml_trainer.py`, `migrations/005_ml_feature_columns.sql` | ✅ 47.P3-2 confirmed already implemented. All 5 features (`gex_distance`, `ivr`, `time_to_close`, `spy_5m_bias`, `rvol_ratio`) present in `LIVE_FEATURE_COLS`, `_fetch_training_data()`, and `_prepare_features()`. Migration `005_ml_feature_columns.sql` adds all 5 columns with `IF NOT EXISTS`. Committed `0f3dfa3f`. Registry status corrected from ⬜ → ✅. | `0f3dfa3f` | Registry sync |
 | 96 | 2026-04-02 | P3-3 | `app/core/sniper_pipeline.py`, `utils/config.py` | ✅ 47.P3-3 confirmed already implemented. `CONFIDENCE_ABSOLUTE_FLOOR = 0.55` in `utils/config.py`. Imported and applied at gate 12 via `max(CONFIDENCE_ABSOLUTE_FLOOR, _sc.score / 100.0)` — replaces former hardcoded `0.60`. P3-3 fix documented in `sniper_pipeline.py` docstring. Registry status corrected from ⬜ → ✅. P3 section header updated to ✅ COMPLETE. | pre-committed | Registry sync |
+| 97 | 2026-04-02 | S28 | `app/notifications/discord_helpers.py` | ✅ BUG-DH-1 confirmed fixed — `test_webhook()` dispatches on daemon Thread, non-blocking. BUG-DH-2 confirmed fixed — `get_company_name()` uses `ThreadPoolExecutor` with `future.result(timeout=2.0)`. BUG-DH-3 confirmed fixed — all `strftime()` footer calls use `ET` not `EST`. Full line-by-line audit: no blocking POSTs, rate limiter correct, payload truncation correct, watchlist fallback correct. | this commit | 3 open bugs closed |
+| 98 | 2026-04-02 | S28 | `app/notifications/discord_helpers.py` | ⚠️ BUG-DH-4 logged: `global _last_send_ts` declared inside inner `_post()` closure — works correctly due to `_rl_lock` guard. No fix needed; monitor only. | this commit | Low-risk observation |
+| 99 | 2026-04-02 | S28 | `app/notifications/discord_helpers.py` | ⚠️ BUG-DH-5 logged: `send_options_signal_alert()` confirmation section checks `if mtf_convergence:` (falsy for 0) while quality section uses `is not None`. Inconsistent but harmless — 0 MTF convergence has no confluence value. | this commit | Low risk |
+| 100 | 2026-04-02 | S28 | `app/core/eod_reporter.py` | ✅ Full line-by-line audit clean. Imports verified: `get_session_status`, `get_eod_report` from `app.risk.risk_manager`; `send_daily_summary`, `send_simple_message` from `app.notifications.discord_helpers`. `signal_analytics` imported lazily (safe). `clear_session_cache()` called post-report. `ZoneInfo` with backports fallback correct. No `print()` calls — Railway-clean. | this commit | Clean |
+| 101 | 2026-04-02 | S28 | `app/core/eod_reporter.py` | ⚠️ BUG-EOD-1 logged: `win_rate` pulled from `daily_stats` — if `risk_manager.get_session_status()` returns it as 0–1 decimal (0.65) instead of percentage (65.0), Discord footer shows `0.7%`. Verify `get_session_status()` always returns 0–100 scale. | this commit | Low risk |
