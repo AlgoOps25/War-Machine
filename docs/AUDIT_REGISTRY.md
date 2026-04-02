@@ -4,10 +4,9 @@
 > Every finding, fix, and status change is recorded here chronologically — never delete entries.
 > Updated after **every commit** — no exceptions.
 >
-> **Last updated:** 2026-04-02 — Header file counts corrected after full filesystem cross-check.
-> All 6 discrepancies were stale counts (`__init__.py` omissions + uncounted docs/configs).
+> **Last updated:** 2026-04-02 — P3-2 and P3-3 marked complete (both were already implemented).
 > No unaudited source files exist. Audit is 100% complete across all folders.
-> Next: Phase 6 — P3-2 feature engineering (`app/ml/ml_trainer.py`).
+> Next: Phase 6 — P4-1 walk-forward backtest (`scripts/backtesting/unified_production_backtest.py`).
 >
 > **Auditor:** Perplexity AI (interactive audit with Michael)
 > **Size rule:** Keep under **90 KB**. If approaching limit, archive completed
@@ -107,13 +106,13 @@
 | 47.P2-2 | Options Selection | Delta-adjusted strike selector: intraday ATR → delta-optimal strikes (0.35–0.45Δ directional) | `app/options/options_dte_selector.py`, `app/validation/greeks_precheck.py` | ✅ Done |
 | 47.P2-3 | Options Selection | 0-DTE vs 1-DTE regime switch: force 1-DTE when VIX > 22, 0-DTE when IVR < 25 AND within 60m of close | `app/options/options_dte_selector.py` | ✅ Done — `030b4f4b` |
 
-### P3 — ML Confidence
+### P3 — ML Confidence ✅ COMPLETE
 
 | ID | Area | Description | Target File(s) | Status |
 |----|------|-------------|----------------|--------|
 | 47.P3-1 | ML Confidence | Retrain ML model on post-fix signal data — all pre-fix records corrupted. Gate: 50 clean signals | `app/ml/ml_trainer.py` | ✅ Done — `0f3dfa3f` |
-| 47.P3-2 | ML Confidence | Feature engineering: add GEX_distance, IVR, time_to_close, SPY_5m_bias, RVOL_ratio | `app/ml/ml_trainer.py` | ⬜ Open |
-| 47.P3-3 | ML Confidence | Confidence floor raise: reject ML confidence < 0.55 (current 0.45 too permissive) | `app/ml/ml_confidence_boost.py`, `app/core/sniper.py` | ⬜ Open |
+| 47.P3-2 | ML Confidence | Feature engineering: add GEX_distance, IVR, time_to_close, SPY_5m_bias, RVOL_ratio | `app/ml/ml_trainer.py`, `migrations/005_ml_feature_columns.sql` | ✅ Done — `0f3dfa3f` + migration. All 5 features in `LIVE_FEATURE_COLS`, `_fetch_training_data()`, `_prepare_features()`. Migration adds columns with `IF NOT EXISTS`. |
+| 47.P3-3 | ML Confidence | Confidence floor raise: reject ML confidence < 0.55 (current 0.45 too permissive) | `app/core/sniper_pipeline.py`, `utils/config.py` | ✅ Done — `CONFIDENCE_ABSOLUTE_FLOOR=0.55` in `utils/config.py`, imported and used at gate 12 via `max(CONFIDENCE_ABSOLUTE_FLOOR, _sc.score / 100.0)`. Docstring in `sniper_pipeline.py` documents the P3-3 fix. |
 
 ### P4 — Backtesting
 
@@ -247,3 +246,5 @@
 | 92 | 2026-04-01 | P3-1 | `app/ml/ml_trainer.py` | 🔧 47.P3-1: `CLEAN_DATA_CUTOFF=2026-03-25`, `MIN_CLEAN_SAMPLES=50`. `_fetch_training_data()` filters `signal_time >= cutoff`; `should_retrain()` checks floor first — blocks retrain if <50 clean records exist. Pre-fix records (corrupted gates) never used for training. | `0f3dfa3f` | ML data integrity |
 | 93 | 2026-04-01 | S19-B | `app/options/dte_selector.py` | ❌ DELETED — Sprint 2 legacy rule-based selector, fully superseded by `options_dte_selector.py`. Zero callers confirmed via repo-wide `Select-String` search. | manual | Dead code removed |
 | 94 | 2026-04-02 | COUNT-FIX | `docs/AUDIT_REGISTRY.md` | 🔧 Header table file counts corrected after full filesystem cross-check. analytics/: 9→10, ml/: clarified 5py+2md, validation/: 9→10, migrations/: 4→5, utils/: 4→5, Root config: 8→10. All were `__init__.py` omissions or uncounted docs/configs. No unaudited source files. | this commit | Registry accuracy |
+| 95 | 2026-04-02 | P3-2 | `app/ml/ml_trainer.py`, `migrations/005_ml_feature_columns.sql` | ✅ 47.P3-2 confirmed already implemented. All 5 features (`gex_distance`, `ivr`, `time_to_close`, `spy_5m_bias`, `rvol_ratio`) present in `LIVE_FEATURE_COLS`, `_fetch_training_data()`, and `_prepare_features()`. Migration `005_ml_feature_columns.sql` adds all 5 columns with `IF NOT EXISTS`. Committed `0f3dfa3f`. Registry status corrected from ⬜ → ✅. | `0f3dfa3f` | Registry sync |
+| 96 | 2026-04-02 | P3-3 | `app/core/sniper_pipeline.py`, `utils/config.py` | ✅ 47.P3-3 confirmed already implemented. `CONFIDENCE_ABSOLUTE_FLOOR = 0.55` in `utils/config.py`. Imported and applied at gate 12 via `max(CONFIDENCE_ABSOLUTE_FLOOR, _sc.score / 100.0)` — replaces former hardcoded `0.60`. P3-3 fix documented in `sniper_pipeline.py` docstring. Registry status corrected from ⬜ → ✅. P3 section header updated to ✅ COMPLETE. | pre-committed | Registry sync |
