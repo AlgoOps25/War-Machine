@@ -19,6 +19,25 @@ BUG-BT-1 (Apr 02 2026): fetch_from_cache() queried intraday_bars (1m, ~39k bars)
 BUG-BT-2 (Apr 02 2026): Add first-bar datetime diagnostic to surface
   UTC-vs-ET timezone issues immediately on fetch.
 
+BUG-BT-3 (Apr 02 2026): AAPL/MSFT 0 trades.
+  OR range threshold was 0.2% (0.002). Low-vol tickers (AAPL/MSFT) have
+  typical OR ranges of 0.10-0.15%, so the filter killed every session.
+  Lowered to 0.1% (0.001). Also: VWAP was computed on all session_bars
+  including pre-market (04:00-09:29) — now scoped to RTH bars (>=09:30)
+  so pre-market volume does not skew the gate.
+
+BUG-BT-4 (Apr 02 2026): Inverted R:R on NVDA/AMD (avg loss > avg win).
+  ATR was computed on last 14 bars regardless of session — pre-market bars
+  have inflated ranges due to gap open, making ATR ~2x the true RTH range.
+  Stop = close - ATR*1.5 placed stops $3-4 below entry on $100+ stocks,
+  while T1 = entry + ATR*1.0 was a shorter distance — inverted risk.
+  Fix: compute ATR on RTH bars only. Tighten stop multiplier to 1.0
+  (stop = ATR*1.0 away from entry). T1=ATR*1.0, T2=ATR*2.0 — R:R is
+  now 1:1 at T1 and 1:2 at T2, never inverted.
+
+BUG-BT-5 (Apr 02 2026): FVG scan window bars[-10:] can include pre-market.
+  Fix: filter to RTH bars only before passing to _detect_fvg.
+
 Usage:
     # Single ticker, 90-day single-pass
     python unified_production_backtest.py --ticker AAPL --days 90
@@ -91,9 +110,14 @@ except ImportError:
 # ---------------------------------------------------------------------------
 DEFAULT_TICKERS = ["AAPL", "TSLA", "NVDA", "MSFT", "AMD"]
 
-OR_START = dtime(9, 30)   # Opening Range start (ET)
-OR_END   = dtime(9, 50)   # Opening Range end   (ET)
-EOD_CUT  = dtime(15, 45)  # No new entries after this
+OR_START  = dtime(9, 30)   # Opening Range start (ET)
+OR_END    = dtime(9, 50)   # Opening Range end   (ET)
+RTH_START = dtime(9, 30)   # Regular Trading Hours start
+EOD_CUT   = dtime(15, 45)  # No new entries after this
+
+# BUG-BT-3: lowered from 0.002 (0.2%) to 0.001 (0.1%) to allow
+# low-vol tickers (AAPL, MSFT) whose OR ranges average ~0.10-0.15%.
+OR_MIN_RANGE_PCT = 0.001
 
 DEFAULT_PARAM_GRID = {
     "fvg_min_size_pct": [0.003, 0.005, 0.008],
@@ -118,7 +142,6 @@ def resample_1m_to_5m(bars_1m: List[Dict]) -> List[Dict]:
     buckets: Dict[datetime, Dict] = {}
     for b in bars_1m:
         dt = b["datetime"]
-        # Floor to nearest 5-minute boundary
         floored = dt.replace(minute=(dt.minute // 5) * 5, second=0, microsecond=0)
         if floored not in buckets:
             buckets[floored] = {
@@ -133,7 +156,7 @@ def resample_1m_to_5m(bars_1m: List[Dict]) -> List[Dict]:
             bucket = buckets[floored]
             bucket["high"]   = max(bucket["high"],  b["high"])
             bucket["low"]    = min(bucket["low"],   b["low"])
-            bucket["close"]  = b["close"]           # last close wins
+            bucket["close"]  = b["close"]
             bucket["volume"] += b["volume"]
 
     return sorted(buckets.values(), key=lambda x: x["datetime"])
@@ -158,7 +181,6 @@ class DataFetcher:
         if not self.api_key:
             logger.warning("EODHD_API_KEY not set — will use PostgreSQL cache only")
 
-    # ------------------------------------------------------------------
     def _rows_to_bars(self, rows, source_label: str) -> List[Dict]:
         """Convert DB rows to normalized bar dicts with ET-naive datetimes."""
         bars = []
@@ -166,7 +188,6 @@ class DataFetcher:
             dt = row["datetime"]
             if isinstance(dt, str):
                 dt = datetime.fromisoformat(dt)
-            # BUG-BT-2: convert tz-aware Postgres timestamps to ET-naive
             if dt.tzinfo is not None:
                 dt = dt.astimezone(ET).replace(tzinfo=None)
             bars.append({
@@ -179,20 +200,15 @@ class DataFetcher:
             })
         return bars
 
-    # ------------------------------------------------------------------
     def fetch_from_cache(self, ticker: str, start: datetime, end: datetime) -> List[Dict]:
-        """
-        BUG-BT-1 fix: query intraday_bars_5m first.
-        If empty, fall back to intraday_bars (1m) and resample to 5m.
-        """
+        """BUG-BT-1: query intraday_bars_5m first, fallback to 1m resample."""
         try:
             from app.data.db_connection import get_conn, return_conn, ph, dict_cursor
-            p   = ph()
+            p    = ph()
             conn = get_conn()
             try:
                 cur = dict_cursor(conn)
 
-                # --- Primary: 5m materialized table ---
                 cur.execute(
                     f"SELECT datetime, open, high, low, close, volume "
                     f"FROM intraday_bars_5m "
@@ -208,7 +224,6 @@ class DataFetcher:
                     self._log_bar_diagnostic(ticker, bars)
                     return bars
 
-                # --- Fallback: 1m table resampled to 5m (BUG-BT-1) ---
                 logger.info(
                     f"[DATA] {ticker}: intraday_bars_5m empty — "
                     f"falling back to 1m resample"
@@ -241,19 +256,14 @@ class DataFetcher:
             logger.warning(f"[DATA] Cache fetch failed for {ticker}: {e}")
             return []
 
-    # ------------------------------------------------------------------
     def _log_bar_diagnostic(self, ticker: str, bars: List[Dict]):
-        """
-        BUG-BT-2: Log first 3 and last bar datetime so UTC-vs-ET issues
-        are immediately visible in the run log.
-        """
+        """BUG-BT-2: Log first 3 + last bar datetimes to surface TZ issues."""
         if not bars:
             return
         sample = bars[:3] + (bars[-1:] if len(bars) > 3 else [])
         times  = [b["datetime"].strftime("%Y-%m-%d %H:%M") for b in sample]
         logger.info(f"[DATA] {ticker} bar datetimes (ET-naive): {times}")
 
-    # ------------------------------------------------------------------
     def fetch_from_eodhd(self, ticker: str, start: datetime, end: datetime) -> List[Dict]:
         if not self.api_key:
             return []
@@ -289,7 +299,6 @@ class DataFetcher:
             logger.error(f"[DATA] EODHD fetch failed for {ticker}: {e}")
         return []
 
-    # ------------------------------------------------------------------
     def fetch(self, ticker: str, start: datetime, end: datetime) -> List[Dict]:
         bars = self.fetch_from_cache(ticker, start, end)
         if not bars:
@@ -300,8 +309,16 @@ class DataFetcher:
 
 
 # ===========================================================================
-# SIGNAL STRATEGY  (matches BacktestEngine.run() strategy signature)
+# STRATEGY HELPERS
 # ===========================================================================
+
+def _rth_bars(bars: List[Dict]) -> List[Dict]:
+    """
+    Return only Regular Trading Hours bars (>= 09:30 ET).
+    BUG-BT-3/4/5: Pre-market bars pollute ATR, VWAP, and FVG detection.
+    """
+    return [b for b in bars if b["datetime"].time() >= RTH_START]
+
 
 def _compute_vwap(bars: List[Dict]) -> float:
     """Cumulative VWAP from bar list."""
@@ -315,7 +332,6 @@ def _detect_fvg(bars: List[Dict], direction: str, min_size_pct: float) -> Option
     Scan most-recent 3-bar sequence for a Fair Value Gap.
     direction='BULL': c1.high < c3.low  (gap up)
     direction='BEAR': c1.low  > c3.high (gap down)
-    Returns dict with fvg_top / fvg_bottom / fvg_mid if found.
     """
     if len(bars) < 3:
         return None
@@ -334,6 +350,10 @@ def _detect_fvg(bars: List[Dict], direction: str, min_size_pct: float) -> Option
                         "fvg_mid": (c1["low"] + c3["high"]) / 2}
     return None
 
+
+# ===========================================================================
+# SIGNAL STRATEGY  (matches BacktestEngine.run() strategy signature)
+# ===========================================================================
 
 def war_machine_strategy(
     lookback_bars: List[Dict],
@@ -363,12 +383,13 @@ def war_machine_strategy(
     current_bar = lookback_bars[-1]
     bar_time    = current_bar["datetime"]
 
-    # Filter to RTH only; skip OR window and near-EOD
+    # RTH only; skip OR window and near-EOD
     if bar_time.time() < OR_END or bar_time.time() > EOD_CUT:
         return None
 
-    # Build OR high/low from bars in the OR window of the SAME session date
     session_date = bar_time.date()
+
+    # Build OR high/low from OR bars of the current session
     or_bars = [
         b for b in lookback_bars
         if b["datetime"].date() == session_date
@@ -380,10 +401,12 @@ def war_machine_strategy(
     or_high  = max(b["high"] for b in or_bars)
     or_low   = min(b["low"]  for b in or_bars)
     or_range = or_high - or_low
-    if or_range / or_low < 0.002:   # OR too narrow — skip
+
+    # BUG-BT-3: was 0.002; lowered to 0.001 to allow low-vol tickers
+    if or_range / or_low < OR_MIN_RANGE_PCT:
         return None
 
-    # BOS: price has broken out of OR
+    # BOS: price has closed beyond the OR
     close = current_bar["close"]
     if close > or_high:
         direction = "BULL"
@@ -392,23 +415,27 @@ def war_machine_strategy(
         direction = "BEAR"
         bos_level = or_low
     else:
-        return None   # Price still inside OR
+        return None
 
-    # RVOL filter
+    # RVOL filter (uses all lookback bars for volume history)
     recent_vols = [b["volume"] for b in lookback_bars[-20:]]
     avg_vol = np.mean(recent_vols[:-1]) if len(recent_vols) > 1 else 1
     rvol    = current_bar["volume"] / avg_vol if avg_vol > 0 else 0
     if rvol < rvol_min:
         return None
 
-    # FVG on most-recent 3 bars
-    fvg = _detect_fvg(lookback_bars[-10:], direction, fvg_min)
+    # BUG-BT-5: FVG scan on RTH bars only to exclude pre-market candles
+    rth_lookback = _rth_bars(lookback_bars)
+    fvg = _detect_fvg(rth_lookback[-10:], direction, fvg_min)
     if not fvg:
         return None
 
-    # VWAP gate
-    session_bars = [b for b in lookback_bars if b["datetime"].date() == session_date]
-    vwap = _compute_vwap(session_bars) if session_bars else 0.0
+    # BUG-BT-3: VWAP on RTH bars only (exclude pre-market volume)
+    session_rth_bars = [
+        b for b in rth_lookback
+        if b["datetime"].date() == session_date
+    ]
+    vwap = _compute_vwap(session_rth_bars) if session_rth_bars else 0.0
     if direction == "BULL" and close < vwap:
         return None
     if direction == "BEAR" and close > vwap:
@@ -425,18 +452,24 @@ def war_machine_strategy(
     if conf_score < min_conf:
         return None
 
-    # Entry / stop / targets
-    atr_approx = np.mean([b["high"] - b["low"] for b in lookback_bars[-14:]]) or 0.01
+    # BUG-BT-4: ATR on RTH bars only — pre-market inflated range
+    # Stop tightened to ATR*1.0 (was 1.5). T1=ATR*1.0, T2=ATR*2.0.
+    # R:R is now 1:1 at T1, 1:2 at T2 — no longer inverted.
+    rth_for_atr = _rth_bars(lookback_bars[-30:])  # last 30 bars, RTH only
+    atr_approx  = np.mean([b["high"] - b["low"] for b in rth_for_atr[-14:]]) if rth_for_atr else 0.01
+    atr_approx  = max(atr_approx, 0.01)  # floor to avoid zero-size stop
 
     if direction == "BULL":
         entry  = close
-        stop   = max(fvg["fvg_bottom"] - atr_approx * 0.1, close - atr_approx * 1.5)
-        t1     = entry + atr_approx * 1.0
-        t2     = entry + atr_approx * 2.0
+        stop   = max(fvg["fvg_bottom"] - atr_approx * 0.1,
+                     close - atr_approx * 1.0)   # tighter: 1.0x ATR
+        t1     = entry + atr_approx * 1.0         # T1 at 1R
+        t2     = entry + atr_approx * 2.0         # T2 at 2R
         signal = "BUY"
     else:
         entry  = close
-        stop   = min(fvg["fvg_top"] + atr_approx * 0.1, close + atr_approx * 1.5)
+        stop   = min(fvg["fvg_top"] + atr_approx * 0.1,
+                     close + atr_approx * 1.0)
         t1     = entry - atr_approx * 1.0
         t2     = entry - atr_approx * 2.0
         signal = "SELL"
@@ -518,9 +551,6 @@ def run_single(
         return None
 
     if walk_forward:
-        # ----------------------------------------------------------------
-        # Walk-forward: 2-month train / 1-month test
-        # ----------------------------------------------------------------
         wf = WalkForward(
             train_months=2,
             test_months=1,
@@ -551,9 +581,6 @@ def run_single(
         }
 
     else:
-        # ----------------------------------------------------------------
-        # Single-pass backtest
-        # ----------------------------------------------------------------
         start_date = bars[0]["datetime"]
         end_date   = bars[-1]["datetime"]
 
@@ -587,16 +614,10 @@ def run_single(
             "max_drawdown":   results.max_drawdown,
         }
 
-    # ----------------------------------------------------------------
-    # Hourly win-rate map
-    # ----------------------------------------------------------------
     hourly = build_hourly_win_rate(all_trades)
     print_hourly_map(hourly, ticker)
     summary["hourly_win_rates"] = hourly
 
-    # ----------------------------------------------------------------
-    # Optionally save JSON
-    # ----------------------------------------------------------------
     if save and all_trades:
         Path(output_dir).mkdir(parents=True, exist_ok=True)
         fname = Path(output_dir) / f"{ticker}_{date.today().isoformat()}.json"
@@ -650,7 +671,7 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="War Machine — Unified Production Backtest (47.P4-1 / BUG-BT-1)"
+        description="War Machine — Unified Production Backtest (47.P4-1 / BUG-BT-1-5)"
     )
     parser.add_argument("--ticker",        help="Single ticker to backtest")
     parser.add_argument("--batch",         action="store_true",
@@ -667,17 +688,12 @@ def main():
     parser.add_argument("--output-dir",    default="backtests/results",
                         help="Output directory for JSON results")
 
-    # Strategy param overrides
-    parser.add_argument("--fvg-min",  type=float, default=0.005,
-                        help="FVG min size pct (default 0.005)")
-    parser.add_argument("--min-conf", type=int,   default=65,
-                        help="Min confidence score (default 65)")
-    parser.add_argument("--rvol-min", type=float, default=1.5,
-                        help="Min RVOL (default 1.5)")
+    parser.add_argument("--fvg-min",  type=float, default=0.005)
+    parser.add_argument("--min-conf", type=int,   default=65)
+    parser.add_argument("--rvol-min", type=float, default=1.5)
 
     args = parser.parse_args()
 
-    # Resolve tickers
     if args.tickers:
         tickers = [t.strip().upper() for t in args.tickers.split(",")]
     elif args.batch:
@@ -687,7 +703,6 @@ def main():
     else:
         tickers = ["AAPL"]
 
-    # Resolve date range
     end_dt   = datetime.strptime(args.end,   "%Y-%m-%d") if args.end   else datetime.now()
     start_dt = datetime.strptime(args.start, "%Y-%m-%d") if args.start else end_dt - timedelta(days=args.days)
 
