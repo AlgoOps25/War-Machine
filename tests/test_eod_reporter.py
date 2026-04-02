@@ -216,13 +216,18 @@ class TestRunEodReport:
         tracker.clear_session_cache.assert_called_once()
 
     # ------------------------------------------------------------------
-    # 6. get_daily_summary() output printed to stdout
+    # 6. get_daily_summary() output emitted via logger.info()
+    #
+    # FIX #36 (Mar 19 2026) changed print(full_summary) → logger.info(full_summary)
+    # so Railway captures it through the logging handler.  capsys only intercepts
+    # real sys.stdout writes; use caplog to assert against the logger record.
     # ------------------------------------------------------------------
-    def test_daily_summary_printed_to_stdout(self, capsys):
-        _run_eod_report(daily_summary="=== FULL SUMMARY OUTPUT ===")
+    def test_daily_summary_emitted_via_logger(self, caplog):
+        import logging
+        with caplog.at_level(logging.INFO):
+            _run_eod_report(daily_summary="=== FULL SUMMARY OUTPUT ===")
 
-        captured = capsys.readouterr()
-        assert "=== FULL SUMMARY OUTPUT ===" in captured.out
+        assert any("=== FULL SUMMARY OUTPUT ===" in r.message for r in caplog.records)
 
     # ------------------------------------------------------------------
     # 7. Graceful degradation when signal_analytics is unavailable
