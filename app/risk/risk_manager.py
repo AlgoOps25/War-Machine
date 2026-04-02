@@ -257,9 +257,15 @@ def open_trade(
     or_low: float,
     or_high: float,
     options_rec: Optional[Dict] = None,
+    signal_type: str = "",
 ) -> int:
     """
     Open a position via position_manager after evaluate_signal() has approved.
+
+    BUG-EOD-1 (Apr 02 2026): added signal_type kwarg (default "") and forward
+    it to open_position() so positions.signal_type is populated.  Without this
+    the _get_winrate_adjustment() query in dynamic_thresholds.py matched 0 rows
+    even after the column was added, keeping win-rate adj permanently at 0.00.
 
     Returns:
         int: position_id (>= 1 on success, -1 on failure)
@@ -278,6 +284,7 @@ def open_trade(
         confidence=confidence,
         grade=grade,
         options_rec=options_rec,
+        signal_type=signal_type,
     )
 
 
