@@ -4,8 +4,10 @@
 > Every finding, fix, and status change is recorded here chronologically — never delete entries.
 > Updated after **every commit** — no exceptions.
 >
-> **Last updated:** 2026-04-01 — S19-B complete. `app/options/dte_selector.py` deleted (Sprint 2 legacy, zero callers confirmed via repo-wide search).
-> Next: `app/backtesting/` audit.
+> **Last updated:** 2026-04-02 — Header file counts corrected after full filesystem cross-check.
+> All 6 discrepancies were stale counts (`__init__.py` omissions + uncounted docs/configs).
+> No unaudited source files exist. Audit is 100% complete across all folders.
+> Next: Phase 6 — P3-2 feature engineering (`app/ml/ml_trainer.py`).
 >
 > **Auditor:** Perplexity AI (interactive audit with Michael)
 > **Size rule:** Keep under **90 KB**. If approaching limit, archive completed
@@ -41,26 +43,26 @@
 |--------|-------|---------|--------|
 | `app/` (root) | 1 | 1 | ✅ Complete |
 | `app/ai/` | 2 | 2 | ✅ **COMPLETE** — S23 + S25 |
-| `app/analytics/` | 9 | 9 | ✅ Complete (S4–S10) |
+| `app/analytics/` | 10 | 10 | ✅ Complete (S4–S10) |
 | `app/backtesting/` | 7 | 7 | ✅ **COMPLETE** — S21 + S24 |
 | `app/core/` | 15 | 15 | ✅ **COMPLETE** — CORE-1 through CORE-6 + S9–S18 |
 | `app/data/` | 10 | 10 | ✅ **COMPLETE** — DATA-1 through DATA-4 |
 | `app/filters/` | 12 | 12 | ✅ Complete (S4, S9) — 2 deleted |
 | `app/indicators/` | 4 | 4 | ✅ **COMPLETE** — S22 |
-| `app/ml/` | 7 | 7 | ✅ Complete — ML-1, S11 |
+| `app/ml/` | 5 py + 2 md | 5 py + 2 md | ✅ Complete — ML-1, S11 |
 | `app/mtf/` | 7 | 7 | ✅ Complete — S12 |
 | `app/notifications/` | 2 | 2 | ✅ **COMPLETE** — S20 |
-| `app/options/` | 9 | 9 | ✅ **COMPLETE** — S19-A + S19-B (2 deleted) |
+| `app/options/` | 9 audited → 7 remain | 9 | ✅ **COMPLETE** — S19-A + S19-B (2 deleted) |
 | `app/risk/` | 7 | 7 | ✅ Complete — S14 |
 | `app/screening/` | 8 | 8 | ✅ Complete (S9) |
 | `app/signals/` | 5 | 5 | ✅ **COMPLETE** — SIG-1 through SIG-3 |
-| `app/validation/` | 9 | 9 | ✅ Complete (S1, S9) |
+| `app/validation/` | 10 | 10 | ✅ Complete (S1, S9) |
 | `docs/` | 8 | — | Reference only |
-| `migrations/` | 4 | 4 | ✅ **COMPLETE** — S27 |
+| `migrations/` | 5 | 5 | ✅ **COMPLETE** — S27 |
 | `scripts/` | 55 | 55 | ✅ Complete (S7–S8) — 1 quarantine pending |
 | `tests/` | 9 | 9 | ✅ Complete (S8) |
-| `utils/` | 4 | 4 | ✅ Complete (S8–S9) |
-| Root config files | 8 | 8 | ✅ **COMPLETE** — S26 |
+| `utils/` | 5 | 5 | ✅ Complete (S8–S9) |
+| Root config files | 10 | 10 | ✅ **COMPLETE** — S26 |
 
 ---
 
@@ -244,3 +246,4 @@
 | 91 | 2026-04-01 | P2-3 | `app/options/options_dte_selector.py` | 🔧 47.P2-3: `_dte_regime_override()` — VIX>22→1DTE, IVR<25+≤60m→0DTE. Fires after IVR gate, before scoring. `confidence_pct=70` on override path. | `030b4f4b` | New gate active |
 | 92 | 2026-04-01 | P3-1 | `app/ml/ml_trainer.py` | 🔧 47.P3-1: `CLEAN_DATA_CUTOFF=2026-03-25`, `MIN_CLEAN_SAMPLES=50`. `_fetch_training_data()` filters `signal_time >= cutoff`; `should_retrain()` checks floor first — blocks retrain if <50 clean records exist. Pre-fix records (corrupted gates) never used for training. | `0f3dfa3f` | ML data integrity |
 | 93 | 2026-04-01 | S19-B | `app/options/dte_selector.py` | ❌ DELETED — Sprint 2 legacy rule-based selector, fully superseded by `options_dte_selector.py`. Zero callers confirmed via repo-wide `Select-String` search. | manual | Dead code removed |
+| 94 | 2026-04-02 | COUNT-FIX | `docs/AUDIT_REGISTRY.md` | 🔧 Header table file counts corrected after full filesystem cross-check. analytics/: 9→10, ml/: clarified 5py+2md, validation/: 9→10, migrations/: 4→5, utils/: 4→5, Root config: 8→10. All were `__init__.py` omissions or uncounted docs/configs. No unaudited source files. | this commit | Registry accuracy |
