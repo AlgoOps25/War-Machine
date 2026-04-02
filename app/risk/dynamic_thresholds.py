@@ -18,6 +18,11 @@ FIXED (Mar 26 2026): _get_winrate_adjustment() now filters by BOTH grade AND sig
   (previously signal_type parameter was accepted but never used in the query — Issue #27).
 FIXED (Mar 26 2026): evaluate_signal() in risk_manager.py now passes bars_session + ticker
   into get_dynamic_threshold() so the ATR bucket adjustment is live (Issue #26).
+BUG-EOD-1 (Apr 02 2026): _get_winrate_adjustment() queried positions.signal_type but that
+  column did not exist on the positions table (only on ml_signals), causing a silent
+  exception and permanent 0.00 return — win-rate adjustment was permanently disabled.
+  Fix: column now added by position_manager._migrate_signal_type_column() on every
+  startup. Also added logger.info() so win-rate influence is visible in session logs.
 """
 
 from datetime import datetime, time, timedelta
@@ -138,6 +143,12 @@ def _get_winrate_adjustment(signal_type, grade):
     FIX #27 (Mar 26 2026): Query now filters on BOTH grade AND signal_type.
     Previously signal_type was accepted as a parameter but never used in the
     SQL query, so CFW6_OR A+ and CFW6_INTRADAY A+ returned identical win rates.
+
+    BUG-EOD-1 (Apr 02 2026): The positions table previously had no signal_type
+    column, so every call raised an OperationalError / ProgrammingError which
+    was silently swallowed by the except block, permanently returning 0.00 and
+    disabling win-rate influence on dynamic thresholds entirely.
+    Column is now added by position_manager._migrate_signal_type_column().
     """
     try:
         from app.data.db_connection import get_conn, return_conn, dict_cursor, ph
@@ -163,6 +174,10 @@ def _get_winrate_adjustment(signal_type, grade):
                 return_conn(conn)
 
         if len(rows) < 10:
+            logger.debug(
+                f"[DYNAMIC-THRESH] WR skipped ({signal_type}/{grade}): "
+                f"only {len(rows)} closed trades (need 10)"
+            )
             return 0.00
 
         wins = sum(1 for row in rows if (row["pnl"] or 0) > 0)
@@ -170,15 +185,22 @@ def _get_winrate_adjustment(signal_type, grade):
         winrate = wins / total if total > 0 else 0.0
 
         if winrate > 0.70:
-            return -0.05
+            adj = -0.05
         elif winrate > 0.60:
-            return -0.02
+            adj = -0.02
         elif winrate > 0.50:
-            return 0.00
+            adj = 0.00
         elif winrate > 0.40:
-            return +0.03
+            adj = +0.03
         else:
-            return +0.07
+            adj = +0.07
+
+        # BUG-EOD-1: log win-rate influence so it's visible in session logs
+        logger.info(
+            f"[DYNAMIC-THRESH] WR({signal_type}/{grade}): "
+            f"{wins}/{total} = {winrate:.0%} → adj={adj:+.2f}"
+        )
+        return adj
 
     except Exception as e:
         logger.warning(f"[DYNAMIC-THRESH] Win rate lookup error: {e}")
@@ -217,7 +239,7 @@ def get_dynamic_threshold(signal_type: str, grade: str,
     logger.info(
         f"[DYNAMIC-THRESH] {signal_type}/{grade}: "
         f"base={baseline:.2f} + time={time_adj:+.2f} + vix={vix_adj:+.2f} "
-        f"+ {atr_label}={atr_adj:+.2f} = {final_threshold:.2f}"
+        f"+ wr={winrate_adj:+.2f} + {atr_label}={atr_adj:+.2f} = {final_threshold:.2f}"
     )
 
     return final_threshold
