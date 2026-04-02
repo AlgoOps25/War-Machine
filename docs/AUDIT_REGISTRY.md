@@ -4,9 +4,9 @@
 > Every finding, fix, and status change is recorded here chronologically — never delete entries.
 > Updated after **every commit** — no exceptions.
 >
-> **Last updated:** 2026-04-02 — S28: `discord_helpers.py` + `eod_reporter.py` line-by-line audit complete.
-> BUG-DH-1/2/3 confirmed fixed in repo. BUG-DH-4/5 + BUG-EOD-1 newly logged (all low-severity).
-> Pending queue rows 9/10/11 closed.
+> **Last updated:** 2026-04-02 — S29: `app/ml/ml_trainer.py` full line-by-line audit.
+> BUG-MLT-6 (missing `f1` key in `train_model()` metrics) + BUG-MLT-7 (dead `cross_val_score` import)
+> confirmed fixed in SHA `eaa0b54`. BUG-MLT-2/3/5 newly logged (queue rows 17/18/19).
 >
 > **Auditor:** Perplexity AI (interactive audit with Michael)
 > **Size rule:** Keep under **90 KB**. If approaching limit, archive completed
@@ -48,7 +48,7 @@
 | `app/data/` | 10 | 10 | ✅ **COMPLETE** — DATA-1 through DATA-4 |
 | `app/filters/` | 12 | 12 | ✅ Complete (S4, S9) — 2 deleted |
 | `app/indicators/` | 4 | 4 | ✅ **COMPLETE** — S22 |
-| `app/ml/` | 5 py + 2 md | 5 py + 2 md | ✅ Complete — ML-1, S11 |
+| `app/ml/` | 5 py + 2 md | 5 py + 2 md | ✅ Complete — ML-1, S11, S29 |
 | `app/mtf/` | 7 | 7 | ✅ Complete — S12 |
 | `app/notifications/` | 2 | 2 | ✅ **COMPLETE** — S20 + S28 re-audit |
 | `app/options/` | 9 audited → 7 remain | 9 | ✅ **COMPLETE** — S19-A + S19-B (2 deleted) |
@@ -74,7 +74,7 @@
 | 3 | 🟢 LOW | `scripts/audit_repo.py` | QUARANTINE — one-time audit script, superseded by this registry | ⏳ Open |
 | 4 | 🟢 LOW | `market_memory.db` | Verify if replaced by PostgreSQL on Railway or still active | ⏳ Open |
 | 5 | 🟢 LOW | `scripts/war_machine.db` | Verify if stale vs root `war_machine.db` | ⏳ Open |
-| 6 | 🟡 MEDIUM | `app/ml/ml_trainer.py` | BUG-ML-3: Platt calibration + threshold on same slice — data leakage | ⏳ Open |
+| 6 | 🟡 MEDIUM | `app/ml/ml_trainer.py` | BUG-MLT-2: Platt calibration + threshold tuning share the same `X_last_val` slice — calibrator already fit on that slice, so threshold tuning sees optimistically calibrated probs. Threshold will be systematically too low. Needs dedicated holdout strategy. | ⏳ Open |
 | 7 | 🟡 MEDIUM | `app/validation/cfw6_gate_validator.py` | BUG-ML-4: `get_validation_stats()` permanent stub — wire or delete | ⏳ Open |
 | 8 | 🟢 LOW | `app/ml/ml_confidence_boost.py` | BUG-ML-5: `.iterrows()` in logging loop — replace with `itertuples()` | ⏳ Open |
 | 9 | ~~🟡 MEDIUM~~ | ~~`app/notifications/discord_helpers.py`~~ | ~~BUG-DH-1: `test_webhook()` blocking~~ | ✅ Fixed (S28 confirmed) |
@@ -85,6 +85,9 @@
 | 14 | 🟢 LOW | `app/notifications/discord_helpers.py` | BUG-DH-4: `global _last_send_ts` declared inside inner `_post()` closure — works correctly due to `_rl_lock` guard, but unusual pattern worth noting. No fix required. | ⏳ Monitor |
 | 15 | 🟢 LOW | `app/notifications/discord_helpers.py` | BUG-DH-5: `send_options_signal_alert()` — confirmation section checks `if mtf_convergence:` (falsy for 0) while quality section uses `is not None`. Inconsistent but harmless since 0-MTF convergence is meaningless. | ⏳ Open |
 | 16 | 🟢 LOW | `app/core/eod_reporter.py` | BUG-EOD-1: `win_rate` pulled from `daily_stats` — if `risk_manager` returns it as 0–1 decimal (0.65) instead of 0–100 (65.0), Discord footer shows `0.7%` instead of `65.0%`. Verify `get_session_status()` always returns 0–100. | ⏳ Open |
+| 17 | 🟡 MEDIUM | `app/ml/ml_trainer.py` | BUG-MLT-2: Same as row 6 — Platt calibration (Step 3) and threshold tuning (Step 4) both use `X_last_val`/`y_last_val`. Calibrator already fit on that slice → threshold tuning sees optimistically calibrated probs → threshold systematically too low. Needs separate holdout split before Platt fit. | ⏳ Open |
+| 18 | 🟢 LOW | `app/ml/ml_trainer.py` | BUG-MLT-3: `pd.read_sql_query()` receives raw psycopg2 v2 connection. If Railway upgrades to psycopg2 v3, this will `TypeError`. Low risk today but document for future migration. | ⏳ Monitor |
+| 19 | 🟢 LOW | `app/ml/ml_trainer.py` | BUG-MLT-5: `should_retrain()` calls `_fetch_training_data()` at Step 0, then `train_model()` calls it again internally — 2 DB round-trips for same data when retrain is triggered. Low priority; cache result and pass as argument. | ⏳ Open |
 
 ---
 
@@ -256,3 +259,9 @@
 | 99 | 2026-04-02 | S28 | `app/notifications/discord_helpers.py` | ⚠️ BUG-DH-5 logged: `send_options_signal_alert()` confirmation section checks `if mtf_convergence:` (falsy for 0) while quality section uses `is not None`. Inconsistent but harmless — 0 MTF convergence has no confluence value. | this commit | Low risk |
 | 100 | 2026-04-02 | S28 | `app/core/eod_reporter.py` | ✅ Full line-by-line audit clean. Imports verified: `get_session_status`, `get_eod_report` from `app.risk.risk_manager`; `send_daily_summary`, `send_simple_message` from `app.notifications.discord_helpers`. `signal_analytics` imported lazily (safe). `clear_session_cache()` called post-report. `ZoneInfo` with backports fallback correct. No `print()` calls — Railway-clean. | this commit | Clean |
 | 101 | 2026-04-02 | S28 | `app/core/eod_reporter.py` | ⚠️ BUG-EOD-1 logged: `win_rate` pulled from `daily_stats` — if `risk_manager.get_session_status()` returns it as 0–1 decimal (0.65) instead of percentage (65.0), Discord footer shows `0.7%`. Verify `get_session_status()` always returns 0–100 scale. | this commit | Low risk |
+| 102 | 2026-04-02 | S29 | `app/ml/ml_trainer.py` | ✅ Full line-by-line audit — S29. Import order clean. `get_conn`/`return_conn` pool usage correct. `ET = ZoneInfo(...)` module-level. `CLEAN_DATA_CUTOFF` TZ-aware (confirmed). `walk_forward_cv()` last-20% fallback correct. `__main__` block present. Feature importance `AttributeError` guard present. Model bundle complete (`threshold`, `calibrated`, `model_version`). | `eaa0b54` | Clean — no new critical findings |
+| 103 | 2026-04-02 | S29 | `app/ml/ml_trainer.py` | 🔧 BUG-MLT-6: `train_model()` metrics dict missing `'f1'` key — any downstream caller doing `metrics['f1']` on a live-path model bundle would raise `KeyError`. `f1_score()` computed on threshold-adjusted preds; `'f1'` key added to live-path metrics dict for parity with `train_from_dataframe()`. | `eaa0b54` | Runtime crash prevention |
+| 104 | 2026-04-02 | S29 | `app/ml/ml_trainer.py` | 🔧 BUG-MLT-7: `cross_val_score` imported from `sklearn.model_selection` but never called anywhere in the file. Dead import removed. | `eaa0b54` | Dead code |
+| 105 | 2026-04-02 | S29 | `app/ml/ml_trainer.py` | ⚠️ BUG-MLT-2 logged (queue row 17): Platt calibration (Step 3) and threshold tuning (Step 4) both use `X_last_val`/`y_last_val` — calibrator already fit on that slice, so threshold tuning sees optimistically calibrated probs. Threshold will be systematically too low. Needs dedicated holdout split. | this commit | Medium priority — open |
+| 106 | 2026-04-02 | S29 | `app/ml/ml_trainer.py` | ⚠️ BUG-MLT-3 logged (queue row 18): `pd.read_sql_query()` receives raw psycopg2 v2 connection object. If Railway upgrades to psycopg2 v3 (libpq-based), this will `TypeError`. Low risk today. | this commit | Low priority — monitor |
+| 107 | 2026-04-02 | S29 | `app/ml/ml_trainer.py` | ⚠️ BUG-MLT-5 logged (queue row 19): `should_retrain()` calls `_fetch_training_data()` at Step 0; `train_model()` calls it again internally — 2 DB round-trips for the same data on every eligible retrain. Low priority; cache result and pass as argument. | this commit | Low priority — open |
