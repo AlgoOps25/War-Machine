@@ -27,6 +27,10 @@ ADDED (Mar 16 2026):
   - get_hourly_funnel(days): funnel breakdown per hour_of_day — reveals time-of-day
     signal quality differences for threshold tuning.
   - get_daily_summary() extended to include rejection breakdown + hourly funnel sections.
+AUDIT 2026-04-02:
+  BUG-SA-1: All except-block logger.info() calls promoted to logger.warning() so analytics
+            errors surface in Railway logs. Matches convention already established in
+            armed_signal_store.py and watch_signal_store.py.
 """
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime, timedelta, time as dtime
@@ -128,7 +132,7 @@ class SignalTracker:
             conn.commit()
             logger.info("[ANALYTICS] Signal tracking database initialized")
         except Exception as e:
-            logger.info(f"[ANALYTICS] DB init error: {e}")
+            logger.warning(f"[ANALYTICS] DB init error: {e}")
         finally:
             if conn:
                 return_conn(conn)
@@ -198,7 +202,7 @@ class SignalTracker:
 
             return event_id
         except Exception as e:
-            logger.info(f"[ANALYTICS] record_signal_generated error for {ticker}: {e}")
+            logger.warning(f"[ANALYTICS] record_signal_generated error for {ticker}: {e}")
             return -1
         finally:
             if conn:
@@ -228,7 +232,7 @@ class SignalTracker:
         """
         cached = self.session_signals.get(ticker)
         if not cached or cached['stage'] != 'GENERATED':
-            logger.info(f"[ANALYTICS] Warning: No GENERATED signal found for {ticker}")
+            logger.warning(f"[ANALYTICS] No GENERATED signal found for {ticker} — record_validation_result skipped")
             return -1
 
         p = ph()
@@ -277,7 +281,7 @@ class SignalTracker:
 
             return event_id
         except Exception as e:
-            logger.info(f"[ANALYTICS] record_validation_result error for {ticker}: {e}")
+            logger.warning(f"[ANALYTICS] record_validation_result error for {ticker}: {e}")
             return -1
         finally:
             if conn:
@@ -298,7 +302,7 @@ class SignalTracker:
         """
         cached = self.session_signals.get(ticker)
         if not cached or cached['stage'] != 'VALIDATED':
-            logger.info(f"[ANALYTICS] Warning: No VALIDATED signal found for {ticker}")
+            logger.warning(f"[ANALYTICS] No VALIDATED signal found for {ticker} — record_signal_armed skipped")
             return -1
 
         p = ph()
@@ -338,7 +342,7 @@ class SignalTracker:
 
             return event_id
         except Exception as e:
-            logger.info(f"[ANALYTICS] record_signal_armed error for {ticker}: {e}")
+            logger.warning(f"[ANALYTICS] record_signal_armed error for {ticker}: {e}")
             return -1
         finally:
             if conn:
@@ -358,7 +362,7 @@ class SignalTracker:
         """
         cached = self.session_signals.get(ticker)
         if not cached or cached['stage'] != 'ARMED':
-            logger.info(f"[ANALYTICS] Warning: No ARMED signal found for {ticker}")
+            logger.warning(f"[ANALYTICS] No ARMED signal found for {ticker} — record_trade_executed skipped")
             return -1
 
         p = ph()
@@ -395,7 +399,7 @@ class SignalTracker:
 
             return event_id
         except Exception as e:
-            logger.info(f"[ANALYTICS] record_trade_executed error for {ticker}: {e}")
+            logger.warning(f"[ANALYTICS] record_trade_executed error for {ticker}: {e}")
             return -1
         finally:
             if conn:
@@ -438,7 +442,7 @@ class SignalTracker:
 
             rows = cursor.fetchall()
         except Exception as e:
-            logger.info(f"[ANALYTICS] get_funnel_stats error: {e}")
+            logger.warning(f"[ANALYTICS] get_funnel_stats error: {e}")
             rows = []
         finally:
             if conn:
@@ -483,7 +487,7 @@ class SignalTracker:
 
             rows = cursor.fetchall()
         except Exception as e:
-            logger.info(f"[ANALYTICS] get_grade_distribution error: {e}")
+            logger.warning(f"[ANALYTICS] get_grade_distribution error: {e}")
             rows = []
         finally:
             if conn:
@@ -527,7 +531,7 @@ class SignalTracker:
 
             row = cursor.fetchone()
         except Exception as e:
-            logger.info(f"[ANALYTICS] get_multiplier_impact error: {e}")
+            logger.warning(f"[ANALYTICS] get_multiplier_impact error: {e}")
             row = None
         finally:
             if conn:
@@ -583,7 +587,7 @@ class SignalTracker:
             """, (cutoff,))
             rows = cursor.fetchall()
         except Exception as e:
-            logger.info(f"[ANALYTICS] get_rejection_breakdown error: {e}")
+            logger.warning(f"[ANALYTICS] get_rejection_breakdown error: {e}")
             rows = []
         finally:
             if conn:
@@ -617,7 +621,7 @@ class SignalTracker:
             """, (cutoff,))
             rows = cursor.fetchall()
         except Exception as e:
-            logger.info(f"[ANALYTICS] get_hourly_funnel error: {e}")
+            logger.warning(f"[ANALYTICS] get_hourly_funnel error: {e}")
             rows = []
         finally:
             if conn:
@@ -809,10 +813,12 @@ if __name__ == "__main__":
 
     funnel = signal_tracker.get_funnel_stats()
     logger.info("\nFunnel Visualization:")
-    print(f"{funnel['generated']} generated → "
-          f"{funnel['validated']} validated ({funnel['validation_rate']:.0f}%) → "
-          f"{funnel['armed']} armed ({funnel['arming_rate']:.0f}%) → "
-          f"{funnel['traded']} traded ({funnel['execution_rate']:.0f}%)")
+    logger.info(
+        f"{funnel['generated']} generated → "
+        f"{funnel['validated']} validated ({funnel['validation_rate']:.0f}%) → "
+        f"{funnel['armed']} armed ({funnel['arming_rate']:.0f}%) → "
+        f"{funnel['traded']} traded ({funnel['execution_rate']:.0f}%)"
+    )
 
     logger.info("\nRejection Breakdown (7d):")
     for reason, count in signal_tracker.get_rejection_breakdown(days=7).items():

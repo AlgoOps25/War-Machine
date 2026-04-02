@@ -19,6 +19,13 @@
 #              arm_signal.py sends 'validation_data' after BUG-S16-1 renamed the key.
 #              Validation payload was always None in DB on every arm. Fixed: read
 #              'validation_data' to match the key arm_signal.py actually sends.
+#
+# AUDIT 2026-04-02:
+#   BUG-ASS-4: _ensure_armed_db() contained an inline CREATE TABLE with SQLite-style types
+#              (TEXT, REAL, INTEGER) that diverged from migration 002 which uses the correct
+#              PostgreSQL types (VARCHAR, NUMERIC, TIMESTAMPTZ, SERIAL). Schema ownership
+#              belongs exclusively to migrations/. Function gutted to a no-op log — if the
+#              table is missing it means migration 002 has not been run, which is the real fix.
 
 import json
 import logging
@@ -39,33 +46,11 @@ def _now_et():
 
 
 def _ensure_armed_db():
-    from app.data.db_connection import get_conn, return_conn
-    conn = None
-    try:
-        conn = get_conn()
-        cursor = conn.cursor()
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS armed_signals_persist (
-                ticker          TEXT PRIMARY KEY,
-                position_id     INTEGER     NOT NULL,
-                direction       TEXT        NOT NULL,
-                entry_price     REAL        NOT NULL,
-                stop_price      REAL        NOT NULL,
-                t1              REAL        NOT NULL,
-                t2              REAL        NOT NULL,
-                confidence      REAL        NOT NULL,
-                grade           TEXT        NOT NULL,
-                signal_type     TEXT        NOT NULL,
-                validation_data TEXT,
-                saved_at        TIMESTAMP   DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        conn.commit()
-    except Exception as e:
-        logger.warning(f"[ARMED-DB] Init error: {e}")
-    finally:
-        if conn:
-            return_conn(conn)
+    # BUG-ASS-4 FIX (2026-04-02): Schema is owned by migrations/002_signal_persist_tables.sql.
+    # The old inline CREATE TABLE used SQLite-style types (TEXT/REAL/INTEGER) that diverged
+    # from the correct PostgreSQL schema in migration 002. Gutted to a no-op.
+    # If armed_signals_persist is missing, run: psql < migrations/002_signal_persist_tables.sql
+    logger.debug("[ARMED-DB] _ensure_armed_db() skipped — schema owned by migration 002")
 
 
 def _persist_armed_signal(ticker: str, data: dict):
