@@ -229,8 +229,12 @@ def patch_file(new_block: str, dry_run: bool = False) -> bool:
 
 
 def main():
-    # Declare global first — before any reference to MIN_SAMPLE in this scope
-    global MIN_SAMPLE
+    # Snapshot the module-level default BEFORE the argparse block.
+    # Python 3.11+ raises SyntaxError if a name appears in any expression
+    # (including default= values) before the `global` declaration in the
+    # same function scope.  Reading it into a local here avoids that while
+    # still allowing us to reassign the global after parsing.
+    _default_min = MIN_SAMPLE
 
     parser = argparse.ArgumentParser(
         description="47.P4-2: Patch HOURLY_WIN_RATES in entry_timing.py "
@@ -244,8 +248,8 @@ def main():
     parser.add_argument(
         "--min-sample",
         type=int,
-        default=MIN_SAMPLE,
-        help=f"Minimum trades per hour bucket before trusting the rate (default: {MIN_SAMPLE})",
+        default=_default_min,
+        help=f"Minimum trades per hour bucket before trusting the rate (default: {_default_min})",
     )
     parser.add_argument(
         "--dry-run",
@@ -254,6 +258,9 @@ def main():
     )
     args = parser.parse_args()
 
+    # Now safe to update the module-level MIN_SAMPLE used by compute_rates()
+    # and build_block() which read it directly.
+    global MIN_SAMPLE
     MIN_SAMPLE = args.min_sample
 
     results_dir = Path(args.results_dir)
