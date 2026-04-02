@@ -4,7 +4,7 @@ Analyzes win/loss patterns and adjusts strategy parameters
 
 CONSOLIDATED: Now includes learning_policy functions (compute_confidence, grade_to_label)
 FIXED (Mar 10 2026): All get_conn() calls now use try/finally: return_conn(conn) — no leaks.
-FIXED (Mar 16 2026): Extended _GRADE_BASE to all 9 grades (A+/A/A-/B+/B/B-/C+/C/C-).
+FIXED (Mar 16 2026): Extended _GRADE_BASE to all 9 grades (A+/A/A-/B+/B/B-).
                      Fixed bare 'import db_connection' -> 'from app.data import db_connection'.
 FIXED (Mar 26 2026): record_trade() print() → logger.info() (Issue #37).
                      save_data() last_update timestamp naive → ZoneInfo ET (Issue #38).
@@ -23,6 +23,16 @@ FIXED (Apr 01 2026): BUG-AIL-1: 6x logger.info on error/exception paths → logg
                      → logger.debug (spammy until 20 trades accumulated).
                      BUG-AIL-4: __init__ load_data() fallback → logger.warning.
                      BUG-AIL-5: optimize_fvg_threshold() silent early return → logger.debug.
+FIX (Apr 02 2026) — 47.P3-3: Kill C/C- grades.
+                     Confidence scoring is inversely correlated with wins (backtest p=0.006).
+                     Until confidence is properly re-tuned, C+/C/C- grades are rejected
+                     at the source so no downstream code can accidentally pass them.
+                     Changes:
+                       - MIN_CONFIDENCE raised 0.50 → 0.60 (B- floor).
+                       - _GRADE_BASE: C+/C/C- entries removed entirely.
+                       - grade_to_label(): scores below 0.60 return 'reject'.
+                       - config.py: MIN_CONFIDENCE_BY_GRADE / CONFIDENCE_CAP_BY_GRADE
+                         C+/C/C- entries removed; CONFIDENCE_ABSOLUTE_FLOOR 0.55 → 0.60.
 """
 
 import json
@@ -43,9 +53,12 @@ ET = ZoneInfo("America/New_York")
 # CONFIDENCE SCORING (formerly learning_policy.py)
 # =============================================================================
 
-# Grade baseline confidence map — all 9 CFW6 grades.
-# A+/A/A- midpoints align with original learning_policy values.
-# B+/B/B-/C+/C/C- midpoints sourced from confidence_model.py (Phase 2 extraction).
+# Grade baseline confidence map — B- and above only.
+# 47.P3-3 (Apr 02 2026): C+/C/C- removed. Confidence scoring is inversely
+# correlated with wins (backtest p=0.006, n=107 trades) and is not yet
+# re-tuned. Accepting C-tier signals until the scoring model is fixed risks
+# feeding low-quality, mislabelled entries into live execution and ML training.
+# Re-add C-tier entries here only after confidence calibration is validated.
 _GRADE_BASE = {
     "A+":  0.90,   # midpoint of (0.88, 0.92)
     "A":   0.85,   # midpoint of (0.83, 0.87)
@@ -53,9 +66,7 @@ _GRADE_BASE = {
     "B+":  0.74,   # midpoint of (0.72, 0.76)
     "B":   0.68,   # midpoint of (0.66, 0.70)
     "B-":  0.62,   # midpoint of (0.60, 0.64)
-    "C+":  0.575,  # midpoint of (0.55, 0.60)
-    "C":   0.525,  # midpoint of (0.50, 0.55)
-    "C-":  0.475,  # midpoint of (0.45, 0.50)
+    # C+/C/C- deliberately omitted — 47.P3-3
 }
 
 # Timeframe multiplier: higher timeframe = higher weight
@@ -66,8 +77,10 @@ _TF_MULTIPLIER = {
     "1m": 0.97,
 }
 
-# Minimum threshold - signals below this are dropped upstream
-MIN_CONFIDENCE = 0.50
+# Minimum threshold - signals below this are dropped upstream.
+# 47.P3-3 (Apr 02 2026): raised 0.50 → 0.60 (B- floor).
+# C+ midpoint is 0.575, C is 0.525, C- is 0.475 — all now below this floor.
+MIN_CONFIDENCE = 0.60
 
 
 def compute_confidence(
@@ -79,13 +92,16 @@ def compute_confidence(
     Compute base confidence score for a CFW6 signal.
 
     Args:
-        grade:     Signal grade string - "A+" through "C-" (9 grades)
+        grade:     Signal grade string - "A+" through "B-" (6 grades).
+                   C+/C/C- grades are not in _GRADE_BASE (47.P3-3) and will
+                   fall back to MIN_CONFIDENCE (0.60), which will be rejected
+                   by downstream gates.
         timeframe: Bar timeframe - "1m", "2m", "3m", "5m"
         ticker:    Ticker symbol (reserved for future per-ticker tuning)
 
     Returns:
         Float in [0.0, 1.0] representing signal confidence.
-        Falls back to 0.50 (MIN_CONFIDENCE) for unrecognised grades.
+        Falls back to MIN_CONFIDENCE (0.60) for unrecognised/C-tier grades.
     """
     base = _GRADE_BASE.get(grade, MIN_CONFIDENCE)
     tf_mult = _TF_MULTIPLIER.get(timeframe, 1.00)
@@ -94,15 +110,20 @@ def compute_confidence(
 
 
 def grade_to_label(confidence: float) -> str:
+    """
+    Map a confidence float back to a letter grade.
+
+    47.P3-3 (Apr 02 2026): Scores below 0.60 (B- floor) now return 'reject'.
+    Previously C- returned for [0.45, 0.50) and C for [0.50, 0.55) — both
+    are now 'reject' so callers that check for a non-reject grade act as a
+    second gate against C-tier signals slipping through.
+    """
     if confidence >= 0.88:   return "A+"
     elif confidence >= 0.83: return "A"
     elif confidence >= 0.78: return "A-"
     elif confidence >= 0.72: return "B+"
     elif confidence >= 0.66: return "B"
     elif confidence >= 0.60: return "B-"
-    elif confidence >= 0.55: return "C+"
-    elif confidence >= 0.50: return "C"
-    elif confidence >= 0.45: return "C-"
     else:                    return "reject"
 
 # =============================================================================
@@ -449,7 +470,7 @@ class AILearningEngine:
         report += f"Total P&L: ${total_pnl:+,.2f}\n"
         report += "\nGrade Performance:\n"
 
-        for grade in ["A+", "A", "A-", "B+", "B", "B-", "C+", "C", "C-"]:
+        for grade in ["A+", "A", "A-", "B+", "B", "B-"]:
             if grade in self.data["pattern_performance"]:
                 perf     = self.data["pattern_performance"][grade]
                 grade_wr = (perf["wins"] / perf["count"]) * 100 if perf["count"] > 0 else 0
