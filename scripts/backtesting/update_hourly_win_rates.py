@@ -90,7 +90,7 @@ def load_results(results_dir: Path) -> Dict[int, Dict]:
 
         hourly = data.get("hourly_win_rates")
         if not hourly:
-            logger.warning(f"No hourly_win_rates in {fpath.name} — skipping")
+            logger.warning(f"No hourly_win_rates in {fpath.name} \u2014 skipping")
             continue
 
         ticker = data.get("ticker", fpath.stem)
@@ -117,7 +117,7 @@ def compute_rates(
     Hours with total < MIN_SAMPLE get (0.50, 0) to keep gating disabled.
     """
     rates: Dict[int, Tuple[float, int]] = {}
-    # Standard RTH hours 9–15
+    # Standard RTH hours 9-15
     for h in range(9, 16):
         d = pooled.get(h, {"wins": 0, "total": 0})
         total = d["total"]
@@ -125,7 +125,7 @@ def compute_rates(
         if total >= MIN_SAMPLE:
             wr = round(wins / total, 2)
             rates[h] = (wr, total)
-            flag = "✅" if wr >= 0.65 else "⚠️" if wr < 0.50 else "🟡"
+            flag = "\u2705" if wr >= 0.65 else "\u26a0\ufe0f" if wr < 0.50 else "\U0001f7e1"
             logger.info(
                 f"  Hour {h:02d}:xx  {wr:.0%}  "
                 f"({wins}/{total} trades)  {flag}"
@@ -134,7 +134,7 @@ def compute_rates(
             rates[h] = (0.50, 0)
             logger.info(
                 f"  Hour {h:02d}:xx  insufficient data "
-                f"({total} trades < {MIN_SAMPLE} min) — keeping (0.50, 0)"
+                f"({total} trades < {MIN_SAMPLE} min) \u2014 keeping (0.50, 0)"
             )
     return rates
 
@@ -186,14 +186,14 @@ def patch_file(new_block: str, dry_run: bool = False) -> bool:
     if not match:
         logger.error(
             "Could not find HOURLY_WIN_RATES block in entry_timing.py. "
-            "Pattern may have changed — update HOURLY_BLOCK_RE."
+            "Pattern may have changed \u2014 update HOURLY_BLOCK_RE."
         )
         return False
 
     patched = HOURLY_BLOCK_RE.sub(new_block, original, count=1)
 
     if patched == original:
-        logger.info("No change — HOURLY_WIN_RATES already matches computed rates.")
+        logger.info("No change \u2014 HOURLY_WIN_RATES already matches computed rates.")
         return True
 
     if dry_run:
@@ -211,6 +211,9 @@ def patch_file(new_block: str, dry_run: bool = False) -> bool:
 
 
 def main():
+    # Declare global first — before any reference to MIN_SAMPLE in this scope
+    global MIN_SAMPLE
+
     parser = argparse.ArgumentParser(
         description="47.P4-2: Patch HOURLY_WIN_RATES in entry_timing.py "
                     "from real backtest JSON results."
@@ -233,7 +236,6 @@ def main():
     )
     args = parser.parse_args()
 
-    global MIN_SAMPLE
     MIN_SAMPLE = args.min_sample
 
     results_dir = Path(args.results_dir)
@@ -259,7 +261,7 @@ def main():
         logger.info("  1. Review the diff: git diff app/validation/entry_timing.py")
         logger.info("  2. Run tests:       python -m pytest tests/ -q")
         logger.info("  3. Commit:          git add app/validation/entry_timing.py && git commit -m '47.P4-2: wire real HOURLY_WIN_RATES from backtest'")
-        logger.info("  4. Update registry: mark 47.P4-2 ✅ in docs/AUDIT_REGISTRY.md")
+        logger.info("  4. Update registry: mark 47.P4-2 \u2705 in docs/AUDIT_REGISTRY.md")
 
 
 if __name__ == "__main__":
