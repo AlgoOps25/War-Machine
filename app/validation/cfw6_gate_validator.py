@@ -1,4 +1,26 @@
 """
+Entry Timing Validator - Time-of-Day Win Rate Optimization
+
+Validates signal entry timing based on historical performance data.
+Filters signals during historically weak trading hours and enhances
+confidence during golden hours.
+
+Integration: Step 6.7 in signal pipeline (after confirmation passes)
+
+PHASE 4.C-10 (Mar 19, 2026):
+  - FIX: HOURLY_WIN_RATES was fabricated placeholder data — all rates were
+    invented (0.58, 0.68, 0.71, etc.) with no real journal backing.
+    All rates neutralized to 0.50 / sample_size=0 so MIN_SAMPLE_SIZE check
+    fires immediately for every hour, returning True with no gating.
+
+47.P4-2 (Apr 02, 2026):
+  - Real backtested rates wired from 5-ticker walk-forward (55 trades, Apr 02 2026).
+    Hours 10 (54% WR, n=26) and 15 (67% WR, n=12) now have live gating.
+    Remaining hours have insufficient data (n<10) — kept at (0.50, 0).
+    MIN_SAMPLE_SIZE lowered 20→10 to match update_hourly_win_rates.py floor.
+    Re-run update_hourly_win_rates.py after each walk-forward batch to accumulate.
+"""
+"""
 CFW6 Gate Validator — Signal Quality Pipeline
 
 Six-gate hard-pass/fail validation pipeline for scanner.py signals.
@@ -33,6 +55,11 @@ Note on scanner.py integration:
     (routed via __init__.py re-export). The import is currently disabled
     with `validate_signal = None` in scanner.py — re-enable by removing
     that line once the CFW6 gate is ready for production use.
+
+BUG-ML-4 (Apr 02 2026):
+    get_validation_stats() was a permanent zeroed stub. Now delegates to
+    signal_analytics.get_funnel_stats() — the live source of truth for
+    gate pass/fail counts already maintained by the scanner pipeline.
 """
 import logging
 from datetime import datetime, time as dtime
@@ -329,7 +356,24 @@ def _check_greeks(ticker: str) -> dict:
 
 def get_validation_stats() -> dict:
     """
-    Stub — returns zeroed counters until DB tracking is implemented.
-    TODO: persist gate pass/fail counts to PostgreSQL for threshold tuning.
+    Returns live gate pass/fail counts from signal_analytics.get_funnel_stats().
+
+    BUG-ML-4 (Apr 02 2026): was a permanent zeroed stub — wired to the
+    existing signal_analytics funnel tracker which is already maintained
+    by the scanner pipeline on every signal evaluation.
+
+    Falls back to zeroed counters if signal_analytics is unavailable
+    (e.g. during unit tests or import before scanner init).
     """
-    return {'total_signals': 0, 'passed': 0, 'rejected': 0, 'rejection_reasons': {}}
+    try:
+        from app.signals.signal_analytics import get_funnel_stats
+        funnel = get_funnel_stats()
+        return {
+            'total_signals':   funnel.get('total_signals', 0),
+            'passed':          funnel.get('passed', 0),
+            'rejected':        funnel.get('rejected', 0),
+            'rejection_reasons': funnel.get('rejection_reasons', {}),
+        }
+    except Exception as exc:
+        logger.warning(f"[CFW6] get_validation_stats fallback — signal_analytics unavailable: {exc}")
+        return {'total_signals': 0, 'passed': 0, 'rejected': 0, 'rejection_reasons': {}}

@@ -12,7 +12,13 @@ PHASE 4.C-10 (Mar 19, 2026):
     invented (0.58, 0.68, 0.71, etc.) with no real journal backing.
     All rates neutralized to 0.50 / sample_size=0 so MIN_SAMPLE_SIZE check
     fires immediately for every hour, returning True with no gating.
-    Win rate gating is now a no-op until real backtested data is wired in.
+
+47.P4-2 (Apr 02, 2026):
+  - Real backtested rates wired from 5-ticker walk-forward (55 trades, Apr 02 2026).
+    Hours 10 (54% WR, n=26) and 15 (67% WR, n=12) now have live gating.
+    Remaining hours have insufficient data (n<10) — kept at (0.50, 0).
+    MIN_SAMPLE_SIZE lowered 20→10 to match update_hourly_win_rates.py floor.
+    Re-run update_hourly_win_rates.py after each walk-forward batch to accumulate.
 """
 
 from datetime import datetime, time
@@ -32,9 +38,9 @@ class EntryTimingValidator:
     - Session quality (open vs. mid-day vs. close)
     """
 
-    # 4.C-10 FIX: All rates set to 0.50 / sample_size=0 (fabricated data removed).
-    # sample_size=0 < MIN_SAMPLE_SIZE=20 → every hour returns True immediately.
-    # Replace with real backtested rates when available.
+    # 47.P4-2 (Apr 02 2026): Real backtested rates from 5-ticker walk-forward.
+    # Hours below MIN_SAMPLE_SIZE keep (0.50, 0) — gating disabled until data accumulates.
+    # Re-run scripts/backtesting/update_hourly_win_rates.py after each batch to refresh.
     HOURLY_WIN_RATES = {
         9: (0.50, 0),  # 9:30-10:00  - insufficient data (n<10)
         10: (0.54, 26),  # 10:00-11:00  - 54% WR  (26 trades)
@@ -45,8 +51,9 @@ class EntryTimingValidator:
         15: (0.67, 12),  # 15:00-16:00  - 67% WR  (12 trades)
     }
 
-    # Minimum sample size for confidence
-    MIN_SAMPLE_SIZE = 20
+    # Minimum sample size for confidence.
+    # Aligned with update_hourly_win_rates.py --min-sample floor (47.P4-2).
+    MIN_SAMPLE_SIZE = 10
 
     # Win rate thresholds
     GOLDEN_HOUR_THRESHOLD = 0.65  # 65%+ = golden hour
@@ -66,7 +73,7 @@ class EntryTimingValidator:
         logger.info("[ENTRY-TIMING] ✅ Validator initialized")
         logger.info(f"[ENTRY-TIMING] Min win rate threshold: {min_win_rate:.1%}")
         logger.info(f"[ENTRY-TIMING] Golden hour threshold: {self.GOLDEN_HOUR_THRESHOLD:.1%}")
-        logger.info("[ENTRY-TIMING] ⚠️  Win rate gating DISABLED — no real data (4.C-10)")
+        logger.info("[ENTRY-TIMING] ✅ Win rate gating ACTIVE — hours 10 (54%) and 15 (67%) have real data (47.P4-2)")
 
     def validate_entry_time(
         self,
@@ -104,7 +111,6 @@ class EntryTimingValidator:
             'is_weak_hour': hour_win_rate < self.WEAK_HOUR_THRESHOLD
         }
 
-        # sample_size=0 for all hours → always hits this branch (no gating)
         if sample_size < self.MIN_SAMPLE_SIZE:
             return (
                 True,
@@ -157,7 +163,6 @@ class EntryTimingValidator:
 
         hour_win_rate, sample_size = hour_data
 
-        # sample_size=0 → no boost/penalty until real data available
         if sample_size < self.MIN_SAMPLE_SIZE:
             return 0.0
 

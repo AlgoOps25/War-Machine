@@ -90,7 +90,7 @@ def load_results(results_dir: Path) -> Dict[int, Dict]:
         try:
             data = json.loads(fpath.read_text())
         except Exception as e:
-            logger.warning(f"Skipping {fpath.name}: parse error — {e}")
+            logger.warning(f"Skipping {fpath.name}: parse error \u2014 {e}")
             continue
 
         # Skip JSON arrays (summary files, batch output, etc.)
@@ -128,11 +128,12 @@ def load_results(results_dir: Path) -> Dict[int, Dict]:
 
 def compute_rates(
     pooled: Dict[int, Dict],
+    min_sample: int,
 ) -> Dict[int, Tuple[float, int]]:
     """
     Convert pooled wins/totals into (win_rate, sample_size) tuples.
 
-    Hours with total < MIN_SAMPLE get (0.50, 0) to keep gating disabled.
+    Hours with total < min_sample get (0.50, 0) to keep gating disabled.
     """
     rates: Dict[int, Tuple[float, int]] = {}
     # Standard RTH hours 9-15
@@ -140,7 +141,7 @@ def compute_rates(
         d = pooled.get(h, {"wins": 0, "total": 0})
         total = d["total"]
         wins  = d["wins"]
-        if total >= MIN_SAMPLE:
+        if total >= min_sample:
             wr = round(wins / total, 2)
             rates[h] = (wr, total)
             flag = "\u2705" if wr >= 0.65 else "\u26a0\ufe0f" if wr < 0.50 else "\U0001f7e1"
@@ -152,12 +153,12 @@ def compute_rates(
             rates[h] = (0.50, 0)
             logger.info(
                 f"  Hour {h:02d}:xx  insufficient data "
-                f"({total} trades < {MIN_SAMPLE} min) \u2014 keeping (0.50, 0)"
+                f"({total} trades < {min_sample} min) \u2014 keeping (0.50, 0)"
             )
     return rates
 
 
-def build_block(rates: Dict[int, Tuple[float, int]]) -> str:
+def build_block(rates: Dict[int, Tuple[float, int]], min_sample: int) -> str:
     """
     Render the new HOURLY_WIN_RATES dict block as Python source.
     """
@@ -175,7 +176,7 @@ def build_block(rates: Dict[int, Tuple[float, int]]) -> str:
         wr, n = rates[h]
         label = hour_labels.get(h, f"{h}:xx")
         if n == 0:
-            comment = f"# {label}  - insufficient data (n<{MIN_SAMPLE})"
+            comment = f"# {label}  - insufficient data (n<{min_sample})"
         else:
             pct = f"{wr:.0%}"
             comment = f"# {label}  - {pct} WR  ({n} trades)"
@@ -229,9 +230,6 @@ def patch_file(new_block: str, dry_run: bool = False) -> bool:
 
 
 def main():
-    # Declare global first — before any reference to MIN_SAMPLE in this scope
-    global MIN_SAMPLE
-
     parser = argparse.ArgumentParser(
         description="47.P4-2: Patch HOURLY_WIN_RATES in entry_timing.py "
                     "from real backtest JSON results."
@@ -254,7 +252,8 @@ def main():
     )
     args = parser.parse_args()
 
-    MIN_SAMPLE = args.min_sample
+    # Use the parsed value as a plain local — no global mutation needed.
+    min_sample = args.min_sample
 
     results_dir = Path(args.results_dir)
     if not results_dir.exists():
@@ -265,9 +264,9 @@ def main():
     pooled = load_results(results_dir)
 
     logger.info("Computing hourly win rates:")
-    rates = compute_rates(pooled)
+    rates = compute_rates(pooled, min_sample)
 
-    new_block = build_block(rates)
+    new_block = build_block(rates, min_sample)
     logger.info(f"New HOURLY_WIN_RATES block:\n{new_block}")
 
     ok = patch_file(new_block, dry_run=args.dry_run)
