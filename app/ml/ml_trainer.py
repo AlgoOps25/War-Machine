@@ -74,6 +74,12 @@ Key improvements (Mar 2026)
     tickers with different baseline volumes.
   Migration 005_ml_feature_columns.sql adds the columns with IF NOT EXISTS so
   it is safe to run on an already-migrated DB.
+* AUDIT 2026-04-02 (Session S29):
+  - BUG-MLT-6: train_model() metrics dict was missing 'f1' key (present in
+    train_from_dataframe() metrics). Any caller doing metrics['f1'] on a
+    live-path model would KeyError. Fixed: f1_score() computed on
+    threshold-adjusted preds and added to metrics before joblib.dump().
+  - BUG-MLT-7: cross_val_score imported but never used. Dead import removed.
 """
 import logging
 import os
@@ -86,7 +92,7 @@ from typing import Optional, Tuple, List
 from sklearn.inspection import permutation_importance
 from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.calibration import CalibratedClassifierCV
-from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.model_selection import train_test_split
 from sklearn.metrics import (
     accuracy_score, precision_score, recall_score,
     confusion_matrix, precision_recall_curve, f1_score,
@@ -555,6 +561,7 @@ def train_model(
     accuracy  = accuracy_score(y_last_val, y_pred)
     precision = precision_score(y_last_val, y_pred, zero_division=0)
     recall    = recall_score(y_last_val, y_pred, zero_division=0)
+    f1        = f1_score(y_last_val, y_pred, zero_division=0)  # BUG-MLT-6: was missing
     cm        = confusion_matrix(y_last_val, y_pred)
 
     try:
@@ -568,6 +575,7 @@ def train_model(
         'accuracy':           accuracy,
         'precision':          precision,
         'recall':             recall,
+        'f1':                 f1,            # BUG-MLT-6: added
         'threshold':          opt_threshold,
         'cv_mean':            cv_acc,
         'cv_std':             float(np.std([m['accuracy'] for m in fold_metrics])),
@@ -588,7 +596,7 @@ def train_model(
 
     logger.info(
         f"[ML-TRAIN] Acc={accuracy:.2%}  Prec={precision:.2%}  "
-        f"Rec={recall:.2%}  Thresh={opt_threshold:.3f}"
+        f"Rec={recall:.2%}  F1={f1:.2%}  Thresh={opt_threshold:.3f}"
     )
 
     try:
@@ -820,5 +828,5 @@ if __name__ == '__main__':
     logger.info(
         f"[ML-TRAIN] ✅ Retrain complete — "
         f"Acc={metrics['accuracy']:.2%}  Prec={metrics['precision']:.2%}  "
-        f"Rec={metrics['recall']:.2%}  Thresh={metrics['threshold']:.3f}"
+        f"Rec={metrics['recall']:.2%}  F1={metrics['f1']:.2%}  Thresh={metrics['threshold']:.3f}"
     )
