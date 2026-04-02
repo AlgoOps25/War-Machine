@@ -27,6 +27,13 @@ Fixed with .get('datetime') or .get('timestamp') fallback pattern.
 BUG-WF-3 (Apr 2026): WalkForwardResults imported from app.backtesting.performance_metrics
 inside __init__() on every instantiation. Hoisted to module-level import to
 eliminate repeated import overhead and surface ImportError at load time.
+
+BUG-BT-9 (Apr 2026): create_windows() broke immediately on short data spans
+(e.g. --days 90 yields ~59 calendar days of actual bar data). With 1m/1m
+windows, test_end landed 1 day past end_date (Apr-03 vs Apr-02), triggering
+the strict `test_end > end_date` break on the very first window.
+Fix: changed break condition to `test_end > end_date + timedelta(days=1)`
+so windows that end within 1 calendar day of the last bar are still included.
 """
 from typing import Dict, List, Callable, Optional
 from datetime import datetime, timedelta
@@ -189,6 +196,13 @@ class WalkForward:
         NOTE: Month boundaries use timedelta(days=30 * months) -- approximation.
         See module docstring (BUG-WF-1) for details.
 
+        BUG-BT-9: Break condition changed from `test_end > end_date` to
+        `test_end > end_date + timedelta(days=1)`. With 1m/1m windows on
+        ~59-day datasets, test_end fell 1 day past end_date (e.g. Apr-03
+        vs Apr-02), causing the loop to exit before creating any window.
+        The +1d buffer allows windows whose test period ends within 1
+        calendar day of the last available bar.
+
         Args:
             bars: Historical OHLCV bars with 'datetime' or 'timestamp' field
                   (BUG-WF-2: both keys supported via _bar_datetime())
@@ -215,7 +229,10 @@ class WalkForward:
             test_start  = train_end
             test_end    = test_start + timedelta(days=30 * self.test_months)
 
-            if test_end > end_date:
+            # BUG-BT-9: allow test windows that end within 1 day of the last bar.
+            # Previously `test_end > end_date` broke on 59-day datasets where
+            # test_end landed 1 day past end_date on the very first window.
+            if test_end > end_date + timedelta(days=1):
                 break
 
             # BUG-WF-2: filter using _bar_datetime() not ['datetime']
