@@ -73,6 +73,20 @@ BUG-PM-3 (MAR 30, 2026):
   - calculate_position_size() silently bumped odd contract counts to the next
     even number with no log output. Added logger.info() when the bump fires so
     every sizing adjustment appears in session logs.
+
+BUG-EOD-1 (APR 02, 2026):
+  - _get_winrate_adjustment() in dynamic_thresholds.py queried
+    positions.signal_type, but that column did not exist on the positions
+    table — it only existed on ml_signals. Every call silently crashed inside
+    the except block and returned 0.00, permanently disabling win-rate
+    influence on dynamic thresholds.
+  - Fix: add signal_type TEXT column to positions via _initialize_database()
+    (CREATE TABLE) and _migrate_signal_type_column() (ALTER TABLE ADD COLUMN
+    for existing DBs — idempotent, ignores duplicate-column errors on both
+    Postgres and SQLite). open_position() now accepts signal_type as a kwarg
+    and writes it to the INSERT. _load_session_state() maps the column into
+    the in-memory cache. get_todays_closed_trades() includes signal_type in
+    its SELECT for downstream ML training use.
 """
 from utils import config
 from datetime import datetime, timedelta
@@ -151,6 +165,7 @@ class PositionManager:
         # ─────────────────────────────────────────────────────────────────────────────
 
         self._initialize_database()
+        self._migrate_signal_type_column()   # BUG-EOD-1: safe ADD COLUMN for existing DBs
         self._close_stale_positions()
         self._load_session_state()
 
@@ -189,6 +204,8 @@ class PositionManager:
                     "confidence":          pos["confidence"],
                     "t1_hit":              bool(pos["t1_hit"]),
                     "pnl":                 pos["pnl"] or 0.0,
+                    # BUG-EOD-1: include signal_type in in-memory cache
+                    "signal_type":         pos.get("signal_type"),
                 }
                 for pos in open_db
             ]
@@ -447,6 +464,7 @@ class PositionManager:
                     remaining_contracts INTEGER DEFAULT 1,
                     grade TEXT,
                     confidence REAL,
+                    signal_type TEXT,
                     t1_hit INTEGER DEFAULT 0,
                     entry_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     exit_time TIMESTAMP,
@@ -464,6 +482,35 @@ class PositionManager:
                 )
             """)
             conn.commit()
+        finally:
+            if conn:
+                return_conn(conn)
+
+    def _migrate_signal_type_column(self) -> None:
+        """
+        BUG-EOD-1: Safe ALTER TABLE ADD COLUMN for existing DBs that were
+        created before signal_type was added to the schema.
+
+        Idempotent — ignores errors caused by the column already existing
+        (Postgres: DuplicateColumn / 42701, SQLite: duplicate column name).
+        Called unconditionally on every startup after _initialize_database().
+        """
+        conn = None
+        try:
+            conn   = get_conn()
+            cursor = conn.cursor()
+            cursor.execute("ALTER TABLE positions ADD COLUMN signal_type TEXT")
+            conn.commit()
+            logger.info("[POSITION] \u2705 Migrated positions table: added signal_type column")
+        except Exception as e:
+            err = str(e).lower()
+            # Both Postgres ("duplicate column") and SQLite ("duplicate column name")
+            # raise on ALTER when the column already exists — that's the expected path
+            # for any DB created after this fix was deployed.
+            if "duplicate column" in err or "already exists" in err:
+                pass  # Column present — nothing to do
+            else:
+                logger.warning(f"[POSITION] signal_type migration warning (non-fatal): {e}")
         finally:
             if conn:
                 return_conn(conn)
@@ -568,8 +615,17 @@ class PositionManager:
                       entry_price: float, stop_price: float,
                       t1: float, t2: float,
                       confidence: float, grade: str,
-                      options_rec=None) -> int:
-        """Open a new position and return position ID."""
+                      options_rec=None,
+                      signal_type: str = None) -> int:
+        """Open a new position and return position ID.
+
+        Args:
+            signal_type: BUG-EOD-1 — "CFW6_OR" or "CFW6_INTRADAY". Written to
+                         the positions table so _get_winrate_adjustment() in
+                         dynamic_thresholds.py can query it without joining
+                         ml_signals. Defaults to None for back-compat with any
+                         caller that hasn't been updated yet.
+        """
         entry_price = float(entry_price)
         stop_price  = float(stop_price)
         zone_low    = float(zone_low)
@@ -612,8 +668,9 @@ class PositionManager:
             gex_context   = options_rec.get("gex_label")
 
         p      = ph()
+        # BUG-EOD-1: signal_type added to INSERT
         values = (ticker, direction, entry_price, stop_price, t1, t2,
-                  contracts, contracts, grade, confidence,
+                  contracts, contracts, grade, confidence, signal_type,
                   strike, expiry, contract_type, delta, ivr, gex_context)
 
         conn   = None
@@ -625,9 +682,9 @@ class PositionManager:
                 cursor.execute(f"""
                     INSERT INTO positions
                         (ticker, direction, entry_price, stop_price, t1_price, t2_price,
-                         contracts, remaining_contracts, grade, confidence, status,
-                         strike, expiry, contract_type, delta, ivr, gex_context)
-                    VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p},{p},'OPEN',
+                         contracts, remaining_contracts, grade, confidence, signal_type,
+                         status, strike, expiry, contract_type, delta, ivr, gex_context)
+                    VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p},'OPEN',
                             {p},{p},{p},{p},{p},{p})
                     RETURNING id
                 """, values)
@@ -636,9 +693,9 @@ class PositionManager:
                 cursor.execute(f"""
                     INSERT INTO positions
                         (ticker, direction, entry_price, stop_price, t1_price, t2_price,
-                         contracts, remaining_contracts, grade, confidence, status,
-                         strike, expiry, contract_type, delta, ivr, gex_context)
-                    VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p},{p},'OPEN',
+                         contracts, remaining_contracts, grade, confidence, signal_type,
+                         status, strike, expiry, contract_type, delta, ivr, gex_context)
+                    VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p},'OPEN',
                             {p},{p},{p},{p},{p},{p})
                 """, values)
                 position_id = cursor.lastrowid
@@ -658,6 +715,7 @@ class PositionManager:
                 "remaining_contracts":  contracts,
                 "grade":                grade,
                 "confidence":           confidence,
+                "signal_type":          signal_type,   # BUG-EOD-1
                 "t1_hit":               False,
                 "pnl":                  0.0
             })
@@ -679,7 +737,8 @@ class PositionManager:
                   f"Confidence: {confidence:.1%}  Risk: ${risk_dollars:.0f} "
                   f"({sizing['risk_percentage']:.1f}%)  "
                   f"Perf: x{sizing['performance_adj']:.2f}  VIX: x{sizing['vix_mult']:.2f}")
-            logger.info(f"  Sector: {sector}  Streak: {self._format_streak()}")
+            logger.info(f"  Sector: {sector}  Streak: {self._format_streak()}"
+                  f"  SignalType: {signal_type or 'None'}")
 
             if options_rec:
                 opt_str = f"  Options: {contract_type} ${strike} exp {expiry}"
@@ -1081,7 +1140,7 @@ class PositionManager:
             today  = datetime.now(_ET).strftime("%Y-%m-%d")
             date_col = _date_eq_today("exit_time")
             cursor.execute(f"""
-                SELECT ticker, direction, grade, entry_price, exit_price, pnl
+                SELECT ticker, direction, grade, signal_type, entry_price, exit_price, pnl
                 FROM positions
                 WHERE status = 'CLOSED'
                   AND {date_col} = {p}
