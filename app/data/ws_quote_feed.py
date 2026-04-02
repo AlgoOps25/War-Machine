@@ -28,13 +28,14 @@ Design:
   - Separate _started guard prevents duplicate threads.
   - Exponential backoff on reconnect: 2^attempt seconds, capped at 60s.
 
-500 / entitlement handling (v2):
+500 / entitlement handling (v3):
   - Consecutive 500s are counted. First one logs normally. Subsequent ones are
     suppressed (log every 10th) to prevent log spam.
   - After SERVER_500_BACKOFF_THRESHOLD consecutive 500s (default 3), the feed
-    treats this as a server-side entitlement or outage issue and backs off
-    hard for SERVER_500_HARD_BACKOFF seconds (default 300s = 5 min) before
-    retrying. This prevents a reconnect storm against a degraded endpoint.
+    backs off hard. Backoff duration grows exponentially:
+      attempt 1: 300s, attempt 2: 600s, attempt 3: 1200s, … capped at 3600s.
+    This prevents a reconnect storm where a flat 300s backoff expires and the
+    feed immediately hammers a still-degraded EODHD endpoint.
   - If the server sends a non-200 status_code that is NOT 500 (e.g. 401/403),
     the feed logs a permanent entitlement warning and stops retrying — no
     point hammering an auth-rejected endpoint.
@@ -100,16 +101,18 @@ SPREAD_HISTORY_LEN  = 20     # rolling window for spread% averaging
 # 500 flood control:
 #   After this many consecutive 500s, back off hard before retrying.
 SERVER_500_BACKOFF_THRESHOLD = 3
-#   How long to pause (seconds) after hitting the 500 threshold.
-SERVER_500_HARD_BACKOFF      = 300   # 5 minutes
+#   Base hard-backoff duration (seconds). Actual wait = min(BASE * 2^(attempt-1), MAX).
+#   attempt 1 → 300s, attempt 2 → 600s, attempt 3 → 1200s, … capped at 3600s.
+SERVER_500_HARD_BACKOFF_BASE = 300
+SERVER_500_HARD_BACKOFF_MAX  = 3600  # 1 hour ceiling
 
 # Spread gate: block entries when spread_pct exceeds this threshold.
 # Configurable via config.MAX_SPREAD_PCT; default 0.15% (15 bps).
 # Fail-open: if no quote data, returns 0.0 (entry allowed).
 MAX_SPREAD_PCT = getattr(config, "MAX_SPREAD_PCT", 0.15)
 
-# ── Shared state ───────────────────────────────────────────────────────────────────────────
-_lock              = threading.Lock()
+# ── Shared state ──────────────────────────────────────────────────────────────────────────────────
+lock              = threading.Lock()
 _quotes            = {}          # ticker → {bid, ask, spread, spread_pct, mid, ...}
 _spread_history    = defaultdict(lambda: deque(maxlen=SPREAD_HISTORY_LEN))
 _connected         = False
@@ -122,7 +125,7 @@ _ws_connection     = None
 _started           = False
 
 
-# ── Public read API ─────────────────────────────────────────────────────────────────────────────
+# ── Public read API ──────────────────────────────────────────────────────────────────────────────────────
 
 def is_quote_connected() -> bool:
     """Return True if the quote WebSocket is currently connected."""
@@ -135,7 +138,7 @@ def get_quote(ticker: str) -> dict | None:
 
     Keys: bid, ask, spread, spread_pct, mid, bid_size, ask_size, timestamp
     """
-    with _lock:
+    with lock:
         q = _quotes.get(ticker)
         return dict(q) if q else None
 
@@ -145,7 +148,7 @@ def get_spread_pct(ticker: str) -> float:
     Return the current instantaneous spread percentage for a ticker.
     Returns 0.0 (fail-open) if no quote has been received yet.
     """
-    with _lock:
+    with lock:
         q = _quotes.get(ticker)
         return q["spread_pct"] if q else 0.0
 
@@ -156,7 +159,7 @@ def get_avg_spread_pct(ticker: str) -> float:
     More stable than instantaneous spread for threshold decisions.
     Returns 0.0 if no history yet.
     """
-    with _lock:
+    with lock:
         history = list(_spread_history[ticker])
     return (sum(history) / len(history)) if history else 0.0
 
@@ -181,7 +184,7 @@ def is_spread_acceptable(ticker: str, max_spread_pct: float = None) -> tuple:
 
 def get_spread_summary() -> dict:
     """Return spread snapshot for all tracked tickers."""
-    with _lock:
+    with lock:
         return {
             ticker: {
                 "spread_pct": q["spread_pct"],
@@ -193,7 +196,7 @@ def get_spread_summary() -> dict:
         }
 
 
-# ── Quote update handler ──────────────────────────────────────────────────────────────────
+# ── Quote update handler ────────────────────────────────────────────────────────────────────────────
 
 def _on_quote(ticker: str, bid: float, ask: float,
              bid_size: int, ask_size: int, epoch_ms: int):
@@ -211,7 +214,7 @@ def _on_quote(ticker: str, bid: float, ask: float,
     spread_pct = round((spread / mid) * 100, 4) if mid > 0 else 0.0
     ts         = datetime.fromtimestamp(epoch_ms / 1000, tz=ET).replace(tzinfo=None)
 
-    with _lock:
+    with lock:
         _quotes[ticker] = {
             "bid":        bid,
             "ask":        ask,
@@ -225,7 +228,7 @@ def _on_quote(ticker: str, bid: float, ask: float,
         _spread_history[ticker].append(spread_pct)
 
 
-# ── Dynamic subscription ───────────────────────────────────────────────────────────────
+# ── Dynamic subscription ─────────────────────────────────────────────────────────────────────────────────
 
 async def _do_subscribe(ws, tickers: list):
     """Send subscribe messages for new tickers. Must be called from WS event loop."""
@@ -272,7 +275,7 @@ def subscribe_quote_tickers(tickers: list):
         logger.info(f"[QUOTE] subscribe_quote_tickers error: {e}")
 
 
-# ── Server message handler ──────────────────────────────────────────────────────────────
+# ── Server message handler ─────────────────────────────────────────────────────────────────────────
 
 def _handle_server_msg(msg: dict, consecutive_500s: list) -> str:
     """
@@ -312,7 +315,7 @@ def _handle_server_msg(msg: dict, consecutive_500s: list) -> str:
     return "fatal"
 
 
-# ── WebSocket coroutine ────────────────────────────────────────────────────────────────────────────
+# ── WebSocket coroutine ──────────────────────────────────────────────────────────────────────────────────────────
 
 async def _ws_run():
     """
@@ -320,19 +323,23 @@ async def _ws_run():
 
     Reconnect strategy:
       Normal disconnect → exponential backoff: min(2^attempt, 60s), resets on clean connect.
-      500 flood (>= SERVER_500_BACKOFF_THRESHOLD consecutive) → hard backoff of
-        SERVER_500_HARD_BACKOFF seconds (300s) before next connect attempt.
+      500 flood (>= SERVER_500_BACKOFF_THRESHOLD consecutive) → exponential hard backoff:
+        min(SERVER_500_HARD_BACKOFF_BASE * 2^(attempt-1), SERVER_500_HARD_BACKOFF_MAX)
+        i.e. 300s → 600s → 1200s → … capped at 3600s.
       Fatal auth error (401/403) → stops retrying entirely.
+
+    FIX v3 changes vs v2:
+      - Hard backoff is now exponential (300 * 2^(attempt-1), max 3600s) instead of
+        a flat 300s. This prevents the reconnect storm where the flat timeout expired
+        and attempt reset to 1, causing the feed to hammer EODHD every 5 minutes
+        during a prolonged outage.
 
     FIX v2 changes vs v1:
       - _handle_server_msg() deduplicates 500 log spam (log 1st + every 10th).
       - consecutive_500s counter tracked per-connection; triggers hard backoff
-        when threshold is hit instead of immediately reconnecting (which caused
-        a tight loop of connect → 500 → connect → 500...).
-      - Fatal non-200/non-500 codes (401/403) disable the feed permanently rather
-        than looping forever against an auth-rejected endpoint.
-      - attempt counter is now also incremented on 500-triggered hard backoff so
-        normal backoff math stays coherent.
+        when threshold is hit instead of immediately reconnecting.
+      - Fatal non-200/non-500 codes (401/403) disable the feed permanently.
+      - attempt counter incremented on 500-triggered hard backoff.
 
     BUG-WQF-1/2 fix (DATA-4 audit):
       - bid/ask parsed with explicit `is not None` checks so a 0.0 price from
@@ -437,12 +444,16 @@ async def _ws_run():
 
                 if hard_backoff_triggered:
                     attempt += 1
+                    # Exponential hard backoff: 300s → 600s → 1200s → … capped at 3600s
+                    backoff = min(
+                        SERVER_500_HARD_BACKOFF_BASE * (2 ** (attempt - 1)),
+                        SERVER_500_HARD_BACKOFF_MAX
+                    )
                     logger.warning(
                         f"[QUOTE] \U0001f534 {consecutive_500s[0]} consecutive 500s — "
-                        f"hard backoff {SERVER_500_HARD_BACKOFF}s before retry "
-                        f"(attempt {attempt})"
+                        f"hard backoff {backoff}s before retry (attempt {attempt})"
                     )
-                    await asyncio.sleep(SERVER_500_HARD_BACKOFF)
+                    await asyncio.sleep(backoff)
 
         except Exception as exc:
             _connected     = False
@@ -457,7 +468,7 @@ async def _ws_run():
             await asyncio.sleep(delay)
 
 
-# ── Public API ─────────────────────────────────────────────────────────────────────────────
+# ── Public API ─────────────────────────────────────────────────────────────────────────────────────────
 
 def start_quote_feed(tickers: list):
     """
@@ -506,7 +517,7 @@ def start_quote_feed(tickers: list):
     )
 
 
-# ── Module self-test ──────────────────────────────────────────────────────────────────────
+# ── Module self-test ────────────────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     logger.info("=" * 60)
