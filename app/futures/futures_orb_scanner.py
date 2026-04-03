@@ -31,8 +31,6 @@ Signal gate order:
                       ATR fallback for MOMENTUM_CONTINUATION only
   8. CONFIDENCE     — simple scoring (OR quality + entry type + volume)
                       floor raised to 65% (FIX-ORB-5)
-  9. PERSIST        — armed_signals_persist + futures_signals
- 10. DISCORD        — orange embed alert
 
 FIX HISTORY (2026-04-03):
 
@@ -65,6 +63,15 @@ FIX HISTORY (2026-04-03):
     pipeline intent. Grade thresholds adjusted: A >= 80, B >= 68, C below.
     _CONTRACTS now read from env var FUTURES_CONTRACTS (default 1) so
     contract size is tunable without a code change.
+
+  DIS-FUT-1 (Apr 3 2026):
+    _discord_alert() upgraded to rich orange embed via send_futures_orb_alert().
+    Plain-text send_simple_message() retained as fallback so a missing key
+    or import error never silences the alert entirely.
+
+  DIS-FUT-2 (Apr 3 2026):
+    _discord_exit() static method added. Call when price reaches stop, T1,
+    T2, or you close EOD manually. See docs/DISCORD_SIGNALS.md.
 """
 from __future__ import annotations
 import json
@@ -77,12 +84,12 @@ from zoneinfo import ZoneInfo
 logger = logging.getLogger(__name__)
 ET = ZoneInfo("America/New_York")
 
-# ── Session constants ─────────────────────────────────────────────────────────
-_SESSION_START  = time(9, 30)
+# ── Session constants ──────────────────────────────────────────────────────────────
+SESSION_START  = time(9, 30)
 _SESSION_CUTOFF = time(11, 0)
 _OR_END         = time(9, 40)   # first 10 minutes form the OR
 
-# ── Risk constants ────────────────────────────────────────────────────────────
+# ── Risk constants ────────────────────────────────────────────────────────────────
 _POINT_VALUE    = {"NQ": 20.0, "MNQ": 2.0}
 # FIX-ORB-5: read from env so contract size is tunable without a code change
 _CONTRACTS      = int(os.getenv("FUTURES_CONTRACTS", "1"))
@@ -184,7 +191,7 @@ def _detect_momentum(bars: list[dict], bk_idx: int, direction: str
     return {"entry_high": bar["high"], "entry_low": bar["low"]}
 
 
-# ── Scanner class ─────────────────────────────────────────────────────────────
+# ── Scanner class ──────────────────────────────────────────────────────────────────
 
 class FuturesORBScanner:
     """
@@ -200,13 +207,13 @@ class FuturesORBScanner:
         self._or_low:      Optional[float] = None
         self._or_locked:   bool = False
 
-    # ── Public ────────────────────────────────────────────────────────────────
+    # ── Public ─────────────────────────────────────────────────────────────────────────────
 
     def scan(self, current_time: Optional[datetime] = None) -> Optional[dict]:
         """
         Run one scan cycle. Returns the armed signal dict if a signal was
         generated and persisted, or None if no signal.
-        Safe to call every 30–60 s without side effects.
+        Safe to call every 30-60 s without side effects.
         """
         if current_time is None:
             current_time = datetime.now(ET)
@@ -308,7 +315,7 @@ class FuturesORBScanner:
         self._or_locked = False
         logger.info(f"[FUTURES-ORB] Daily state reset for {self.symbol}")
 
-    # ── Private helpers ───────────────────────────────────────────────────────
+    # ── Private helpers ─────────────────────────────────────────────────────────────────
 
     @staticmethod
     def _compute_atr(bars: list[dict], window: int = 10) -> float:
@@ -510,26 +517,73 @@ class FuturesORBScanner:
 
     @staticmethod
     def _discord_alert(signal: dict) -> None:
+        """
+        DIS-FUT-1 (Apr 3 2026): Upgraded to rich embed via send_futures_orb_alert().
+        Plain-text send_simple_message() is retained as a fallback so a missing
+        key or import error never silences the alert entirely.
+        """
         try:
-            from app.notifications.discord_helpers import send_simple_message
-            sym   = signal["ticker"]
-            d     = signal["direction"]
-            entry = signal["entry_price"]
-            stop  = signal["stop_price"]
-            t1    = signal["t1"]
-            t2    = signal["t2"]
-            conf  = round(signal["confidence"] * 100, 1)
-            etype = signal["validation_data"]["entry_type"]
-            grade = signal["grade"]
-            drisk = signal["validation_data"]["dollar_risk"]
-            arrow = "🟢" if d == "BULL" else "🔴"
-            msg = (
-                f"🟠 **FUTURES ORB SIGNAL** {arrow}\n"
-                f"**{sym}** {d} | Grade {grade} | {conf}% conf\n"
-                f"Entry: `{entry}` | Stop: `{stop}` | "
-                f"T1: `{t1}` | T2: `{t2}`\n"
-                f"Entry type: {etype} | Dollar risk ({_CONTRACTS} contract(s)): ${drisk}"
-            )
-            send_simple_message(msg)
+            from app.notifications.discord_helpers import send_futures_orb_alert
+            send_futures_orb_alert(signal)
         except Exception as e:
-            logger.warning(f"[FUTURES-ORB] Discord alert failed (non-fatal): {e}")
+            logger.warning(f"[FUTURES-ORB] Rich Discord alert failed ({e}) — falling back to plain text")
+            try:
+                from app.notifications.discord_helpers import send_simple_message
+                sym   = signal.get("ticker", "UNKNOWN")
+                d     = signal.get("direction", "BULL")
+                entry = signal.get("entry_price", 0)
+                stop  = signal.get("stop_price", 0)
+                t1    = signal.get("t1", 0)
+                t2    = signal.get("t2", 0)
+                conf  = round(signal.get("confidence", 0) * 100, 1)
+                grade = signal.get("grade", "?")
+                etype = signal.get("validation_data", {}).get("entry_type", "?")
+                drisk = signal.get("validation_data", {}).get("dollar_risk", 0)
+                arrow = "✅" if d == "BULL" else "❌"
+                msg = (
+                    f"⬜ **FUTURES ORB SIGNAL** {arrow}\n"
+                    f"**{sym}** {d} | Grade {grade} | {conf}% conf\n"
+                    f"Entry: `{entry}` | Stop: `{stop}` | "
+                    f"T1: `{t1}` | T2: `{t2}`\n"
+                    f"Entry type: {etype} | Dollar risk ({_CONTRACTS} contract(s)): ${drisk}"
+                )
+                send_simple_message(msg)
+            except Exception as e2:
+                logger.warning(f"[FUTURES-ORB] Plain-text fallback also failed: {e2}")
+
+    @staticmethod
+    def _discord_exit(
+        symbol: str,
+        direction: str,
+        exit_price: float,
+        reason: str,
+        entry_price: float = 0.0,
+        pnl_pts: float = 0.0,
+    ) -> None:
+        """
+        DIS-FUT-2 (Apr 3 2026): Send a rich exit/stop alert to Discord.
+        Call when price reaches stop, T1, T2, or you close EOD manually.
+
+        reason values: "STOP_HIT" | "T1_HIT" | "T2_HIT" | "EOD_CLOSE" | free-form
+
+        Example:
+            scanner._discord_exit("MNQ", "BULL", 19450.0, "T1_HIT",
+                                   entry_price=19410.0, pnl_pts=40.0)
+
+        See docs/DISCORD_SIGNALS.md for full reference.
+        """
+        try:
+            from app.notifications.discord_helpers import send_futures_exit_alert
+            pv = _POINT_VALUE.get(symbol, 2.0)
+            send_futures_exit_alert(
+                symbol=symbol,
+                direction=direction,
+                exit_price=exit_price,
+                reason=reason,
+                entry_price=entry_price,
+                pnl_pts=pnl_pts,
+                contracts=_CONTRACTS,
+                point_value=pv,
+            )
+        except Exception as e:
+            logger.warning(f"[FUTURES-ORB] Exit Discord alert failed (non-fatal): {e}")
