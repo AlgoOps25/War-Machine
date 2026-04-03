@@ -32,6 +32,16 @@ FIX S21 (APR 1, 2026):
   BUG-BE-7: run() one-position-at-a-time design documented inline so future
     multi-position work doesn't silently break capital accounting.
 
+BUG-BE-8/9 (Apr 03 2026): T1 partial exit used `continue` after filling,
+  which skipped the T2 check block for the remainder on the same bar.
+  On fast-move bars where price cleared both T1 and T2 in the same candle,
+  T2 never fired — the remainder was held until a future bar and frequently
+  stopped out, shrinking avg_win to ~0.8x avg_loss despite T1_RATIO=1.5.
+  Fix: removed `continue` after T1 fill so execution falls through to the
+  T2 check on the same bar. Also removed the now-redundant inner `continue`
+  calls inside the T1 LONG/SHORT branches (replaced with a single t1_hit
+  boolean check to avoid duplicated logic).
+
 Usage:
   engine = BacktestEngine(initial_capital=10000, commission=0.50)
   results = engine.run(
@@ -445,8 +455,16 @@ class BacktestEngine:
                     continue
 
             # T1 partial exit — BUG-BE-4 fix: record Trade for the exited half
+            # BUG-BE-8/9 fix: removed `continue` after T1 fill so execution falls
+            # through to the T2 check on the same bar. On fast-move candles where
+            # price clears both T1 and T2 in one bar, T2 now fires immediately
+            # instead of leaving the remainder exposed until the next bar.
             if self.enable_t1_t2_exits and position.t1_target and not position.t1_filled:
-                if position.side == 'LONG' and bar['high'] >= position.t1_target:
+                t1_hit = (
+                    (position.side == 'LONG'  and bar['high'] >= position.t1_target) or
+                    (position.side == 'SHORT' and bar['low']  <= position.t1_target)
+                )
+                if t1_hit:
                     shares_to_close = position.shares // 2
                     if shares_to_close > 0:
                         self._record_partial_close(
@@ -455,19 +473,13 @@ class BacktestEngine:
                         )
                         position.shares -= shares_to_close
                     position.t1_filled = True
-                    continue
-                elif position.side == 'SHORT' and bar['low'] <= position.t1_target:
-                    shares_to_close = position.shares // 2
-                    if shares_to_close > 0:
-                        self._record_partial_close(
-                            position, bar, exit_price=position.t1_target,
-                            shares_closed=shares_to_close, exit_reason='T1'
-                        )
-                        position.shares -= shares_to_close
-                    position.t1_filled = True
-                    continue
+                    # No continue — fall through to T2 check below
 
             # T2 or regular target — BUG-BE-5 fix: exit at target price
+            # Runs on the same bar as T1 if price cleared both levels (BUG-BE-8/9 fix)
+            if position not in self.positions:
+                # Position was already closed above (e.g. stop and T1 on same bar edge case)
+                continue
             target_price = position.t2_target if self.enable_t1_t2_exits else position.target
             if target_price:
                 if position.side == 'LONG' and bar['high'] >= target_price:
