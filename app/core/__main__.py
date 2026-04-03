@@ -6,10 +6,12 @@ This is the ONLY place setup_logging() is called so that log level
 and format are configured once before any other module is imported.
 
 BOOT ORDER (critical for Railway health-check):
-  1. setup_logging()        — configure log level/format
-  2. start_health_server()  — bind :PORT so Railway probe gets 200
-  3. import scanner         — triggers module-level DB pool initialization
-  4. start_scanner_loop()   — enter the main loop
+  1. setup_logging()          — configure log level/format
+  2. start_health_server()    — bind :PORT so Railway probe gets 200
+  2.5. start_annotation_bot() — Discord Gateway bot (daemon thread);
+                                no-ops gracefully if env vars are absent
+  3. import scanner           — triggers module-level DB pool initialization
+  4. start_scanner_loop()     — enter the main loop
 
 Previously health server was started inside start_scanner_loop() which
 meant the port was dark during the DB initialization block, causing Railway to
@@ -24,6 +26,12 @@ setup_logging()
 #    (scanner.py triggers module-level DB pool initialization on import)
 from app.core.health_server import start_health_server
 start_health_server()
+
+# ── 2.5. Annotation bot — non-blocking daemon thread ─────────────────────────
+#    Reads DISCORD_BOT_TOKEN + ANNOTATION_CHANNEL_ID from env.
+#    Skips silently if either is missing or discord.py is not installed.
+from app.notifications.annotation_bot import start_annotation_bot
+start_annotation_bot()
 
 # ── 3. Now safe to import scanner (triggers module-level DB pool init) ────────
 from app.core.scanner import start_scanner_loop
