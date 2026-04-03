@@ -18,6 +18,17 @@ Environment variables consumed (all optional at import time):
                                  set to https://sandbox.tradier.com for paper
     TRADIER_FUTURES_ENABLED    — "true" / "false" (default false until account confirmed)
     EODHD_API_KEY              — used for QQQ fallback only
+
+FIX HISTORY (2026-04-03):
+
+  FIX-FEED-1: _fetch_tradier_1m_bars() used .replace(tzinfo=timezone.utc)
+    to attach timezone info to Tradier timestamps. Tradier's timesales
+    endpoint returns timestamps in the market's local timezone (Eastern Time),
+    not UTC. Using timezone.utc shifted every bar by 4–5 hours, causing
+    the OR formation window check (dt.astimezone(ET).time() < _OR_END) to
+    evaluate bars at 05:30 ET instead of 09:30 ET — the OR would never lock.
+    Fixed: .replace(tzinfo=ET) so Tradier timestamps are stored as ET
+    and all subsequent .astimezone(ET) comparisons are correct.
 """
 from __future__ import annotations
 import os
@@ -31,7 +42,7 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-# ── Config ────────────────────────────────────────────────────────────────────
+# ── Config ────────────────────────────────────────────────────────────────
 TRADIER_TOKEN           = os.getenv("TRADIER_API_TOKEN", "")
 TRADIER_BASE_URL        = os.getenv("TRADIER_BASE_URL", "https://api.tradier.com")
 TRADIER_FUTURES_ENABLED = os.getenv("TRADIER_FUTURES_ENABLED", "false").lower() == "true"
@@ -88,6 +99,10 @@ def _fetch_tradier_1m_bars(symbol: str) -> list[dict]:
     Fetch 1-min OHLCV bars for today from Tradier.
     Returns list of dicts with keys: datetime, open, high, low, close, volume.
     Returns [] on any error.
+
+    FIX-FEED-1: timestamps now stored with tzinfo=ET (Eastern Time).
+    Tradier returns local ET timestamps, not UTC. Using timezone.utc
+    previously caused a 4-5 hour shift that broke the OR window check.
     """
     if not TRADIER_TOKEN:
         logger.warning("[FUTURES-FEED] TRADIER_API_TOKEN not set")
@@ -117,7 +132,10 @@ def _fetch_tradier_1m_bars(symbol: str) -> list[dict]:
         for item in raw:
             try:
                 bars.append({
-                    "datetime": datetime.fromisoformat(item["time"]).replace(tzinfo=timezone.utc),
+                    # FIX-FEED-1: .replace(tzinfo=ET) — Tradier timestamps are
+                    # Eastern Time, not UTC. Previously used timezone.utc which
+                    # shifted bars by 4-5 hours and broke OR window detection.
+                    "datetime": datetime.fromisoformat(item["time"]).replace(tzinfo=ET),
                     "open":     float(item["open"]),
                     "high":     float(item["high"]),
                     "low":      float(item["low"]),
