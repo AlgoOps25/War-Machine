@@ -24,12 +24,47 @@ Signal gate order:
   2. BAR COUNT gate — need >= 10 bars to form a valid OR
   3. OR FORMATION   — first 10 min (09:30–09:40) define OR high/low
   4. BOS / ORB      — price closes beyond OR high or low
-  5. FVG entry      — 3-bar gap after breakout candle
+  5. FVG entry      — 3-bar gap after breakout candle; entry at fill zone
+                      (FIX-ORB-1: bull=fvg_low, bear=fvg_high)
   6. MOMENTUM fallback — if no FVG, use breakout candle close as entry
-  7. ATR STOP       — 1× intraday ATR below/above entry
+  7. STOP           — wick-anchored on FVG path (FIX-ORB-2);
+                      ATR fallback for MOMENTUM_CONTINUATION only
   8. CONFIDENCE     — simple scoring (OR quality + entry type + volume)
+                      floor raised to 65% (FIX-ORB-5)
   9. PERSIST        — armed_signals_persist + futures_signals
  10. DISCORD        — orange embed alert
+
+FIX HISTORY (2026-04-03):
+
+  FIX-ORB-1: FVG entry direction was inverted.
+    _resolve_entry() set entry = fvg_high for bull and fvg_low for bear.
+    A bullish FVG retest fills from fvg_low (bottom of gap) upward —
+    entering at fvg_high means chasing the top of the gap, not retesting it.
+    Fixed: bull entry = fvg_low (fill zone bottom), bear entry = fvg_high.
+
+  FIX-ORB-2: ATR stop replaced with wick-anchored stop on FVG path.
+    _compute_levels() used 1x ATR for both FVG and MOMENTUM entries.
+    On the FVG path, the CFW6-STOP-1 rule applies: stop goes below/above
+    the deepest wick of the FVG candle cluster, not a full ATR away.
+    New: _compute_fvg_stop() walks the 3-bar FVG cluster and anchors
+    the stop to the extreme wick with a 0.25-pt buffer. ATR fallback
+    retained for MOMENTUM_CONTINUATION only.
+    fvg_cluster_idx is now returned from _detect_fvg() as a third value
+    so _compute_levels() can access the exact candles.
+
+  FIX-ORB-3: _detect_fvg() loop started at max(bk_idx, 1), missing the
+    earliest FVG when bk_idx == 0 (gap-open day, breakout on first
+    post-OR bar). Fixed: loop starts at bk_idx; i-1 guard handled
+    separately so index never underflows.
+
+  FIX-ORB-4: Volume bonus in _score() fired trivially when bk_idx < 3
+    because bars[:0] is empty, avg_vol == 0, and bk_vol > 0 is always
+    true. Fixed: volume check skipped when bk_idx < 3.
+
+  FIX-ORB-5: _MIN_CONFIDENCE raised from 55 to 65 to match the equity
+    pipeline intent. Grade thresholds adjusted: A >= 80, B >= 68, C below.
+    _CONTRACTS now read from env var FUTURES_CONTRACTS (default 1) so
+    contract size is tunable without a code change.
 """
 from __future__ import annotations
 import json
@@ -49,10 +84,12 @@ _OR_END         = time(9, 40)   # first 10 minutes form the OR
 
 # ── Risk constants ────────────────────────────────────────────────────────────
 _POINT_VALUE    = {"NQ": 20.0, "MNQ": 2.0}
-_CONTRACTS      = 1
-_MIN_CONFIDENCE = 55   # % — below this skip (do not log to DB)
+# FIX-ORB-5: read from env so contract size is tunable without a code change
+_CONTRACTS      = int(os.getenv("FUTURES_CONTRACTS", "1"))
+_MIN_CONFIDENCE = 65   # FIX-ORB-5: raised from 55 to match equity pipeline intent
 _RR_T1          = 2.0
 _RR_T2          = 3.5
+_FVG_STOP_BUFFER = 0.25  # FIX-ORB-2: pts below/above FVG wick for stop placement
 
 
 # ── Inline ORB detection helpers (no external dependency) ────────────────────
@@ -82,25 +119,57 @@ def _detect_breakout(bars: list[dict], or_high: float, or_low: float
 
 
 def _detect_fvg(bars: list[dict], bk_idx: int, direction: str
-                ) -> Tuple[Optional[float], Optional[float]]:
+                ) -> Tuple[Optional[float], Optional[float], Optional[int]]:
     """
-    Look for a 3-bar Fair Value Gap starting at the breakout candle.
+    Look for a 3-bar Fair Value Gap starting at or after the breakout candle.
     A bullish FVG exists when bars[n-1].high < bars[n+1].low.
     A bearish FVG exists when bars[n-1].low  > bars[n+1].high.
 
-    Returns (fvg_low, fvg_high) or (None, None) if no gap found.
+    FIX-ORB-3: loop now starts at bk_idx (not max(bk_idx, 1)) so a gap
+    that forms at the breakout bar itself is not missed on gap-open days.
+    The i-1 guard is handled explicitly to prevent index underflow.
+
+    Returns (fvg_low, fvg_high, cluster_mid_idx) or (None, None, None).
+    cluster_mid_idx is the index of the middle bar of the FVG triplet —
+    used by _compute_fvg_stop() to anchor the stop to the wick.
     """
-    for i in range(max(bk_idx, 1), len(bars) - 1):
+    for i in range(bk_idx, len(bars) - 1):
+        if i < 1:
+            continue  # need a previous bar; skip index 0
         prev = bars[i - 1]
-        curr = bars[i]      # noqa: F841 — kept for clarity
         nxt  = bars[i + 1]
         if direction == "bull":
             if prev["high"] < nxt["low"]:
-                return prev["high"], nxt["low"]
+                return prev["high"], nxt["low"], i
         else:
             if prev["low"] > nxt["high"]:
-                return nxt["high"], prev["low"]
-    return None, None
+                return nxt["high"], prev["low"], i
+    return None, None, None
+
+
+def _compute_fvg_stop(
+    bars: list[dict], cluster_mid_idx: int, direction: str
+) -> Optional[float]:
+    """
+    FIX-ORB-2: Wick-anchored stop for the FVG entry path.
+
+    Walks the 3-bar FVG cluster (mid-1, mid, mid+1) and places the stop
+    just beyond the most extreme wick in the counter-trade direction,
+    plus a small buffer (_FVG_STOP_BUFFER points).
+
+    Returns the stop price, or None if the cluster indices are out of range.
+    """
+    start = cluster_mid_idx - 1
+    end   = cluster_mid_idx + 1
+    if start < 0 or end >= len(bars):
+        return None
+    cluster = bars[start : end + 1]
+    if direction == "bull":
+        extreme_wick = min(b["low"] for b in cluster)
+        return round(extreme_wick - _FVG_STOP_BUFFER, 2)
+    else:
+        extreme_wick = max(b["high"] for b in cluster)
+        return round(extreme_wick + _FVG_STOP_BUFFER, 2)
 
 
 def _detect_momentum(bars: list[dict], bk_idx: int, direction: str
@@ -192,12 +261,16 @@ class FuturesORBScanner:
             return None
 
         # Gate 5/6 — FVG entry or momentum fallback
-        entry, entry_type = self._resolve_entry(bars, bk_idx, direction)
+        entry, entry_type, fvg_cluster_idx = self._resolve_entry(
+            bars, bk_idx, direction
+        )
         if entry is None:
             return None
 
         # Gate 7 — stop & targets
-        stop, t1, t2 = self._compute_levels(entry, direction, atr)
+        stop, t1, t2 = self._compute_levels(
+            entry, direction, atr, entry_type, bars, fvg_cluster_idx
+        )
 
         # Gate 8 — confidence
         confidence = self._score(entry_type, direction, bars, bk_idx, or_high, or_low)
@@ -247,28 +320,65 @@ class FuturesORBScanner:
 
     def _resolve_entry(
         self, bars: list[dict], bk_idx: int, direction: str
-    ) -> Tuple[Optional[float], str]:
-        fvg_low, fvg_high = _detect_fvg(bars, bk_idx, direction)
+    ) -> Tuple[Optional[float], str, Optional[int]]:
+        """
+        FIX-ORB-1: Entry direction corrected.
+          Bull FVG: enter at fvg_low (bottom of gap = fill zone entry).
+          Bear FVG: enter at fvg_high (top of gap = fill zone entry).
+          Previously inverted — was entering at the most extended side.
+
+        Returns (entry_price, entry_type, fvg_cluster_idx).
+        fvg_cluster_idx is passed to _compute_levels() for wick-anchored stop.
+        """
+        fvg_low, fvg_high, cluster_idx = _detect_fvg(bars, bk_idx, direction)
         if fvg_low is not None:
-            entry = fvg_high if direction == "bull" else fvg_low
-            return entry, "FVG"
+            # FIX-ORB-1: bull enters at fvg_low (fill zone bottom), not fvg_high
+            entry = fvg_low if direction == "bull" else fvg_high
+            return entry, "FVG", cluster_idx
 
         mom = _detect_momentum(bars, bk_idx, direction)
         if mom is not None:
             entry = mom.get("entry_high") if direction == "bull" else mom.get("entry_low")
             if entry is not None:
-                return entry, "MOMENTUM_CONTINUATION"
+                return entry, "MOMENTUM_CONTINUATION", None
 
         logger.debug(
             f"[FUTURES-ORB] {self.symbol} {direction}: BOS confirmed "
             f"but no FVG / momentum entry yet — waiting"
         )
-        return None, ""
+        return None, "", None
 
     @staticmethod
     def _compute_levels(
-        entry: float, direction: str, atr: float
+        entry: float,
+        direction: str,
+        atr: float,
+        entry_type: str,
+        bars: list[dict],
+        fvg_cluster_idx: Optional[int],
     ) -> Tuple[float, float, float]:
+        """
+        FIX-ORB-2: Wick-anchored stop on FVG path; ATR fallback for momentum.
+
+        FVG path: stop is placed just beyond the extreme wick of the 3-bar
+        FVG cluster (_compute_fvg_stop). This matches the CFW6-STOP-1 rule
+        used in the equity pipeline (sniper_pipeline.py).
+
+        MOMENTUM_CONTINUATION path: ATR-based stop unchanged.
+        """
+        if entry_type == "FVG" and fvg_cluster_idx is not None:
+            fvg_stop = _compute_fvg_stop(bars, fvg_cluster_idx, direction)
+            if fvg_stop is not None:
+                risk = abs(entry - fvg_stop)
+                if direction == "bull":
+                    t1 = round(entry + risk * _RR_T1, 2)
+                    t2 = round(entry + risk * _RR_T2, 2)
+                else:
+                    t1 = round(entry - risk * _RR_T1, 2)
+                    t2 = round(entry - risk * _RR_T2, 2)
+                return fvg_stop, t1, t2
+
+        # ATR fallback (MOMENTUM_CONTINUATION or FVG cluster out of range)
         risk = atr
         if direction == "bull":
             stop = round(entry - risk, 2)
@@ -309,9 +419,12 @@ class FuturesORBScanner:
         elif or_range > 50:
             score -= 5
 
-        if bars and bk_idx is not None and bk_idx < len(bars):
+        # FIX-ORB-4: skip volume check when bk_idx < 3 — not enough history
+        # to compute a meaningful average (bars[:0] is empty, avg_vol == 0,
+        # causing bk_vol > 0 to trivially fire and inflate confidence).
+        if bars and bk_idx is not None and bk_idx >= 3 and bk_idx < len(bars):
             bk_vol  = bars[bk_idx].get("volume", 0)
-            avg_vol = sum(b.get("volume", 0) for b in bars[:bk_idx]) / max(bk_idx, 1)
+            avg_vol = sum(b.get("volume", 0) for b in bars[:bk_idx]) / bk_idx
             if avg_vol > 0 and bk_vol > avg_vol * 1.5:
                 score += 10
 
@@ -324,6 +437,8 @@ class FuturesORBScanner:
         point_value = _POINT_VALUE.get(self.symbol, 2.0)
         risk_pts    = abs(entry - stop)
         dollar_risk = round(risk_pts * point_value * _CONTRACTS, 2)
+        # FIX-ORB-5: grade thresholds tightened to match raised confidence floor
+        grade = "A" if confidence >= 80 else ("B" if confidence >= 68 else "C")
         return {
             "ticker":       self.symbol,
             "direction":    direction.upper(),
@@ -332,7 +447,7 @@ class FuturesORBScanner:
             "t1":           t1,
             "t2":           t2,
             "confidence":   round(confidence / 100, 4),
-            "grade":        "A" if confidence >= 75 else ("B" if confidence >= 60 else "C"),
+            "grade":        grade,
             "signal_type":  "FUTURES_ORB",
             "validation_data": {
                 "or_high":      or_high,
@@ -413,7 +528,7 @@ class FuturesORBScanner:
                 f"**{sym}** {d} | Grade {grade} | {conf}% conf\n"
                 f"Entry: `{entry}` | Stop: `{stop}` | "
                 f"T1: `{t1}` | T2: `{t2}`\n"
-                f"Entry type: {etype} | Dollar risk (1 contract): ${drisk}"
+                f"Entry type: {etype} | Dollar risk ({_CONTRACTS} contract(s)): ${drisk}"
             )
             send_simple_message(msg)
         except Exception as e:
