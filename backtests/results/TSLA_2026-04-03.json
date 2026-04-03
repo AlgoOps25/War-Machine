@@ -1,0 +1,43 @@
+{
+  "ticker": "TSLA",
+  "mode": "walk_forward",
+  "windows": 1,
+  "total_trades": 12,
+  "win_rate": 33.33333333333333,
+  "net_pnl": -211.86532247252381,
+  "profit_factor": 0.38924547464396625,
+  "sharpe_ratio": -0.10960190869576271,
+  "expectancy": -16.738776872710318,
+  "hourly_win_rates": {
+    "9": {
+      "wins": 2,
+      "total": 3,
+      "win_rate": 66.7
+    },
+    "10": {
+      "wins": 0,
+      "total": 4,
+      "win_rate": 0.0
+    },
+    "11": {
+      "wins": 0,
+      "total": 1,
+      "win_rate": 0.0
+    },
+    "13": {
+      "wins": 0,
+      "total": 1,
+      "win_rate": 0.0
+    },
+    "14": {
+      "wins": 0,
+      "total": 1,
+      "win_rate": 0.0
+    },
+    "15": {
+      "wins": 2,
+      "total": 2,
+      "win_rate": 100.0
+    }
+  }
+}

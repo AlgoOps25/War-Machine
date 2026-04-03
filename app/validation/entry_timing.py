@@ -42,13 +42,13 @@ class EntryTimingValidator:
     # Hours below MIN_SAMPLE_SIZE keep (0.50, 0) — gating disabled until data accumulates.
     # Re-run scripts/backtesting/update_hourly_win_rates.py after each batch to refresh.
     HOURLY_WIN_RATES = {
-        9: (0.50, 0),  # 9:30-10:00  - insufficient data (n<10)
-        10: (0.54, 26),  # 10:00-11:00  - 54% WR  (26 trades)
+        9: (0.27, 15),  # 9:30-10:00  - 27% WR  (15 trades)
+        10: (0.49, 51),  # 10:00-11:00  - 49% WR  (51 trades)
         11: (0.50, 0),  # 11:00-12:00  - insufficient data (n<10)
         12: (0.50, 0),  # 12:00-13:00  - insufficient data (n<10)
         13: (0.50, 0),  # 13:00-14:00  - insufficient data (n<10)
         14: (0.50, 0),  # 14:00-15:00  - insufficient data (n<10)
-        15: (0.67, 12),  # 15:00-16:00  - 67% WR  (12 trades)
+        15: (0.64, 25),  # 15:00-16:00  - 64% WR  (25 trades)
     }
 
     # Minimum sample size for confidence.

@@ -1,0 +1,30 @@
+{
+  "ticker": "NVDA",
+  "mode": "single_pass",
+  "start": "2026-02-02T04:00:00",
+  "end": "2026-04-02T19:55:00",
+  "total_trades": 11,
+  "win_rate": 45.45454545454545,
+  "net_pnl": -72.52754520563359,
+  "profit_factor": 0.6957213072011946,
+  "sharpe_ratio": 0.00837418193268846,
+  "expectancy": -5.776057828611318,
+  "max_drawdown": 1.6196939262741386,
+  "hourly_win_rates": {
+    "9": {
+      "wins": 0,
+      "total": 1,
+      "win_rate": 0.0
+    },
+    "10": {
+      "wins": 4,
+      "total": 7,
+      "win_rate": 57.1
+    },
+    "15": {
+      "wins": 1,
+      "total": 3,
+      "win_rate": 33.3
+    }
+  }
+}
