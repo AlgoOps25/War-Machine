@@ -26,6 +26,12 @@ AUDIT 2026-03-31 (Session ML-1):
              load failures and prediction errors surface visibly in Railway logs.
              Consistent with metrics_cache.py, armed_signal_store.py, and all
              other modules in the codebase.
+
+AUDIT 2026-04-03 (Queue #8):
+  BUG-ML-5: Replaced `.iterrows()` with `.itertuples()` in
+            `_save_feature_importance()`. `.iterrows()` boxes each row into a
+            Series (dtype coercion, ~10-50x slower). `.itertuples()` yields
+            lightweight named tuples — correct for simple read-only logging.
 """
 
 import logging
@@ -202,5 +208,7 @@ class MLConfidenceBooster:
 
         logger.info(f"[ML] Feature importance saved to {IMPORTANCE_PATH}")
         logger.info("[ML] Top 10 features:")
-        for idx, row in df.head(10).iterrows():
-            logger.info(f"  {row['feature']}: {row['importance']:.4f}")
+        # BUG-ML-5: replaced .iterrows() with .itertuples() — avoids per-row
+        # Series boxing and dtype coercion; correct for read-only logging.
+        for row in df.head(10).itertuples(index=False):
+            logger.info(f"  {row.feature}: {row.importance:.4f}")
