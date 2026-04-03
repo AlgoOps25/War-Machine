@@ -34,6 +34,12 @@ BUG-DH-3 (Apr 1 2026):
 - All footer timestamps now use 'ET' (timezone-neutral abbreviation)
   instead of the hardcoded 'EST' string, which was incorrect during
   EDT (March–November).
+
+BUG-DH-5 (Apr 3 2026):
+- send_options_signal_alert() Confirmation block used bare `if mtf_convergence:`
+  which silently dropped mtf_convergence=0 (Single TF — a valid, meaningful
+  value). Fixed to `if mtf_convergence is not None:` consistent with the
+  Signal Quality block above it.
 """
 import requests
 import functools
@@ -215,7 +221,7 @@ def send_equity_bos_fvg_alert(signal: Dict):
     conf_bits = []
     if candle_type:
         conf_bits.append(f"Pattern: **{candle_type}**")
-    if mtf:
+    if mtf is not None:
         if mtf >= 4:
             mtf_label = "Ultra-confluence 🌟"
         elif mtf == 3:
@@ -357,7 +363,9 @@ def send_options_signal_alert(
     conf_bits = []
     if confirmation:
         conf_bits.append(f"Pattern: **{confirmation}** ({candle_type or 'Price Action'})")
-    if mtf_convergence:
+    # BUG-DH-5: use `is not None` — mtf_convergence=0 (Single TF) is valid and
+    # must not be silently dropped by a bare truthiness check.
+    if mtf_convergence is not None:
         conf_bits.append(f"Aligned TFs: **{mtf_convergence}**")
     if conf_bits:
         fields.append({
