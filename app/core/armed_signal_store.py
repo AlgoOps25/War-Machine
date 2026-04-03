@@ -26,6 +26,16 @@
 #              PostgreSQL types (VARCHAR, NUMERIC, TIMESTAMPTZ, SERIAL). Schema ownership
 #              belongs exclusively to migrations/. Function gutted to a no-op log — if the
 #              table is missing it means migration 002 has not been run, which is the real fix.
+#
+# AUDIT 2026-04-03:
+#   BUG-ASS-5 (REAL BUG): _cleanup_stale_armed_signals() evaluated
+#              `pos_id not in open_position_ids` for every row. FUTURES_ORB signals
+#              are persisted with position_id = None (no auto-execution path yet).
+#              None is never in open_position_ids so every futures signal was deleted
+#              on the very next cleanup cycle, making futures persistence a no-op.
+#              Fix: skip rows where position_id IS NULL — treat them as manually-managed
+#              signals. Equity signals always have a non-None position_id so the existing
+#              cleanup logic is completely unchanged for that path.
 
 import json
 import logging
@@ -137,6 +147,15 @@ def _cleanup_stale_armed_signals():
         for row in rows:
             ticker = row[0] if isinstance(row, tuple) else row["ticker"]
             pos_id = row[1] if isinstance(row, tuple) else row["position_id"]
+            # BUG-ASS-5 FIX (2026-04-03): skip rows with no position_id.
+            # FUTURES_ORB signals are persisted with position_id = None because
+            # there is no auto-execution path yet. None is never in
+            # open_position_ids, so without this guard every futures signal was
+            # silently deleted on the first cleanup cycle after being written.
+            # Equity signals always carry a non-None position_id, so this guard
+            # leaves the equity cleanup path completely unchanged.
+            if pos_id is None:
+                continue
             if pos_id not in open_position_ids:
                 stale_tickers.append(ticker)
         if stale_tickers:
