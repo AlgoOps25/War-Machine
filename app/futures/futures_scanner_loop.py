@@ -14,6 +14,12 @@ Scan interval:
   - 09:30–09:40 (OR formation): 5s  ← same as equity OR window
   - 09:40–11:00 (signal window): 30s ← Tradier REST poll minimum interval
   - Outside session: 300s (5 min idle)
+
+MON-FUT-1 (2026-04-03):
+  - start_futures_loop() now also starts the FuturesPositionMonitor daemon
+    thread via futures_position_monitor.start_monitor_loop().
+  - After scanner.scan() returns a signal, the monitor is armed automatically
+    so stop/T1/T2 Discord exit alerts fire without any manual intervention.
 """
 from __future__ import annotations
 import logging
@@ -40,9 +46,11 @@ def _futures_loop(symbol: str) -> None:
     """Target function for the futures scan thread."""
     from app.futures.futures_orb_scanner import FuturesORBScanner
     from app.futures.tradier_futures_feed import clear_bar_cache
+    from app.futures.futures_position_monitor import get_monitor
 
     logger.info(f"[FUTURES-LOOP] Thread started for {symbol}")
     scanner = FuturesORBScanner(symbol=symbol)
+    monitor = get_monitor(symbol)
     last_reset_day = None
 
     while True:
@@ -53,11 +61,15 @@ def _futures_loop(symbol: str) -> None:
             # Daily reset
             if last_reset_day != today:
                 scanner.reset_daily()
+                monitor.disarm()
                 clear_bar_cache(symbol)
                 last_reset_day = today
                 logger.info(f"[FUTURES-LOOP] Daily reset complete for {symbol}")
 
-            scanner.scan(current_time=now)
+            # Run scan — arm monitor if a signal fires
+            signal = scanner.scan(current_time=now)
+            if signal is not None:
+                monitor.arm(signal)
 
         except Exception as e:
             logger.error(f"[FUTURES-LOOP] Unhandled error: {e}")
@@ -69,11 +81,16 @@ def _futures_loop(symbol: str) -> None:
 
 def start_futures_loop(symbol: str = "MNQ") -> threading.Thread:
     """
-    Launch the futures scan loop in a daemon thread.
-    Safe to call multiple times — only starts one thread per process.
-    Returns the thread object (useful for testing / health checks).
+    Launch the futures scan loop and position monitor in daemon threads.
+    Safe to call multiple times — only starts one of each per process.
+    Returns the scan thread object (useful for testing / health checks).
     """
     global _futures_thread
+
+    # MON-FUT-1: start position monitor alongside the scanner
+    from app.futures.futures_position_monitor import start_monitor_loop
+    start_monitor_loop(symbol)
+
     if _futures_thread is not None and _futures_thread.is_alive():
         logger.info("[FUTURES-LOOP] Thread already running — skipping duplicate start")
         return _futures_thread
