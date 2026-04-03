@@ -11,23 +11,17 @@ from whichever part of the codebase already reads incoming Discord messages
 (e.g. your existing discord_helpers / webhook handler).
 
 Example (inside your existing message handler):
-    from app.signals.annotation_resolver import resolve_annotation
-    import re
-
-    _RR_RE = re.compile(r"^\s*(?:(long|bull|short|bear)\s+)?(\d+\.\d+)\s*$", re.I)
+    from app.signals.annotation_resolver import parse_annotation, resolve_annotation
 
     def on_annotation_message(content: str, posted_at):
-        m = _RR_RE.match(content)
-        if not m:
-            return
-        dir_hint = m.group(1)
-        if dir_hint:
-            dir_hint = "bull" if dir_hint.lower() in ("long", "bull") else "bear"
-        resolve_annotation(float(m.group(2)), dir_hint, "NQM25", posted_at)
+        result = parse_annotation(content)
+        if result:
+            rr_ratio, direction_hint = result
+            resolve_annotation(rr_ratio, direction_hint, "NQM25", posted_at)
 
 PIPELINE
 --------
-1. Pull live 1-min bars via data_manager.get_today_session_bars() — same
+1. Pull live 1-min bars via data_manager.get_today_session_bars() -- same
    source used by opening_range.py and breakout_detector.py.
 2. Compute ATR via or_detector._calculate_atr() for consistency.
 3. Auto-detect direction from BOS (detect_breakout_after_or) unless caller
@@ -37,7 +31,14 @@ PIPELINE
      b. BOS confirmation  (detect_breakout_after_or)
      c. All War Machine risk gates via position_manager.can_open_position()
 5. Call position_manager.open_position() with signal_type="DISCORD_ANNOTATION".
-6. Send Discord confirmation via discord_helpers.send_discord_message().
+6. Send rich Discord embed via _send_annotation_to_discord() to the dedicated
+   DISCORD_ANNOTATIONS_WEBHOOK_URL (falls back to #signals if not set).
+
+ANNOT-2 (Apr 3 2026):
+- _notify() upgraded from plain-text message to rich embed (green/red,
+  Price Levels field, ATR + Position ID in footer).
+- Routes through _send_annotation_to_discord() so alerts land in
+  #chart-annotations channel rather than #signals.
 """
 
 import logging
@@ -60,8 +61,7 @@ logger = logging.getLogger(__name__)
 _ET      = ZoneInfo("America/New_York")
 _MIN_RR  = getattr(config, "MIN_RISK_REWARD_RATIO", 1.5)
 
-# Shared PositionManager instance — reuses the same object when imported
-# from the same process as the scanner; creates a fresh one in isolation.
+# Shared PositionManager instance
 _pm: Optional[PositionManager] = None
 
 
@@ -113,7 +113,7 @@ def resolve_annotation(
     """
     Convert an annotated R:R value into a War Machine futures position.
 
-    Synchronous — safe to call from any thread or async context via
+    Synchronous -- safe to call from any thread or async context via
     asyncio.to_thread().
 
     Args:
@@ -126,58 +126,52 @@ def resolve_annotation(
 
     # ── 1. Min R:R gate ───────────────────────────────────────────────────────
     if rr_ratio < _MIN_RR:
-        logger.info(f"{tag} Skipped — R:R {rr_ratio} < min {_MIN_RR}")
+        logger.info(f"{tag} Skipped -- R:R {rr_ratio} < min {_MIN_RR}")
         return
 
     # ── 2. Live bars via data_manager ─────────────────────────────────────────
     bars = data_manager.get_today_session_bars(symbol)
     if not bars or len(bars) < 5:
-        logger.warning(f"{tag} Skipped — insufficient session bars ({len(bars) if bars else 0})")
+        logger.warning(f"{tag} Skipped -- insufficient session bars ({len(bars) if bars else 0})")
         return
-
-    # bars from data_manager are oldest-first (ascending timestamp)
-    # detect_breakout_after_or expects the same order.
 
     # ── 3. OR levels for BOS anchor ───────────────────────────────────────────
     or_high, or_low = compute_opening_range_from_bars(bars)
     if or_high is None or or_low is None:
-        # Fallback: use full session range
         or_high = max(b["high"] for b in bars)
         or_low  = min(b["low"]  for b in bars)
-        logger.info(f"{tag} OR not available — using session range ${or_low:.2f}–${or_high:.2f}")
+        logger.info(f"{tag} OR not available -- using session range ${or_low:.2f}-${or_high:.2f}")
 
     # ── 4. BOS detection / direction ──────────────────────────────────────────
     bos_direction, bos_idx = detect_breakout_after_or(bars, or_high, or_low)
 
     if direction_hint:
         direction = direction_hint
-        # Still require BOS in the same direction for confirmation
         if bos_direction and bos_direction != direction:
             logger.info(
-                f"{tag} Skipped — caller says {direction} but BOS fired {bos_direction}"
+                f"{tag} Skipped -- caller says {direction} but BOS fired {bos_direction}"
             )
             return
         if not bos_direction:
-            logger.info(f"{tag} Skipped — no BOS confirmed for explicit {direction} hint")
+            logger.info(f"{tag} Skipped -- no BOS confirmed for explicit {direction} hint")
             return
     else:
         if not bos_direction:
-            logger.info(f"{tag} Skipped — no BOS detected (auto-direction)")
+            logger.info(f"{tag} Skipped -- no BOS detected (auto-direction)")
             return
         direction = bos_direction
 
-    # ── 5. ATR via or_detector (same logic as opening_range.py) ───────────────
+    # ── 5. ATR via or_detector ─────────────────────────────────────────────────
     atr = or_detector._calculate_atr(symbol)
     if not atr or atr <= 0:
-        # Fallback: simple session H-L mean
         atr = sum(b["high"] - b["low"] for b in bars[-14:]) / min(14, len(bars))
 
     # ── 6. Build entry / stop / targets ───────────────────────────────────────
     latest_bar = bars[-1]
     entry      = latest_bar["close"]
-    stop_dist  = atr                   # 1 ATR = 1R
-    t1_dist    = atr * (rr_ratio / 2)  # scale-out at midpoint
-    t2_dist    = atr * rr_ratio        # full annotated R:R
+    stop_dist  = atr
+    t1_dist    = atr * (rr_ratio / 2)
+    t2_dist    = atr * rr_ratio
 
     if direction == "bull":
         stop = entry - stop_dist
@@ -207,16 +201,16 @@ def resolve_annotation(
         stop_price   = stop,
         t1           = t1,
         t2           = t2,
-        confidence   = 0.70,        # human-validated annotation = standard tier
+        confidence   = 0.70,
         grade        = "A",
         signal_type  = "DISCORD_ANNOTATION",
     )
 
     if pos_id and pos_id > 0:
-        logger.info(f"{tag} ✅ Position opened — ID {pos_id}")
-        _notify(symbol, direction, entry, stop, t1, t2, rr_ratio, pos_id)
+        logger.info(f"{tag} \u2705 Position opened -- ID {pos_id}")
+        _notify(symbol, direction, entry, stop, t1, t2, rr_ratio, atr, pos_id)
     else:
-        logger.info(f"{tag} ❌ open_position rejected (risk gate, duplicate, or RTH guard)")
+        logger.info(f"{tag} \u274c open_position rejected (risk gate, duplicate, or RTH guard)")
 
 
 # ── Discord notification ───────────────────────────────────────────────────────
@@ -224,18 +218,50 @@ def resolve_annotation(
 def _notify(
     symbol: str, direction: str,
     entry: float, stop: float, t1: float, t2: float,
-    rr: float, pos_id: int,
+    rr: float, atr: float, pos_id: int,
 ) -> None:
-    """Best-effort Discord alert — non-fatal on any failure."""
+    """Rich embed annotation alert routed to DISCORD_ANNOTATIONS_WEBHOOK_URL.
+
+    ANNOT-2: Upgraded from plain text to structured embed so the alert is
+    visually consistent with other War Machine signal alerts.
+    Non-fatal on any failure.
+    """
     try:
-        from app.notifications.discord_helpers import send_discord_message
-        arrow = "🟢 LONG" if direction == "bull" else "🔴 SHORT"
-        msg = (
-            f"**{arrow} {symbol}** _(Annotation Signal | R:R {rr}:1)_\n"
-            f"Entry: `{entry:.2f}` | Stop: `{stop:.2f}`\n"
-            f"T1: `{t1:.2f}` | T2: `{t2:.2f}`\n"
-            f"Position ID: `{pos_id}`"
-        )
-        send_discord_message(msg)
+        from app.notifications.discord_helpers import _send_annotation_to_discord
+
+        is_long = direction == "bull"
+        color   = 0x00FF00 if is_long else 0xFF0000
+        side    = "LONG \U0001f7e2" if is_long else "SHORT \U0001f534"
+
+        risk = abs(entry - stop)
+        r1   = abs(t1 - entry) / risk if risk > 0 else 0
+        r2   = abs(t2 - entry) / risk if risk > 0 else 0
+
+        embed = {
+            "title": f"{side}  {symbol}  \u2014  Annotation Signal  (R:R {rr}:1)",
+            "color": color,
+            "fields": [
+                {
+                    "name": "Price Levels",
+                    "value": (
+                        f"Entry : **{entry:.2f}**\n"
+                        f"Stop  : **{stop:.2f}**  (Risk **{risk:.2f}**)\n"
+                        f"T1    : **{t1:.2f}**  ({r1:.1f}R)\n"
+                        f"T2    : **{t2:.2f}**  ({r2:.1f}R)"
+                    ),
+                    "inline": False,
+                },
+            ],
+            "footer": {
+                "text": (
+                    f"War Machine Annotation | ATR {atr:.2f} | "
+                    f"Pos ID {pos_id} | "
+                    f"{datetime.now().strftime('%Y-%m-%d %I:%M %p ET')}"
+                )
+            },
+        }
+
+        _send_annotation_to_discord({"embeds": [embed]})
+
     except Exception as exc:
         logger.warning(f"[ANNOTATION] Discord notify failed (non-fatal): {exc}")
