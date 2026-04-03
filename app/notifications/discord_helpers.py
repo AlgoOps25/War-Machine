@@ -48,6 +48,17 @@ BUG-DH-6 (Apr 3 2026):
 - _send_annotation_to_discord() added: routes to DISCORD_ANNOTATIONS_WEBHOOK_URL
   when configured, falls back to _SIGNALS_WEBHOOK. Keeps annotation alerts
   in their own channel rather than polluting #signals.
+
+DIS-FUT-1 (Apr 3 2026):
+- send_futures_orb_alert() added — rich orange embed for FUTURES_ORB entry
+  signals.  Replaces the plain-text send_simple_message() call in
+  FuturesORBScanner._discord_alert().  Plain-text fallback is retained inside
+  _discord_alert() so a missing key never silences the alert entirely.
+
+DIS-FUT-2 (Apr 3 2026):
+- send_futures_exit_alert() added — rich embed for exits / stops.
+  Call from FuturesORBScanner._discord_exit() or any position monitor.
+  reason values: STOP_HIT | T1_HIT | T2_HIT | EOD_CLOSE | free-form.
 """
 import requests
 import functools
@@ -615,6 +626,171 @@ def send_daily_summary(stats: Dict):
             "text": f"War Machine  |  {datetime.now().strftime('%Y-%m-%d %H:%M:%S ET')}"
         }
     }
+    _send_to_discord({"embeds": [embed]})
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# FUTURES ORB SIGNAL ALERTS  (NQ / MNQ — manual execution on TradingView)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def send_futures_orb_alert(signal: dict) -> None:
+    """
+    Rich Discord embed for a FUTURES_ORB entry signal.
+
+    Expected signal dict keys (produced by FuturesORBScanner._build_signal):
+      ticker, direction, entry_price, stop_price, t1, t2,
+      confidence, grade, signal_type, validation_data
+
+    validation_data sub-keys used here:
+      or_high, or_low, or_range, entry_type, atr,
+      risk_pts, rr_t1, rr_t2, contracts, point_value, dollar_risk
+
+    Color coding:
+      BULL  -> 0xFF8C00  (dark orange)
+      BEAR  -> 0xFF4500  (orange-red)
+
+    DIS-FUT-1 (Apr 3 2026):
+      Initial implementation.  Replaces the send_simple_message() plain-text
+      alert fired by FuturesORBScanner._discord_alert().  The plain-text path
+      is retained as a fallback inside _discord_alert() so a missing key never
+      silences the alert entirely.
+    """
+    sym   = signal.get("ticker", "UNKNOWN")
+    d     = signal.get("direction", "BULL").upper()
+    entry = signal.get("entry_price", 0.0)
+    stop  = signal.get("stop_price", 0.0)
+    t1    = signal.get("t1", 0.0)
+    t2    = signal.get("t2", 0.0)
+    conf  = round(signal.get("confidence", 0.0) * 100, 1)
+    grade = signal.get("grade", "?")
+
+    vd          = signal.get("validation_data", {})
+    or_high     = vd.get("or_high", 0.0)
+    or_low      = vd.get("or_low", 0.0)
+    or_range    = vd.get("or_range", 0.0)
+    entry_type  = vd.get("entry_type", "?")
+    atr         = vd.get("atr", 0.0)
+    risk_pts    = vd.get("risk_pts", 0.0)
+    rr_t1       = vd.get("rr_t1", 2.0)
+    rr_t2       = vd.get("rr_t2", 3.5)
+    contracts   = vd.get("contracts", 1)
+    dollar_risk = vd.get("dollar_risk", 0.0)
+
+    arrow = "🟢 LONG" if d == "BULL" else "🔴 SHORT"
+    color = 0xFF8C00 if d == "BULL" else 0xFF4500
+
+    embed = {
+        "title": f"🟠 FUTURES ORB — {sym}  {arrow}",
+        "description": (
+            f"**Grade {grade}**  •  **{conf}%** conf  •  Entry type: **{entry_type}**"
+        ),
+        "color": color,
+        "fields": [
+            {
+                "name": "📐 Price Levels",
+                "value": (
+                    f"Entry : **{entry}**\n"
+                    f"Stop  : **{stop}**  "
+                    f"(Risk **{risk_pts:.2f} pts** / **${dollar_risk:.0f}** on {contracts} contract)\n"
+                    f"T1    : **{t1}**  ({rr_t1}R)\n"
+                    f"T2    : **{t2}**  ({rr_t2}R)"
+                ),
+                "inline": False,
+            },
+            {
+                "name": "📊 Opening Range",
+                "value": (
+                    f"OR High : **{or_high}**\n"
+                    f"OR Low  : **{or_low}**\n"
+                    f"OR Range: **{or_range:.2f} pts**  •  ATR: **{atr:.2f} pts**"
+                ),
+                "inline": False,
+            },
+            {
+                "name": "⚡ Execution Note",
+                "value": (
+                    "Place trade **manually** on TradingView / Tradovate.\n"
+                    f"Set stop at **{stop}** immediately after entry."
+                ),
+                "inline": False,
+            },
+        ],
+        "footer": {
+            "text": (
+                f"War Machine Futures ORB  |  "
+                f"{datetime.now().strftime('%Y-%m-%d %I:%M %p ET')}"
+            )
+        },
+    }
+
+    _send_to_discord({"embeds": [embed]})
+
+
+def send_futures_exit_alert(
+    symbol: str,
+    direction: str,
+    exit_price: float,
+    reason: str,
+    entry_price: float = 0.0,
+    pnl_pts: float = 0.0,
+    contracts: int = 1,
+    point_value: float = 2.0,
+) -> None:
+    """
+    Rich Discord embed for a FUTURES_ORB exit / stop event.
+
+    reason values: "STOP_HIT" | "T1_HIT" | "T2_HIT" | "EOD_CLOSE" | free-form
+
+    DIS-FUT-2 (Apr 3 2026):
+      Initial implementation.  Called from FuturesORBScanner._discord_exit()
+      or directly from any external position monitor.
+    """
+    d      = direction.upper()
+    win    = reason in ("T1_HIT", "T2_HIT") or (reason not in ("STOP_HIT",) and pnl_pts > 0)
+    dollar = round(abs(pnl_pts) * point_value * contracts, 2)
+
+    reason_emoji = {
+        "STOP_HIT":  "🛑",
+        "T1_HIT":    "🎯",
+        "T2_HIT":    "🏆",
+        "EOD_CLOSE": "🕐",
+    }.get(reason, "📌")
+
+    color       = 0x00C853 if win else 0xFF4500
+    status      = "WIN ✅" if win else "LOSS ❌"
+    pnl_sign    = f"+{pnl_pts:.2f}" if pnl_pts >= 0 else f"{pnl_pts:.2f}"
+    dollar_sign = f"+${dollar:.2f}" if win else f"-${dollar:.2f}"
+
+    embed = {
+        "title": f"{reason_emoji} FUTURES EXIT — {symbol}  ({status})",
+        "color": color,
+        "fields": [
+            {
+                "name": "💵 Fill",
+                "value": (
+                    f"Entry : **{entry_price}**\n"
+                    f"Exit  : **{exit_price}**\n"
+                    f"Reason: **{reason}**"
+                ),
+                "inline": True,
+            },
+            {
+                "name": "💰 P&L",
+                "value": (
+                    f"Points: **{pnl_sign}**\n"
+                    f"Dollars ({contracts}ct): **{dollar_sign}**"
+                ),
+                "inline": True,
+            },
+        ],
+        "footer": {
+            "text": (
+                f"War Machine Futures ORB  |  "
+                f"{datetime.now().strftime('%Y-%m-%d %I:%M %p ET')}"
+            )
+        },
+    }
+
     _send_to_discord({"embeds": [embed]})
 
 
