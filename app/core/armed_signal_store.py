@@ -36,6 +36,13 @@
 #              Fix: skip rows where position_id IS NULL — treat them as manually-managed
 #              signals. Equity signals always have a non-None position_id so the existing
 #              cleanup logic is completely unchanged for that path.
+#
+#   BUG-ARM-3 (REAL BUG): be_price was stored in-memory (arm_signal.py) and passed
+#              to position_manager, but never included in the DB INSERT. After a Railway
+#              restart _load_armed_signals_from_db() reloaded signals without be_price,
+#              silently dropping the break-even trigger. Fixed: be_price added to INSERT
+#              column list, ON CONFLICT DO UPDATE, SELECT, and loaded dict.
+#              Requires migration 007 (migrations/007_armed_signals_be_price.sql).
 
 import json
 import logging
@@ -78,11 +85,13 @@ def _persist_armed_signal(ticker: str, data: dict):
                 validation_json = json.dumps(data["validation_data"])
             except Exception:
                 validation_json = None
+        # BUG-ARM-3 FIX: be_price added to INSERT and ON CONFLICT DO UPDATE.
+        # Requires migration 007 to have added the column.
         query = f"""
             INSERT INTO armed_signals_persist
                 (ticker, position_id, direction, entry_price, stop_price, t1, t2,
-                 confidence, grade, signal_type, validation_data, saved_at)
-            VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, CURRENT_TIMESTAMP)
+                 be_price, confidence, grade, signal_type, validation_data, saved_at)
+            VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, CURRENT_TIMESTAMP)
             ON CONFLICT (ticker) DO UPDATE SET
                 position_id     = EXCLUDED.position_id,
                 direction       = EXCLUDED.direction,
@@ -90,6 +99,7 @@ def _persist_armed_signal(ticker: str, data: dict):
                 stop_price      = EXCLUDED.stop_price,
                 t1              = EXCLUDED.t1,
                 t2              = EXCLUDED.t2,
+                be_price        = EXCLUDED.be_price,
                 confidence      = EXCLUDED.confidence,
                 grade           = EXCLUDED.grade,
                 signal_type     = EXCLUDED.signal_type,
@@ -104,6 +114,7 @@ def _persist_armed_signal(ticker: str, data: dict):
             data["stop_price"],
             data["t1"],
             data["t2"],
+            data.get("be_price"),   # BUG-ARM-3: None-safe; old signals lack this key
             data["confidence"],
             data["grade"],
             data["signal_type"],
@@ -184,14 +195,14 @@ def _load_armed_signals_from_db() -> dict:
         if _USE_PG:
             query = f"""
                 SELECT ticker, position_id, direction, entry_price, stop_price, t1, t2,
-                       confidence, grade, signal_type, validation_data
+                       be_price, confidence, grade, signal_type, validation_data
                 FROM   armed_signals_persist
                 WHERE  DATE(saved_at AT TIME ZONE 'America/New_York') = {p}
             """
         else:
             query = f"""
                 SELECT ticker, position_id, direction, entry_price, stop_price, t1, t2,
-                       confidence, grade, signal_type, validation_data
+                       be_price, confidence, grade, signal_type, validation_data
                 FROM   armed_signals_persist
                 WHERE  DATE(saved_at) = {p}
             """
@@ -205,15 +216,16 @@ def _load_armed_signals_from_db() -> dict:
                 except Exception:
                     validation = None
             loaded[row["ticker"]] = {
-                "position_id":  row["position_id"],
-                "direction":    row["direction"],
-                "entry_price":  row["entry_price"],
-                "stop_price":   row["stop_price"],
-                "t1":           row["t1"],
-                "t2":           row["t2"],
-                "confidence":   row["confidence"],
-                "grade":        row["grade"],
-                "signal_type":  row["signal_type"],
+                "position_id":     row["position_id"],
+                "direction":       row["direction"],
+                "entry_price":     row["entry_price"],
+                "stop_price":      row["stop_price"],
+                "t1":              row["t1"],
+                "t2":              row["t2"],
+                "be_price":        row.get("be_price"),  # BUG-ARM-3: None-safe for rows pre-migration 007
+                "confidence":      row["confidence"],
+                "grade":           row["grade"],
+                "signal_type":     row["signal_type"],
                 "validation_data": validation
             }
         if loaded:
