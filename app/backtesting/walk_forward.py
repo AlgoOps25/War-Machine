@@ -16,9 +16,9 @@ Example:
 
   ... continue rolling forward
 
-NOTE (BUG-WF-1, S21): Window boundaries are computed as timedelta(days=30 * months).
-This is a known approximation -- February and 31-day months cause 1-2 day drift per
-window over long runs. For calendar-precise splits use dateutil.relativedelta.
+BUG-WF-1 (Apr 03 2026): Window boundaries previously used timedelta(days=30 * months),
+causing 1-2 day drift per window on February and 31-day months over long runs.
+Fixed with _add_months() — stdlib calendar.monthrange, zero extra dependencies.
 
 BUG-WF-2 (Apr 2026): create_windows() and run() used bars[0]['datetime'] directly.
 EODHD bars (from historical_trainer) use 'timestamp' key, not 'datetime'.
@@ -38,6 +38,7 @@ so windows that end within 1 calendar day of the last bar are still included.
 from typing import Dict, List, Callable, Optional
 from datetime import datetime, timedelta
 from dataclasses import dataclass
+import calendar
 import statistics
 
 from app.backtesting.backtest_engine import BacktestEngine, BacktestResults
@@ -52,6 +53,21 @@ from app.backtesting.performance_metrics import (
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+def _add_months(dt: datetime, months: int) -> datetime:
+    """
+    BUG-WF-1: Calendar-exact month addition using stdlib only.
+    Advances dt by `months` calendar months, clamping to the last
+    valid day when the target month is shorter (e.g. Jan 31 + 1m = Feb 28/29).
+    Replaces timedelta(days=30 * months) which drifted 1-2 days on
+    February and 31-day months over multi-window runs.
+    """
+    month = dt.month - 1 + months
+    year = dt.year + month // 12
+    month = month % 12 + 1
+    day = min(dt.day, calendar.monthrange(year, month)[1])
+    return dt.replace(year=year, month=month, day=day)
 
 
 def _bar_datetime(bar: Dict) -> Optional[datetime]:
@@ -193,15 +209,15 @@ class WalkForward:
         """
         Create train/test windows from bars.
 
-        NOTE: Month boundaries use timedelta(days=30 * months) -- approximation.
-        See module docstring (BUG-WF-1) for details.
+        BUG-WF-1: Month boundaries now use _add_months() (stdlib calendar.monthrange)
+        instead of timedelta(days=30 * months). Eliminates 1-2 day drift on
+        February and 31-day months over multi-window runs.
 
-        BUG-BT-9: Break condition changed from `test_end > end_date` to
-        `test_end > end_date + timedelta(days=1)`. With 1m/1m windows on
-        ~59-day datasets, test_end fell 1 day past end_date (e.g. Apr-03
-        vs Apr-02), causing the loop to exit before creating any window.
-        The +1d buffer allows windows whose test period ends within 1
-        calendar day of the last available bar.
+        BUG-BT-9: Break condition uses `test_end > end_date + timedelta(days=1)`.
+        With 1m/1m windows on ~59-day datasets, test_end fell 1 day past end_date
+        (e.g. Apr-03 vs Apr-02), causing the loop to exit before creating any window.
+        The +1d buffer allows windows whose test period ends within 1 calendar day
+        of the last available bar.
 
         Args:
             bars: Historical OHLCV bars with 'datetime' or 'timestamp' field
@@ -225,13 +241,12 @@ class WalkForward:
 
         while True:
             train_start = current_start
-            train_end   = train_start + timedelta(days=30 * self.train_months)
+            # BUG-WF-1: calendar-exact month stepping via _add_months()
+            train_end   = _add_months(train_start, self.train_months)
             test_start  = train_end
-            test_end    = test_start + timedelta(days=30 * self.test_months)
+            test_end    = _add_months(test_start, self.test_months)
 
             # BUG-BT-9: allow test windows that end within 1 day of the last bar.
-            # Previously `test_end > end_date` broke on 59-day datasets where
-            # test_end landed 1 day past end_date on the very first window.
             if test_end > end_date + timedelta(days=1):
                 break
 
@@ -244,7 +259,7 @@ class WalkForward:
                           and test_start  <= _bar_datetime(b) < test_end]
 
             if len(train_bars) < self.min_train_bars or len(test_bars) < 100:
-                current_start += timedelta(days=30 * self.step_months)
+                current_start = _add_months(current_start, self.step_months)
                 continue
 
             windows.append(WalkForwardWindow(
@@ -256,7 +271,7 @@ class WalkForward:
                 test_bars=test_bars,
             ))
 
-            current_start += timedelta(days=30 * self.step_months)
+            current_start = _add_months(current_start, self.step_months)
 
         return windows
 
