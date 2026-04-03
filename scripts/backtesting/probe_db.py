@@ -1,8 +1,8 @@
-"""Quick DB probe — run once to diagnose table visibility and date coverage.
+"""Quick DB probe -- run once to diagnose table visibility and date ranges.
 
-BUG-BT-12 (Apr 03 2026): Added per-ticker MIN/MAX datetime queries so data
-  gaps (e.g. intraday_bars_5m starting Feb 02 instead of Jan 03) are visible
-  immediately without a separate SQL session.
+BUG-BT-14 (Apr 03 2026): Added per-ticker MIN/MAX datetime queries for
+  intraday_bars and intraday_bars_5m so data gaps are immediately visible
+  without needing a separate SQL client.
 """
 import os, sys
 sys.path.insert(0, '.')
@@ -32,35 +32,47 @@ for table in ('intraday_bars', 'candle_cache', 'intraday_bars_5m'):
         print(f"  {table:<25} EXISTS  ({n:,} rows)")
     except Exception as e:
         conn.rollback()
-        print(f"  {table:<25} MISSING — {e}")
-
-# ---------------------------------------------------------------------------
-# BUG-BT-12: Per-ticker date ranges for backtest tickers
-# ---------------------------------------------------------------------------
-TICKERS = ('AAPL', 'TSLA', 'NVDA', 'MSFT', 'AMD')
-
-for table in ('intraday_bars', 'intraday_bars_5m'):
-    print(f"\n  {table} — date ranges per ticker:")
-    print(f"  {'Ticker':<8} {'First bar':<14} {'Last bar':<14} {'Rows':>10}")
-    print(f"  {'-'*8} {'-'*13} {'-'*13} {'-'*10}")
-    try:
-        for ticker in TICKERS:
-            cur.execute(
-                f"SELECT MIN(datetime)::date, MAX(datetime)::date, COUNT(*) "
-                f"FROM {table} WHERE ticker = %s",
-                (ticker,),
-            )
-            row = cur.fetchone()
-            first, last, count = row if row else (None, None, 0)
-            if count:
-                print(f"  {ticker:<8} {str(first):<14} {str(last):<14} {count:>10,}")
-            else:
-                print(f"  {ticker:<8} {'NO DATA':<14} {'':14} {'0':>10}")
-    except Exception as e:
-        conn.rollback()
-        print(f"  ERROR querying {table}: {e}")
+        print(f"  {table:<25} MISSING -- {e}")
 
 print()
+
+# ---------------------------------------------------------------------------
+# BUG-BT-14: Date ranges per ticker for both bar tables
+# ---------------------------------------------------------------------------
+DEFAULT_TICKERS = ('AAPL', 'TSLA', 'NVDA', 'MSFT', 'AMD')
+
+for table in ('intraday_bars', 'intraday_bars_5m'):
+    print(f"  {table} -- date ranges:")
+    print(f"    {'Ticker':<8}  {'First bar':<12}  {'Last bar':<12}  {'Rows':>8}")
+    print(f"    {'-'*8}  {'-'*12}  {'-'*12}  {'-'*8}")
+    try:
+        cur.execute(
+            f"""
+            SELECT ticker,
+                   MIN(datetime)::date  AS first_bar,
+                   MAX(datetime)::date  AS last_bar,
+                   COUNT(*)             AS rows
+            FROM {table}
+            WHERE ticker = ANY(%s)
+            GROUP BY ticker
+            ORDER BY ticker
+            """,
+            (list(DEFAULT_TICKERS),),
+        )
+        rows = cur.fetchall()
+        if rows:
+            for ticker, first, last, cnt in rows:
+                print(f"    {ticker:<8}  {str(first):<12}  {str(last):<12}  {cnt:>8,}")
+        else:
+            print("    (no rows for default tickers)")
+    except Exception as e:
+        conn.rollback()
+        print(f"    ERROR: {e}")
+    print()
+
+# ---------------------------------------------------------------------------
+# All public tables
+# ---------------------------------------------------------------------------
 cur.execute(
     "SELECT table_name FROM information_schema.tables "
     "WHERE table_schema='public' ORDER BY table_name"

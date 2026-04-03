@@ -65,6 +65,30 @@ BUG-BT-11 (Apr 02 2026): Log shows rvol_min=1.5 for AAPL because BacktestEngine
   logs strategy_params before strategy merges TICKER_PARAMS at call time.
   Fix: log effective merged params in run_single() before engine.run().
 
+BUG-BT-12 (Apr 03 2026): EODHD fetch_from_eodhd() crashes with
+  "int() argument must be a string... not 'NoneType'".
+  Root cause: EODHD intraday JSON uses "datetime" key (string, e.g.
+  "2026-01-03 09:30:00"), not "timestamp" (int). r["timestamp"] returns
+  None -> int(None) raises TypeError.
+  Fix: probe both keys; parse string datetimes directly; remove deprecated
+  datetime.utcfromtimestamp() call.
+
+BUG-BT-13 (Apr 03 2026): min_confidence invariance -- 60/65/70 produce
+  identical trade counts.
+  Root cause: confidence scorer awards only +2 pts for 0.1% OR range
+  (or_range_pct * 2000 = 0.001 * 2000 = 2). Low-vol tickers (AAPL/MSFT)
+  cap out at ~54-58 (below every threshold); high-vol tickers (TSLA/AMD)
+  score 72-88 (above every threshold). The 60-70 band is a dead zone.
+  Fix: add per-ticker min_confidence to TICKER_PARAMS so low-vol tickers
+  use a reachable floor (AAPL/MSFT=55, NVDA=60). TSLA/AMD stay at 65.
+  This distributes scores across the 55-70 band and makes the sweep param
+  meaningful.
+
+BUG-BT-14 (Apr 03 2026): probe_db.py only counts rows -- no date ranges.
+  Fix: updated probe_db.py to also print MIN/MAX datetime per ticker for
+  both intraday_bars and intraday_bars_5m so data gaps are immediately
+  visible. (probe_db.py change tracked separately.)
+
 Usage:
     # Single ticker, 90-day single-pass
     python unified_production_backtest.py --ticker AAPL --days 90
@@ -87,7 +111,7 @@ import os
 import json
 import logging
 import requests
-from datetime import datetime, timedelta, date, time as dtime
+from datetime import datetime, timedelta, date, time as dtime, timezone
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 from collections import defaultdict
@@ -162,11 +186,16 @@ T2_RATIO = 3.0
 # AAPL/MSFT: low intraday RVOL on 5m (rarely > 1.3), tight OR ranges
 # TSLA:      high RVOL, wide gaps -- default params fine
 # NVDA/AMD:  moderate RVOL but wide ATR -- lower rvol_min slightly
+#
+# BUG-BT-13: Added min_confidence per-ticker.
+# Low-vol tickers score ~54-58 with or_range_pct*2000 formula (0.1% OR -> +2pts).
+# All three thresholds (60/65/70) sit above that ceiling -> invariant sweep.
+# AAPL/MSFT floor lowered to 55; NVDA to 60; TSLA/AMD stay at default 65.
 TICKER_PARAMS: Dict[str, Dict] = {
-    "AAPL": {"rvol_min": 1.2, "fvg_min_size_pct": 0.003},
-    "MSFT": {"rvol_min": 1.2, "fvg_min_size_pct": 0.003},
+    "AAPL": {"rvol_min": 1.2, "fvg_min_size_pct": 0.003, "min_confidence": 55},
+    "MSFT": {"rvol_min": 1.2, "fvg_min_size_pct": 0.003, "min_confidence": 55},
     "TSLA": {"rvol_min": 1.5, "fvg_min_size_pct": 0.005},
-    "NVDA": {"rvol_min": 1.3, "fvg_min_size_pct": 0.004},
+    "NVDA": {"rvol_min": 1.3, "fvg_min_size_pct": 0.004, "min_confidence": 60},
     "AMD":  {"rvol_min": 1.3, "fvg_min_size_pct": 0.004},
 }
 
@@ -316,6 +345,17 @@ class DataFetcher:
         logger.info(f"[DATA] {ticker} bar datetimes (ET-naive): {times}")
 
     def fetch_from_eodhd(self, ticker: str, start: datetime, end: datetime) -> List[Dict]:
+        """
+        BUG-BT-12: EODHD intraday JSON uses "datetime" (string) not
+        "timestamp" (int). Previous code did r["timestamp"] -> None ->
+        int(None) -> TypeError crash.
+
+        Fix:
+          - Probe both "datetime" and "timestamp" keys.
+          - String datetimes parsed via strptime (no utcfromtimestamp needed).
+          - Integer timestamps converted via fromtimestamp(..., tz=UTC) to
+            avoid the deprecated utcfromtimestamp() call.
+        """
         if not self.api_key:
             return []
         url = f"https://eodhd.com/api/intraday/{ticker}.US"
@@ -332,7 +372,26 @@ class DataFetcher:
                 raw = resp.json()
                 bars = []
                 for r in raw:
-                    dt = datetime.utcfromtimestamp(r["timestamp"]).astimezone(ET).replace(tzinfo=None)
+                    # BUG-BT-12: probe both key names; skip malformed rows.
+                    raw_dt = r.get("datetime") or r.get("date")
+                    raw_ts = r.get("timestamp")
+
+                    if raw_dt is not None:
+                        # String datetime: "2026-01-03 09:30:00"
+                        try:
+                            dt = datetime.strptime(raw_dt, "%Y-%m-%d %H:%M:%S")
+                        except ValueError:
+                            dt = datetime.fromisoformat(raw_dt)
+                    elif raw_ts is not None:
+                        # Integer Unix timestamp (fallback)
+                        dt = datetime.fromtimestamp(int(raw_ts), tz=timezone.utc)
+                        dt = dt.astimezone(ET).replace(tzinfo=None)
+                    else:
+                        logger.warning(
+                            f"[DATA] EODHD {ticker}: bar missing datetime/timestamp -- skipping row"
+                        )
+                        continue
+
                     bars.append({
                         "datetime": dt,
                         "open":   float(r["open"]),
@@ -415,7 +474,7 @@ def war_machine_strategy(
 
     Params accepted:
         fvg_min_size_pct  (default 0.005; TICKER_PARAMS may override)
-        min_confidence    (default 65)
+        min_confidence    (default 65; TICKER_PARAMS may override per BUG-BT-13)
         rvol_min          (default 1.5; TICKER_PARAMS may override)
         _ticker           (optional; injected by run_single for per-ticker overrides)
 
@@ -429,6 +488,7 @@ def war_machine_strategy(
     Returns signal dict or None.
     """
     # BUG-BT-7: merge per-ticker overrides over CLI params
+    # BUG-BT-13: TICKER_PARAMS now includes min_confidence for low-vol tickers
     ticker = params.get("_ticker", "").upper()
     effective_params = dict(params)
     if ticker and ticker in TICKER_PARAMS:
@@ -802,7 +862,7 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="War Machine -- Unified Production Backtest (47.P4-1 / BUG-BT-1-11)"
+        description="War Machine -- Unified Production Backtest (47.P4-1 / BUG-BT-1-14)"
     )
     parser.add_argument("--ticker",        help="Single ticker to backtest")
     parser.add_argument("--batch",         action="store_true",
