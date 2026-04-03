@@ -3,9 +3,8 @@
 > **Purpose:** Single source of truth for every file-by-file, line-by-line audit session.
 > Every finding, fix, and status change is recorded here chronologically — never delete entries.
 >
-> **Last updated:** 2026-04-03 — BUG-ML-5 ✅ CONFIRMED FIXED. `_save_feature_importance()`
-> in `ml_confidence_boost.py` already uses `.itertuples()` — fix was applied prior to this
-> session and documented in the file docstring. Queue #8 closed.
+> **Last updated:** 2026-04-03 — BUG-WF-1 ✅ FIXED. `create_windows()` `timedelta(days=30*months)`
+> replaced with `_add_months()` (stdlib `calendar.monthrange`, zero new deps). Queue #12 closed.
 >
 > **Auditor:** Perplexity AI (interactive audit with Michael)
 > **Size rule:** Keep under **90 KB**. If approaching limit, archive completed
@@ -79,7 +78,7 @@
 | 9 | ~~🟡 MEDIUM~~ | ~~`app/notifications/discord_helpers.py`~~ | ~~BUG-DH-1: `test_webhook()` blocking~~ | ✅ Fixed (S28 confirmed) |
 | 10 | ~~🟢 LOW~~ | ~~`app/notifications/discord_helpers.py`~~ | ~~BUG-DH-2: `get_company_name()` no timeout~~ | ✅ Fixed (S28 confirmed) |
 | 11 | ~~🟢 LOW~~ | ~~`app/notifications/discord_helpers.py`~~ | ~~BUG-DH-3: `EST` hardcoded footer timestamps~~ | ✅ Fixed (S28 confirmed) |
-| 12 | 🟢 LOW | `app/backtesting/walk_forward.py` | BUG-WF-1: `create_windows()` uses `timedelta(days=30 * months)` — Feb / 31-day months cause 1-2 day boundary drift. Low risk for dev/research use; fix with `dateutil.relativedelta` if production walk-forward is enabled | ⏳ Open |
+| 12 | ~~🟢 LOW~~ | ~~`app/backtesting/walk_forward.py`~~ | ~~BUG-WF-1: `create_windows()` uses `timedelta(days=30 * months)` — Feb / 31-day months cause 1-2 day boundary drift.~~ | ✅ Fixed `45109c9` (Apr 03 2026) |
 | 13 | ~~🟡 MEDIUM~~ | ~~`migrations/`~~ | ~~BUG-DTC-1: Run `add_dte_tracking_columns.sql` on Railway Postgres — columns not yet applied~~ | ✅ Done (Apr 02 2026) |
 | 14 | 🟢 LOW | `app/notifications/discord_helpers.py` | BUG-DH-4: `global _last_send_ts` declared inside inner `_post()` closure — works correctly due to `_rl_lock` guard, but unusual pattern worth noting. No fix required. | ⏳ Monitor |
 | 15 | 🟢 LOW | `app/notifications/discord_helpers.py` | BUG-DH-5: `send_options_signal_alert()` — confirmation section checks `if mtf_convergence:` (falsy for 0) while quality section uses `is not None`. Inconsistent but harmless since 0-MTF convergence is meaningless. | ⏳ Open |
@@ -270,3 +269,4 @@
 | 111 | 2026-04-02 | BUG-DTC-1 | `migrations/add_dte_tracking_columns.sql` | 🔧 BUG-DTC-1 COMPLETE: Migration applied to Railway Postgres via Python db pool. Columns `dte_selected INTEGER`, `adx_at_entry NUMERIC(8,4)`, `vix_at_entry NUMERIC(8,4)`, `target_pct_t1 NUMERIC(8,4)` added to `positions` table with `IF NOT EXISTS` guard. Queue #13 closed. | manual | DTE tracking columns live |
 | 112 | 2026-04-03 | Queue-7 | `app/validation/cfw6_gate_validator.py` | 🔧 BUG-ML-4b: `get_validation_stats()` was calling `from app.signals.signal_analytics import get_funnel_stats` — `get_funnel_stats` is an **instance method** on `SignalTracker`, not a module-level function. This caused an `ImportError` at runtime, silently falling back to zeroed counters every call. Fixed to `from app.signals.signal_analytics import signal_tracker` and call `signal_tracker.get_funnel_stats()`. Key mapping also corrected: funnel returns `generated`/`validated`/`rejected`; mapped to `total_signals`/`passed`/`rejected`. Queue #7 closed. | `efc1efe` | Runtime ImportError fix |
 | 113 | 2026-04-03 | Queue-8 | `app/ml/ml_confidence_boost.py` | ✅ BUG-ML-5 confirmed already fixed — `_save_feature_importance()` uses `.itertuples(index=False)` not `.iterrows()`. Fix was applied in a prior session and documented in the file docstring under "AUDIT 2026-04-03 (Queue #8)". Queue #8 closed. | this commit | No change needed |
+| 114 | 2026-04-03 | Queue-12 | `app/backtesting/walk_forward.py` | 🔧 BUG-WF-1 FIXED: `create_windows()` month boundary computation replaced from `timedelta(days=30 * months)` to new `_add_months()` helper using stdlib `calendar.monthrange`. Also fixed step advancement in the skip-window branch (was also using raw `timedelta`). Zero new dependencies. Drift eliminated on February (28/29-day) and 31-day months over multi-window runs. Queue #12 closed. | `45109c9` | Window boundary correctness |
