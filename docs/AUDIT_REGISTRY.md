@@ -3,9 +3,11 @@
 > **Purpose:** Single source of truth for every file-by-file, line-by-line audit session.
 > Every finding, fix, and status change is recorded here chronologically — never delete entries.
 >
-> **Last updated:** 2026-04-02 — BUG-DTC-1 ✅ COMPLETE. `add_dte_tracking_columns.sql` applied
-> to Railway Postgres via Python db pool. Columns `dte_selected`, `adx_at_entry`, `vix_at_entry`,
-> `target_pct_t1` now live on `positions` table. Queue #13 closed.
+> **Last updated:** 2026-04-03 — BUG-ML-4b ✅ FIXED. `get_validation_stats()` in
+> `cfw6_gate_validator.py` was importing `get_funnel_stats` as a module-level function;
+> it is an instance method on `SignalTracker`. Fixed to import `signal_tracker` global
+> instance. Key mapping corrected: `generated`→`total_signals`, `validated`→`passed`.
+> Queue #7 closed. Commit `efc1efe`.
 >
 > **Auditor:** Perplexity AI (interactive audit with Michael)
 > **Size rule:** Keep under **90 KB**. If approaching limit, archive completed
@@ -74,7 +76,7 @@
 | 4 | 🟢 LOW | `market_memory.db` | Verify if replaced by PostgreSQL on Railway or still active | ⏳ Open |
 | 5 | 🟢 LOW | `scripts/war_machine.db` | Verify if stale vs root `war_machine.db` | ⏳ Open |
 | 6 | 🟡 MEDIUM | `app/ml/ml_trainer.py` | BUG-MLT-2: Platt calibration + threshold tuning share the same `X_last_val` slice — calibrator already fit on that slice, so threshold tuning sees optimistically calibrated probs. Threshold will be systematically too low. Needs dedicated holdout strategy. | ⏳ Open |
-| 7 | 🟡 MEDIUM | `app/validation/cfw6_gate_validator.py` | BUG-ML-4: `get_validation_stats()` permanent stub — wire or delete | ⏳ Open |
+| 7 | ~~🟡 MEDIUM~~ | ~~`app/validation/cfw6_gate_validator.py`~~ | ~~BUG-ML-4: `get_validation_stats()` permanent stub — wire or delete~~ | ✅ Fixed `efc1efe` (Apr 03 2026) |
 | 8 | 🟢 LOW | `app/ml/ml_confidence_boost.py` | BUG-ML-5: `.iterrows()` in logging loop — replace with `itertuples()` | ⏳ Open |
 | 9 | ~~🟡 MEDIUM~~ | ~~`app/notifications/discord_helpers.py`~~ | ~~BUG-DH-1: `test_webhook()` blocking~~ | ✅ Fixed (S28 confirmed) |
 | 10 | ~~🟢 LOW~~ | ~~`app/notifications/discord_helpers.py`~~ | ~~BUG-DH-2: `get_company_name()` no timeout~~ | ✅ Fixed (S28 confirmed) |
@@ -268,3 +270,4 @@
 | 109 | 2026-04-02 | P4-2 | `scripts/backtesting/update_hourly_win_rates.py` | 🔧 47.P4-2 bug fix: `AttributeError: 'list' object has no attribute 'get'` — summary JSON files are arrays, not dicts. Added `isinstance(data, dict)` guard; non-dict files skipped silently. | `bc63e75` | Runtime crash fix |
 | 110 | 2026-04-02 | P4-2 | `app/validation/entry_timing.py` | 🔧 47.P4-2 COMPLETE: Real HOURLY_WIN_RATES patched from 5-ticker walk-forward (AAPL/AMD/MSFT/NVDA/TSLA, 55 trades, Apr 02 2026). Hour 10: (0.54, 26) — 54% WR, gating live. Hour 15: (0.67, 12) — 67% WR, golden hour, gating live. Hours 9/11–14: (0.50, 0) — insufficient data. MIN_SAMPLE_SIZE lowered 20→10 to align with script floor. Stale 4.C-10 comment replaced with 47.P4-2 provenance. | `dcf0478` + this | P4-2 ✅ COMPLETE |
 | 111 | 2026-04-02 | BUG-DTC-1 | `migrations/add_dte_tracking_columns.sql` | 🔧 BUG-DTC-1 COMPLETE: Migration applied to Railway Postgres via Python db pool. Columns `dte_selected INTEGER`, `adx_at_entry NUMERIC(8,4)`, `vix_at_entry NUMERIC(8,4)`, `target_pct_t1 NUMERIC(8,4)` added to `positions` table with `IF NOT EXISTS` guard. Queue #13 closed. | manual | DTE tracking columns live |
+| 112 | 2026-04-03 | Queue-7 | `app/validation/cfw6_gate_validator.py` | 🔧 BUG-ML-4b: `get_validation_stats()` was calling `from app.signals.signal_analytics import get_funnel_stats` — `get_funnel_stats` is an **instance method** on `SignalTracker`, not a module-level function. This caused an `ImportError` at runtime, silently falling back to zeroed counters every call. Fixed to `from app.signals.signal_analytics import signal_tracker` and call `signal_tracker.get_funnel_stats()`. Key mapping also corrected: funnel returns `generated`/`validated`/`rejected`; mapped to `total_signals`/`passed`/`rejected`. Queue #7 closed. | `efc1efe` | Runtime ImportError fix |
