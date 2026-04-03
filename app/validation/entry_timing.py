@@ -19,6 +19,15 @@ PHASE 4.C-10 (Mar 19, 2026):
     Remaining hours have insufficient data (n<10) — kept at (0.50, 0).
     MIN_SAMPLE_SIZE lowered 20→10 to match update_hourly_win_rates.py floor.
     Re-run update_hourly_win_rates.py after each walk-forward batch to accumulate.
+
+47.P4-2b (Apr 03, 2026):
+  - Pooled Apr 02 + Apr 03 batch results (10 files, 110 trades across 5 tickers).
+    Hour 09: (0.27, 15) suppressed → neutralized to (0.50, 0). OR-window
+    attribution noise — BOS bars at 9:50-9:59 bucket into hour 9 but are
+    structurally part of the OR open; 15-trade sample is not reliable for gating.
+    Hour 10: updated (0.54, 26) → (0.49, 51). More data wins; 49% on n=51
+    is honest — hour 10 is not a boost hour on this tape (Feb-Apr 2026 selloff).
+    Hour 15: updated (0.67, 12) → (0.64, 25). Still golden hour at larger n. ✅
 """
 
 from datetime import datetime, time
@@ -38,17 +47,20 @@ class EntryTimingValidator:
     - Session quality (open vs. mid-day vs. close)
     """
 
-    # 47.P4-2 (Apr 02 2026): Real backtested rates from 5-ticker walk-forward.
+    # 47.P4-2b (Apr 03 2026): Pooled rates from Apr 02 + Apr 03 batch (110 trades, 5 tickers).
+    # Hour 09 neutralized — OR-window attribution noise (bars at 9:50-9:59 bucket here).
+    # Hour 10 updated to pooled result: 49% WR on n=51 — not a boost hour on this tape.
+    # Hour 15 confirmed golden: 64% WR on n=25. ✅
     # Hours below MIN_SAMPLE_SIZE keep (0.50, 0) — gating disabled until data accumulates.
     # Re-run scripts/backtesting/update_hourly_win_rates.py after each batch to refresh.
     HOURLY_WIN_RATES = {
-        9: (0.27, 15),  # 9:30-10:00  - 27% WR  (15 trades)
-        10: (0.49, 51),  # 10:00-11:00  - 49% WR  (51 trades)
-        11: (0.50, 0),  # 11:00-12:00  - insufficient data (n<10)
-        12: (0.50, 0),  # 12:00-13:00  - insufficient data (n<10)
-        13: (0.50, 0),  # 13:00-14:00  - insufficient data (n<10)
-        14: (0.50, 0),  # 14:00-15:00  - insufficient data (n<10)
-        15: (0.64, 25),  # 15:00-16:00  - 64% WR  (25 trades)
+        9:  (0.50, 0),   # 9:30-10:00  - neutralized (OR-window noise, n=15 unreliable)
+        10: (0.49, 51),  # 10:00-11:00 - 49% WR  (51 trades) — neutral, no gating
+        11: (0.50, 0),   # 11:00-12:00 - insufficient data (n<10)
+        12: (0.50, 0),   # 12:00-13:00 - insufficient data (n<10)
+        13: (0.50, 0),   # 13:00-14:00 - insufficient data (n<10)
+        14: (0.50, 0),   # 14:00-15:00 - insufficient data (n<10)
+        15: (0.64, 25),  # 15:00-16:00 - 64% WR  (25 trades) — golden hour ✅
     }
 
     # Minimum sample size for confidence.
@@ -73,7 +85,7 @@ class EntryTimingValidator:
         logger.info("[ENTRY-TIMING] ✅ Validator initialized")
         logger.info(f"[ENTRY-TIMING] Min win rate threshold: {min_win_rate:.1%}")
         logger.info(f"[ENTRY-TIMING] Golden hour threshold: {self.GOLDEN_HOUR_THRESHOLD:.1%}")
-        logger.info("[ENTRY-TIMING] ✅ Win rate gating ACTIVE — hours 10 (54%) and 15 (67%) have real data (47.P4-2)")
+        logger.info("[ENTRY-TIMING] ✅ Win rate gating ACTIVE — hr15 golden (64%, n=25); hr10 neutral (49%, n=51) (47.P4-2b)")
 
     def validate_entry_time(
         self,
