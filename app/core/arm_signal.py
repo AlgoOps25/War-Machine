@@ -35,6 +35,13 @@ FIX BUG-S16-1 (2026-03-31): Renamed 'validation' key → 'validation_data' in
   armed_signal_data dict so it matches the key expected by
   armed_signal_store._persist_armed_signal(). Previously the validation payload
   was always None in the DB even when a validation_result was passed.
+
+UPDATE CFW6-BE-1 (2026-04-03): Added be_price parameter (1.5R break-even trigger).
+  - Accepted as optional kwarg (default None — backward compatible).
+  - Logged in the ARMED summary line alongside stop/t1/t2.
+  - Persisted in armed_signal_data dict under 'be_price' key.
+  - Passed to position_manager.open_position() as be_price kwarg.
+  - Included in both Discord alert paths as be_price kwarg.
 """
 import logging
 logger = logging.getLogger(__name__)
@@ -45,7 +52,7 @@ def arm_ticker(
     entry_price, stop_price, t1, t2, confidence, grade,
     options_rec=None, signal_type="CFW6_OR", validation_result=None,
     bos_confirmation=None, bos_candle_type=None, mtf_result=None, metadata=None,
-    vp_bias=None
+    vp_bias=None, be_price=None,
 ):
     """
     Arm a confirmed signal:
@@ -55,6 +62,10 @@ def arm_ticker(
       4. Persist to armed_signals_persist DB table.
       5. Record TRADED stage in signal_analytics (FIX Mar 16 2026).
       6. Set per-ticker cooldown.
+
+    be_price: the 1.5R price level at which the position manager should
+      move the stop to break-even. Passed through to position_manager and
+      persisted in armed_signal_data. None if not available.
 
     Returns:
         True  — position opened and all steps completed (FIX G)
@@ -74,10 +85,11 @@ def arm_ticker(
         return
 
     mode_label = " [OR]" if signal_type == "CFW6_OR" else " [INTRADAY]"
+    _be_str = f" BE@${be_price:.2f}" if be_price is not None else ""
     logger.info(
         f"✅ {ticker} ARMED{mode_label}: {direction.upper()} | "
         f"Entry:${entry_price:.2f} Stop:${stop_price:.2f} "
-        f"T1:${t1:.2f} T2:${t2:.2f} | {confidence*100:.1f}% ({grade})"
+        f"T1:${t1:.2f} T2:${t2:.2f}{_be_str} | {confidence*100:.1f}% ({grade})"
     )
 
     log_proposed_trade(ticker, signal_type, direction, entry_price, confidence, grade)
@@ -94,7 +106,9 @@ def arm_ticker(
         zone_low=zone_low, zone_high=zone_high,
         or_low=or_low, or_high=or_high,
         entry_price=entry_price, stop_price=stop_price,
-        t1=t1, t2=t2, confidence=confidence, grade=grade, options_rec=options_rec
+        t1=t1, t2=t2, confidence=confidence, grade=grade,
+        options_rec=options_rec,
+        be_price=be_price,          # CFW6-BE-1: 1.5R break-even trigger
     )
 
     if position_id == -1:
@@ -109,7 +123,7 @@ def arm_ticker(
     except Exception as _analytics_err:
         logger.warning(f"[ANALYTICS] record_trade_executed error (non-fatal): {_analytics_err}")
 
-    # Discord alert (FIX H: was at col 0, now correctly indented inside function)
+    # Discord alert
     try:
         from utils.production_helpers import _send_alert_safe
         PRODUCTION_HELPERS_ENABLED = True
@@ -129,7 +143,8 @@ def arm_ticker(
             composite_score=metadata.get('score'),
             mtf_convergence=mtf_convergence_count,
             explosive_mover=metadata.get('qualified', False),
-            vp_bias=vp_bias
+            vp_bias=vp_bias,
+            be_price=be_price,          # CFW6-BE-1
         )
     else:
         # FIX P3 (2026-03-25): vp_bias added to fallback path
@@ -168,7 +183,8 @@ def arm_ticker(
                 composite_score=metadata.get('score'),
                 mtf_convergence=mtf_convergence_count,
                 explosive_mover=metadata.get('qualified', False),
-                vp_bias=vp_bias
+                vp_bias=vp_bias,
+                be_price=be_price,          # CFW6-BE-1
             )
         except Exception as e:
             logger.warning(f"[DISCORD] ❌ Alert failed: {e}")
@@ -183,6 +199,7 @@ def arm_ticker(
         "stop_price":     stop_price,
         "t1":             t1,
         "t2":             t2,
+        "be_price":       be_price,       # CFW6-BE-1: 1.5R break-even trigger
         "confidence":     confidence,
         "grade":          grade,
         "signal_type":    signal_type,

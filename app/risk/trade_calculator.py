@@ -27,11 +27,25 @@ UPDATED Mar 19 2026 (47.P6-2 Sprint 1):
     for stop/target math.  atr_source is logged for observability.
     compute_stop_and_targets() is unchanged — continues to use
     calculate_atr() for the TR-series stop calculations.
+
+UPDATED Apr 3 2026 (CFW6 transcript alignment):
+    Added calculate_fvg_wick_stop() — places stop slightly below/above
+    the deepest wick of the 3-candle FVG cluster, matching the transcript
+    rule exactly: "slightly below deepest wick in case it wants to sweep".
+
+    Added calculate_breakeven_price() — computes the 1.5R break-even
+    trigger price per transcript rule: "break even at one to 1.5".
+
+    compute_stop_and_targets() now returns a 4-tuple:
+        (stop_price, t1, t2, be_price)
+    All callers updated. fvg_candle_idx parameter added — when supplied
+    the wick-anchored stop is used; when None falls back to ATR stop
+    (backward-compatible for OR-anchored path).
 """
 from utils import config
 import numpy as np
 from datetime import time as dtime
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
 import logging
 logger = logging.getLogger(__name__)
 
@@ -66,8 +80,8 @@ def calculate_atr(bars: List[Dict], period: int = 14) -> float:
     inflate the ATR and push stops artificially far from entry.
 
     NOTE: This function is intentionally kept for stop/target math in
-    compute_stop_and_targets().  For volatility bucket selection
-    (FVG thresholds, dynamic confidence thresholds) use
+    compute_stop_and_targets() ATR-fallback path.  For volatility bucket
+    selection (FVG thresholds, dynamic confidence thresholds) use
     get_atr_for_breakout() from app.data.intraday_atr instead.
     """
     session_bars = _filter_session_bars(bars)
@@ -226,6 +240,82 @@ def apply_confidence_decay(base_confidence: float, candles_waited: int) -> float
 # STOP LOSS & TARGETS
 # ============================================================================
 
+def calculate_fvg_wick_stop(
+    bars: List[Dict],
+    fvg_candle_idx: int,
+    direction: str,
+    buffer_pct: float = 0.001
+) -> Optional[float]:
+    """
+    CFW6 transcript rule: stop placed slightly below the deepest wick
+    of the 3-candle FVG cluster to allow for a potential sweep of the low
+    before continuation.
+
+    Examines the 3 candles starting at fvg_candle_idx (the candle cluster
+    that formed the fair value gap):
+      - Bull: stop = min(low) of cluster * (1 - buffer_pct)
+      - Bear: stop = max(high) of cluster * (1 + buffer_pct)
+
+    buffer_pct default 0.001 (0.1%) — small enough to avoid normal wick
+    noise but wide enough to survive a liquidity sweep of the low.
+
+    Returns None if index is out of range or cluster is empty.
+    """
+    if fvg_candle_idx is None:
+        return None
+
+    cluster = bars[fvg_candle_idx: fvg_candle_idx + 3]
+    if not cluster:
+        logger.warning(f"[WICK-STOP] fvg_candle_idx={fvg_candle_idx} out of range (bars={len(bars)})")
+        return None
+
+    if direction == "bull":
+        deepest_wick = min(c["low"] for c in cluster)
+        stop = deepest_wick * (1 - buffer_pct)
+        logger.info(
+            f"[WICK-STOP] BULL cluster[{fvg_candle_idx}:{fvg_candle_idx+3}] "
+            f"deepest_low=${deepest_wick:.2f} → stop=${stop:.2f} "
+            f"(buffer={buffer_pct*100:.1f}%)"
+        )
+    else:
+        deepest_wick = max(c["high"] for c in cluster)
+        stop = deepest_wick * (1 + buffer_pct)
+        logger.info(
+            f"[WICK-STOP] BEAR cluster[{fvg_candle_idx}:{fvg_candle_idx+3}] "
+            f"deepest_high=${deepest_wick:.2f} → stop=${stop:.2f} "
+            f"(buffer={buffer_pct*100:.1f}%)"
+        )
+
+    return stop
+
+
+def calculate_breakeven_price(
+    entry_price: float,
+    stop_price: float,
+    direction: str,
+    be_multiplier: float = 1.5
+) -> float:
+    """
+    CFW6 transcript rule: move stop to break-even at 1:1.5R.
+    Returns the price level at which the position manager should
+    move the stop to entry_price.
+
+    be_multiplier default 1.5 — per transcript: "break even at one to 1.5".
+    """
+    risk = abs(entry_price - stop_price)
+    be_distance = risk * be_multiplier
+    if direction == "bull":
+        be_price = entry_price + be_distance
+    else:
+        be_price = entry_price - be_distance
+    logger.info(
+        f"[BE] {direction.upper()} entry=${entry_price:.2f} "
+        f"stop=${stop_price:.2f} risk=${risk:.2f} "
+        f"→ BE trigger @ ${be_price:.2f} ({be_multiplier}R)"
+    )
+    return be_price
+
+
 def calculate_stop_loss_by_grade(
     entry_price: float,
     grade: str,
@@ -235,21 +325,22 @@ def calculate_stop_loss_by_grade(
     atr: float
 ) -> float:
     """
-    CFW6 OPTIMIZATION: Grade-based stop loss with wider ATR multipliers
+    ATR-based stop fallback used when no FVG candle cluster is available
+    (e.g. OR-anchored path where breakout_idx points to the ORB candle,
+    not the FVG formation candles).
+
     A+: 2.0x ATR | A: 2.5x ATR | A-: 3.0x ATR
-    Increased from previous (1.2x, 1.5x, 1.8x) to prevent "too tight" stops.
     Also respects Opening Range boundaries when ORB has formed.
 
     FIXED M8 (Mar 10 2026): or_low/or_high of 0.0 means the opening range
-    has not yet been established (pre-10 AM signal). In that case the OR
-    boundary comparison is skipped entirely so a zero stop is never
-    produced. Callers do not need to change — passing 0.0 is safe.
+    has not yet been established. In that case the OR boundary comparison
+    is skipped entirely so a zero stop is never produced.
     """
     atr_multipliers = {"A+": 2.0, "A": 2.5, "A-": 3.0, "B+": 3.5, "B": 4.0}
     atr_mult        = atr_multipliers.get(grade, 2.5)
     stop_distance   = atr * atr_mult
 
-    # ── M8 FIX: only use OR boundary when the range has actually formed ──
+    # M8 FIX: only use OR boundary when the range has actually formed
     or_formed = (or_low > 0) and (or_high > 0)
 
     if direction == "bull":
@@ -327,22 +418,59 @@ def compute_stop_and_targets(
     or_high: float,
     or_low: float,
     entry_price: float,
-    grade: str = "A"
-) -> Tuple[float, float, float]:
+    grade: str = "A",
+    fvg_candle_idx: Optional[int] = None,
+) -> Tuple[Optional[float], Optional[float], Optional[float], Optional[float]]:
     """
-    Main entry point: compute stop and targets.
-    ATR is derived from session-only bars (09:30-16:00 ET) so pre-market
-    volatility does not widen stops.  Uses calculate_atr() (not intraday ATR)
-    because stop math requires TR-series smoothing, not just a % bucket.
+    Main entry point: compute stop, targets, and break-even trigger.
+
+    Stop priority (Apr 3 2026 update):
+      1. Wick-anchored stop (calculate_fvg_wick_stop) when fvg_candle_idx
+         is supplied — matches CFW6 transcript rule exactly.
+      2. ATR-based stop (calculate_stop_loss_by_grade) as fallback when
+         fvg_candle_idx is None (OR-anchored path, no indexed FVG cluster).
+
+    Returns: (stop_price, t1, t2, be_price)
+      All four are None if stop calculation fails (invalid geometry).
+
     Passing or_high=0 / or_low=0 is safe — the OR boundary is skipped
     and ATR stop is used exclusively (M8 fix).
-    Returns: (stop_price, t1, t2)
     """
-    atr        = calculate_atr(bars, period=14)
-    stop_price = calculate_stop_loss_by_grade(
-        entry_price, grade, direction, or_low, or_high, atr
-    )
+    # --- Stop ---
+    stop_price = None
+
+    if fvg_candle_idx is not None:
+        # Primary: wick-anchored stop from FVG candle cluster
+        stop_price = calculate_fvg_wick_stop(bars, fvg_candle_idx, direction)
+        if stop_price is not None:
+            # Sanity check: stop must be on the correct side of entry
+            if direction == "bull" and stop_price >= entry_price:
+                logger.warning(
+                    f"[WICK-STOP] BULL stop ${stop_price:.2f} >= entry ${entry_price:.2f} "
+                    f"— falling back to ATR stop"
+                )
+                stop_price = None
+            elif direction == "bear" and stop_price <= entry_price:
+                logger.warning(
+                    f"[WICK-STOP] BEAR stop ${stop_price:.2f} <= entry ${entry_price:.2f} "
+                    f"— falling back to ATR stop"
+                )
+                stop_price = None
+
     if stop_price is None:
-        return None, None, None
+        # Fallback: ATR-based grade stop
+        atr        = calculate_atr(bars, period=14)
+        stop_price = calculate_stop_loss_by_grade(
+            entry_price, grade, direction, or_low, or_high, atr
+        )
+
+    if stop_price is None:
+        return None, None, None, None
+
+    # --- Targets ---
     t1, t2 = calculate_targets_by_grade(entry_price, stop_price, grade, direction)
-    return stop_price, t1, t2
+
+    # --- Break-even trigger (1.5R) ---
+    be_price = calculate_breakeven_price(entry_price, stop_price, direction)
+
+    return stop_price, t1, t2, be_price

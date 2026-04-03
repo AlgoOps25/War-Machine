@@ -2,6 +2,24 @@
 """
 app/core/sniper_pipeline.py — CFW6 Signal Pipeline
 
+FIX HISTORY (2026-04-03):
+
+  CFW6-STOP-1: Pass fvg_candle_idx to compute_stop_and_targets().
+    On the INTRADAY_BOS path, breakout_idx is the index of the BOS candle
+    which is near the FVG cluster. Passing it as fvg_candle_idx activates
+    the new wick-anchored stop in trade_calculator.py — stop is now placed
+    slightly below the deepest wick of the FVG candle cluster instead of
+    a wide ATR multiplier, matching the CFW6 transcript rule exactly.
+    OR-anchored path passes fvg_candle_idx=None (ATR fallback unchanged).
+
+  CFW6-BE-1: Unpack be_price from compute_stop_and_targets() 4-tuple.
+    compute_stop_and_targets() now returns (stop, t1, t2, be_price).
+    be_price (1.5R break-even trigger) is unpacked here and forwarded
+    to arm_ticker() so it can be persisted, logged, and acted on by
+    the position manager.
+
+  CFW6-STOP-2: STOP-INVALID log updated to reflect 4-tuple unpack.
+
 FIX HISTORY (2026-04-01):
 
   P3-3: Wired CONFIDENCE_ABSOLUTE_FLOOR into confidence gate (gate 12).
@@ -149,7 +167,9 @@ def _run_signal_pipeline(
      11. SMC delta / Sweep / OB enrichment
      12. SignalScorecard (gate: 60 pts) — now includes CFW6 confidence_base (BUG-SP-2)
      13. compute_stop_and_targets() — None return drops signal cleanly
-     14. arm_ticker() — all required args supplied
+                                      CFW6-STOP-1: passes fvg_candle_idx on INTRADAY path
+                                      CFW6-BE-1:   unpacks be_price from 4-tuple
+     14. arm_ticker() — all required args supplied; be_price forwarded
     """
     # -- 1. TIME gate (BUG-SP-1: moved above RVOL fetch) ----------------------
     now_et = _now_et()
@@ -300,8 +320,6 @@ def _run_signal_pipeline(
         return False
 
     # P3-3: floor from config.CONFIDENCE_ABSOLUTE_FLOOR (0.55), not hardcoded 0.60.
-    # Previously max(0.60, ...) was inconsistent with the config value and made
-    # CONFIDENCE_ABSOLUTE_FLOOR a dead constant. Now tunable in one place.
     _confidence = min(0.85, max(CONFIDENCE_ABSOLUTE_FLOOR, _sc.score / 100.0))
     logger.info(
         f"[{ticker}] SCORECARD PASS: {_sc.score:.1f}pts "
@@ -309,19 +327,27 @@ def _run_signal_pipeline(
     )
 
     # -- 13. Stop / Targets ---------------------------------------------------
-    stop_price, t1, t2 = compute_stop_and_targets(
+    # CFW6-STOP-1: On INTRADAY_BOS path, breakout_idx is near the FVG cluster —
+    # pass it as fvg_candle_idx to activate wick-anchored stop.
+    # OR-anchored path: signal_type == "CFW6_OR", no indexed FVG cluster →
+    # fvg_candle_idx=None falls back to ATR-based grade stop (unchanged).
+    _fvg_candle_idx = breakout_idx if signal_type == "CFW6_INTRADAY" else None
+
+    stop_price, t1, t2, be_price = compute_stop_and_targets(
         bars=bars_session,
         direction=direction,
         or_high=or_high_ref or 0.0,
         or_low=or_low_ref or 0.0,
         entry_price=entry_price,
         grade=grade,
+        fvg_candle_idx=_fvg_candle_idx,
     )
 
     if stop_price is None:
         logger.info(
             f"[{ticker}] STOP-INVALID: compute_stop_and_targets returned None "
-            f"(entry=${entry_price:.2f} grade={grade} direction={direction}) — signal dropped"
+            f"(entry=${entry_price:.2f} grade={grade} direction={direction} "
+            f"fvg_candle_idx={_fvg_candle_idx}) — signal dropped"
         )
         return False
 
@@ -337,6 +363,7 @@ def _run_signal_pipeline(
         stop_price=stop_price,
         t1=t1,
         t2=t2,
+        be_price=be_price,          # CFW6-BE-1: 1.5R break-even trigger
         confidence=_confidence,
         grade=grade,
         options_rec=options_rec,
