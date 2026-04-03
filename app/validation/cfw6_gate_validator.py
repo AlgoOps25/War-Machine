@@ -57,9 +57,17 @@ Note on scanner.py integration:
     that line once the CFW6 gate is ready for production use.
 
 BUG-ML-4 (Apr 02 2026):
-    get_validation_stats() was a permanent zeroed stub. Now delegates to
-    signal_analytics.get_funnel_stats() — the live source of truth for
-    gate pass/fail counts already maintained by the scanner pipeline.
+    get_validation_stats() was a permanent zeroed stub. Wired to
+    signal_analytics.signal_tracker.get_funnel_stats() — the live source
+    of truth for gate pass/fail counts already maintained by the scanner
+    pipeline.
+
+BUG-ML-4b (Apr 03 2026):
+    get_validation_stats() was importing get_funnel_stats as a module-level
+    function, but it is an instance method on SignalTracker. Import changed to
+    the global `signal_tracker` instance. Key mapping also corrected:
+    funnel returns 'generated'/'validated'/'rejected' — cfw6 now maps
+    'generated' -> 'total_signals' and 'validated' -> 'passed'.
 """
 import logging
 from datetime import datetime, time as dtime
@@ -356,23 +364,29 @@ def _check_greeks(ticker: str) -> dict:
 
 def get_validation_stats() -> dict:
     """
-    Returns live gate pass/fail counts from signal_analytics.get_funnel_stats().
+    Returns live gate pass/fail counts from signal_analytics.signal_tracker.
 
     BUG-ML-4 (Apr 02 2026): was a permanent zeroed stub — wired to the
     existing signal_analytics funnel tracker which is already maintained
     by the scanner pipeline on every signal evaluation.
 
+    BUG-ML-4b (Apr 03 2026): previous fix imported get_funnel_stats as a
+    module-level function — it is an instance method on SignalTracker.
+    Fixed to import the global `signal_tracker` instance instead.
+    Key mapping also corrected: funnel returns 'generated'/'validated'/
+    'rejected'; mapped to 'total_signals'/'passed'/'rejected' here.
+
     Falls back to zeroed counters if signal_analytics is unavailable
     (e.g. during unit tests or import before scanner init).
     """
     try:
-        from app.signals.signal_analytics import get_funnel_stats
-        funnel = get_funnel_stats()
+        from app.signals.signal_analytics import signal_tracker
+        funnel = signal_tracker.get_funnel_stats()
         return {
-            'total_signals':   funnel.get('total_signals', 0),
-            'passed':          funnel.get('passed', 0),
-            'rejected':        funnel.get('rejected', 0),
-            'rejection_reasons': funnel.get('rejection_reasons', {}),
+            'total_signals':     funnel.get('generated', 0),
+            'passed':            funnel.get('validated', 0),
+            'rejected':          funnel.get('rejected', 0),
+            'rejection_reasons': {},  # per-reason breakdown not in funnel; use get_rejection_breakdown() directly
         }
     except Exception as exc:
         logger.warning(f"[CFW6] get_validation_stats fallback — signal_analytics unavailable: {exc}")
