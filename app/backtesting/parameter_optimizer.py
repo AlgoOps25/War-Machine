@@ -29,6 +29,22 @@ FIX S21 (APR 1, 2026):
     gross loss (all-winner run on thin data). inf sorts to the top silently,
     making an unreliable parameter set appear optimal. Capped at
     _METRIC_INF_CAP (10.0) before appending to results list.
+
+BUG-PO-2 (Apr 03, 2026):
+  grid_search() passed raw CLI params to engine.run() without injecting
+  _ticker, so war_machine_strategy never merged TICKER_PARAMS during the
+  optimizer sweep. Low-vol tickers (AAPL/MSFT) ran with default rvol_min=1.5
+  and fvg_min_size_pct=0.005 instead of their per-ticker overrides, producing
+  far fewer trades than the live strategy would. Fix: inject ticker as
+  _ticker in every param combo passed to engine.run().
+
+BUG-PO-3 (Apr 03, 2026):
+  min_trades default of 10 silently dropped all combos for low-frequency
+  tickers (AAPL 5 trades, NVDA 8 trades on 59-day windows), returning
+  valid=0/27 and causing WalkForward.run() to skip the window entirely.
+  Fix: lowered default to 5. Walk-forward windows are already short (1m/1m
+  on ~59-day data = ~20 trading days per test window); 5 trades is a
+  reasonable floor for OOS evaluation without over-filtering sparse tickers.
 """
 from typing import Dict, List, Callable
 from itertools import product
@@ -60,14 +76,17 @@ class ParameterOptimizer:
     def __init__(self,
                  initial_capital: float = 10000,
                  optimization_metric: str = 'sharpe_ratio',
-                 min_trades: int = 10):
+                 min_trades: int = 5):
         """
         Args:
             initial_capital: Starting capital for backtests
             optimization_metric: Metric to optimize
                 Options: 'sharpe_ratio', 'sortino_ratio', 'profit_factor',
                          'win_rate', 'expectancy', 'total_return_pct'
-            min_trades: Minimum trades required to consider result valid
+            min_trades: Minimum trades required to consider result valid.
+                BUG-PO-3: lowered from 10 to 5. Short walk-forward windows
+                (~20 trading days) on sparse tickers produce 5-9 trades per
+                combo; the old floor of 10 silently returned valid=0/27.
         """
         self.initial_capital = initial_capital
         self.optimization_metric = optimization_metric
@@ -115,6 +134,14 @@ class ParameterOptimizer:
 
         for i, combo in enumerate(combinations, 1):
             params = dict(zip(param_names, combo))
+
+            # BUG-PO-2: inject _ticker so war_machine_strategy merges TICKER_PARAMS
+            # during the optimizer sweep (same as run_single does for live runs).
+            # Without this, low-vol tickers used default rvol_min/fvg_min_size_pct
+            # and produced far fewer trades than the live strategy would.
+            params_with_ticker = dict(params)
+            params_with_ticker['_ticker'] = ticker
+
             logger.debug(f"[OPTIMIZER] [{i}/{total_combinations}] Testing: {params}")
 
             engine = BacktestEngine(initial_capital=self.initial_capital)
@@ -124,11 +151,11 @@ class ParameterOptimizer:
                     ticker=ticker,
                     bars=bars,
                     strategy=strategy,
-                    strategy_params=params
+                    strategy_params=params_with_ticker,
                 )
 
                 if backtest_results.total_trades < self.min_trades:
-                    logger.debug(f"[OPTIMIZER] Skipped (only {backtest_results.total_trades} trades)")
+                    logger.debug(f"[OPTIMIZER] Skipped (only {backtest_results.total_trades} trades < min={self.min_trades})")
                     continue
 
                 raw_metric = getattr(backtest_results, self.optimization_metric)
