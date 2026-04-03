@@ -33,13 +33,21 @@ BUG-DH-2 (Apr 1 2026):
 BUG-DH-3 (Apr 1 2026):
 - All footer timestamps now use 'ET' (timezone-neutral abbreviation)
   instead of the hardcoded 'EST' string, which was incorrect during
-  EDT (March–November).
+  EDT (March-November).
 
 BUG-DH-5 (Apr 3 2026):
 - send_options_signal_alert() Confirmation block used bare `if mtf_convergence:`
   which silently dropped mtf_convergence=0 (Single TF — a valid, meaningful
   value). Fixed to `if mtf_convergence is not None:` consistent with the
   Signal Quality block above it.
+
+BUG-DH-6 (Apr 3 2026):
+- send_discord_message() added as a public alias for send_simple_message().
+  annotation_resolver._notify() imports this name; without it the first
+  annotation signal would raise ImportError at runtime.
+- _send_annotation_to_discord() added: routes to DISCORD_ANNOTATIONS_WEBHOOK_URL
+  when configured, falls back to _SIGNALS_WEBHOOK. Keeps annotation alerts
+  in their own channel rather than polluting #signals.
 """
 import requests
 import functools
@@ -54,6 +62,9 @@ logger = logging.getLogger(__name__)
 # and avoids repeated attribute lookups inside the hot send path.
 _SIGNALS_WEBHOOK: str = (getattr(config, "DISCORD_SIGNALS_WEBHOOK_URL",  None) or "").strip().rstrip("\n\r")
 _WATCHLIST_WEBHOOK: str = (getattr(config, "DISCORD_WATCHLIST_WEBHOOK_URL", None) or "").strip().rstrip("\n\r")
+# BUG-DH-6: dedicated webhook for annotation signals (#chart-annotations channel).
+# Falls back to _SIGNALS_WEBHOOK when not configured.
+_ANNOTATIONS_WEBHOOK: str = (getattr(config, "DISCORD_ANNOTATIONS_WEBHOOK_URL", None) or "").strip().rstrip("\n\r")
 
 # Rate-limiter state (used by Fix 45.M-4)
 import time as _time
@@ -282,7 +293,7 @@ def send_options_signal_alert(
     Consolidated, easy-to-read layout.
 
     ml_adjustment: float in pts (e.g. +9.0 or -5.0).  When |adjustment| >= 1pt,
-    a ML Score line is appended showing the direction arrow and base→adjusted conf.
+    a ML Score line is appended showing the direction arrow and base->adjusted conf.
     """
     # CALL / PUT and colors
     option_side = "CALL" if direction.lower() == "bull" else "PUT"
@@ -612,6 +623,16 @@ def send_simple_message(message: str):
     _send_to_discord({"content": message})
 
 
+# BUG-DH-6: public alias — annotation_resolver imports this name.
+def send_discord_message(message: str):
+    """Send a plain text message to Discord (alias for send_simple_message)."""
+    _send_to_discord({"content": message})
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# INTERNAL SEND HELPERS
+# ══════════════════════════════════════════════════════════════════════════════
+
 def _send_to_discord_watchlist(payload: Dict):
     """
     PHASE 1.29: Send to the dedicated watchlist channel.
@@ -648,6 +669,40 @@ def _send_to_discord_watchlist(payload: Dict):
 
     t = threading.Thread(target=_post, daemon=True)
     t.start()
+
+
+def _send_annotation_to_discord(payload: Dict):
+    """
+    BUG-DH-6: Route annotation signals to DISCORD_ANNOTATIONS_WEBHOOK_URL when
+    configured, otherwise fall back to _SIGNALS_WEBHOOK.
+    Dispatched on a daemon thread (non-blocking), shares the global rate-limiter.
+    """
+    webhook_url = _ANNOTATIONS_WEBHOOK or _SIGNALS_WEBHOOK
+    if not webhook_url:
+        logger.info("[DISCORD] ❌ No annotations webhook URL configured.")
+        return
+
+    if not _ANNOTATIONS_WEBHOOK:
+        logger.info("[DISCORD] ⚠️  DISCORD_ANNOTATIONS_WEBHOOK_URL not set — falling back to signals channel")
+
+    def _post():
+        global _last_send_ts
+        with _rl_lock:
+            now = _time.monotonic()
+            wait = _RATE_LIMIT_INTERVAL - (now - _last_send_ts)
+            if wait > 0:
+                _time.sleep(wait)
+            _last_send_ts = _time.monotonic()
+        try:
+            response = requests.post(webhook_url, json=_truncate_payload(payload), timeout=5)
+            if response.status_code not in (200, 204):
+                logger.info(f"[DISCORD] ❌ Annotation HTTP {response.status_code} — payload dropped: {str(payload)[:300]}")
+        except Exception as e:
+            logger.info(f"[DISCORD] ❌ Annotation send failed ({e}) — payload dropped: {str(payload)[:300]}")
+
+    t = threading.Thread(target=_post, daemon=True)
+    t.start()
+
 
 def _truncate_payload(payload: Dict, max_chars: int = 1900) -> Dict:
     """
