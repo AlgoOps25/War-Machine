@@ -4,6 +4,14 @@ Two-path scanning: OR-Anchored + Intraday BOS+FVG fallback.
 Signal pipeline lives in app/core/sniper_pipeline.py.
 See CHANGELOG.md for full phase history.
 
+AUDIT 2026-04-06:
+  SN-10 (source of truth): EXPLOSIVE_RVOL_THRESHOLD was hardcoded to 3.0
+    locally while config.EXPLOSIVE_RVOL_THRESHOLD is 4.0. Two values in
+    production meant the explosive-mover override fired at a lower threshold
+    than intended, potentially bypassing the regime filter for marginal RVOL
+    movers. Fixed: removed local constant; all references now use
+    config.EXPLOSIVE_RVOL_THRESHOLD directly.
+
 AUDIT 2026-04-03:
   BUG-SN-7 (dead import): BEAR_SIGNALS_ENABLED was imported from utils.config
     but never referenced anywhere in this file. Same class as BUG-SP-3 which
@@ -79,7 +87,9 @@ _ET = ZoneInfo("America/New_York")  # FIX: was NameError in process_ticker regim
 
 # ── Constants ──────────────────────────────────────────────────────────
 EXPLOSIVE_SCORE_THRESHOLD = 80
-EXPLOSIVE_RVOL_THRESHOLD  = 3.0
+# SN-10 FIX: removed local EXPLOSIVE_RVOL_THRESHOLD = 3.0 — was diverging from
+# config.EXPLOSIVE_RVOL_THRESHOLD (4.0). All references below use config directly
+# so there is a single source of truth.
 MIN_RVOL_TO_SIGNAL         = config.RVOL_SIGNAL_GATE
 MAX_WATCH_BARS             = 12
 REGIME_FILTER_ENABLED      = True
@@ -100,7 +110,7 @@ except ImportError:
                     rvol  = t.get('rvol', 0.0)
                     tier  = t.get('tier', None)
                     return {
-                        'qualified': score >= EXPLOSIVE_SCORE_THRESHOLD and rvol >= EXPLOSIVE_RVOL_THRESHOLD,
+                        'qualified': score >= EXPLOSIVE_SCORE_THRESHOLD and rvol >= config.EXPLOSIVE_RVOL_THRESHOLD,
                         'score': score, 'rvol': rvol, 'tier': tier,
                     }
         except Exception as _e:
