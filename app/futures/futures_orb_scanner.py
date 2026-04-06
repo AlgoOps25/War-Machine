@@ -72,6 +72,11 @@ FIX HISTORY (2026-04-03):
   DIS-FUT-2 (Apr 3 2026):
     _discord_exit() static method added. Call when price reaches stop, T1,
     T2, or you close EOD manually. See docs/DISCORD_SIGNALS.md.
+
+  FIX-ORB-6 (Apr 6 2026):
+    SESSION_START renamed to _SESSION_START (added leading underscore) to
+    match the reference on line 224 inside scan(). The mismatch caused a
+    NameError crash on every loop iteration during the session window.
 """
 from __future__ import annotations
 import json
@@ -85,7 +90,7 @@ logger = logging.getLogger(__name__)
 ET = ZoneInfo("America/New_York")
 
 # ── Session constants ──────────────────────────────────────────────────────────────
-SESSION_START  = time(9, 30)
+_SESSION_START  = time(9, 30)   # FIX-ORB-6: was SESSION_START — matched scan() usage
 _SESSION_CUTOFF = time(11, 0)
 _OR_END         = time(9, 40)   # first 10 minutes form the OR
 
