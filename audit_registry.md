@@ -13,10 +13,10 @@
 | app/ai | 2 | 0 | 0 |
 | app/analytics | 10 | 0 | 2 |
 | app/backtesting | 7 | 0 | 0 |
-| app/core | 15 | **1** | 0 |
+| app/core | 15 | **2** | 0 |
 | app/data | 10 | 0 | 0 |
 | app/filters | 12 | 0 | 0 |
-| app/futures | 5 | 0 | 0 |
+| app/futures | 5 | **1** | 0 |
 | app/indicators | 4 | 0 | 0 |
 | app/ml | 7 | 0 | 0 |
 | app/mtf | 7 | 0 | 0 |
@@ -33,7 +33,7 @@
 | scripts (all) | 64 | 0 | 15 |
 | docs | 8 | 0 | 1 |
 | root files | 18 | 0 | 4 |
-| **TOTAL** | **235** | **2** | **25** |
+| **TOTAL** | **235** | **4** | **25** |
 
 > ⚠️ **Not tracked in source audit:** `backtests/results/` (output data), `backtests/analysis/` (output CSVs), `scripts/backtesting/campaign/*.db`, `.venv/`, `.pytest_cache/`, `__pycache__/`, `.env`, `*.log`, `*.db` (runtime), `*.pyc`
 
@@ -219,7 +219,7 @@ No internal imports. Pure stdlib. Self-contained.
 
 #### Functions
 | Function | Signature | Purpose |
-|----------|-----------|---------|
+|----------|-----------|---------| 
 | `get_vix_or_threshold(vix, spy_regime)` | `float → float` | VIX-scaled min OR range % with regime floor |
 | `validate_required_env_vars()` | `→ None` | Startup env var check; `sys.exit(1)` on missing required |
 
@@ -394,6 +394,165 @@ LOOP:
 
 ---
 
+## ✅ AUDIT: app/core/sniper.py
+> **Audited:** 2026-04-06 | **Size:** ~large | **Lines:** ~600+ | **Version:** v1.38e
+
+### Role
+Two-path signal engine. Called by `scanner.py` as `process_ticker(ticker)` for every watchlist ticker on every scan cycle. Owns:
+- OR-Anchored path (ORB breakout → FVG entry → armed signal)
+- Intraday BOS+FVG fallback path
+- Watch signal lifecycle (BOS detected → armed on FVG confirmation)
+- `options_rec` fetch and forwarding to `_run_signal_pipeline`
+- VWAP reclaim path (optional, structurally unreachable per BUG-SN-2 note)
+
+### Imports Map
+| Import | Source | Notes |
+|--------|--------|-------|
+| `traceback, datetime, time, timedelta, ZoneInfo` | stdlib | |
+| `_now_et, _bar_time, _strip_tz` | `utils.time_helpers` | |
+| `resample_bars` | `utils.bar_utils` | FIX #53: was a local duplicate |
+| `send_simple_message` | `app.notifications.discord_helpers` | |
+| `get_validator, get_regime_filter` | `app.validation.validation` | |
+| `wait_for_confirmation, grade_signal_with_confirmations` | `app.validation.cfw6_confirmation` | |
+| `compute_stop_and_targets, get_adaptive_fvg_threshold` | `app.risk.trade_calculator` | |
+| `data_manager` | `app.data.data_manager` | |
+| `config` | `utils.config` | |
+| `scan_bos_fvg, is_force_close_time, find_fvg_after_bos` | `app.mtf.bos_fvg_engine` | |
+| `build_scorecard, SCORECARD_GATE_MIN` | `app.core.signal_scorecard` | |
+| `RVOL_SIGNAL_GATE, RVOL_CEILING` | `utils.config` | |
+| `is_dead_zone` | `app.filters.dead_zone_suppressor` | |
+| `is_in_gex_pin_zone` | `app.filters.gex_pin_gate` | |
+| `should_skip_cfw6_or_early` | `app.filters.early_session_disqualifier` | |
+| `_pipeline` | `app.core.sniper_pipeline._run_signal_pipeline` | aliased to avoid name collision with local dispatcher |
+| `_persist_watch, _remove_watch_from_db, _maybe_load_watches, send_bos_watch_alert, clear_watching_signals` | `app.core.watch_signal_store` | |
+| `_persist_armed_signal, _remove_armed_from_db, _maybe_load_armed_signals, clear_armed_signals` | `app.core.armed_signal_store` | |
+| `get_ticker_screener_metadata` | `app.screening.screener_integration` | Optional; falls back to watchlist_funnel |
+| `run_eod_report` | `app.core.eod_reporter` | Optional stub on ImportError |
+| `compute_vwap, passes_vwap_gate` | `app.filters.vwap_gate` | |
+| `mtf_bias_engine` | `app.filters.mtf_bias` | Optional |
+| `or_detector, compute_opening_range_from_bars, compute_premarket_range, detect_breakout_after_or, detect_fvg_after_break, get_secondary_range_levels` | `app.signals.opening_range` | Optional (BUG-SN-5 fix: all in one block) |
+| `detect_vwap_reclaim` | `app.signals.vwap_reclaim` | Optional |
+| `get_highest_priority_fvg, get_full_mtf_analysis, print_priority_stats` | `app.mtf.mtf_fvg_priority` | Optional |
+| `cache_sd_zones, apply_sd_confluence_boost, clear_sd_cache` | `app.filters.sd_zone_confluence` | Optional |
+| `clear_ob_cache` | `app.filters.order_block_cache` | Optional |
+| `get_market_regime, print_market_regime` | `app.filters.market_regime_context` | Optional |
+| `_funnel_tracker` | `app.analytics.funnel_analytics` | Optional |
+
+### Key Module-Level Constants
+| Constant | Value | Notes |
+|----------|-------|-------|
+| `EXPLOSIVE_SCORE_THRESHOLD` | `80` | |
+| `EXPLOSIVE_RVOL_THRESHOLD` | `3.0` | Note: config.py defines `4.0`; local override |
+| `MIN_RVOL_TO_SIGNAL` | `config.RVOL_SIGNAL_GATE` | `1.2` |
+| `MAX_WATCH_BARS` | `12` | |
+| `REGIME_FILTER_ENABLED` | `True` | |
+
+### Prior Fix History (from docstring)
+| ID | Description |
+|----|-------------|
+| BUG-SN-1 | logger moved before optional try/except blocks |
+| BUG-SN-2 | VWAP reclaim block documented as structurally unreachable |
+| BUG-SN-3 | Resolved by BUG-SN-1 fix |
+| BUG-SN-4 | _run_signal_pipeline local wrapper docstring clarified — intentional alias, not circular |
+| BUG-SN-5 | get_secondary_range_levels moved to module-level ORB_TRACKER_ENABLED block |
+| BUG-SN-6 | bos_signal key access hardened to .get() with 0.0 defaults |
+| BUG-SN-7 | Dead import BEAR_SIGNALS_ENABLED removed |
+| BUG-SN-9 | options_rec fetch added in process_ticker; now forwarded to all _run_signal_pipeline call sites |
+
+### ⚠️ Issues Found
+
+| # | ID | Severity | Issue |
+|---|----|----------|-------|
+| 1 | SN-10 | 🟡 Medium | `EXPLOSIVE_RVOL_THRESHOLD = 3.0` is defined at module level (line ~52) but `config.py` defines `EXPLOSIVE_RVOL_THRESHOLD = 4.0`. This local override silently diverges from the config value. The watchlist_funnel fallback inside `get_ticker_screener_metadata` also uses the local constant. Decide on one source of truth and remove the duplicate, or explicitly document that `3.0` is the sniper-specific threshold. |
+| 2 | SN-11 | 🟡 Medium | `get_ticker_screener_metadata` fallback stub (lines ~72–88) calls `get_watchlist_with_metadata(force_refresh=False)` on every invocation — this happens **inside `process_ticker`**, which is called per ticker per scan cycle. If `screener_integration` is missing and `watchlist_funnel` is slow (DB round-trip), this adds significant latency per ticker. Should cache the result for the session rather than re-fetching per ticker. |
+| 3 | SN-12 | 🟠 Low | `run_eod_report` stub (ImportError fallback) logs `"[EOD] ⚠️ run_eod_report stub called"` but `scanner.py` also has its own `run_eod_report` import with its own fallback stub. Two independent stubs for the same function could produce confusing log messages if both fire. No functional harm — just noise. |
+| 4 | SN-13 | 🟠 Low | `_ET = ZoneInfo("America/New_York")` is defined at module level here and also at module level in `futures_orb_scanner.py` as `ET`. Neither is wrong, but the inconsistent naming (`_ET` vs `ET`) across files is a minor style inconsistency that could confuse future developers reading both files. |
+
+### ✅ What's Clean
+- All optional module imports use `try/except ImportError` with correct boolean flags and graceful stubs — zero crash risk on missing deps.
+- BUG-SN-9 fix (options_rec fetch) is correctly placed: after armed-signal guard, before bars fetch, non-fatal on exception.
+- BUG-SN-5 fix (all opening_range imports in one block) confirmed clean — no inline deferred imports remain.
+- BUG-SN-6 fix (.get() on bos_signal keys) confirmed — no bare dict key access on scanner output.
+- BUG-SN-4 alias pattern (local `_run_signal_pipeline` dispatcher over `_pipeline`) is well-documented and not a circular call.
+- Logger is at true module level (before all optional blocks) — BUG-SN-1 fix confirmed.
+- `_ET` defined before any function that uses it — no NameError risk.
+
+### 🔧 Action Items
+| ID | Action | Priority |
+|----|--------|----------|
+| SN-10 | Reconcile `EXPLOSIVE_RVOL_THRESHOLD` local `3.0` vs `config.py` `4.0` — pick one source of truth | Medium |
+| SN-11 | Cache `get_ticker_screener_metadata` fallback result per session to avoid per-ticker DB fetch | Medium |
+| SN-12 | Note in comments that `scanner.py` also has a `run_eod_report` stub — prevent future confusion | Low |
+| SN-13 | Standardize `_ET` / `ET` naming across sniper.py and futures_orb_scanner.py | Low |
+
+---
+
+## ✅ AUDIT: app/futures/futures_orb_scanner.py
+> **Audited:** 2026-04-06 | **Size:** ~medium | **Lines:** ~380 | **Version:** post FIX-ORB-6
+
+### Role
+Fully self-contained NQ/MNQ ORB signal generator. Stateless scanner (one `FuturesORBScanner` instance per symbol). Runs in a daemon thread spawned by `scanner.py`. Writes to both `armed_signals_persist` and the `futures_signals` DB table. Sends Discord alert via `send_futures_orb_alert` (rich embed) with `send_simple_message` fallback.
+
+### Integration Contract (Zero Equity System Touch)
+- Reads candle data via `tradier_futures_feed.get_todays_bars()` only.
+- Writes `signal_type = 'FUTURES_ORB'` — equity queries filter this out.
+- Does NOT call: `app.options.*`, `app.validation.*`, `app.risk.position_manager`, `app.screening.*`, `app.signals.opening_range`.
+
+### Module-Level Constants
+| Constant | Value | Notes |
+|----------|-------|-------|
+| `_SESSION_START` | `time(9, 30)` | FIX-ORB-6: was `SESSION_START` — caused NameError crash |
+| `_SESSION_CUTOFF` | `time(11, 0)` | |
+| `_OR_END` | `time(9, 40)` | First 10 min form OR |
+| `_POINT_VALUE` | `{"NQ": 20.0, "MNQ": 2.0}` | |
+| `_CONTRACTS` | `int(os.getenv("FUTURES_CONTRACTS", "1"))` | FIX-ORB-5: was hardcoded |
+| `_MIN_CONFIDENCE` | `65` | FIX-ORB-5: raised from 55 |
+| `_RR_T1` | `2.0` | |
+| `_RR_T2` | `3.5` | Matches equity T2_MULTIPLIER |
+| `_FVG_STOP_BUFFER` | `0.25` | Points buffer beyond wick (FIX-ORB-2) |
+
+### Fix History (confirmed applied)
+| ID | Description | Status |
+|----|-------------|--------|
+| FIX-ORB-1 | FVG entry direction corrected: bull=fvg_low, bear=fvg_high | ✅ Confirmed |
+| FIX-ORB-2 | ATR stop → wick-anchored stop on FVG path; `_compute_fvg_stop()` added | ✅ Confirmed |
+| FIX-ORB-3 | `_detect_fvg()` loop starts at `bk_idx` (not `max(bk_idx, 1)`) | ✅ Confirmed |
+| FIX-ORB-4 | Volume bonus gated on `bk_idx >= 3` | ✅ Confirmed |
+| FIX-ORB-5 | `_MIN_CONFIDENCE` raised 55→65; grade thresholds A≥80, B≥68; `_CONTRACTS` from env | ✅ Confirmed |
+| FIX-ORB-6 | `SESSION_START` → `_SESSION_START` (NameError crash fix) | ✅ Confirmed |
+| DIS-FUT-1 | Rich orange embed via `send_futures_orb_alert()`; plain-text fallback retained | ✅ Confirmed |
+| DIS-FUT-2 | `_discord_exit()` static method added | ✅ Confirmed |
+
+### ⚠️ Issues Found
+
+| # | ID | Severity | Issue |
+|---|----|----------|-------|
+| 1 | ORB-7 | 🟡 Medium | `_compute_atr()` uses `bar["high"] - bar["low"]` (bar range) rather than true ATR (which uses `max(high-low, abs(high-prev_close), abs(low-prev_close))`). For futures with overnight gaps, bar range significantly underestimates true ATR. This affects the `MOMENTUM_CONTINUATION` stop width. Low immediate risk (FVG path uses wick-anchored stop), but should be tightened before adding more MOMENTUM_CONTINUATION reliance. |
+| 2 | ORB-8 | 🟡 Medium | `_fired_today` set is instance state on `FuturesORBScanner`. If `scanner.py` creates a new `FuturesORBScanner` instance on redeploy without calling `reset_daily()`, duplicate signals can fire within the same session. The EOD path in `scanner.py` calls `clear_bar_cache()` but it's not confirmed that `scanner._orb_scanner.reset_daily()` is called on hot redeploy. Verify in `scanner.py` / `futures_scanner_loop.py` audit. |
+| 3 | ORB-9 | 🟠 Low | `_discord_exit()` is a `@staticmethod` but accesses `_CONTRACTS` and `_POINT_VALUE` module-level constants via `_POINT_VALUE.get(symbol, 2.0)` — this is fine. However it is only callable via `scanner._discord_exit(...)` which means the caller must hold a reference to the scanner instance. Since it's a static method, it could equivalently be called as `FuturesORBScanner._discord_exit(...)`. Add a usage note in the docstring. |
+| 4 | ORB-10 | 🟠 Low | `ET = ZoneInfo("America/New_York")` is module-level (no underscore prefix), inconsistent with `sniper.py` which uses `_ET`. Minor style inconsistency — no functional impact. |
+
+### ✅ What's Clean
+- All 8 prior fixes (FIX-ORB-1 through FIX-ORB-6, DIS-FUT-1, DIS-FUT-2) confirmed applied and correct.
+- FIX-ORB-6 (`_SESSION_START` NameError) fully resolves the crash seen in the loop log.
+- `_detect_fvg()` index underflow guard (FIX-ORB-3) correctly handles `bk_idx == 0` case.
+- `_compute_fvg_stop()` correctly walks the 3-bar cluster and anchors to extreme wick — logic is sound.
+- `_score()` volume check gated on `bk_idx >= 3` (FIX-ORB-4) — trivial-true false positive eliminated.
+- `_persist()` correctly writes to both `armed_signals_persist` and `futures_signals` with independent try/except — one DB failure does not silence the other.
+- `_discord_alert()` fallback chain is correct: rich embed → plain text → log warning. Never raises.
+- `FUTURES_CONTRACTS` env var read at module load time — tunable without code change (FIX-ORB-5).
+- Zero equity system coupling confirmed — no imports from `app.signals.opening_range`, `app.validation.*`, `app.options.*`.
+
+### 🔧 Action Items
+| ID | Action | Priority |
+|----|--------|----------|
+| ORB-7 | Replace bar-range ATR with true ATR (using prev_close) in `_compute_atr()` | Medium |
+| ORB-8 | Confirm `reset_daily()` is called on hot redeploy in `futures_scanner_loop.py` audit | Medium |
+| ORB-9 | Add usage note to `_discord_exit()` docstring re: static vs instance call | Low |
+| ORB-10 | Rename `ET` → `_ET` to match `sniper.py` convention | Low |
+
+---
+
 ## ROOT FILES
 
 | # | File | Category | Audit Status | Notes |
@@ -413,7 +572,7 @@ LOOP:
 | 13 | `railway.toml` | Config | ⬜ Not Audited | |
 | 14 | `README.md` | Docs | ⬜ Not Audited | |
 | 15 | `REBUILD_PLAN.md` | Docs | 🗑️ Review | Likely stale planning doc |
-| 16 | `requirements.txt` | Config | ⬜ Not Audited | Python deps |
+| 16 | `requirements.txt` | Config | ⬜ Not Audited | |
 | 17 | `run_migration_006.py` | Migration | 🗑️ Remove | One-off migration runner; 006 SQL is in migrations/ |
 | 18 | `war_machine.db` | DB | 📦 Runtime DB | Not tracked |
 
@@ -479,9 +638,9 @@ LOOP:
 | 47 | `app/core/logging_config.py` | Core | ⬜ Not Audited | Logging setup |
 | 48 | `app/core/scanner.py` | **Core Orchestrator** | ✅ Audited | AUDIT CORE-6 — 8 issues (SC-7 to SC-14) |
 | 49 | `app/core/signal_scorecard.py` | Core | ⬜ Not Audited | |
-| 50 | `app/core/sniper.py` | Core | ⬜ Not Audited | **CORE** Sniper entry/execution — audit next |
+| 50 | `app/core/sniper.py` | Core | ✅ Audited | AUDIT CORE-7 — 4 issues (SN-10 to SN-13) |
 | 51 | `app/core/sniper_log.py` | Core | ⬜ Not Audited | Sniper trade log |
-| 52 | `app/core/sniper_pipeline.py` | Core | ⬜ Not Audited | **CORE** Sniper pipeline |
+| 52 | `app/core/sniper_pipeline.py` | Core | ⬜ Not Audited | **CORE** Sniper pipeline — audit next |
 | 53 | `app/core/thread_safe_state.py` | Core | ⬜ Not Audited | Thread-safe shared state |
 | 54 | `app/core/watch_signal_store.py` | Core | ⬜ Not Audited | Watch-mode signal store |
 
@@ -523,8 +682,8 @@ LOOP:
 | # | File | Category | Audit Status | Notes |
 |---|------|----------|--------------|-------|
 | 78 | `app/futures/__init__.py` | Init | ⬜ Not Audited | |
-| 79 | `app/futures/futures_orb_scanner.py` | Futures | ⬜ Not Audited | FIX-ORB-6 applied (2026-04-06) |
-| 80 | `app/futures/futures_scanner_loop.py` | Futures | ⬜ Not Audited | |
+| 79 | `app/futures/futures_orb_scanner.py` | Futures | ✅ Audited | AUDIT CORE-7 — 4 issues (ORB-7 to ORB-10); FIX-ORB-6 confirmed |
+| 80 | `app/futures/futures_scanner_loop.py` | Futures | ⬜ Not Audited | ⚠️ Verify reset_daily() on hot redeploy (ORB-8) |
 | 81 | `app/futures/futures_signal_sender.py` | Futures | ⬜ Not Audited | |
 | 82 | `app/futures/tradier_futures_feed.py` | Futures | ⬜ Not Audited | |
 
@@ -685,3 +844,5 @@ LOOP:
 |------|--------|------|----------|---------|
 | 2026-04-03 | — | `utils/config.py` | S17 | Full audit — 6 issues, 340 lines |
 | 2026-04-06 | AUDIT CORE-6 | `app/core/scanner.py` | CORE-6 | Full audit — 8 issues (SC-7 to SC-14), 530 lines |
+| 2026-04-06 | AUDIT CORE-7 | `app/core/sniper.py` | CORE-7 | Full audit — 4 issues (SN-10 to SN-13), 600+ lines |
+| 2026-04-06 | AUDIT CORE-7 | `app/futures/futures_orb_scanner.py` | CORE-7 | Full audit — 4 issues (ORB-7 to ORB-10), all 8 prior fixes confirmed |
