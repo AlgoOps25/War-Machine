@@ -1,10 +1,23 @@
 """
-sniper.py — CFW6 Strategy Engine v1.38e
+sniper.py — CFW6 Strategy Engine v1.38f
 Two-path scanning: OR-Anchored + Intraday BOS+FVG fallback.
 Signal pipeline lives in app/core/sniper_pipeline.py.
 See CHANGELOG.md for full phase history.
 
-AUDIT 2026-04-06:
+AUDIT 2026-04-06 (SN-11):
+  FIX-SN-11 (screener fallback key path): get_watchlist_with_metadata()
+    returns a nested dict:
+      {'watchlist': [...], 'metadata': {'all_tickers_with_scores': [...]}, ...}
+    The ImportError fallback stub was calling wl.get('all_tickers_with_scores', [])
+    on the top-level dict, which always resolves to []. Every lookup therefore
+    fell through to the default return {'qualified': False, 'score': 0,
+    'rvol': 0.0, 'tier': None}, meaning the explosive-mover override was
+    permanently disabled when screener_integration was absent — even for
+    tickers that were fully scored and present in the watchlist funnel.
+    Fix: changed the lookup to wl.get('metadata', {}).get('all_tickers_with_scores', [])
+    so the loop iterates the actual scored-ticker list.
+
+AUDIT 2026-04-06 (SN-10):
   SN-10 (source of truth): EXPLOSIVE_RVOL_THRESHOLD was hardcoded to 3.0
     locally while config.EXPLOSIVE_RVOL_THRESHOLD is 4.0. Two values in
     production meant the explosive-mover override fired at a lower threshold
@@ -104,11 +117,16 @@ except ImportError:
         try:
             from app.screening.watchlist_funnel import get_watchlist_with_metadata
             wl = get_watchlist_with_metadata(force_refresh=False)
-            for t in wl.get('all_tickers_with_scores', []):
+            # FIX SN-11: get_watchlist_with_metadata() nests scored tickers under
+            # wl['metadata']['all_tickers_with_scores'], not at the top level.
+            # The old wl.get('all_tickers_with_scores', []) always returned []
+            # so every ticker fell through to qualified=False.
+            scored = wl.get('metadata', {}).get('all_tickers_with_scores', [])
+            for t in scored:
                 if t.get('ticker') == ticker:
-                    score = t.get('score', 0)
+                    score = t.get('score', 0) or t.get('composite_score', 0)
                     rvol  = t.get('rvol', 0.0)
-                    tier  = t.get('tier', None)
+                    tier  = t.get('tier', None) or t.get('rvol_tier', None)
                     return {
                         'qualified': score >= EXPLOSIVE_SCORE_THRESHOLD and rvol >= config.EXPLOSIVE_RVOL_THRESHOLD,
                         'score': score, 'rvol': rvol, 'tier': tier,
