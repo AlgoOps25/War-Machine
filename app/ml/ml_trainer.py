@@ -80,6 +80,21 @@ Key improvements (Mar 2026)
     live-path model would KeyError. Fixed: f1_score() computed on
     threshold-adjusted preds and added to metrics before joblib.dump().
   - BUG-MLT-7: cross_val_score imported but never used. Dead import removed.
+* FIX 2026-04-06 (BUG-MLT-2) — Platt calibration / threshold-tuning data leakage:
+  - Both train_from_dataframe() and train_model() were fitting
+    CalibratedClassifierCV and then calling _find_optimal_threshold() on the
+    same X_last_val / y_last_val slice returned by walk_forward_cv().  Because
+    the calibrator was already fit on that data, the threshold search saw
+    in-sample calibrated probabilities → artificially inflated precision
+    estimates at every threshold candidate.
+  - Fix: _split_calib_tune() helper carves X_last_val into two non-overlapping
+    halves.  The first half (X_calib) is passed to CalibratedClassifierCV.fit();
+    the second half (X_tune) is passed to _find_optimal_threshold() and used
+    for the final eval metrics.  Neither half has seen the other's data during
+    calibration.
+  - Fallback: if either half is < 10 samples or single-class, fall back to
+    using the full last-fold val for both steps and emit a WARNING.
+  - n_val in the metrics dict now reflects len(X_tune) (the held-out half).
 """
 import logging
 import os
@@ -238,6 +253,58 @@ def predict_with_threshold(model, X: np.ndarray, threshold: float = 0.50) -> np.
     return (model.predict_proba(X)[:, 1] >= threshold).astype(int)
 
 
+# ── BUG-MLT-2: calib/tune split helper ──────────────────────────────────────
+
+def _split_calib_tune(
+    X_val: np.ndarray,
+    y_val: np.ndarray,
+    tag: str = "",
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, bool]:
+    """
+    Split a validation array into two non-overlapping halves:
+      X_calib / y_calib — first 50% → used to fit CalibratedClassifierCV
+      X_tune  / y_tune  — second 50% → used for threshold search & eval metrics
+
+    BUG-MLT-2: Previously both Platt calibration and threshold tuning consumed
+    the same slice.  The calibrator was already fit on that data, so the
+    threshold search evaluated in-sample calibrated probabilities, inflating
+    precision estimates at every candidate threshold.
+
+    Returns (X_calib, y_calib, X_tune, y_tune, ok).
+    ok=False means at least one half was too small or single-class; callers
+    must fall back to using the full val slice for both steps.
+    """
+    prefix = f"[ML-TRAIN{tag}]"
+    n = len(X_val)
+    mid = n // 2
+
+    X_calib, y_calib = X_val[:mid], y_val[:mid]
+    X_tune,  y_tune  = X_val[mid:], y_val[mid:]
+
+    def _ok(X, y, name):
+        if len(X) < 10:
+            logger.warning(
+                f"{prefix} BUG-MLT-2 split: {name} half too small "
+                f"({len(X)} samples) — falling back to full val slice"
+            )
+            return False
+        if len(np.unique(y)) < 2:
+            logger.warning(
+                f"{prefix} BUG-MLT-2 split: {name} half is single-class "
+                f"— falling back to full val slice"
+            )
+            return False
+        return True
+
+    ok = _ok(X_calib, y_calib, "calib") and _ok(X_tune, y_tune, "tune")
+    if ok:
+        logger.info(
+            f"{prefix} BUG-MLT-2 calib/tune split: "
+            f"calib={len(X_calib)} tune={len(X_tune)} (total val={n})"
+        )
+    return X_calib, y_calib, X_tune, y_tune, ok
+
+
 # ── Walk-forward cross-validation (FIX: 3-fold, not single split) ───────────
 
 def walk_forward_cv(
@@ -324,6 +391,9 @@ def train_from_dataframe(
     Train (and validate) an ML model from a pre-built labelled DataFrame.
     Now uses 3-fold walk-forward CV instead of a single 75/25 split.
     Final model is retrained on ALL data then Platt-calibrated.
+
+    BUG-MLT-2 (Apr 6 2026): Platt calibration and threshold tuning now use
+    non-overlapping halves of the last-fold val set (via _split_calib_tune()).
     """
     logger.info("[ML-TRAIN-DF] Starting train_from_dataframe() — 3-fold walk-forward + Platt scaling")
 
@@ -401,28 +471,40 @@ def train_from_dataframe(
         logger.error(f"[ML-TRAIN-DF] Training failed: {exc}")
         return None, {'error': str(exc)}
 
-    # ── Step 3: Platt scaling (CalibratedClassifierCV, sigmoid) ───────────
+    # ── Step 3: BUG-MLT-2 — split last-fold val into calib / tune halves ──
+    X_calib, y_calib, X_tune, y_tune, split_ok = _split_calib_tune(
+        X_last_val, y_last_val, tag="-DF"
+    )
+    if not split_ok:
+        # Fallback: use full last-fold val for both (logs WARNING inside helper)
+        X_calib, y_calib = X_last_val, y_last_val
+        X_tune,  y_tune  = X_last_val, y_last_val
+
+    # ── Step 4: Platt scaling — fit on calib half only ────────────────────
     try:
         model = CalibratedClassifierCV(estimator=base_model, method='sigmoid', cv='prefit')
-        model.fit(X_last_val, y_last_val)
-        logger.info("[ML-TRAIN-DF] ✅ Platt scaling applied (CalibratedClassifierCV sigmoid)")
+        model.fit(X_calib, y_calib)
+        logger.info(
+            f"[ML-TRAIN-DF] ✅ Platt scaling applied on calib half "
+            f"(n={len(X_calib)}, BUG-MLT-2 fix)"
+        )
     except Exception as exc:
         logger.warning(f"[ML-TRAIN-DF] Platt scaling failed ({exc}) — using uncalibrated model")
         model = base_model
 
-    # ── Step 4: Threshold tuning on last-fold val set ────────────────────
-    opt_threshold = _find_optimal_threshold(model, X_last_val, y_last_val)
-    y_pred_opt    = predict_with_threshold(model, X_last_val, opt_threshold)
-    accuracy      = accuracy_score(y_last_val, y_pred_opt)
-    precision     = precision_score(y_last_val, y_pred_opt, zero_division=0)
-    recall        = recall_score(y_last_val, y_pred_opt, zero_division=0)
-    f1            = f1_score(y_last_val, y_pred_opt, zero_division=0)
-    cm            = confusion_matrix(y_last_val, y_pred_opt)
+    # ── Step 5: Threshold tuning on tune half only ─────────────────────────
+    opt_threshold = _find_optimal_threshold(model, X_tune, y_tune)
+    y_pred_opt    = predict_with_threshold(model, X_tune, opt_threshold)
+    accuracy      = accuracy_score(y_tune, y_pred_opt)
+    precision     = precision_score(y_tune, y_pred_opt, zero_division=0)
+    recall        = recall_score(y_tune, y_pred_opt, zero_division=0)
+    f1            = f1_score(y_tune, y_pred_opt, zero_division=0)
+    cm            = confusion_matrix(y_tune, y_pred_opt)
 
-    # ── Step 5: Permutation importance on last-fold val set ───────────────
+    # ── Step 6: Permutation importance on tune half ────────────────────────
     try:
         pi = permutation_importance(
-            model, X_last_val, y_last_val,
+            model, X_tune, y_tune,
             n_repeats=10, random_state=42, n_jobs=-1,
         )
         feat_imp = dict(zip(available_feats, pi.importances_mean))
@@ -448,7 +530,7 @@ def train_from_dataframe(
         'feature_importance': feat_imp_sorted,
         'feature_names':      available_feats,
         'n_train':            len(X_all),
-        'n_val':              len(X_last_val),
+        'n_val':              len(X_tune),   # BUG-MLT-2: tune half, not full last-fold val
         'calibrated':         True,
         'trained_at':         datetime.now(ET).isoformat(),
         'source':             'historical_pretraining',
@@ -497,6 +579,9 @@ def train_model(
     """
     Train ML model on live signal_outcomes from the PostgreSQL DB.
     Called by the EOD auto-retrain hook in scanner.py and the Railway weekly cron.
+
+    BUG-MLT-2 (Apr 6 2026): Platt calibration and threshold tuning now use
+    non-overlapping halves of the last-fold val set (via _split_calib_tune()).
     """
     logger.info("[ML-TRAIN] Starting live retrain from DB...")
     logger.warning(
@@ -548,21 +633,40 @@ def train_model(
             l2_regularization=0.1, class_weight='balanced', random_state=42,
         )
         base_model.fit(X, y)
-        model = CalibratedClassifierCV(estimator=base_model, method='sigmoid', cv='prefit')
-        model.fit(X_last_val, y_last_val)
-        logger.info("[ML-TRAIN] ✅ Model trained on full dataset + Platt-calibrated on last-fold val")
+        logger.info("[ML-TRAIN] ✅ Base model trained on full dataset")
     except Exception as exc:
         logger.error(f"[ML-TRAIN] Training failed: {exc}")
         return None, {'error': str(exc)}
 
-    opt_threshold = _find_optimal_threshold(model, X_last_val, y_last_val)
-    y_pred = predict_with_threshold(model, X_last_val, opt_threshold)
+    # ── BUG-MLT-2 — split last-fold val into calib / tune halves ──────────
+    X_calib, y_calib, X_tune, y_tune, split_ok = _split_calib_tune(
+        X_last_val, y_last_val, tag=""
+    )
+    if not split_ok:
+        X_calib, y_calib = X_last_val, y_last_val
+        X_tune,  y_tune  = X_last_val, y_last_val
 
-    accuracy  = accuracy_score(y_last_val, y_pred)
-    precision = precision_score(y_last_val, y_pred, zero_division=0)
-    recall    = recall_score(y_last_val, y_pred, zero_division=0)
-    f1        = f1_score(y_last_val, y_pred, zero_division=0)  # BUG-MLT-6: was missing
-    cm        = confusion_matrix(y_last_val, y_pred)
+    # Platt scaling — fit on calib half only
+    try:
+        model = CalibratedClassifierCV(estimator=base_model, method='sigmoid', cv='prefit')
+        model.fit(X_calib, y_calib)
+        logger.info(
+            f"[ML-TRAIN] ✅ Platt scaling applied on calib half "
+            f"(n={len(X_calib)}, BUG-MLT-2 fix)"
+        )
+    except Exception as exc:
+        logger.warning(f"[ML-TRAIN] Platt scaling failed ({exc}) — using uncalibrated model")
+        model = base_model
+
+    # Threshold tuning + eval metrics on tune half only
+    opt_threshold = _find_optimal_threshold(model, X_tune, y_tune)
+    y_pred = predict_with_threshold(model, X_tune, opt_threshold)
+
+    accuracy  = accuracy_score(y_tune, y_pred)
+    precision = precision_score(y_tune, y_pred, zero_division=0)
+    recall    = recall_score(y_tune, y_pred, zero_division=0)
+    f1        = f1_score(y_tune, y_pred, zero_division=0)
+    cm        = confusion_matrix(y_tune, y_pred)
 
     try:
         feature_importance = dict(zip(feature_names, base_model.feature_importances_))
@@ -575,7 +679,7 @@ def train_model(
         'accuracy':           accuracy,
         'precision':          precision,
         'recall':             recall,
-        'f1':                 f1,            # BUG-MLT-6: added
+        'f1':                 f1,
         'threshold':          opt_threshold,
         'cv_mean':            cv_acc,
         'cv_std':             float(np.std([m['accuracy'] for m in fold_metrics])),
@@ -587,7 +691,7 @@ def train_model(
         'feature_importance': dict(sorted_features[:10]),
         'feature_names':      feature_names,
         'n_train':            len(X),
-        'n_val':              len(X_last_val),
+        'n_val':              len(X_tune),   # BUG-MLT-2: tune half, not full last-fold val
         'calibrated':         True,
         'trained_at':         datetime.now(ET).isoformat(),
         'model_version':      MODEL_VERSION,
