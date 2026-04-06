@@ -77,6 +77,31 @@ FIX HISTORY (2026-04-03):
     SESSION_START renamed to _SESSION_START (added leading underscore) to
     match the reference on line 224 inside scan(). The mismatch caused a
     NameError crash on every loop iteration during the session window.
+
+  FIX-ORB-7 (Apr 6 2026):
+    _compute_atr() now uses True Range (TR = max of high-low, |high-prev_close|,
+    |low-prev_close|) instead of simple bar range (high-low). The old range-only
+    approach underestimates ATR on gap days, producing a stop that is too tight
+    on MOMENTUM_CONTINUATION entries. ATR is only used as the fallback stop on
+    MOMENTUM_CONTINUATION; FVG entries use the wick-anchored stop (FIX-ORB-2).
+
+  FIX-ORB-8 (Apr 6 2026):
+    reset_daily() docstring updated to explicitly state it must be called by
+    futures_scanner_loop.py on both scheduled EOD reset AND on hot-redeploy /
+    process restart so _fired_today, _or_high, _or_low, and _or_locked are
+    never stale from a previous session. See ORB-8 in AUDIT_REGISTRY.md.
+
+  FIX-ORB-9 (Apr 6 2026):
+    _discord_exit() docstring clarified: it is a @staticmethod and must be
+    called explicitly by the caller (futures_scanner_loop.py or manual tooling).
+    It is NOT called automatically by scan() — the scanner has no position
+    tracking. Added usage note and clarified that scanner._discord_exit(...)
+    and FuturesORBScanner._discord_exit(...) are equivalent call forms.
+
+  FIX-ORB-10 (Apr 6 2026):
+    Module-level timezone alias renamed from ET to _ET to match the convention
+    in sniper.py (which uses _ET). All internal references updated. The public
+    name ET is no longer exported from this module.
 """
 from __future__ import annotations
 import json
@@ -87,7 +112,7 @@ from typing import Optional, Tuple
 from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
-ET = ZoneInfo("America/New_York")
+_ET = ZoneInfo("America/New_York")  # FIX-ORB-10: renamed ET → _ET (matches sniper.py convention)
 
 # ── Session constants ──────────────────────────────────────────────────────────────
 _SESSION_START  = time(9, 30)   # FIX-ORB-6: was SESSION_START — matched scan() usage
@@ -120,7 +145,7 @@ def _detect_breakout(bars: list[dict], or_high: float, or_low: float
     for i, bar in enumerate(bars):
         dt = bar["datetime"]
         if hasattr(dt, "astimezone"):
-            dt = dt.astimezone(ET)
+            dt = dt.astimezone(_ET)
         if dt.time() < _OR_END:
             continue   # still inside OR formation window
         if bar["close"] > or_high:
@@ -221,7 +246,7 @@ class FuturesORBScanner:
         Safe to call every 30-60 s without side effects.
         """
         if current_time is None:
-            current_time = datetime.now(ET)
+            current_time = datetime.now(_ET)
 
         now = current_time.time()
 
@@ -245,7 +270,7 @@ class FuturesORBScanner:
         if not self._or_locked:
             or_bars = [
                 b for b in bars
-                if b["datetime"].astimezone(ET).time() < _OR_END
+                if b["datetime"].astimezone(_ET).time() < _OR_END
             ]
             if len(or_bars) >= 10 or now >= _OR_END:
                 self._or_high   = max(b["high"] for b in or_bars)
@@ -313,7 +338,18 @@ class FuturesORBScanner:
         return signal
 
     def reset_daily(self) -> None:
-        """Call at EOD reset (mirrors clear_armed_signals in scanner.py)."""
+        """
+        Reset all per-session state.
+
+        FIX-ORB-8: Must be called by futures_scanner_loop.py in TWO scenarios:
+          1. Scheduled EOD reset (e.g. after TRADING_END / FORCE_CLOSE_TIME).
+          2. On process restart / hot-redeploy — call immediately after
+             instantiation so stale _fired_today, _or_high, _or_low, and
+             _or_locked values from a previous Railway deploy are never
+             carried into the new session.
+
+        Mirrors clear_armed_signals() in scanner.py.
+        """
         self._fired_today.clear()
         self._or_high   = None
         self._or_low    = None
@@ -324,11 +360,36 @@ class FuturesORBScanner:
 
     @staticmethod
     def _compute_atr(bars: list[dict], window: int = 10) -> float:
+        """
+        FIX-ORB-7: Compute ATR using True Range instead of simple bar range.
+
+        True Range = max(high - low, |high - prev_close|, |low - prev_close|)
+
+        The old implementation used only (high - low), which underestimates
+        ATR on gap days and produces a stop that is too tight for
+        MOMENTUM_CONTINUATION entries. TR correctly accounts for overnight
+        gaps by comparing to the previous close.
+
+        Note: ATR is only used as the fallback stop on MOMENTUM_CONTINUATION
+        entries. FVG entries use the wick-anchored stop from FIX-ORB-2 and
+        are unaffected by this change.
+        """
         if not bars:
             return 1.0
         recent = bars[-window:] if len(bars) >= window else bars
-        ranges = [b["high"] - b["low"] for b in recent if b["high"] > b["low"]]
-        return sum(ranges) / len(ranges) if ranges else 1.0
+        true_ranges = []
+        for i, b in enumerate(recent):
+            high = b["high"]
+            low  = b["low"]
+            if i == 0:
+                # No previous bar available — fall back to bar range
+                tr = high - low
+            else:
+                prev_close = recent[i - 1]["close"]
+                tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+            if tr > 0:
+                true_ranges.append(tr)
+        return sum(true_ranges) / len(true_ranges) if true_ranges else 1.0
 
     def _resolve_entry(
         self, bars: list[dict], bk_idx: int, direction: str
@@ -376,7 +437,8 @@ class FuturesORBScanner:
         FVG cluster (_compute_fvg_stop). This matches the CFW6-STOP-1 rule
         used in the equity pipeline (sniper_pipeline.py).
 
-        MOMENTUM_CONTINUATION path: ATR-based stop unchanged.
+        MOMENTUM_CONTINUATION path: ATR-based stop. ATR now uses True Range
+        (FIX-ORB-7) so the stop correctly accounts for gap days.
         """
         if entry_type == "FVG" and fvg_cluster_idx is not None:
             fvg_stop = _compute_fvg_stop(bars, fvg_cluster_idx, direction)
@@ -391,6 +453,7 @@ class FuturesORBScanner:
                 return fvg_stop, t1, t2
 
         # ATR fallback (MOMENTUM_CONTINUATION or FVG cluster out of range)
+        # FIX-ORB-7: atr is now True Range-based — stop width is accurate on gap days
         risk = atr
         if direction == "bull":
             stop = round(entry - risk, 2)
@@ -567,13 +630,27 @@ class FuturesORBScanner:
     ) -> None:
         """
         DIS-FUT-2 (Apr 3 2026): Send a rich exit/stop alert to Discord.
-        Call when price reaches stop, T1, T2, or you close EOD manually.
+
+        FIX-ORB-9 (Apr 6 2026): Usage clarified.
+          This is a @staticmethod — it is NOT called automatically by scan().
+          The scanner has no position tracking; the caller is responsible for
+          detecting stop/target hits and invoking this method explicitly.
+
+          Call via either form (both are equivalent):
+            scanner._discord_exit(...)
+            FuturesORBScanner._discord_exit(...)
+
+          Typical call sites:
+            - futures_scanner_loop.py: after detecting price crossed stop/T1/T2
+            - Manual tooling / notebook: to log a manual EOD close
 
         reason values: "STOP_HIT" | "T1_HIT" | "T2_HIT" | "EOD_CLOSE" | free-form
 
         Example:
-            scanner._discord_exit("MNQ", "BULL", 19450.0, "T1_HIT",
-                                   entry_price=19410.0, pnl_pts=40.0)
+            FuturesORBScanner._discord_exit(
+                "MNQ", "BULL", 19450.0, "T1_HIT",
+                entry_price=19410.0, pnl_pts=40.0
+            )
 
         See docs/DISCORD_SIGNALS.md for full reference.
         """
