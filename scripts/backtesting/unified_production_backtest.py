@@ -89,6 +89,18 @@ BUG-BT-14 (Apr 03 2026): probe_db.py only counts rows -- no date ranges.
   both intraday_bars and intraday_bars_5m so data gaps are immediately
   visible. (probe_db.py change tracked separately.)
 
+BUG-BT-15 (Apr 06 2026): engine.run() received run_params (CLI defaults +
+  _ticker key only) as strategy_params. BacktestEngine logs and uses
+  strategy_params for position sizing BEFORE calling strategy(), so
+  engine-level logs showed stale CLI values (e.g. conf=65 for NVDA instead
+  of conf=60). Trade decisions were correct because war_machine_strategy()
+  merges TICKER_PARAMS internally, but engine logging was misleading and
+  position sizing could diverge if the engine ever uses strategy_params
+  directly for sizing calculations.
+  Fix: build effective_params (post-TICKER_PARAMS merge) in run_single()
+  and pass it as strategy_params to engine.run(). The _ticker key is
+  retained so the strategy's internal merge remains a no-op (idempotent).
+
 Usage:
     # Single ticker, 90-day single-pass
     python unified_production_backtest.py --ticker AAPL --days 90
@@ -476,7 +488,7 @@ def war_machine_strategy(
         fvg_min_size_pct  (default 0.005; TICKER_PARAMS may override)
         min_confidence    (default 65; TICKER_PARAMS may override per BUG-BT-13)
         rvol_min          (default 1.5; TICKER_PARAMS may override)
-        _ticker           (optional; injected by run_single for per-ticker overrides)
+        _ticker           (optional; retained for idempotent merge after BUG-BT-15)
 
     R:R structure (BUG-BT-10):
         stop_dist = clamp(ATR*0.5, MIN_STOP_PCT*entry, MAX_STOP_PCT*entry)
@@ -485,10 +497,16 @@ def war_machine_strategy(
     This guarantees T1/T2 are always anchored to the ACTUAL stop distance
     used after clamping, so R:R cannot invert regardless of ATR magnitude.
 
+    BUG-BT-15: engine.run() now passes the fully-merged effective_params
+    (built in run_single) as strategy_params, so this internal merge is a
+    no-op for normal runs. The merge is retained as a safety fallback for
+    any direct callers that do not pre-merge.
+
     Returns signal dict or None.
     """
-    # BUG-BT-7: merge per-ticker overrides over CLI params
-    # BUG-BT-13: TICKER_PARAMS now includes min_confidence for low-vol tickers
+    # BUG-BT-7 / BUG-BT-15: merge per-ticker overrides over incoming params.
+    # After BUG-BT-15 fix, params already contain merged values when called
+    # from run_single. This merge is a no-op in that case (idempotent).
     ticker = params.get("_ticker", "").upper()
     effective_params = dict(params)
     if ticker and ticker in TICKER_PARAMS:
@@ -703,11 +721,16 @@ def run_single(
     """
     Run either a single-pass backtest or walk-forward for one ticker.
 
-    BUG-BT-7: Injects _ticker so war_machine_strategy merges TICKER_PARAMS.
-    BUG-BT-9: Computes actual_span_days from real bar dates, passes to
-              _wf_params_for_span() instead of the --days CLI arg.
+    BUG-BT-7:  Injects _ticker so war_machine_strategy merges TICKER_PARAMS.
+    BUG-BT-9:  Computes actual_span_days from real bar dates, passes to
+               _wf_params_for_span() instead of the --days CLI arg.
     BUG-BT-11: Logs effective merged params before engine.run() so the log
                accurately reflects what the strategy uses (not CLI defaults).
+    BUG-BT-15: Builds effective_params (post-TICKER_PARAMS merge) and passes
+               it as strategy_params to engine.run() so engine-level logging
+               and position sizing use the correct per-ticker values rather
+               than the unmerged CLI defaults. The _ticker key is retained in
+               effective_params so the strategy's internal merge is idempotent.
     """
     if not BACKTEST_AVAILABLE:
         logger.error("BacktestEngine not available -- install War Machine dependencies")
@@ -721,11 +744,14 @@ def run_single(
     run_params = dict(params)
     run_params["_ticker"] = ticker
 
-    # BUG-BT-11: log effective params (post-ticker-override) for auditability
-    effective_log = dict(run_params)
+    # BUG-BT-15: build fully-merged effective_params so engine.run() receives
+    # the post-TICKER_PARAMS values for logging and position sizing.
+    effective_params = dict(run_params)
     if ticker.upper() in TICKER_PARAMS:
-        effective_log.update(TICKER_PARAMS[ticker.upper()])
-    logger.info(f"[{ticker}] Effective strategy params: {effective_log}")
+        effective_params.update(TICKER_PARAMS[ticker.upper()])
+
+    # BUG-BT-11: log effective params (post-ticker-override) for auditability
+    logger.info(f"[{ticker}] Effective strategy params: {effective_params}")
 
     if walk_forward:
         # BUG-BT-9: use actual bar span, not --days, to pick window config
@@ -782,11 +808,14 @@ def run_single(
             risk_per_trade_pct=1.0,
             enable_t1_t2_exits=True,
         )
+        # BUG-BT-15: pass effective_params (post-TICKER_PARAMS merge) so
+        # BacktestEngine logs and position sizing use the correct per-ticker
+        # values (e.g. NVDA conf=60, not CLI default conf=65).
         results: BacktestResults = engine.run(
             ticker=ticker,
             bars=bars,
             strategy=war_machine_strategy,
-            strategy_params=run_params,
+            strategy_params=effective_params,
         )
         logger.info(results.summary())
 
@@ -862,7 +891,7 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="War Machine -- Unified Production Backtest (47.P4-1 / BUG-BT-1-14)"
+        description="War Machine -- Unified Production Backtest (47.P4-1 / BUG-BT-1-15)"
     )
     parser.add_argument("--ticker",        help="Single ticker to backtest")
     parser.add_argument("--batch",         action="store_true",
