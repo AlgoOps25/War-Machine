@@ -19,3 +19,5 @@ websockets>=12.0
 
 # Database ORM (required by metrics_cache.py for pd.read_sql_query)
 sqlalchemy>=2.0.0
+python-dotenv
+python-dotenv==1.0.1
