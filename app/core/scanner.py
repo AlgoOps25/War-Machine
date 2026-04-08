@@ -141,21 +141,31 @@ if ANALYTICS_AVAILABLE:
 VALIDATION_AVAILABLE = False
 OPTIONS_AVAILABLE    = False
 
-try:
-    from app.validation import validate_signal
-    VALIDATION_AVAILABLE = True
-    logger.info("[SCANNER] ✅ Validation gates loaded")
-except Exception as e:
-    logger.warning(f"[SCANNER] ⚠️  Validation module not available: {e}")
+EODHD_ENABLED = os.getenv("EODHD_ENABLED", "true").lower() == "true"
+if EODHD_ENABLED:
+    try:
+        from app.validation import validate_signal
+        VALIDATION_AVAILABLE = True
+        logger.info("[SCANNER] ✅ Validation gates loaded")
+    except Exception as e:
+        logger.warning(f"[SCANNER] ⚠️  Validation module not available: {e}")
+        validate_signal = None
+else:
     validate_signal = None
+    logger.info("[SCANNER] ⏭️  EODHD validation disabled (EODHD_ENABLED=false)")
 
-try:
-    from app.options import build_options_trade
-    OPTIONS_AVAILABLE = True
-    logger.info("[SCANNER] ✅ Options intelligence loaded")
-except Exception as e:
-    logger.warning(f"[SCANNER] ⚠️  Options module not available: {e}")
+OPTIONS_ENABLED = os.getenv("OPTIONS_INTELLIGENCE_ENABLED", "true").lower() == "true"
+if OPTIONS_ENABLED:
+    try:
+        from app.options import build_options_trade
+        OPTIONS_AVAILABLE = True
+        logger.info("[SCANNER] ✅ Options intelligence loaded")
+    except Exception as e:
+        logger.warning(f"[SCANNER] ⚠️  Options module not available: {e}")
+        build_options_trade = None
+else:
     build_options_trade = None
+    logger.info("[SCANNER] ⏭️  Options intelligence disabled (OPTIONS_INTELLIGENCE_ENABLED=false)")
 
 API_KEY            = os.getenv("EODHD_API_KEY", "")
 EMERGENCY_FALLBACK = ["SPY", "QQQ", "AAPL", "MSFT", "NVDA", "TSLA", "META", "AMD"]
