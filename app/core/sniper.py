@@ -276,6 +276,7 @@ _state = get_state()
 
 # BOS watch alert dedup — cleared EOD via clear_bos_alerts()
 _bos_watch_alerted: set = set()
+_eod_reported_today: set = set()   # date strings — prevents duplicate EOD reports
 
 
 def clear_bos_alerts():
@@ -442,7 +443,10 @@ def process_ticker(ticker: str):
 
         # FIX v1.38d: run_eod_report() only accepts session_date (str|None).
         if is_force_close_time(bars_session[-1]):
-            run_eod_report()
+            _today = _now_et().strftime("%Y-%m-%d")
+            if _today not in _eod_reported_today:
+                _eod_reported_today.add(_today)
+                run_eod_report()
             return
 
         _is_watching = _state.ticker_is_watching(ticker)
