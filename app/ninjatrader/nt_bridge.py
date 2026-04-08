@@ -31,6 +31,11 @@ Usage:
     bridge.start()                          # non-blocking background thread
     signal = bridge.signal_queue.get()      # blocks until next signal arrives
     bridge.stop()
+
+Fix BUG-NT-1 (2026-04-08):
+    SignalEngine._prev_bar is now reset when NT disconnects so that the
+    first bar of a new connection is never compared against a stale bar
+    from a previous session, preventing false delta-divergence signals.
 """
 
 import json
@@ -148,6 +153,20 @@ class SignalEngine:
 
     def __init__(self):
         self._prev_bar: Optional[NTBarData] = None
+
+    def reset(self) -> None:
+        """Clear carry-over state between NT sessions.
+
+        Must be called whenever the TCP connection is lost so that the first
+        bar received on the next connection is not compared against a stale
+        bar from a previous session (BUG-NT-1).
+        """
+        if self._prev_bar is not None:
+            logger.info(
+                "[SignalEngine] State reset — discarding prev_bar from %s",
+                self._prev_bar.timestamp,
+            )
+        self._prev_bar = None
 
     def evaluate(self, bar: NTBarData) -> NTSignal:
         prev = self._prev_bar
@@ -331,6 +350,10 @@ class NTBridge:
                 except (ConnectionResetError, BrokenPipeError):
                     logger.warning("NTBridge: connection lost.")
                     break
+
+        # BUG-NT-1: Reset SignalEngine state when connection drops so the first
+        # bar of the next session is never compared against a stale prior bar.
+        self._engine.reset()
 
     def _process_line(self, line: str) -> None:
         try:
