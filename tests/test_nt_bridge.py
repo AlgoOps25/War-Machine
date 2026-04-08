@@ -17,7 +17,9 @@ def make_bar(
     cum_delta=100.0,
     vwap=18190.0,
     poc=18180.0,
-    vah=18250.0,
+    # VA window is tight (18150–18195) so close≥18200 is OUTSIDE — full confidence.
+    # Tests that explicitly want inside-VA behaviour pass their own vah/val.
+    vah=18195.0,
     val=18150.0,
     open_=18195.0,
     high=18210.0,
@@ -77,10 +79,16 @@ class TestSignalEngineInit:
 
 class TestBullishDivergence:
     def test_bullish_divergence_above_poc_above_vwap_returns_buy(self):
-        """Price down, delta up, above POC, above VWAP → BUY divergence"""
+        """
+        Price down, delta up, above POC, above VWAP, outside VA → BUY divergence @ 0.85.
+        VA window (val=18150, vah=18195) is below close (18195–18200) so
+        both bars sit outside the Value Area — full confidence applies.
+        """
         engine = SignalEngine()
-        bar1   = make_bar(close=18200.0, cum_delta=50.0,  vwap=18190.0, poc=18180.0)
-        bar2   = make_bar(close=18195.0, cum_delta=120.0, vwap=18190.0, poc=18180.0)
+        bar1   = make_bar(close=18200.0, cum_delta=50.0,  vwap=18190.0, poc=18180.0,
+                          vah=18195.0, val=18150.0)
+        bar2   = make_bar(close=18196.0, cum_delta=120.0, vwap=18190.0, poc=18180.0,
+                          vah=18195.0, val=18150.0)
         engine.evaluate(bar1)
         signal = engine.evaluate(bar2)
         assert signal.direction  == Direction.BUY
@@ -88,22 +96,28 @@ class TestBullishDivergence:
         assert "divergence" in signal.reason.lower()
 
     def test_bullish_divergence_below_poc_returns_flat(self):
-        """Bullish divergence but price below POC — layers conflict → FLAT"""
+        """Bullish divergence but price below POC — layers conflict → not BUY."""
         engine = SignalEngine()
-        bar1   = make_bar(close=18170.0, cum_delta=50.0,  vwap=18190.0, poc=18180.0)
-        bar2   = make_bar(close=18165.0, cum_delta=120.0, vwap=18190.0, poc=18180.0)
+        bar1   = make_bar(close=18170.0, cum_delta=50.0,  vwap=18190.0, poc=18180.0,
+                          vah=18165.0, val=18130.0)
+        bar2   = make_bar(close=18165.0, cum_delta=120.0, vwap=18190.0, poc=18180.0,
+                          vah=18162.0, val=18130.0)
         engine.evaluate(bar1)
         signal = engine.evaluate(bar2)
-        # price below POC conflicts with bullish divergence → no BUY issued
         assert signal.direction != Direction.BUY
 
 
 class TestBearishDivergence:
     def test_bearish_divergence_below_poc_below_vwap_returns_sell(self):
-        """Price up, delta down, below POC, below VWAP → SELL divergence"""
+        """
+        Price up, delta down, below POC, below VWAP, outside VA → SELL divergence @ 0.85.
+        VA window (val=18120, vah=18158) keeps close (18160–18165) outside VA.
+        """
         engine = SignalEngine()
-        bar1   = make_bar(close=18160.0, cum_delta=200.0, vwap=18190.0, poc=18180.0)
-        bar2   = make_bar(close=18165.0, cum_delta=80.0,  vwap=18190.0, poc=18180.0)
+        bar1   = make_bar(close=18160.0, cum_delta=200.0, vwap=18190.0, poc=18180.0,
+                          vah=18158.0, val=18120.0)
+        bar2   = make_bar(close=18165.0, cum_delta=80.0,  vwap=18190.0, poc=18180.0,
+                          vah=18158.0, val=18120.0)
         engine.evaluate(bar1)
         signal = engine.evaluate(bar2)
         assert signal.direction  == Direction.SELL
@@ -111,10 +125,12 @@ class TestBearishDivergence:
         assert "divergence" in signal.reason.lower()
 
     def test_bearish_divergence_above_poc_returns_flat(self):
-        """Bearish divergence but price above POC — layers conflict → FLAT"""
+        """Bearish divergence but price above POC — layers conflict → not SELL."""
         engine = SignalEngine()
-        bar1   = make_bar(close=18200.0, cum_delta=200.0, vwap=18190.0, poc=18180.0)
-        bar2   = make_bar(close=18205.0, cum_delta=80.0,  vwap=18190.0, poc=18180.0)
+        bar1   = make_bar(close=18200.0, cum_delta=200.0, vwap=18190.0, poc=18180.0,
+                          vah=18195.0, val=18150.0)
+        bar2   = make_bar(close=18205.0, cum_delta=80.0,  vwap=18190.0, poc=18180.0,
+                          vah=18195.0, val=18150.0)
         engine.evaluate(bar1)
         signal = engine.evaluate(bar2)
         assert signal.direction != Direction.SELL
@@ -122,20 +138,30 @@ class TestBearishDivergence:
 
 class TestAgreementSignals:
     def test_agreement_buy_above_poc_above_vwap(self):
-        """Price up + delta up, above POC + above VWAP → BUY (trend follow)"""
+        """
+        Price up + delta up, above POC + above VWAP, outside VA → BUY @ 0.70.
+        vah=18195 keeps close=18200/18210 outside the Value Area.
+        """
         engine = SignalEngine()
-        bar1   = make_bar(close=18200.0, cum_delta=100.0, vwap=18190.0, poc=18180.0)
-        bar2   = make_bar(close=18210.0, cum_delta=180.0, vwap=18190.0, poc=18180.0)
+        bar1   = make_bar(close=18200.0, cum_delta=100.0, vwap=18190.0, poc=18180.0,
+                          vah=18195.0, val=18150.0)
+        bar2   = make_bar(close=18210.0, cum_delta=180.0, vwap=18190.0, poc=18180.0,
+                          vah=18195.0, val=18150.0)
         engine.evaluate(bar1)
         signal = engine.evaluate(bar2)
         assert signal.direction  == Direction.BUY
         assert signal.confidence == pytest.approx(0.70)
 
     def test_agreement_sell_below_poc_below_vwap(self):
-        """Price down + delta down, below POC + below VWAP → SELL (trend follow)"""
+        """
+        Price down + delta down, below POC + below VWAP, outside VA → SELL @ 0.70.
+        vah=18145 keeps close=18150/18160 outside the Value Area.
+        """
         engine = SignalEngine()
-        bar1   = make_bar(close=18160.0, cum_delta=100.0, vwap=18190.0, poc=18180.0)
-        bar2   = make_bar(close=18150.0, cum_delta=40.0,  vwap=18190.0, poc=18180.0)
+        bar1   = make_bar(close=18160.0, cum_delta=100.0, vwap=18190.0, poc=18180.0,
+                          vah=18145.0, val=18100.0)
+        bar2   = make_bar(close=18150.0, cum_delta=40.0,  vwap=18190.0, poc=18180.0,
+                          vah=18145.0, val=18100.0)
         engine.evaluate(bar1)
         signal = engine.evaluate(bar2)
         assert signal.direction  == Direction.SELL
@@ -144,7 +170,7 @@ class TestAgreementSignals:
 
 class TestValueAreaConfidenceReduction:
     def test_inside_value_area_reduces_confidence(self):
-        """Signals inside Value Area get 0.6x confidence multiplier"""
+        """Signals inside Value Area get 0.6x confidence multiplier."""
         engine = SignalEngine()
         # Price inside VA (val=18150, vah=18250) — agreement BUY signal
         bar1   = make_bar(close=18200.0, cum_delta=100.0, vwap=18190.0, poc=18180.0,
@@ -157,7 +183,7 @@ class TestValueAreaConfidenceReduction:
         assert signal.confidence == pytest.approx(0.70 * 0.6, abs=0.01)
 
     def test_outside_value_area_full_confidence(self):
-        """Signals outside Value Area keep full confidence"""
+        """Signals outside Value Area keep full confidence."""
         engine = SignalEngine()
         bar1   = make_bar(close=18200.0, cum_delta=100.0, vwap=18190.0, poc=18180.0,
                           vah=18195.0, val=18150.0)  # close=18200 > vah=18195 → outside VA
