@@ -1,19 +1,24 @@
-// NTBarSender.cs
-// NinjaScript Strategy — streams bar payloads to War Machine over TCP.
+// NTBarSender.cs  (v2 — native NT8 only, no Order Flow+ required)
+//
+// Streams bar payloads to War Machine over TCP.
+// Works on any NT8 account — funded or unfunded.
 //
 // INSTALL:
-//   1. Open NinjaTrader 8
-//   2. Tools → NinjaScript Editor → right-click Strategies → Add Strategy
-//   3. Paste this file contents → Compile (F5)
-//   4. Apply to NQ JUN26 chart (1-Minute bars, Tick Replay ON)
-//   5. Set WAR_MACHINE_HOST = the IP of your Railway/local Python server
-//   6. Set WAR_MACHINE_PORT = 5570 (matches NTBridge DEFAULT_PORT)
+//   1. NinjaTrader 8 → Tools → NinjaScript Editor
+//   2. New → Strategy → delete template → paste this file
+//   3. Compile (F5) — should show 0 errors
+//   4. Apply to NQ JUN26 chart (1-Minute bars)
+//   5. Set WAR_MACHINE_HOST below to your Railway hostname or 127.0.0.1
 //
-// PAYLOAD (one JSON line per bar close):
+// UPGRADE PATH (after funding + Order Flow+ active):
+//   Search for "ORDER FLOW+ UPGRADE" comments and swap the blocks back in.
+//   JSON payload schema is identical — War Machine needs no changes.
+//
+// PAYLOAD (one JSON line per confirmed bar close):
 //   {"symbol":"NQ JUN26","timestamp":"2026-04-08T09:35:00",
 //    "open":18200.25,"high":18215.50,"low":18195.00,"close":18210.75,
-//    "volume":1842,"cum_delta":312.0,"vwap":18205.10,
-//    "poc":18200.00,"vah":18220.00,"val":18185.00}
+//    "volume":1842,"cum_delta":10.50,"vwap":18205.10,
+//    "poc":18200.00,"vah":18215.50,"val":18195.00}
 
 #region Using declarations
 using System;
@@ -21,7 +26,6 @@ using System.Net.Sockets;
 using System.Text;
 using System.Threading;
 using NinjaTrader.Cbi;
-using NinjaTrader.Gui.Tools;
 using NinjaTrader.NinjaScript;
 using NinjaTrader.NinjaScript.Strategies;
 using NinjaTrader.Data;
@@ -31,46 +35,49 @@ namespace NinjaTrader.NinjaScript.Strategies
 {
     public class NTBarSender : Strategy
     {
-        // ── Configuration ─────────────────────────────────────────────────
-        private const string WAR_MACHINE_HOST = "127.0.0.1";  // Change for Railway IP
+        // ── Configuration ─────────────────────────────────────────────────────────────
+        private const string WAR_MACHINE_HOST = "127.0.0.1";  // Change to Railway hostname
         private const int    WAR_MACHINE_PORT = 5570;
         private const int    RECONNECT_MS     = 5000;
+        private const int    VOL_LOOKBACK     = 20;  // bars for POC/VAH/VAL calculation
 
-        // ── State ─────────────────────────────────────────────────────────
-        private TcpClient   _client;
+        // ── Native indicators (no add-ons required) ────────────────────────────────
+        // VWAP approximation: SMA of typical price (smooths toward volume-weighted mean)
+        private NinjaTrader.NinjaScript.Indicators.SMA _vwapProxy;
+        private NinjaTrader.NinjaScript.Indicators.VOL _vol;
+
+        // ── TCP state ─────────────────────────────────────────────────────────────────
+        private TcpClient     _client;
         private NetworkStream _stream;
-        private bool        _connected = false;
-        private Thread      _connectThread;
+        private bool          _connected    = false;
+        private Thread        _connectThread;
 
-        // ── Order Flow indicators ─────────────────────────────────────────
-        // These require Order Flow+ to be active on the account.
-        // If Order Flow+ is pending, delta will fall back to (close - open) proxy.
-        private OrderFlowCumulativeDelta _cumDelta;
-        private OrderFlowVWAP            _vwap;
-        private OrderFlowVolumeProfile   _volProfile;
+        // ── Delta accumulator ───────────────────────────────────────────────────────────
+        // Cumulative delta proxy: sum of (close-open) per bar, resets at session open.
+        // Directional: positive = net buying pressure, negative = net selling.
+        private double _sessionDelta = 0.0;
+        private int    _lastSessionBar = -1;
 
         protected override void OnStateChange()
         {
             if (State == State.SetDefaults)
             {
-                Description = "Streams bar data to War Machine over TCP";
+                Description = "Streams bar data to War Machine over TCP (native NT8, no add-ons)";
                 Name        = "NTBarSender";
                 Calculate   = Calculate.OnBarClose;
                 IsOverlay   = true;
             }
             else if (State == State.Configure)
             {
-                // Add Order Flow indicators — requires Order Flow+ subscription
-                _cumDelta   = OrderFlowCumulativeDelta(CumulativeDeltaType.BidAsk, CumulativeDeltaMode.Bars, 0, 0);
-                _vwap       = OrderFlowVWAP(Anchored.Session, 0, 0);
-                _volProfile = OrderFlowVolumeProfile(200, 1, 70, 3);
+                // Native SMA on typical price as VWAP proxy
+                // ORDER FLOW+ UPGRADE: replace with OrderFlowVWAP(Anchored.Session, 0, 0)
+                _vwapProxy = SMA(Typical, 20);
+                _vol       = VOL(1);
 
-                AddChartIndicator(_cumDelta);
-                AddChartIndicator(_vwap);
+                AddChartIndicator(_vwapProxy);
             }
             else if (State == State.DataLoaded)
             {
-                // Connect in background so NT UI stays responsive
                 _connectThread = new Thread(ConnectLoop) { IsBackground = true };
                 _connectThread.Start();
             }
@@ -82,8 +89,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         protected override void OnBarUpdate()
         {
-            // Only send on primary series, confirmed bars
-            if (BarsInProgress != 0 || CurrentBar < 2)
+            if (BarsInProgress != 0 || CurrentBar < VOL_LOOKBACK + 2)
                 return;
 
             if (!_connected)
@@ -91,30 +97,42 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             try
             {
-                // ── Pull indicator values ─────────────────────────────────
-                double cumDeltaVal = 0;
-                try   { cumDeltaVal = _cumDelta.DeltaClose.GetValueAt(CurrentBar); }
-                catch { cumDeltaVal = Close[0] - Open[0]; }  // proxy if OF+ pending
+                // ── Cumulative Delta proxy ─────────────────────────────────────────────
+                // Reset at each new session
+                // ORDER FLOW+ UPGRADE: replace _sessionDelta with
+                //   _cumDelta.DeltaClose.GetValueAt(CurrentBar)
+                if (Bars.IsFirstBarOfSession)
+                    _sessionDelta = 0.0;
 
-                double vwapVal = 0;
-                try   { vwapVal = _vwap.Value.GetValueAt(CurrentBar); }
-                catch { vwapVal = Close[0]; }
+                _sessionDelta += (Close[0] - Open[0]);
+                double cumDeltaVal = _sessionDelta;
 
-                double poc = 0, vah = 0, val = 0;
-                try
+                // ── VWAP proxy ─────────────────────────────────────────────────────────
+                // ORDER FLOW+ UPGRADE: replace with _vwap.Value.GetValueAt(CurrentBar)
+                double vwapVal = _vwapProxy[0];
+
+                // ── POC / VAH / VAL proxy ─────────────────────────────────────────────
+                // Find the bar with highest volume over VOL_LOOKBACK bars → its close = POC
+                // VAH = highest high over lookback, VAL = lowest low over lookback
+                // ORDER FLOW+ UPGRADE: replace with OrderFlowVolumeProfile values
+                double poc = Close[0];
+                double maxVol = double.MinValue;
+                double vah = double.MinValue;
+                double val = double.MaxValue;
+
+                for (int i = 0; i < VOL_LOOKBACK; i++)
                 {
-                    poc = _volProfile.PointOfControl.GetValueAt(CurrentBar);
-                    vah = _volProfile.ValueAreaHigh.GetValueAt(CurrentBar);
-                    val = _volProfile.ValueAreaLow.GetValueAt(CurrentBar);
-                }
-                catch
-                {
-                    poc = Close[0];
-                    vah = High[0];
-                    val = Low[0];
+                    double barVol = Volume[i];
+                    if (barVol > maxVol)
+                    {
+                        maxVol = barVol;
+                        poc    = Close[i];
+                    }
+                    if (High[i] > vah) vah = High[i];
+                    if (Low[i]  < val) val = Low[i];
                 }
 
-                // ── Build JSON payload ────────────────────────────────────
+                // ── JSON payload ─────────────────────────────────────────────────────────────
                 string ts      = Time[0].ToString("yyyy-MM-ddTHH:mm:ss");
                 string symbol  = Instrument.FullName;
                 string payload = string.Format(
@@ -123,10 +141,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                     "\"volume\":{6},\"cum_delta\":{7},\"vwap\":{8}," +
                     "\"poc\":{9},\"vah\":{10},\"val\":{11}}}\n",
                     symbol, ts,
-                    Open[0].ToString("F2"),
-                    High[0].ToString("F2"),
-                    Low[0].ToString("F2"),
-                    Close[0].ToString("F2"),
+                    Open[0].ToString("F2"),  High[0].ToString("F2"),
+                    Low[0].ToString("F2"),   Close[0].ToString("F2"),
                     Volume[0],
                     cumDeltaVal.ToString("F2"),
                     vwapVal.ToString("F2"),
@@ -141,13 +157,13 @@ namespace NinjaTrader.NinjaScript.Strategies
             catch (Exception ex)
             {
                 Print("[NTBarSender] Send error: " + ex.Message + " — reconnecting");
-                _connected = false;
+                _connected     = false;
                 _connectThread = new Thread(ConnectLoop) { IsBackground = true };
                 _connectThread.Start();
             }
         }
 
-        // ── TCP helpers ────────────────────────────────────────────────────
+        // ── TCP helpers ──────────────────────────────────────────────────────────────
 
         private void ConnectLoop()
         {
@@ -160,7 +176,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                     _client.Connect(WAR_MACHINE_HOST, WAR_MACHINE_PORT);
                     _stream    = _client.GetStream();
                     _connected = true;
-                    Print("[NTBarSender] ✅ Connected to War Machine");
+                    Print("[NTBarSender] Connected to War Machine");
                 }
                 catch (Exception ex)
                 {
@@ -173,8 +189,8 @@ namespace NinjaTrader.NinjaScript.Strategies
         private void Disconnect()
         {
             _connected = false;
-            try { _stream?.Close(); }  catch { }
-            try { _client?.Close(); }  catch { }
+            try { _stream?.Close(); } catch { }
+            try { _client?.Close(); } catch { }
         }
     }
 }
