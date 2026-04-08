@@ -1,4 +1,4 @@
-// NTBarSender.cs  (v3 — native NT8 only, no Order Flow+ required)
+// NTBarSender.cs  (v4 — configurable host/port via NT8 UI)
 //
 // Streams bar payloads to War Machine over TCP.
 // Works on any NT8 account — funded or unfunded.
@@ -8,7 +8,11 @@
 //   2. Find NTBarSender under Strategies → double-click to open
 //   3. Ctrl+A → Delete → paste this file → F5 to compile
 //   4. Apply to NQ JUN26 chart (1-Minute bars)
-//   5. Set WAR_MACHINE_HOST below to your Railway hostname or 127.0.0.1
+//   5. In the strategy parameters dialog set:
+//        WarMachineHost = 127.0.0.1       (local)  OR
+//        WarMachineHost = crossover.proxy.rlwy.net  (Railway)
+//        WarMachinePort = 5570            (local)  OR
+//        WarMachinePort = 24283           (Railway)
 //
 // UPGRADE PATH (after funding + Order Flow+ active):
 //   Search for "ORDER FLOW+ UPGRADE" comments and swap the blocks back in.
@@ -22,6 +26,8 @@
 
 #region Using declarations
 using System;
+using System.ComponentModel;
+using System.ComponentModel.DataAnnotations;
 using System.Net.Sockets;
 using System.Text;
 using System.Threading;
@@ -35,11 +41,9 @@ namespace NinjaTrader.NinjaScript.Strategies
 {
     public class NTBarSender : Strategy
     {
-        // ── Configuration ──────────────────────────────────────────────────────────
-        private const string WAR_MACHINE_HOST = "crossover.proxy.rlwy.net";  // Railway TCP proxy
-        private const int    WAR_MACHINE_PORT = 24283;                        // Railway TCP proxy port
-        private const int    RECONNECT_MS     = 5000;
-        private const int    VOL_LOOKBACK     = 20;  // bars for POC/VAH/VAL calculation
+        // ── Constants ──────────────────────────────────────────────────────────────
+        private const int RECONNECT_MS = 5000;
+        private const int VOL_LOOKBACK = 20;  // bars for POC/VAH/VAL calculation
 
         // ── Native indicators (no add-ons required) ────────────────────────────────
         // VWAP approximation: SMA of typical price (smooths toward volume-weighted mean)
@@ -62,10 +66,13 @@ namespace NinjaTrader.NinjaScript.Strategies
         {
             if (State == State.SetDefaults)
             {
-                Description = "Streams bar data to War Machine over TCP (native NT8, no add-ons)";
-                Name        = "NTBarSender";
-                Calculate   = Calculate.OnBarClose;
-                IsOverlay   = true;
+                Description    = "Streams bar data to War Machine over TCP (native NT8, no add-ons)";
+                Name           = "NTBarSender";
+                Calculate      = Calculate.OnBarClose;
+                IsOverlay      = true;
+                // Default to LOCAL — change to Railway values in the UI for production
+                WarMachineHost = "127.0.0.1";
+                WarMachinePort = 5570;
             }
             else if (State == State.Configure)
             {
@@ -163,12 +170,12 @@ namespace NinjaTrader.NinjaScript.Strategies
             {
                 try
                 {
-                    Print("[NTBarSender] Connecting to " + WAR_MACHINE_HOST + ":" + WAR_MACHINE_PORT);
+                    Print("[NTBarSender] Connecting to " + WarMachineHost + ":" + WarMachinePort);
                     _client    = new TcpClient();
-                    _client.Connect(WAR_MACHINE_HOST, WAR_MACHINE_PORT);
+                    _client.Connect(WarMachineHost, WarMachinePort);
                     _stream    = _client.GetStream();
                     _connected = true;
-                    Print("[NTBarSender] Connected to War Machine");
+                    Print("[NTBarSender] Connected to War Machine @ " + WarMachineHost + ":" + WarMachinePort);
                 }
                 catch (Exception ex)
                 {
@@ -184,5 +191,16 @@ namespace NinjaTrader.NinjaScript.Strategies
             try { _stream?.Close(); } catch { }
             try { _client?.Close(); } catch { }
         }
+
+        // ── UI Parameters (configurable in NT8 strategy dialog) ────────────────────
+
+        [NinjaScriptProperty]
+        [Display(Name = "War Machine Host", Description = "127.0.0.1 for local | crossover.proxy.rlwy.net for Railway", Order = 1, GroupName = "War Machine")]
+        public string WarMachineHost { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 65535)]
+        [Display(Name = "War Machine Port", Description = "5570 for local | 24283 for Railway", Order = 2, GroupName = "War Machine")]
+        public int WarMachinePort { get; set; }
     }
 }
