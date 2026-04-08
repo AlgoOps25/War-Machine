@@ -14,7 +14,8 @@ import os
 import sys
 import logging
 from datetime import time as dtime
-
+from dotenv import load_dotenv
+load_dotenv()
 logger = logging.getLogger(__name__)
 
 # ========================================
