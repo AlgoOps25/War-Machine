@@ -1,5 +1,5 @@
 """
-scanner.py — Intelligent Watchlist Builder & Scanner Loop v1.38e
+scanner.py — Intelligent Watchlist Builder & Scanner Loop v1.39
 Adaptive Watchlist Funnel, Pre-Market Scanner, Position Monitoring, DB Cleanup.
 WebSocket bar + quote feeds with candle cache (95%+ API reduction on redeploy).
 See CHANGELOG.md for full phase history.
@@ -25,6 +25,12 @@ FEATURE FUTURES-ORB (2026-04-02): opt-in futures thread added.
   FUT-2: start_futures_loop() called AFTER all equity init — isolated daemon thread.
   FUT-3: EOD reset calls futures_orb_scanner.reset_daily() + clear_bar_cache().
   FUT-4: Startup banner includes futures status line.
+
+FEATURE NT-BRIDGE (2026-04-08): NinjaTrader order flow bridge added.
+  NT-1: NT_BRIDGE_ENABLED env-var guard — zero impact when not set.
+  NT-2: NTBridge starts AFTER all equity init — isolated daemon thread.
+  NT-3: NTBridge signal queue consumed in background — non-blocking to scan loop.
+  NT-4: Startup banner includes NTBridge status line.
 """
 from app.core.health_server import start_health_server, health_heartbeat
 
@@ -44,9 +50,9 @@ from utils.config import validate_required_env_vars
 
 try:
     from utils.production_helpers import _db_operation_safe
-    PRODUCTION_HELPERS_ENABLED = True
+    PRODUCTION_HELPERS_AVAILABLE = True
 except ImportError:
-    PRODUCTION_HELPERS_ENABLED = False
+    PRODUCTION_HELPERS_AVAILABLE = False
     def _db_operation_safe(fn, label=""): fn()
 
 _last_logged_interval       = None
@@ -74,18 +80,21 @@ logger = logging.getLogger(__name__)
 
 REGIME_TICKERS         = ["SPY", "QQQ"]
 TICKER_TIMEOUT_SECONDS = 45
-# SC-F FIX (CORE-5): Moved from inside start_scanner_loop() to module-level.
-# Constants belong at module scope — consistent with TICKER_TIMEOUT_SECONDS above.
 _REDEPLOY_RETRIES      = 2
 _REDEPLOY_RETRY_WAIT   = 3
 _ticker_executor       = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ticker_watchdog")
 
 # ── Futures opt-in flag ───────────────────────────────────────────────────────
-# FUT-1: Evaluated once at import time so the flag is stable across the loop.
-# Setting FUTURES_ENABLED=true in Railway is the ONLY way to activate futures.
-# The options/equity system has zero awareness of this flag.
 _FUTURES_ENABLED = os.getenv("FUTURES_ENABLED", "false").lower() == "true"
-_FUTURES_SYMBOL  = os.getenv("FUTURES_SYMBOL", "MNQ")  # MNQ default; change to NQ for full contract
+_FUTURES_SYMBOL  = os.getenv("FUTURES_SYMBOL", "MNQ")
+
+# ── NT-1: NinjaTrader bridge opt-in flag ─────────────────────────────────────
+# Set NT_BRIDGE_ENABLED=true in Railway (or .env) to activate.
+# NT_BRIDGE_PORT defaults to 5570 — must match NTBarSender.cs WAR_MACHINE_PORT.
+# Zero impact on equity/options pipeline when not set.
+_NT_BRIDGE_ENABLED = os.getenv("NT_BRIDGE_ENABLED", "false").lower() == "true"
+_NT_BRIDGE_PORT    = int(os.getenv("NT_BRIDGE_PORT", "5570"))
+_nt_bridge_ref     = None  # holds NTBridge instance after startup
 
 
 def _run_ticker_with_timeout(process_ticker_fn, ticker: str) -> bool:
@@ -95,12 +104,6 @@ def _run_ticker_with_timeout(process_ticker_fn, ticker: str) -> bool:
         return True
     except FuturesTimeoutError:
         logger.error(f"[WATCHDOG] ⏰ {ticker} timed out after {TICKER_TIMEOUT_SECONDS}s — skipping")
-        # BUG-SC-2 (documented): future.cancel() has NO effect on an already-running
-        # ThreadPoolExecutor thread — Python threads cannot be forcibly interrupted.
-        # cancel() always returns False here. The thread continues running in the
-        # background until it completes naturally. This is a known Python limitation.
-        # The scanner correctly moves on; resource impact is bounded by the executor's
-        # max_workers=1 — the next ticker won't start until the timed-out thread finishes.
         future.cancel()
         return False
     except Exception as exc:
@@ -108,13 +111,6 @@ def _run_ticker_with_timeout(process_ticker_fn, ticker: str) -> bool:
         return False
 
 
-# FIX #30: Removed raw module-level analytics_conn psycopg2 connection and
-# _get_analytics_conn() reconnect helper. That connection was a parallel,
-# unmanaged socket that bypassed the db_connection.py semaphore pool entirely.
-# AnalyticsIntegration.__init__ accepts db_connection for API compatibility but
-# ignores it — SignalTracker manages its own pooled connection internally.
-# The old block also kept a bare psycopg2.connect() at import time which could
-# block Railway startup and left an unclosed socket on any crash.
 ANALYTICS_AVAILABLE = False
 DATABASE_URL        = os.getenv('DATABASE_URL')
 
@@ -192,8 +188,6 @@ def _get_stale_tickers(tickers: list) -> list:
                 if last_bar_time is None or last_bar_time < cutoff:
                     stale.append(ticker)
     except Exception as e:
-        # SC-E FIX (CORE-5): Log warning before returning full list so the cause of
-        # a full backfill on startup is visible in Railway logs instead of silent.
         logger.warning(f"[CACHE] Stale-check failed ({e}) — treating all {len(tickers)} tickers as stale")
         return list(tickers)
     return stale
@@ -298,12 +292,6 @@ def subscribe_and_prefetch_tickers(new_tickers: list):
         subscribe_tickers(combined)
         subscribe_quote_tickers(combined)
         logger.info(f"[WS-SUBSCRIBE] ✅ Subscribed {len(new_tickers)} tickers + regime: {', '.join(new_tickers)}")
-        # BUG-SC-3 (documented): Lambda calls two backfill functions as a tuple expression.
-        # Both are executed left-to-right: startup_backfill_with_cache first (30d history),
-        # then startup_intraday_backfill_today (today's bars). Order is intentional —
-        # historical context must be loaded before intraday bars are appended.
-        # If startup_intraday_backfill_today raises, _fire_and_forget catches it as a
-        # warning — historical backfill will have already completed successfully.
         _fire_and_forget(
             lambda: (
                 data_manager.startup_backfill_with_cache(combined, days=30),
@@ -316,7 +304,36 @@ def subscribe_and_prefetch_tickers(new_tickers: list):
         logger.exception(e)
 
 
+# NT-3: Background thread drains NTBridge signal queue and logs actionable signals.
+# Non-blocking — runs as a daemon thread independent of the equity scan loop.
+def _start_nt_signal_consumer(bridge):
+    """Drain NTBridge.signal_queue in a background thread."""
+    def _consume():
+        logger.info("[NT-BRIDGE] Signal consumer thread started")
+        while True:
+            try:
+                signal = bridge.signal_queue.get(timeout=1)
+                if signal.is_actionable():
+                    logger.info(
+                        "[NT-BRIDGE] %-4s | conf=%.2f | %s | close=%.2f vwap=%.2f poc=%.2f",
+                        signal.direction.value,
+                        signal.confidence,
+                        signal.reason,
+                        signal.bar.close,
+                        signal.bar.vwap,
+                        signal.bar.poc,
+                    )
+                    # Future hook: pass signal into War Machine signal pipeline
+                    # e.g. process_nt_signal(signal)
+            except Exception:
+                pass  # queue.Empty on timeout — continue looping
+    t = threading.Thread(target=_consume, daemon=True, name="NTBridge-Consumer")
+    t.start()
+    return t
+
+
 def start_scanner_loop():
+    global _nt_bridge_ref
     validate_required_env_vars()
 
     from app.core.sniper import process_ticker, clear_armed_signals, clear_watching_signals, clear_bos_alerts
@@ -331,10 +348,8 @@ def start_scanner_loop():
         learning_engine = None
         HAS_AI_LEARNING = False
 
-    # ── Startup banner (status only — see CHANGELOG.md for phase history) ─────
     logger.info("=" * 60)
-    # SC-A FIX (CORE-5): Version bumped to v1.38e — synced with sniper.py post CORE-4.
-    logger.info("WAR MACHINE CFW6 SCANNER v1.38e - STARTUP")
+    logger.info("WAR MACHINE CFW6 SCANNER v1.39 - STARTUP")
     logger.info("=" * 60)
 
     try:
@@ -347,18 +362,16 @@ def start_scanner_loop():
 
     db_msg   = "Connected — Analytics tracking enabled" if ANALYTICS_AVAILABLE else "OFFLINE — no tracking"
     disc_msg = "Alert notifications ready" if os.getenv('DISCORD_WEBHOOK_URL') else "NOT CONFIGURED"
-    # BUG-SC-4 (documented): API_KEY[:8] is safe — Python slice never raises IndexError.
-    # If API_KEY is shorter than 8 chars (e.g. a stub), the full string is shown.
-    # The ✗ branch is taken when API_KEY == "" so [:8] is only reached when a key exists.
     scrn_msg = ("EODHD API configured (" + API_KEY[:8] + "...)") if API_KEY else "EODHD_API_KEY not set"
     reg_msg  = "Regime channel active" if os.getenv('REGIME_WEBHOOK_URL') else "Set REGIME_WEBHOOK_URL"
     opts_msg = "Greeks analysis active" if OPTIONS_AVAILABLE else "NOT INTEGRATED"
     val_msg  = "CFW6 confirmation active" if VALIDATION_AVAILABLE else "NOT INTEGRATED"
-    # FUT-4: Futures status line — mirrors existing banner format.
     fut_msg  = (
         f"ORB thread armed ({_FUTURES_SYMBOL}) "
         f"— {'LIVE Tradier' if os.getenv('TRADIER_FUTURES_ENABLED','false').lower()=='true' else 'QQQ proxy (Tradier pending)'}"
     ) if _FUTURES_ENABLED else "Set FUTURES_ENABLED=true to activate"
+    # NT-4: NTBridge status line in startup banner.
+    nt_msg   = f"Listening on port {_NT_BRIDGE_PORT}" if _NT_BRIDGE_ENABLED else "Set NT_BRIDGE_ENABLED=true to activate"
 
     db_tick   = "\u2713" if ANALYTICS_AVAILABLE else "\u2717"
     disc_tick = "\u2713" if os.getenv('DISCORD_WEBHOOK_URL') else "\u2717"
@@ -367,6 +380,7 @@ def start_scanner_loop():
     opts_tick = "\u2713" if OPTIONS_AVAILABLE else "\u2717"
     val_tick  = "\u2713" if VALIDATION_AVAILABLE else "\u2717"
     fut_tick  = "\u2713" if _FUTURES_ENABLED else "\u2717"
+    nt_tick   = "\u2713" if _NT_BRIDGE_ENABLED else "\u2717"
 
     logger.info(f"{db_tick} DATABASE        {db_msg}")
     logger.info(f"{disc_tick} DISCORD         {disc_msg}")
@@ -375,6 +389,7 @@ def start_scanner_loop():
     logger.info(f"{opts_tick} OPTIONS-GATE    {opts_msg}")
     logger.info(f"{val_tick} VALIDATION      {val_msg}")
     logger.info(f"{fut_tick} FUTURES-ORB     {fut_msg}")
+    logger.info(f"{nt_tick} NT-BRIDGE       {nt_msg}")
     logger.info(f"  RVOL Signal Gate : MIN={config.RVOL_SIGNAL_GATE}x  Ceiling={config.RVOL_CEILING}x")
     logger.info(f"  Bear Signals     : {'ENABLED' if config.BEAR_SIGNALS_ENABLED else 'DISABLED'}")
     logger.info(f"  Ticker Watchdog  : {TICKER_TIMEOUT_SECONDS}s hard timeout per ticker")
@@ -386,9 +401,6 @@ def start_scanner_loop():
     premarket_watchlist = []
     premarket_built     = False
 
-    # BUG-SC-5 FIX (2026-03-31): Previous message showed "OR window active" for any
-    # non-market-hours startup (including pre-market at 8:45 AM before the OR opens).
-    # Now correctly distinguishes: live market hours vs pre-market vs after-hours.
     if _booting_into_market_hours:
         _startup_mode = "Resuming intraday"
     elif is_premarket():
@@ -397,9 +409,8 @@ def start_scanner_loop():
         _startup_mode = "After-hours — awaiting market open"
 
     try:
-        # SC-A FIX (CORE-5): Discord message version synced to v1.38e.
         send_simple_message(
-            f"⚔️ WAR MACHINE ONLINE — CFW6 v1.38e | {_startup_mode}"
+            f"⚔️ WAR MACHINE ONLINE — CFW6 v1.39 | {_startup_mode}"
         )
     except Exception as e:
         logger.warning(f"[SCANNER] Discord unavailable: {e}")
@@ -476,8 +487,6 @@ def start_scanner_loop():
         premarket_built = True
 
     # ── FUT-2: Launch futures ORB thread AFTER all equity init ───────────────
-    # Daemon thread — crash-isolated from the equity scan loop.
-    # Zero effect on options/equity if FUTURES_ENABLED is not set.
     _futures_scanner_ref = None
     if _FUTURES_ENABLED:
         try:
@@ -486,6 +495,18 @@ def start_scanner_loop():
             logger.info(f"[FUTURES-ORB] ✅ Futures ORB thread started for {_FUTURES_SYMBOL}")
         except Exception as e:
             logger.warning(f"[FUTURES-ORB] ⚠️ Failed to start futures thread (non-fatal): {e}")
+
+    # ── NT-2: Launch NTBridge AFTER all equity init ───────────────────────────
+    # Crash-isolated daemon thread. Zero effect on equity/options if not enabled.
+    if _NT_BRIDGE_ENABLED:
+        try:
+            from app.ninjatrader.nt_bridge import NTBridge
+            _nt_bridge_ref = NTBridge(port=_NT_BRIDGE_PORT)
+            _nt_bridge_ref.start()
+            _start_nt_signal_consumer(_nt_bridge_ref)
+            logger.info(f"[NT-BRIDGE] ✅ NTBridge started on port {_NT_BRIDGE_PORT}")
+        except Exception as e:
+            logger.warning(f"[NT-BRIDGE] ⚠️ Failed to start NTBridge (non-fatal): {e}")
     # ─────────────────────────────────────────────────────────────────────────
 
     while True:
@@ -503,14 +524,7 @@ def start_scanner_loop():
                     logger.info(f"[PRE-MARKET] {current_time_str} - Building Watchlist")
                     try:
                         watchlist_data      = get_watchlist_with_metadata(force_refresh=True)
-                        # SC-C FIX (CORE-5): Direct [] access → .get() with empty-list fallback.
-                        # If get_watchlist_with_metadata() returns a partial dict, the old code
-                        # raised a KeyError that was caught as "Funnel error: 'watchlist'" —
-                        # misleading. .get() now falls through to the empty-watchlist warning below.
                         premarket_watchlist = watchlist_data.get('watchlist', [])
-                        # SC-B FIX (CORE-5): Removed dead `metadata = watchlist_data['metadata']`
-                        # that was assigned here but never read in this block. The only use of
-                        # metadata in this function is in the refresh block below (logger.info).
 
                         if not premarket_watchlist and now_et.time() > dtime(8, 0):
                             logger.warning("⚠️  WATCHLIST EMPTY after 8:00 AM - possible config issue")
@@ -541,7 +555,6 @@ def start_scanner_loop():
                         logger.info(f"[PRE-MARKET] {current_time_str} - Refreshing Watchlist")
                         try:
                             watchlist_data      = get_watchlist_with_metadata(force_refresh=True)
-                            # SC-C FIX (CORE-5): .get() fallback on watchlist key.
                             premarket_watchlist = watchlist_data.get('watchlist', [])
                             current_set = set(premarket_watchlist)
                             new_tickers = list(current_set - last_subscribed_watchlist)
@@ -553,9 +566,6 @@ def start_scanner_loop():
                                 subscribe_quote_tickers(combined)
                             last_subscribed_watchlist = current_set
                             metadata = watchlist_data.get('metadata', {})
-                            # SC-G FIX (CORE-5): metadata['stage'] / metadata['stage_description']
-                            # → .get() with '?' fallbacks. If metadata is partial or missing keys,
-                            # the old code raised a KeyError caught as "Refresh error: 'stage'".
                             logger.info(
                                 f"[FUNNEL] Stage: {metadata.get('stage', '?').upper()} "
                                 f"— {metadata.get('stage_description', '?')}"
@@ -627,11 +637,6 @@ def start_scanner_loop():
                     logger.debug(f"[SCANNER] Cycle #{cycle_count} | {len(watchlist)} tickers | {current_time_str}")
 
                 if ANALYTICS_AVAILABLE and analytics:
-                    # BUG-SC-6 (documented): conn=None is REQUIRED here — _db_operation_safe
-                    # calls _run_analytics(conn=<pooled_conn>) injecting a connection as a
-                    # keyword argument. The function does not use it directly (SignalTracker
-                    # manages its own pooled connections internally) but the parameter must
-                    # exist to avoid a TypeError from the wrapper. See FIX #30 / FIX #26.
                     def _run_analytics(conn=None):
                         if analytics:
                             def get_price(t):
@@ -640,7 +645,7 @@ def start_scanner_loop():
                                 return bar['close'] if bar else None
                             analytics.monitor_active_signals(get_price)
                             analytics.check_scheduled_tasks()
-                    if PRODUCTION_HELPERS_ENABLED:
+                    if PRODUCTION_HELPERS_AVAILABLE:
                         _db_operation_safe(_run_analytics, "analytics monitor")
                     else:
                         try:
@@ -725,21 +730,16 @@ def start_scanner_loop():
                     reset_funnel()
                     clear_armed_signals()
                     clear_watching_signals()
-                    clear_bos_alerts()  # OBS-SC-2: public API from sniper.clear_bos_alerts()
+                    clear_bos_alerts()
                     try:
                         data_manager.clear_prev_day_cache()
                     except Exception as e:
                         logger.error(f"[DATA] PDH/PDL cache clear error: {e}")
 
-                    # FUT-3: EOD reset for futures scanner state + bar cache.
-                    # Wrapped in try/except so any futures error never blocks equity EOD tasks.
                     if _FUTURES_ENABLED:
                         try:
                             from app.futures.futures_orb_scanner import FuturesORBScanner
                             from app.futures.tradier_futures_feed import clear_bar_cache
-                            # The running thread's scanner instance resets itself at top-of-loop,
-                            # but we also clear the bar cache here to ensure no stale intraday
-                            # data persists into the next session.
                             clear_bar_cache(_FUTURES_SYMBOL)
                             logger.info(f"[FUTURES-ORB] EOD bar cache cleared for {_FUTURES_SYMBOL}")
                         except Exception as e:
@@ -752,6 +752,8 @@ def start_scanner_loop():
 
         except KeyboardInterrupt:
             logger.info("[SCANNER] Shutdown signal received")
+            if _nt_bridge_ref:
+                _nt_bridge_ref.stop()
             logger.info(get_eod_report())
             raise
 
