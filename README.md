@@ -18,6 +18,16 @@ War Machine is a production algorithmic trading system that:
 
 ---
 
+## 🔗 Related Repositories
+
+| Repo | Language | Purpose |
+|------|----------|---------|
+| [War-Machine-NT](https://github.com/AlgoOps25/War-Machine-NT) | C# | NinjaTrader 8 strategy (`NTBarSender.cs`) — streams real-time bar data to this system over TCP on port 5570 |
+
+The NT bridge receiver lives in `app/ninjatrader/` — see [`nt_bridge.py`](app/ninjatrader/nt_bridge.py) and [`nt_signal_handler.py`](app/ninjatrader/nt_signal_handler.py).
+
+---
+
 ## 🗂️ Project Structure
 
 ```
@@ -43,6 +53,7 @@ war-machine/
 │   ├── indicators/            # RSI, MACD, ATR, VWAP
 │   ├── ml/                    # Confidence model
 │   ├── mtf/                   # Multi-timeframe FVG priority
+│   ├── ninjatrader/           # NT8 bridge receiver (TCP → SignalEngine)
 │   ├── options/               # Greeks & chain analysis
 │   ├── risk/                  # Position sizing, dynamic thresholds
 │   └── validation/            # Multi-indicator validator
@@ -138,7 +149,7 @@ python app/health_check.py
 ## 🗄️ Database Tables
 
 | Table | Purpose |
-|-------|---------|
+|-------|---------| 
 | `candle_cache` | OHLCV history (reduces API calls) |
 | `watching_signals_persist` | BOS watch state (survives restarts) |
 | `armed_signals_persist` | Armed signal state (survives restarts) |
