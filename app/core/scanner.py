@@ -31,6 +31,8 @@ FEATURE NT-BRIDGE (2026-04-08): NinjaTrader order flow bridge added.
   NT-2: NTBridge starts AFTER all equity init — isolated daemon thread.
   NT-3: NTBridge signal queue consumed in background — non-blocking to scan loop.
   NT-4: Startup banner includes NTBridge status line.
+  NT-5: process_nt_signal() wired into consumer thread (2026-04-08).
+        Routes actionable signals: confidence gate → risk gate → options gate → Discord.
 """
 from app.core.health_server import start_health_server, health_heartbeat
 
@@ -84,11 +86,11 @@ _REDEPLOY_RETRIES      = 2
 _REDEPLOY_RETRY_WAIT   = 3
 _ticker_executor       = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ticker_watchdog")
 
-# ── Futures opt-in flag ───────────────────────────────────────────────────────
+# ── Futures opt-in flag ───────────────────────────────────────────────────────────────
 _FUTURES_ENABLED = os.getenv("FUTURES_ENABLED", "false").lower() == "true"
 _FUTURES_SYMBOL  = os.getenv("FUTURES_SYMBOL", "MNQ")
 
-# ── NT-1: NinjaTrader bridge opt-in flag ─────────────────────────────────────
+# ── NT-1: NinjaTrader bridge opt-in flag ───────────────────────────────────────────
 # Set NT_BRIDGE_ENABLED=true in Railway (or .env) to activate.
 # NT_BRIDGE_PORT defaults to 5570 — must match NTBarSender.cs WAR_MACHINE_PORT.
 # Zero impact on equity/options pipeline when not set.
@@ -314,10 +316,22 @@ def subscribe_and_prefetch_tickers(new_tickers: list):
         logger.exception(e)
 
 
-# NT-3: Background thread drains NTBridge signal queue and logs actionable signals.
+# NT-3 / NT-5: Background thread drains NTBridge signal queue.
+# Actionable signals are forwarded to process_nt_signal() which routes them
+# through the full War Machine pipeline: confidence → risk → options → Discord.
 # Non-blocking — runs as a daemon thread independent of the equity scan loop.
 def _start_nt_signal_consumer(bridge):
     """Drain NTBridge.signal_queue in a background thread."""
+    # NT-5: Import here (not at module level) so a missing nt_signal_handler
+    # never blocks scanner startup when NT_BRIDGE_ENABLED=false.
+    try:
+        from app.ninjatrader.nt_signal_handler import process_nt_signal
+        _handler_available = True
+    except Exception as e:
+        logger.warning("[NT-BRIDGE] nt_signal_handler unavailable (%s) — signals will be logged only", e)
+        _handler_available = False
+        process_nt_signal = None
+
     def _consume():
         logger.info("[NT-BRIDGE] Signal consumer thread started")
         while True:
@@ -333,8 +347,9 @@ def _start_nt_signal_consumer(bridge):
                         signal.bar.vwap,
                         signal.bar.poc,
                     )
-                    # Future hook: pass signal into War Machine signal pipeline
-                    # e.g. process_nt_signal(signal)
+                    # NT-5: Route through full pipeline — risk gate, options gate, Discord.
+                    if _handler_available and process_nt_signal is not None:
+                        process_nt_signal(signal)
             except Exception:
                 pass  # queue.Empty on timeout — continue looping
     t = threading.Thread(target=_consume, daemon=True, name="NTBridge-Consumer")
@@ -496,7 +511,7 @@ def start_scanner_loop():
         last_subscribed_watchlist = set(combined)
         premarket_built = True
 
-    # ── FUT-2: Launch futures ORB thread AFTER all equity init ───────────────
+    # ── FUT-2: Launch futures ORB thread AFTER all equity init ───────────────────────
     _futures_scanner_ref = None
     if _FUTURES_ENABLED:
         try:
@@ -506,7 +521,7 @@ def start_scanner_loop():
         except Exception as e:
             logger.warning(f"[FUTURES-ORB] ⚠️ Failed to start futures thread (non-fatal): {e}")
 
-    # ── NT-2: Launch NTBridge AFTER all equity init ───────────────────────────
+    # ── NT-2: Launch NTBridge AFTER all equity init ─────────────────────────────────
     # Crash-isolated daemon thread. Zero effect on equity/options if not enabled.
     if _NT_BRIDGE_ENABLED:
         try:
@@ -517,7 +532,7 @@ def start_scanner_loop():
             logger.info(f"[NT-BRIDGE] ✅ NTBridge started on port {_NT_BRIDGE_PORT}")
         except Exception as e:
             logger.warning(f"[NT-BRIDGE] ⚠️ Failed to start NTBridge (non-fatal): {e}")
-    # ─────────────────────────────────────────────────────────────────────────
+    # ───────────────────────────────────────────────────────────────────────────
 
     while True:
         try:
