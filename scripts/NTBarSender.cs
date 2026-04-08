@@ -36,8 +36,8 @@ namespace NinjaTrader.NinjaScript.Strategies
     public class NTBarSender : Strategy
     {
         // ── Configuration ──────────────────────────────────────────────────────────
-        private const string WAR_MACHINE_HOST = "127.0.0.1";  // Change to Railway hostname
-        private const int    WAR_MACHINE_PORT = 5570;
+        private const string WAR_MACHINE_HOST = "crossover.proxy.rlwy.net";  // Railway TCP proxy
+        private const int    WAR_MACHINE_PORT = 24283;                        // Railway TCP proxy port
         private const int    RECONNECT_MS     = 5000;
         private const int    VOL_LOOKBACK     = 20;  // bars for POC/VAH/VAL calculation
 
