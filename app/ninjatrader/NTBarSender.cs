@@ -1,4 +1,4 @@
-// NTBarSender.cs  (Indicator v27 — IsFirstTickOfBar fix)
+// NTBarSender.cs  (Indicator v28 — AddDataSeries compile fix)
 // Apply to NQ 1m chart as an INDICATOR (not a strategy).
 // Streams enriched bar data to War Machine Python bridge over TCP.
 #region Using declarations
@@ -67,8 +67,9 @@ namespace NinjaTrader.NinjaScript.Indicators
 
 
         // ── secondary bar series indices ──
-        private int _bars5m  = -1;
-        private int _bars15m = -1;
+        // AddDataSeries returns void in NT8 — indices are positional (1st added = 1, 2nd = 2)
+        private const int _bars5m  = 1;
+        private const int _bars15m = 2;
 
 
         protected override void OnStateChange()
@@ -85,8 +86,8 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
             else if (State == State.Configure)
             {
-                _bars5m  = AddDataSeries(BarsPeriodType.Minute, 5);
-                _bars15m = AddDataSeries(BarsPeriodType.Minute, 15);
+                AddDataSeries(BarsPeriodType.Minute, 5);   // index 1 = _bars5m
+                AddDataSeries(BarsPeriodType.Minute, 15);  // index 2 = _bars15m
             }
             else if (State == State.DataLoaded)
             {
