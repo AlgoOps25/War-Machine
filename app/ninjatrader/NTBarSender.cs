@@ -1,6 +1,10 @@
-// NTBarSender.cs  (Indicator v28 — AddDataSeries compile fix)
+// NTBarSender.cs  (Indicator v29 — MTF cache fix + prev-day reset fix)
 // Apply to NQ 1m chart as an INDICATOR (not a strategy).
 // Streams enriched bar data to War Machine Python bridge over TCP.
+//
+// DELTA NOTE: delta/bid_vol/ask_vol require tick replay to be enabled in
+// NinjaTrader: Tools → Options → Market Data → "Use tick replay" for NQ.
+// Without tick replay, OnMarketData(Last) does not fire and all delta fields = 0.
 #region Using declarations
 using System;
 using System.Collections.Generic;
@@ -56,6 +60,15 @@ namespace NinjaTrader.NinjaScript.Indicators
         private double _overnightHigh = double.NaN;
         private double _overnightLow  = double.NaN;
         private bool   _rthStarted    = false;
+
+
+        // ── cached multi-timeframe values (updated when secondary series fires) ──
+        private double _cached5mClose  = double.NaN;
+        private double _cached5mHigh   = double.NaN;
+        private double _cached5mLow    = double.NaN;
+        private double _cached15mClose = double.NaN;
+        private double _cached15mHigh  = double.NaN;
+        private double _cached15mLow   = double.NaN;
 
 
         // ── TCP ──
@@ -157,7 +170,31 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         protected override void OnBarUpdate()
         {
-            if (BarsInProgress != 0) return;
+            // ── Cache 5m values when the 5m series closes a bar ──
+            if (BarsInProgress == _bars5m)
+            {
+                if (CurrentBar >= 1)
+                {
+                    _cached5mClose = Close[1];
+                    _cached5mHigh  = High[1];
+                    _cached5mLow   = Low[1];
+                }
+                return;
+            }
+
+            // ── Cache 15m values when the 15m series closes a bar ──
+            if (BarsInProgress == _bars15m)
+            {
+                if (CurrentBar >= 1)
+                {
+                    _cached15mClose = Close[1];
+                    _cached15mHigh  = High[1];
+                    _cached15mLow   = Low[1];
+                }
+                return;
+            }
+
+            // ── Primary 1m series only below this point ──
             if (CurrentBar < 5)      return;
             if (!IsFirstTickOfBar)   return;
 
@@ -169,10 +206,12 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             if (Bars.IsLastBarOfSession)
             {
+                // Capture prev-day values BEFORE any reset
                 _prevDayHigh  = High[1];
                 _prevDayLow   = Low[1];
                 _prevDayClose = Close[1];
 
+                // Reset session accumulators only — do NOT reset _prevDay* fields
                 _sessionVolByPrice.Clear();
                 _poc = 0.0; _vah = 0.0; _val = 0.0;
                 _barBidVol = 0.0; _barAskVol = 0.0; _barDelta = 0.0;
@@ -233,17 +272,18 @@ namespace NinjaTrader.NinjaScript.Indicators
                     }
                 }
 
-                double close5m  = BarsArray[_bars5m].Count  > 1 ? BarsArray[_bars5m].GetClose(BarsArray[_bars5m].Count   - 2) : Close[1];
-                double close15m = BarsArray[_bars15m].Count > 1 ? BarsArray[_bars15m].GetClose(BarsArray[_bars15m].Count  - 2) : Close[1];
-                double high5m   = BarsArray[_bars5m].Count  > 1 ? BarsArray[_bars5m].GetHigh(BarsArray[_bars5m].Count     - 2) : High[1];
-                double low5m    = BarsArray[_bars5m].Count  > 1 ? BarsArray[_bars5m].GetLow(BarsArray[_bars5m].Count      - 2) : Low[1];
-                double high15m  = BarsArray[_bars15m].Count > 1 ? BarsArray[_bars15m].GetHigh(BarsArray[_bars15m].Count   - 2) : High[1];
-                double low15m   = BarsArray[_bars15m].Count > 1 ? BarsArray[_bars15m].GetLow(BarsArray[_bars15m].Count    - 2) : Low[1];
+                // Use cached MTF values — updated by secondary series OnBarUpdate branches above
+                double close5m  = double.IsNaN(_cached5mClose)  ? Close[1] : _cached5mClose;
+                double high5m   = double.IsNaN(_cached5mHigh)   ? High[1]  : _cached5mHigh;
+                double low5m    = double.IsNaN(_cached5mLow)    ? Low[1]   : _cached5mLow;
+                double close15m = double.IsNaN(_cached15mClose) ? Close[1] : _cached15mClose;
+                double high15m  = double.IsNaN(_cached15mHigh)  ? High[1]  : _cached15mHigh;
+                double low15m   = double.IsNaN(_cached15mLow)   ? Low[1]   : _cached15mLow;
 
                 _barBidVol = 0.0; _barAskVol = 0.0; _barDelta = 0.0;
 
                 string payload = string.Format(
-                    "{{\"symbol\":\"{0}\",\"timestamp\":\"{1}\"," +
+                    "{\"symbol\":\"{0}\",\"timestamp\":\"{1}\"," +
                     "\"open\":{2},\"high\":{3},\"low\":{4},\"close\":{5}," +
                     "\"volume\":{6},\"delta\":{7},\"cum_delta\":{8}," +
                     "\"bid_vol\":{9},\"ask_vol\":{10},\"imbalance\":{11}," +
@@ -253,7 +293,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     "\"session_open\":{24},\"prev_day_high\":{25},\"prev_day_low\":{26},\"prev_day_close\":{27}," +
                     "\"overnight_high\":{28},\"overnight_low\":{29}," +
                     "\"close_5m\":{30},\"high_5m\":{31},\"low_5m\":{32}," +
-                    "\"close_15m\":{33},\"high_15m\":{34},\"low_15m\":{35}}}\n",
+                    "\"close_15m\":{33},\"high_15m\":{34},\"low_15m\":{35}}\n",
                     Instrument.FullName,
                     Time[1].ToString("yyyy-MM-ddTHH:mm:ss"),
                     Open[1].ToString("F2"),  High[1].ToString("F2"),
